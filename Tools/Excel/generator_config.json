@@ -1,0 +1,7 @@
+{
+    "data_tables_source_dir": "DataTables",
+    "json_output_dir": "DataTables_Json",
+    "gameplay_tags_ini_path": "Config/DefaultGameplayTags.ini",
+    "output_module_dir": "Plugins/GameDataSamples/Source/GameDataSamples",
+    "api_macro": "GAMEDATASAMPLES_API"
+}

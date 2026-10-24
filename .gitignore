@@ -1,0 +1,63 @@
+# ==============================================================================
+# Unreal Engine 5 & macOS Standard Git Ignore File
+# ==============================================================================
+
+# Unreal Engine temporary & build folders (Never commit these!)
+Binaries/
+Plugins/*/Binaries/
+Intermediate/
+Plugins/*/Intermediate/
+Saved/
+DerivedDataCache/
+
+# Auto-generated project files (can be regenerated from .uproject)
+*.xcodeproj
+*.xcworkspace
+*.sln
+*.suo
+*.opensdf
+*.sdf
+*.VC.db
+*.VC.opendb
+*.code-workspace
+
+# Build artifacts & packages
+/Build/Receipts/
+*.PackageVersionCounter
+
+# IDE & Editor local configuration / cache
+.vscode/
+.history/
+.idea/
+.cache/
+.clangd
+.clangd/
+.memory/
+.ignore
+compile_commands.json
+
+# 发布加密密钥（阶段四 K1：密钥不入库，由平台安全通道注入）
+Config/DefaultCrypto.ini
+
+# Operating System temporary files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# Python bytecode & temporary files
+__pycache__/
+*.py[cod]
+*$py.class
+*.log
+
+# Temporary / backup files
+*.bak
+*.tmp
+*.swp
+*~
+

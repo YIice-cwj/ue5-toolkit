@@ -1,0 +1,26 @@
+[
+  {
+    "RowName": "Shop_01",
+    "Name": "Shop_01",
+    "GoodsName": "新手铁剑",
+    "ItemId": "Item_Sword",
+    "DisplayItemId": "Item_Sword",
+    "Price": 100
+  },
+  {
+    "RowName": "Shop_02",
+    "Name": "Shop_02",
+    "GoodsName": "新手木盾",
+    "ItemId": "Item_Shield",
+    "DisplayItemId": "Item_Shield",
+    "Price": 80
+  },
+  {
+    "RowName": "Shop_03",
+    "Name": "Shop_03",
+    "GoodsName": "初级生命药水",
+    "ItemId": "Item_Potion",
+    "DisplayItemId": "Item_Potion",
+    "Price": 20
+  }
+]

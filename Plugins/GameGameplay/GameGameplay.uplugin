@@ -1,0 +1,36 @@
+{
+    "FileVersion": 3,
+    "Version": 2,
+    "VersionName": "2.0.0",
+    "FriendlyName": "Game Gameplay",
+    "Description": "Game GAS binding layer: ability base, attribute set base with meta attributes, damage execution base and attribute-to-UI mapping. Forbidden to depend on GameData.",
+    "Category": "Game",
+    "CreatedBy": "Taoist Decree Team",
+    "CanContainContent": false,
+    "Installed": false,
+    "Modules": [
+        {
+            "Name": "GameGameplay",
+            "Type": "Runtime",
+            "LoadingPhase": "Default"
+        }
+    ],
+    "Plugins": [
+        {
+            "Name": "GameplayAbilities",
+            "Enabled": true
+        },
+        {
+            "Name": "GameGameplayCore",
+            "Enabled": true
+        },
+        {
+            "Name": "GameCore",
+            "Enabled": true
+        },
+        {
+            "Name": "GameLogging",
+            "Enabled": true
+        }
+    ]
+}

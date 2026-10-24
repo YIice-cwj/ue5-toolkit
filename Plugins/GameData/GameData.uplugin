@@ -1,0 +1,33 @@
+{
+    "FileVersion": 3,
+    "Version": 2,
+    "VersionName": "2.0.0",
+    "FriendlyName": "Game Data",
+    "Description": "Game static data layer: generic repository, JSON loader, save facility and the generated-domain host module.",
+    "Category": "Game",
+    "CreatedBy": "Taoist Decree Team",
+    "CanContainContent": false,
+    "Installed": false,
+    "Modules": [
+        {
+            "Name": "GameDataCore",
+            "Type": "Runtime",
+            "LoadingPhase": "Default"
+        },
+        {
+            "Name": "GameData",
+            "Type": "Runtime",
+            "LoadingPhase": "Default"
+        }
+    ],
+    "Plugins": [
+        {
+            "Name": "GameCore",
+            "Enabled": true
+        },
+        {
+            "Name": "GameLogging",
+            "Enabled": true
+        }
+    ]
+}

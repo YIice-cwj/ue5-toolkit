@@ -1,0 +1,29 @@
+[
+  {
+    "RowName": "Item_Sword",
+    "Name": "Item_Sword",
+    "ItemName": "铁剑",
+    "BaseAttack": 15,
+    "GoldCost": 50.0,
+    "bIsUsable": true,
+    "ItemTag": "Item.Equipment.Weapon"
+  },
+  {
+    "RowName": "Item_Shield",
+    "Name": "Item_Shield",
+    "ItemName": "木盾",
+    "BaseAttack": 5,
+    "GoldCost": 30.0,
+    "bIsUsable": true,
+    "ItemTag": "Item.Equipment.Armor"
+  },
+  {
+    "RowName": "Item_Potion",
+    "Name": "Item_Potion",
+    "ItemName": "生命药水",
+    "BaseAttack": 0,
+    "GoldCost": 10.5,
+    "bIsUsable": true,
+    "ItemTag": "Item.Consumable.Potion"
+  }
+]

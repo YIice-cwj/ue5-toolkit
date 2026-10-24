@@ -1,0 +1,14 @@
+{
+    "_comment": "数据表代码生成器极简配置示例。本工具链遵循『约定优于配置』，所有未声明项将自动向上寻根 .uproject 并自适应推导最佳默认值。",
+
+    "data_tables_source_dir": "DataTables",
+    "json_output_dir": "DataTables_Json",
+    "gameplay_tags_ini_path": "Config/DefaultGameplayTags.ini",
+
+    "_comment_advanced": "以下为可选高级覆盖项（通常无需配置，脚本会自动推导）：",
+    "_optional_output_module_dir": "Plugins/GameData/Source/GameData (若存在则自动绑定为该插件，否则回落主工程)",
+    "_optional_api_macro": "GAMEDATA_API (自动根据输出模块推导)",
+    "_optional_project_prefix": "Game (自动推导前缀，用于生成类名与命令名)",
+    "_optional_backup_dir": "DataTables_Backup (反向同步备份目录，缺省自动置于工程根下)",
+    "_optional_engine_source_dir": "/path/to/Engine/Source (自动根据 .uproject 中的 EngineAssociation 推导，支持环境变量 UE_ENGINE_DIR 覆盖)"
+}

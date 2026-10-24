@@ -1,0 +1,28 @@
+{
+    "FileVersion": 3,
+    "Version": 3,
+    "VersionName": "2.1.0",
+    "FriendlyName": "Game Gameplay Core",
+    "Description": "Game combat framework core (zero GameplayAbilities dependency): damage pipeline contracts, generic stat management and Buff runtime.",
+    "Category": "Game",
+    "CreatedBy": "Taoist Decree Team",
+    "CanContainContent": false,
+    "Installed": false,
+    "Modules": [
+        {
+            "Name": "GameGameplayCore",
+            "Type": "Runtime",
+            "LoadingPhase": "Default"
+        }
+    ],
+    "Plugins": [
+        {
+            "Name": "GameCore",
+            "Enabled": true
+        },
+        {
+            "Name": "GameLogging",
+            "Enabled": true
+        }
+    ]
+}

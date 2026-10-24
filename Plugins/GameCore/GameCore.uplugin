@@ -1,0 +1,18 @@
+{
+    "FileVersion": 3,
+    "Version": 2,
+    "VersionName": "2.0.0",
+    "FriendlyName": "Game Core",
+    "Description": "Game bottom-layer common framework: config registry, listener hub, observable registry, object pool, cache and loading. Zero dependencies, copyable to any UE project.",
+    "Category": "Game",
+    "CreatedBy": "Taoist Decree Team",
+    "CanContainContent": false,
+    "Installed": false,
+    "Modules": [
+        {
+            "Name": "GameCore",
+            "Type": "Runtime",
+            "LoadingPhase": "Default"
+        }
+    ]
+}
