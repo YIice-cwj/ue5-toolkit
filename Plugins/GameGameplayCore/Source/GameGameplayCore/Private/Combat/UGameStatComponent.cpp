@@ -32,6 +32,9 @@ void UGameStatComponent::RegisterStat(const FGameplayTag& InStatTag, float InIni
 
     const float ClampedMax = FMath::Max(InMax, InMin);
     const float ClampedCurrent = FMath::Clamp(InInitialCurrent, InMin, ClampedMax);
+    const bool bAlreadyRegistered = HasStat(InStatTag);
+    const float PreviousEffectiveCurrent = bAlreadyRegistered ? GetStatEffectiveCurrent(InStatTag) : ClampedCurrent;
+    const float PreviousEffectiveMax = bAlreadyRegistered ? GetStatEffectiveMax(InStatTag) : ClampedMax;
 
     FGameStatValue NewValue;
     NewValue.Current = ClampedCurrent;
@@ -39,8 +42,8 @@ void UGameStatComponent::RegisterStat(const FGameplayTag& InStatTag, float InIni
     NewValue.Min = InMin;
 
     SyncEntryToReplicatedList(InStatTag, NewValue);
-    AcknowledgedStats.FindOrAdd(InStatTag) = NewValue;
     EvaluateVitalState();
+    BroadcastStatChanged(InStatTag, PreviousEffectiveCurrent, GetStatEffectiveCurrent(InStatTag), GetStatEffectiveMax(InStatTag));
 }
 
 bool UGameStatComponent::UnregisterStat(const FGameplayTag& InStatTag) {
@@ -245,8 +248,9 @@ bool UGameStatComponent::ModifyStat(const FGameplayTag& InStatTag, float Delta, 
 
     const float OldEffectiveValue = EvaluateModifiers(InStatTag, OldValue, false);
     const float NewEffectiveValue = EvaluateModifiers(InStatTag, TargetValue, false);
-    const float EffectiveMax = GetStatEffectiveMax(InStatTag);
-    BroadcastStatChanged(InStatTag, OldEffectiveValue, NewEffectiveValue, EffectiveMax);
+    if (!FMath::IsNearlyEqual(OldEffectiveValue, NewEffectiveValue)) {
+        BroadcastStatChanged(InStatTag, OldEffectiveValue, NewEffectiveValue, GetStatEffectiveMax(InStatTag));
+    }
 
     return true;
 }
@@ -489,14 +493,8 @@ void UGameStatComponent::OnRep_VitalAlive() {
 }
 
 int32 UGameStatComponent::ResolveStatIndex(const FGameplayTag& InStatTag) const {
-    if (const int32* Index = StatIndex.Find(InStatTag)) {
-        if (ReplicatedStats.IsValidIndex(*Index)) {
-            return *Index;
-        }
-    }
-    return ReplicatedStats.IndexOfByPredicate([&InStatTag](const FGameStatEntry& Entry) {
-        return Entry.Tag.MatchesTagExact(InStatTag);
-    });
+    const int32* Index = StatIndex.Find(InStatTag);
+    return Index != nullptr ? *Index : INDEX_NONE;
 }
 
 FGameStatValue* UGameStatComponent::FindMutableStat(const FGameplayTag& InStatTag) {

@@ -22,9 +22,7 @@ void UGameBuffComponent::PostInitProperties() {
 }
 
 void UGameBuffComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) {
-    if (IsRegistered()) {
-        Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
-    }
+    Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
     if (ActiveBuffs.Items.IsEmpty()) {
         return;
@@ -395,9 +393,7 @@ void UGameBuffComponent::BroadcastBuffRemoved(const FGameplayTag& InBuffTag) {
 
 void FGameActiveBuffArray::PostReplicatedAdd(const TArrayView<int32>& AddedIndices, int32 FinalSize) {
     UGameBuffComponent* Component = OwnerComponent;
-    if (Component == nullptr) {
-        return;
-    }
+    check(Component != nullptr);
 
     for (const int32 Index : AddedIndices) {
         Component->RegisterInstanceModifiers(Items[Index]);
@@ -408,9 +404,7 @@ void FGameActiveBuffArray::PostReplicatedAdd(const TArrayView<int32>& AddedIndic
 
 void FGameActiveBuffArray::PostReplicatedChange(const TArrayView<int32>& ChangedIndices, int32 FinalSize) {
     UGameBuffComponent* Component = OwnerComponent;
-    if (Component == nullptr) {
-        return;
-    }
+    check(Component != nullptr);
 
     for (const int32 Index : ChangedIndices) {
         Component->UnregisterInstanceModifiers(Items[Index]);
@@ -422,9 +416,7 @@ void FGameActiveBuffArray::PostReplicatedChange(const TArrayView<int32>& Changed
 
 void FGameActiveBuffArray::PreReplicatedRemove(const TArrayView<int32>& RemovedIndices, int32 FinalSize) {
     UGameBuffComponent* Component = OwnerComponent;
-    if (Component == nullptr) {
-        return;
-    }
+    check(Component != nullptr);
 
     for (const int32 Index : RemovedIndices) {
         Component->UnregisterInstanceModifiers(Items[Index]);

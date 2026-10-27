@@ -10,7 +10,7 @@
 
 namespace {
 
-UWorld* GetTestWorld() {
+UWorld* GetTimeDilationTestWorld() {
     for (const FWorldContext& Context : GEngine->GetWorldContexts()) {
         if (Context.World()) {
             return Context.World();
@@ -28,7 +28,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameTimeActorHitStopTest, "Game.Core.Time.Acto
  * @brief 验证 Actor 打击顿帧申请、定时步进、自定义缩放还原与即时清理
  */
 bool FGameTimeActorHitStopTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UWorld* World = GetTestWorld();
+    UWorld* World = GetTimeDilationTestWorld();
     TestNotNull(TEXT("测试世界有效"), World);
     if (!World) {
         return false;
@@ -81,7 +81,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameTimePriorityStackTest, "Game.Core.Time.Lay
  * @brief 验证分层时间膨胀通道优先级覆盖与退栈还原机制
  */
 bool FGameTimePriorityStackTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UWorld* World = GetTestWorld();
+    UWorld* World = GetTimeDilationTestWorld();
     TestNotNull(TEXT("测试世界有效"), World);
     if (!World) {
         return false;
@@ -132,7 +132,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameTimeBlendOutRecoveryTest, "Game.Core.Time.
  * @brief 验证时间膨胀平滑插值淡出回弹曲线
  */
 bool FGameTimeBlendOutRecoveryTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UWorld* World = GetTestWorld();
+    UWorld* World = GetTimeDilationTestWorld();
     TestNotNull(TEXT("测试世界有效"), World);
     if (!World) {
         return false;
@@ -174,7 +174,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameTimePersistentBlendOutTest, "Game.Core.Tim
  * @return 全部断言通过返回 true
  */
 bool FGameTimePersistentBlendOutTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UWorld* World = GetTestWorld();
+    UWorld* World = GetTimeDilationTestWorld();
     TestNotNull(TEXT("测试世界有效"), World);
     if (!World) {
         return false;

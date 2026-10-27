@@ -260,6 +260,40 @@ bool FGameStatTaggedSubscriptionTest::RunTest([[maybe_unused]] const FString& Pa
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameStatRegisterReplayTest,
+    "Game.GameplayCore.Stat.RegisterReplay",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FGameStatRegisterReplayTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UGameStatComponent* Comp = NewObject<UGameStatComponent>();
+    const FGameplayTag ManaTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Attribute.Subscribe.LateRegister")));
+
+    int32 CallbackCount = 0;
+    float ObservedNew = 0.0f;
+    Comp->SubscribeStatChanged(
+        ManaTag,
+        FOnGameStatChangedNative::FDelegate::CreateLambda(
+            [&CallbackCount, &ObservedNew](const FGameplayTag&, float, float NewValue, float) {
+                ++CallbackCount;
+                ObservedNew = NewValue;
+            }
+        )
+    );
+    TestEqual(TEXT("未注册属性订阅时不回放"), CallbackCount, 0);
+
+    Comp->RegisterStat(ManaTag, 60.0f, 120.0f, 0.0f);
+    TestEqual(TEXT("注册时向既有订阅者回放初始值"), CallbackCount, 1);
+    TestEqual(TEXT("注册回放值为初始当前值"), ObservedNew, 60.0f);
+
+    Comp->AddStatModifier(ManaTag, FGameStatModifier(20.0f, EGameStatModifierOp::Add));
+    TestEqual(TEXT("注册后修正器变化继续触发"), CallbackCount, 2);
+    TestEqual(TEXT("修正后回放值为派生值"), ObservedNew, 80.0f);
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameStatOwnerBoundSubscriptionTest,
     "Game.GameplayCore.Stat.OwnerBoundSubscription",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter

@@ -7,10 +7,32 @@
 #include "Misc/AutomationTest.h"
 #include "GameplayTagContainer.h"
 #include "GameplayTagsManager.h"
+#include "Engine/Engine.h"
+#include "Engine/World.h"
+#include "GameFramework/Actor.h"
 #include "Combat/UGameBuffComponent.h"
 #include "Combat/UGameStatComponent.h"
 
 #if WITH_AUTOMATION_TESTS
+
+namespace {
+
+UWorld* GetTestWorld() {
+    for (const FWorldContext& Context : GEngine->GetWorldContexts()) {
+        if (Context.World() != nullptr) {
+            return Context.World();
+        }
+    }
+    return nullptr;
+}
+
+AActor* SpawnTestHost(UWorld* InWorld) {
+    FActorSpawnParameters SpawnParams;
+    SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+    return InWorld->SpawnActor<AActor>(AActor::StaticClass(), FTransform::Identity, SpawnParams);
+}
+
+}  // namespace
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameBuffStackAndExpireTest,
@@ -19,8 +41,16 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 bool FGameBuffStackAndExpireTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UGameStatComponent* StatComponent = NewObject<UGameStatComponent>(GetTransientPackage());
-    UGameBuffComponent* BuffComponent = NewObject<UGameBuffComponent>(GetTransientPackage());
+    UWorld* World = GetTestWorld();
+    TestNotNull(TEXT("测试世界有效"), World);
+    if (World == nullptr) {
+        return false;
+    }
+    AActor* HostActor = SpawnTestHost(World);
+    UGameStatComponent* StatComponent = NewObject<UGameStatComponent>(HostActor);
+    UGameBuffComponent* BuffComponent = NewObject<UGameBuffComponent>(HostActor);
+    StatComponent->RegisterComponent();
+    BuffComponent->RegisterComponent();
     BuffComponent->BindStatComponent(StatComponent);
 
     const FGameplayTag AttackTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Attribute.Buff.Attack")));
@@ -61,6 +91,7 @@ bool FGameBuffStackAndExpireTest::RunTest([[maybe_unused]] const FString& Parame
     TestFalse(TEXT("到期后 Buff 自动移除"), BuffComponent->HasBuff(Spec.BuffTag));
     TestEqual(TEXT("到期后修正器完整回滚"), StatComponent->GetStatEffectiveCurrent(AttackTag), 100.0f);
 
+    HostActor->Destroy();
     return true;
 }
 
@@ -71,7 +102,14 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 bool FGameBuffCooldownStatusTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UGameBuffComponent* BuffComponent = NewObject<UGameBuffComponent>(GetTransientPackage());
+    UWorld* World = GetTestWorld();
+    TestNotNull(TEXT("测试世界有效"), World);
+    if (World == nullptr) {
+        return false;
+    }
+    AActor* HostActor = SpawnTestHost(World);
+    UGameBuffComponent* BuffComponent = NewObject<UGameBuffComponent>(HostActor);
+    BuffComponent->RegisterComponent();
 
     const FGameplayTag CooldownStateTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("State.Cooldown.TestSkill")));
 
@@ -97,6 +135,7 @@ bool FGameBuffCooldownStatusTest::RunTest([[maybe_unused]] const FString& Parame
     BuffComponent->GetGrantedTags(GrantedTags);
     TestFalse(TEXT("冷却结束后状态标签撤销"), GrantedTags.HasTag(CooldownStateTag));
 
+    HostActor->Destroy();
     return true;
 }
 
@@ -160,7 +199,14 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 bool FGameBuffIndependentInstancesTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UGameBuffComponent* BuffComponent = NewObject<UGameBuffComponent>(GetTransientPackage());
+    UWorld* World = GetTestWorld();
+    TestNotNull(TEXT("测试世界有效"), World);
+    if (World == nullptr) {
+        return false;
+    }
+    AActor* HostActor = SpawnTestHost(World);
+    UGameBuffComponent* BuffComponent = NewObject<UGameBuffComponent>(HostActor);
+    BuffComponent->RegisterComponent();
     const FGameplayTag PoisonTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Buff.Independent.Poison")));
 
     int32 LastChangedStacks = 0;
@@ -214,6 +260,7 @@ bool FGameBuffIndependentInstancesTest::RunTest([[maybe_unused]] const FString& 
     TestEqual(TEXT("超出 MaxStacks 时第三实例应被拒绝"), BuffComponent->ApplyBuff(CappedSpec), 0);
     TestEqual(TEXT("独立实例总层数保持为 2"), BuffComponent->GetBuffStacks(CappedSpec.BuffTag), 2);
 
+    HostActor->Destroy();
     return true;
 }
 

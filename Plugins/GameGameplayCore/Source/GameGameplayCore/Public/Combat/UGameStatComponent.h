@@ -190,6 +190,11 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Game|Stat")
     [[nodiscard]] float GetStatMax(const FGameplayTag& InStatTag) const;
 
+    /**
+     * @brief 获取属性下限（代理模式下仍取本地注册值，IGameStatValueSource 契约不含下限）
+     * @param InStatTag 属性标签
+     * @return 下限数值，未注册返回 0
+     */
     UFUNCTION(BlueprintCallable, Category = "Game|Stat")
     [[nodiscard]] float GetStatMin(const FGameplayTag& InStatTag) const;
 

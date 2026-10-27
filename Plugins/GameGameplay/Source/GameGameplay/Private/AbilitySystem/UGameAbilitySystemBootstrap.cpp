@@ -207,14 +207,11 @@ void UGameAbilitySystemBootstrap::GrantDefaultAbilities() {
 
     AActor* SourceActor = GetOwner() != nullptr ? GetOwner() : AbilitySystemComponent->GetOwner();
     for (const TSubclassOf<UGameplayAbility>& AbilityClass : DefaultAbilities) {
-        if (AbilityClass != nullptr) {
-            if (const FGameplayAbilitySpec* ExistingSpec = AbilitySystemComponent->FindAbilitySpecFromClass(AbilityClass)) {
-                GrantedAbilityHandles.AddUnique(ExistingSpec->Handle);
-            } else {
-                const FGameplayAbilitySpecHandle NewHandle = AbilitySystemComponent->GiveAbility(FGameplayAbilitySpec(AbilityClass, 1, INDEX_NONE, SourceActor));
-                GrantedAbilityHandles.AddUnique(NewHandle);
-            }
+        if (AbilityClass == nullptr || AbilitySystemComponent->FindAbilitySpecFromClass(AbilityClass) != nullptr) {
+            continue;
         }
+        const FGameplayAbilitySpecHandle NewHandle = AbilitySystemComponent->GiveAbility(FGameplayAbilitySpec(AbilityClass, 1, INDEX_NONE, SourceActor));
+        GrantedAbilityHandles.AddUnique(NewHandle);
     }
     bDefaultAbilitiesGranted = true;
 }

@@ -236,7 +236,7 @@ public:
 
 ### 按 Tag 订阅
 
-- `SubscribeStatChanged(InStatTag, Delegate)` 订阅时立即回放当前值（未注册属性也会保存订阅，待注册后首次变化触发）。
+- `SubscribeStatChanged(InStatTag, Delegate)` 订阅时立即回放当前值（未注册属性也会保存订阅，注册时立即以初始值回放，之后随每次变化触发）。
 - 成员函数订阅优先使用 `FOnGameStatChangedNative::FDelegate::CreateUObject(this, &UMyClass::OnStatChanged)`，引擎原生弱绑定即可随对象失效。
 - `SubscribeStatChanged(Owner, InStatTag, Lambda)` 为 Owner 感知版本：条目持有 `TWeakObjectPtr`，Owner 销毁后广播自动跳过，失效条目在下次广播时清理；Owner 已失效时返回空句柄。
 - 回调签名：`(StatTag, OldValue, NewValue, MaxValue)`。
