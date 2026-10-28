@@ -27,12 +27,15 @@ public:
     /** 玩家档案存档段名 */
     static const FName SegmentName;
 
+    /** 销毁前注销档案存档段并释放子系统与注册表引用 */
     void BeginDestroy() override;
 
     /**
      * @brief 绑定存档子系统与玩家数据注册表，并注册档案存档段
      * @param InSaveSubsystem 通用存档子系统
      * @param InRegistry 玩家数据注册表
+     *
+     * 实现思路：先解除既有绑定；任一参数为空则只保留解除后的空状态，不注册新段。
      */
     UFUNCTION(BlueprintCallable, Category = "GameDataSamples|Save")
     void Setup(USaveGameSubsystem* InSaveSubsystem, UGamePlayerDataRegistry* InRegistry);

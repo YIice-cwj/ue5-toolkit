@@ -73,13 +73,17 @@ protected:
     UPROPERTY(EditDefaultsOnly, Category = "Game|GAS")
     TArray<TSubclassOf<UGameplayAbility>> DefaultAbilities;
 
-    /** 复制就绪重试上限（默认 8 帧） */
+    /** 复制就绪重试上限（默认 8 次） */
     UPROPERTY(EditDefaultsOnly, Category = "Game|GAS", meta = (ClampMin = "0"))
     int32 MaxReplicationRetries = 8;
 
-    /** 兜底握手重试上限（默认 60 帧） */
+    /** 兜底握手重试上限（默认 60 次） */
     UPROPERTY(EditDefaultsOnly, Category = "Game|GAS", meta = (ClampMin = "0"))
     int32 MaxInitRetries = 60;
+
+    /** 重试定时器间隔（秒，默认 0.05，下限 0.01） */
+    UPROPERTY(EditDefaultsOnly, Category = "Game|GAS", meta = (ClampMin = "0.01"))
+    float RetryIntervalSeconds = 0.05f;
 };
 ```
 
@@ -97,5 +101,5 @@ protected:
    - `WriteInitialAttributes` 与 `DefaultAbilities` 仅在权威端（`HasAuthority()`）执行，严格杜绝客户端虚假初值和网络复制冲突。
    - 在授予默认技能前先通过 `FindAbilitySpecFromClass` 检查，若已存在相同技能 Spec 则不重复赋予，彻底杜绝多次重生导致的技能实例堆积。
 3. **复制就绪重试**：
-   - 若权威端授予能力时组件尚未进入网络就绪态（`IsReadyForReplication()` 返回 false），则按帧定时器重试，并在达到 `MaxReplicationRetries` 阈值后强制赋予，确保高延迟与复杂加载时能力百分之百可用。
+   - 若权威端授予能力时组件尚未进入网络就绪态（`IsReadyForReplication()` 返回 false），则以 `RetryIntervalSeconds`（默认 0.05 秒，下限 0.01 秒）为间隔的定时器重试，并在达到 `MaxReplicationRetries`（默认 8 次）阈值后强制赋予，确保高延迟与复杂加载时能力百分之百可用。
 

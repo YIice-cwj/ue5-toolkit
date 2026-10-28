@@ -35,12 +35,33 @@ class GAMEGAMEPLAY_API UGameGameplayAbility : public UGameplayAbility {
     GENERATED_BODY()
 
 public:
+    /** 构造：实例化策略设为 InstancedPerActor、复制策略设为 ReplicateYes（能力实例与触发来源随 ASC 复制） */
     UGameGameplayAbility();
 
+    /**
+     * @brief 通用激活否决守卫：引擎判定通过后追加死亡 / 硬直等状态标签短路
+     * @param Handle 能力规格句柄
+     * @param ActorInfo 能力宿主信息
+     * @param SourceTags 来源标签
+     * @param TargetTags 目标标签
+     * @param OptionalRelevantTags 可选相关标签输出
+     * @return 允许激活返回 true
+     */
     bool CanActivateAbility(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayTagContainer* SourceTags = nullptr, const FGameplayTagContainer* TargetTags = nullptr, OUT FGameplayTagContainer* OptionalRelevantTags = nullptr) const override;
 
+    /**
+     * @brief 统一激活入口：记录触发来源后转交 GAS 原生激活路径
+     * @param Handle 能力规格句柄
+     * @param ActorInfo 能力宿主信息
+     * @param ActivationInfo 激活信息（承载本地预测 / 服务器授权模式）
+     * @param TriggerEventData 触发事件数据
+     */
     void ActivateAbility(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo, const FGameplayEventData* TriggerEventData) override;
 
+    /**
+     * @brief 注册网络复制属性：触发来源随能力实例复制到远端，供远端表现层分叉
+     * @param OutLifetimeProps 输出属性列表
+     */
     void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
     /**

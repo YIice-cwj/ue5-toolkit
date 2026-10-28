@@ -29,6 +29,7 @@ class GAMEDATACORE_API USaveGameSubsystem : public UGameInstanceSubsystem {
     GENERATED_BODY()
 
 public:
+    /** 构造：默认分段归档类型设为 UGameSaveArchive */
     USaveGameSubsystem();
 
     /**
@@ -53,6 +54,7 @@ public:
     UPROPERTY(BlueprintAssignable, Category = "GameData|Save")
     FOnAsyncLoadComplete OnLoadComplete;
 
+    /** 清空已注册段、未知段缓存与槽位白名单 */
     void Deinitialize() override;
 
     /**
@@ -139,7 +141,7 @@ public:
     bool LoadObjectFromSlot(const FString& SlotName, TSubclassOf<USaveGame> SaveGameClassToLoad, USaveGame*& OutSaveGame);
 
     /**
-     * @brief 检查指定槽位存档是否存在（正式 .sav 或合法的 .sav.tmp）
+     * @brief 检查指定槽位存档是否存在（正式 .sav 或临时 .sav.tmp 任一存在即算存在）
      * @param SlotName 存档槽位名称
      * @return 存在返回 true
      */
@@ -157,6 +159,8 @@ public:
     /**
      * @brief 注册（或按段名覆盖）一个存档段
      * @param Segment 存档段契约（段名、段版本、保存/加载委托）
+     *
+     * 实现思路：段名或任一委托为空则记录错误并拒绝注册。
      */
     void RegisterSegment(const FGameSaveSegment& Segment);
 

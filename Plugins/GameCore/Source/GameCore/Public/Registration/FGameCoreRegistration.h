@@ -30,6 +30,8 @@ public:
     /**
      * @brief 注销统一入口（对称接口）
      * @param InGameInstance 当前 GameInstance
+     *
+     * 实现思路：编译开关桥接键不支持撤销，当前为空实现，仅保留与 RegisterAll 对称的调用点。
      */
     static void UnregisterAll(UGameInstance* InGameInstance);
 

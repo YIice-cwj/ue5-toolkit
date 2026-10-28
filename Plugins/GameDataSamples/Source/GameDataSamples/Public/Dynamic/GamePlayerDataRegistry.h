@@ -22,14 +22,26 @@ class GAMEDATASAMPLES_API UGamePlayerDataRegistry : public UObject {
 public:
     FOnPlayerProfileChanged OnProfileChanged;
 
+    /** 构造：把档案初始化为默认值 */
     UGamePlayerDataRegistry();
 
+    /**
+     * @brief 获取当前玩家档案（只读引用，随 SetProfile / ResetToDefault 更新）
+     * @return 当前档案引用
+     */
     UFUNCTION(BlueprintPure, Category = "GameData|Player")
     const FPlayerProfileData& GetProfile() const { return CurrentProfile; }
 
+    /**
+     * @brief 整体覆盖玩家档案并广播 OnProfileChanged
+     * @param InProfile 新档案
+     */
     UFUNCTION(BlueprintCallable, Category = "GameData|Player")
     void SetProfile(const FPlayerProfileData& InProfile);
 
+    /**
+     * @brief 重置为默认档案（等价 SetProfile(FPlayerProfileData())，同时广播 OnProfileChanged）
+     */
     UFUNCTION(BlueprintCallable, Category = "GameData|Player")
     void ResetToDefault();
 

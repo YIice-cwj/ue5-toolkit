@@ -103,9 +103,9 @@ bool ACustomHero::WriteStatToAttributeSet(
 ```
 
 - 写委托返回 `true` 表示外部源已生效，组件随后回读并广播实际变化；返回 `false` 时本次写操作失败。
-- **未注册属性代理写闭环**：即使属性未在组件本地表注册（纯外部托管），外部写入生效后组件依然会评估修正器并触发 `BroadcastStatChanged`；若属性匹配 `PrimaryVitalTag`，自动执行 `EvaluateVitalState` 判定生死并广播事件。
-- **代理模式复活**：`ReviveVital(HealthPercent)` 自动读取外部源的最大值与最小值，计算比例后经 `SetStatCurrent` 透传至写委托恢复生命。
-- 未绑定写委托时，任何写操作返回 `false`，代理源保持权威。
+- **未注册属性代理写闭环**：即使属性未在组件本地表注册（纯外部托管），外部写入生效后组件依然会评估修正器，并在派生当前值或派生上限变化时触发 `BroadcastStatChanged`；若属性匹配 `PrimaryVitalTag`，自动执行 `EvaluateVitalState` 判定生死并广播事件。
+- **代理模式复活**：`ReviveVital(FillPercent)` 读取外部源的上限与本地注册的下限，按比例计算后经 `SetStatCurrent` 透传至写委托恢复数值。
+- 未绑定写委托时，`ModifyStat` 返回 `false`，`SetStatCurrent` / `SetStatMax` 放弃写入，代理源保持权威。
 - 非权威端（客户端）默认拒绝写入并记录 Warning；确需客户端预测时在类默认值中开启 `bAllowNonAuthoritativeWrites`。
 - 可用 `CanWriteStat()` 在 UI 上提前置灰不可写操作。
 

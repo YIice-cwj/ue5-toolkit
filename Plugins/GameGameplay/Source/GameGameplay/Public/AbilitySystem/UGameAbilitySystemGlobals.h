@@ -25,5 +25,9 @@ class GAMEGAMEPLAY_API UGameAbilitySystemGlobals : public UAbilitySystemGlobals 
     GENERATED_BODY()
 
 public:
+    /**
+     * @brief 分配框架层打击反馈上下文（引擎 GE 施加链路唯一扩展点）
+     * @return 新建的 FGameGameplayEffectContext 实例（调用方负责删除）
+     */
     FGameplayEffectContext* AllocGameplayEffectContext() const override;
 };

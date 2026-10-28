@@ -119,7 +119,10 @@ public:
     /**
      * @brief 精确失效单个键的缓存（单条淘汰，无需整表 Rebuild）
      * @param Key 目标键
-     * @return 若命中并成功剔除返回 true，未缓存返回 false
+     * @return 键原本在有效键集或缓存条目中并成功剔除返回 true；完全未知返回 false
+     *
+     * 实现思路：Eager 档从只读快照剔除；惰性 / LRU 档同时移出有效键集、值表与 LRU 链表节点，
+     * 因此即便该键尚未构建过值，只要仍在有效键集内即视为失效成功。
      */
     bool Invalidate(FName Key);
 

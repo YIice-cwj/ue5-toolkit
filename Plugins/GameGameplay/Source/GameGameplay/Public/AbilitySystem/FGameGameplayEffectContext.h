@@ -123,10 +123,27 @@ public:
      */
     [[nodiscard]] FGameDamageResult ToDamageResult() const;
 
+    /**
+     * @brief 获取脚本结构（类型识别与上下文提取的类型依据）
+     * @return 本上下文的结构体反射信息
+     */
     UScriptStruct* GetScriptStruct() const override;
 
+    /**
+     * @brief 深复制上下文（含打击反馈载荷，命中结果按深拷贝追加）
+     * @return 新建的上下文实例（调用方负责删除）
+     */
     FGameplayEffectContext* Duplicate() const override;
 
+    /**
+     * @brief 网络序列化：先走基类，再依次传输总伤害、反馈标签、通道明细与动态数值
+     * @param Ar 归档
+     * @param Map 网络包映射
+     * @param bOutSuccess 输出是否成功
+     * @return 序列化是否成功
+     *
+     * 实现思路：总伤害与反馈标签各占 1 位存在性标记，为空时省略载荷；通道 / 动态数值数组逐条序列化。
+     */
     bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess) override;
 
     /**

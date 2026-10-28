@@ -54,13 +54,24 @@ public:
     void BroadcastMessage(FGameplayTag Channel, const FMessageStructType& Message);
 
     /**
-     * @brief 注册成员函数监听器（接收通道与载荷）
+     * @brief 注册成员函数监听器（仅接收通道与载荷）
      */
     template <typename FMessageStructType, typename TOwner>
     [[nodiscard]] FGameplayMessageListenerHandle RegisterListener(
         FGameplayTag Channel,
         TOwner* ListenerObject,
         void (TOwner::*CallbackMethod)(FGameplayTag, const FMessageStructType&),
+        EGameplayMessageMatch MatchRule = EGameplayMessageMatch::ExactMatch
+    );
+
+    /**
+     * @brief 注册成员函数监听器（仅接收载荷）
+     */
+    template <typename FMessageStructType, typename TOwner>
+    [[nodiscard]] FGameplayMessageListenerHandle RegisterListener(
+        FGameplayTag Channel,
+        TOwner* ListenerObject,
+        void (TOwner::*CallbackMethod)(const FMessageStructType&),
         EGameplayMessageMatch MatchRule = EGameplayMessageMatch::ExactMatch
     );
 
@@ -88,9 +99,13 @@ public:
     /**
      * @brief 查询当前已注册的监听器总数
      */
-    [[nodiscard]] int32 GetListenerCount() const noexcept;
+    [[nodiscard]] int32 GetListenerCount() const;
 };
 ```
+
+### 监听句柄的拷贝语义
+
+`FGameplayMessageListenerHandle` 内部持有 `TSharedPtr` 注册对象，可安全拷贝；**最后一份副本析构时**才通过共享引用自动注销，`Unregister()` 可提前显式注销并清空句柄。
 
 ---
 

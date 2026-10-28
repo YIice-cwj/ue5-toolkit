@@ -26,6 +26,7 @@ public:
      */
     explicit FObserverBase(const FName& InObserverName);
 
+    /** 析构：解除启停开关配置键的变更监听，避免销毁后回调悬垂 */
     virtual ~FObserverBase();
     FObserverBase(const FObserverBase&) = delete;
     FObserverBase& operator=(const FObserverBase&) = delete;

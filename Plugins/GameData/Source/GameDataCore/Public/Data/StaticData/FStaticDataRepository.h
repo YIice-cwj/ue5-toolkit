@@ -86,7 +86,7 @@ public:
     [[nodiscard]] bool AddTable(const TMap<FName, TRowType>& InRows);
 
     /**
-     * @brief 提取一表（目标表先清空后全量重建；表不存在返回 false）
+     * @brief 提取一表（表不存在返回 false；成功时整体覆盖输出表，失败时输出表保持不变）
      * @tparam TRowType 行结构体类型（以 StaticStruct 名匹配仓库内镜像）
      * @param OutRows 输出行表
      * @return 成功返回 true；表不存在、未登记读写器或任一行反序列化失败返回 false（并置错误码）

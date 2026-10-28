@@ -75,7 +75,7 @@ public:
      * @return 激活的 Actor 实例指针
      */
     template <typename T = AActor>
-    T* AcquireActor(TSubclassOf<AActor> ActorClass, const FTransform& SpawnTransform = FTransform::Identity);
+    [[nodiscard]] T* AcquireActor(TSubclassOf<AActor> ActorClass, const FTransform& SpawnTransform = FTransform::Identity);
 
     /**
      * @brief 蓝图借出接口
@@ -119,14 +119,17 @@ public:
 
 1. **自动状态深度重置**：
    - `ReleaseActor` 时，子系统自动对 Actor 执行：
+     - 先解绑 `OnDestroyed` 委托（避免正常归还被外部销毁逻辑误扣活跃计数）；
      - 调用 `IGamePoolable::OnReleaseToPool` 接口通知；
      - 解除层级附加关系（`DetachFromActor`）；
+     - 清理该 Actor 在 `UTimeDilationSubsystem` 上的活跃顿帧（`ClearHitStop`）；
      - 清理挂接在 Actor 身上的全部定时器（`ClearAllTimersForObject`）；
      - 清零根组件物理线速度与角速度；
      - 停止移动组件惯性速度（`UMovementComponent::StopMovementImmediately`）；
      - 停止播放中的音频组件与发射中的粒子系统；
      - 关闭渲染（`SetActorHiddenInGame(true)`）、物理碰撞（`SetActorEnableCollision(false)`）与 Tick（`SetActorTickEnabled(false)`）。
    - `AcquireActor` 时，子系统先更新其 `ActorTransform`，唤醒渲染、物理与 Tick，并自动触发 `IGamePoolable::OnAcquireFromPool`。
+   - `Prewarm` 对空 `ActorClass` 或 `PrewarmCount <= 0` 直接返回，不做任何生成。
 2. **O(1) 快速重复归还拦截**：
    - 每个池存储桶同时维护 `TArray` 与 `TSet`，归还时以 $O(1)$ 速度判定是否已在闲置列表中，避免高频遍历耗时。
 3. **容量保护**：
@@ -135,4 +138,4 @@ public:
    - 借出实例时自动监听 `OnDestroyed`，即便外界绕过 `ReleaseActor` 直接调用 `DestroyActor`，对象池也会自动同步扣减活跃计数，确保统计恒定准确。
 5. **安全清空闲置对象（Idle-Only 清理）**：
    - `ClearPool` 与 `ClearAllPools` 仅销毁缓存中的空闲实例（`IdleActors`），绝不清零借出计数（`ActiveCount`）或擦除类型映射表；
-   - 外部正在使用的借出实例在稍后正常归还时仍可正常识别并安全销毁，彻底杜绝无符号整型下溢与反注册崩溃。
+   - 外部仍在使用的借出实例不受影响：稍后正常归还时会重新进入空闲队列（若已超容量则按容量规则销毁），不会出现下溢或反注册崩溃。

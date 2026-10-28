@@ -32,6 +32,13 @@ struct FDamageChannelBinding {
     EGameplayModOp::Type ModOp = EGameplayModOp::Additive;
 
     FDamageChannelBinding() = default;
+
+    /**
+     * @brief 构造：绑定通道标签、目标输出属性与修饰操作
+     * @param InTag 伤害通道标签
+     * @param InAttr 目标输出元属性
+     * @param InModOp 修饰操作（默认累加）
+     */
     FDamageChannelBinding(const FGameplayTag& InTag, const FGameplayAttribute& InAttr, EGameplayModOp::Type InModOp = EGameplayModOp::Additive)
         : ChannelTag(InTag), TargetAttribute(InAttr), ModOp(InModOp) {}
 };
@@ -53,8 +60,19 @@ struct FDamageModifier {
     float OverrideValue = 0.0f;
 
     FDamageModifier() = default;
+
+    /**
+     * @brief 构造：以乘算倍率与固定加减量创建修饰器
+     * @param InMult 百分比乘法倍率
+     * @param InAdd 加减法固定数值
+     */
     explicit FDamageModifier(float InMult, float InAdd = 0.0f) : Multiplier(InMult), Additive(InAdd) {}
 
+    /**
+     * @brief 构造绝对覆写修饰器（直接以指定值替换结算伤害）
+     * @param InVal 覆写伤害值
+     * @return 覆写修饰器
+     */
     static FDamageModifier MakeOverride(float InVal) {
         FDamageModifier Mod;
         Mod.bOverride = true;
@@ -62,6 +80,11 @@ struct FDamageModifier {
         return Mod;
     }
 
+    /**
+     * @brief 计算修饰后的伤害（覆写优先，否则 (基础 + 加减) × 倍率）
+     * @param BaseDamage 基础伤害
+     * @return 修饰后伤害
+     */
     [[nodiscard]] FORCEINLINE float Evaluate(float BaseDamage) const noexcept {
         return bOverride ? OverrideValue : (BaseDamage + Additive) * Multiplier;
     }

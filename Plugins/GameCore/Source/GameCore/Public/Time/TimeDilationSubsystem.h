@@ -18,6 +18,7 @@ class GAMECORE_API UTimeDilationSubsystem : public UTickableWorldSubsystem {
     GENERATED_BODY()
 
 public:
+    /** 构造：按通道枚举数量预分配通道状态数组 */
     UTimeDilationSubsystem();
 
     /**
@@ -34,21 +35,36 @@ public:
      */
     static UTimeDilationSubsystem* GetPtr(const UObject* WorldContextObject);
 
+    /** 初始化时间基准、通道状态数组与顿帧表 */
     void Initialize(FSubsystemCollectionBase& Collection) override;
+
+    /** 清理全部顿帧与全局时间膨胀通道 */
     void Deinitialize() override;
 
     /**
      * @brief 每帧推进时间层叠（暂停期间仍刷新 LastRealTime，避免解除暂停时时间突跳）
      */
     void Tick(float DeltaTime) override;
+
+    /**
+     * @brief Tickable 统计 ID（STATGROUP_Tickables）
+     * @return 统计 ID
+     */
     TStatId GetStatId() const override;
+
+    /**
+     * @brief 暂停期间仍参与 Tick（保证悬挂计时与真实时间基准持续推进）
+     * @return 恒为 true
+     */
     bool IsTickableWhenPaused() const override;
 
     /**
-     * @brief 请求对单个 Actor 施加打击顿帧
+     * @brief 请求对单个 Actor 施加打击顿帧（Duration <= 0 或 Target 为空时不生效）
      * @param Target 目标 Actor
      * @param Duration 顿帧持续真实时间（秒）
-     * @param TimeDilation 顿帧期间局部时间缩放
+     * @param TimeDilation 顿帧期间局部时间缩放（钳制到 [0.0001, 20]，默认 0.001 即几乎定格）
+     *
+     * 实现思路：同一 Actor 重复请求不重入，时长取较大值、缩放取较小值后再写回 CustomTimeDilation。
      */
     UFUNCTION(BlueprintCallable, Category = "GameCore|Time")
     void RequestHitStop(AActor* Target, float Duration, float TimeDilation = 0.001f);
@@ -75,11 +91,11 @@ public:
     void ClearAllHitStops();
 
     /**
-     * @brief 在指定通道请求全局时间膨胀
+     * @brief 在指定通道请求全局时间膨胀（重复请求整体覆盖该通道既有状态）
      * @param Channel 目标通道
      * @param Duration 持续时间（秒，<=0 表示持久有效直至手动清除）
-     * @param TimeDilation 目标时间缩放
-     * @param BlendOutDuration 结束时的平滑淡出时间（秒）
+     * @param TimeDilation 目标时间缩放（钳制到 [0, 20]）
+     * @param BlendOutDuration 结束时的平滑淡出时间（秒，负数按 0 处理；默认 0 表示持续时长耗尽后直接结束、不淡出）
      */
     UFUNCTION(BlueprintCallable, Category = "GameCore|Time")
     void RequestGlobalDilation(ETimeDilationChannel Channel, float Duration, float TimeDilation, float BlendOutDuration = 0.0f);
@@ -94,7 +110,7 @@ public:
     /**
      * @brief 清除指定通道的全局时间膨胀，并支持平滑淡出恢复
      * @param Channel 目标通道
-     * @param BlendOutDuration 淡出过渡时间（秒）
+     * @param BlendOutDuration 淡出过渡时间（秒，<=0 时等价于立即清除；默认 0.2）
      */
     UFUNCTION(BlueprintCallable, Category = "GameCore|Time")
     void ClearGlobalDilationWithBlend(ETimeDilationChannel Channel, float BlendOutDuration = 0.2f);

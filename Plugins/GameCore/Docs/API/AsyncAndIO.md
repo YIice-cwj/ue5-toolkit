@@ -100,6 +100,12 @@ public:
 头文件：`#include "System/ULoadingSubsystem.h"`  
 基类：`UGameInstanceSubsystem`
 
+### 职责与原理
+
+- `Initialize` 中挂钩引擎全局委托 `FCoreUObjectDelegates::PreLoadMap` 与 `PostLoadMapWithWorld`，`Deinitialize` 中 `RemoveAll(this)` 注销；不依赖 World Tick。
+- 由本子系统发起跳转时，先置位加载态并广播 `OnLoadingStateChanged(true, 目标关卡)`，再调用 `UGameplayStatics::OpenLevel`。
+- 若地图加载由引擎其他途径触发（未经本子系统），`PreLoadMap` 回调会在未置位时自行置位并广播 `true`，保证遮罩不漏。
+
 ### 核心接口
 
 ```cpp
@@ -110,24 +116,40 @@ class GAMECORE_API ULoadingSubsystem : public UGameInstanceSubsystem {
     GENERATED_BODY()
 
 public:
-    /** 关卡加载状态变动委托（UI 订阅此事件显示/隐藏 Loading 遮罩） */
-    UPROPERTY(BlueprintAssignable, Category = "Game|Loading")
+    /** 通过世界上下文（World / GameInstance）获取子系统，取不到返回 nullptr */
+    UFUNCTION(BlueprintPure, Category = "GameCore|Loading", meta = (WorldContext = "WorldContextObject"))
+    static ULoadingSubsystem* Get(const UObject* WorldContextObject);
+
+    /** 加载状态变动广播（UI 订阅以显示/隐藏遮罩） */
+    UPROPERTY(BlueprintAssignable, Category = "GameCore|Loading")
     FOnLoadingStateChanged OnLoadingStateChanged;
 
-    /** 平滑打开指定关卡 */
-    UFUNCTION(BlueprintCallable, Category = "Game|Loading")
-    void OpenLevel(FName LevelName);
+    /** 携带加载幕布事件的标准关卡跳转 */
+    UFUNCTION(BlueprintCallable, Category = "GameCore|Loading")
+    void OpenLevelWithLoading(const FName& LevelName);
 
-    /** 跳转至配置中的初始关卡（Levels.Start） */
-    UFUNCTION(BlueprintCallable, Category = "Game|Loading")
-    void OpenStartLevel();
-
-    /** 跳转至配置中的主菜单关卡（Levels.MainMenu） */
-    UFUNCTION(BlueprintCallable, Category = "Game|Loading")
-    void OpenMainMenuLevel();
-
-    UFUNCTION(BlueprintPure, Category = "Game|Loading")
+    UFUNCTION(BlueprintPure, Category = "GameCore|Loading")
     bool IsLoading() const;
+
+    UFUNCTION(BlueprintPure, Category = "GameCore|Loading")
+    FName GetTargetLevelName() const;
 };
 ```
+
+### 行为契约
+
+| 场景 | 实际行为 |
+| :--- | :--- |
+| `Get` 传入 `UGameInstance` | 直接取该 GameInstance 的 `ULoadingSubsystem` |
+| `Get` 传入其他上下文 | 经 `GEngine->GetWorldFromContextObject(..., ReturnNull)` 取 World；World 或 GameInstance 为空返回 `nullptr` |
+| 加载中再次调用 `OpenLevelWithLoading` | 记录 Warning 并忽略本次请求（不重复广播） |
+| `LevelName` 为 `None` | 记录 Warning 并放弃，不置位加载态 |
+| GameInstance 或当前 World 无效 | 记录 Warning 并放弃，不置位加载态 |
+| 正常发起跳转 | 置位 `bIsLoading`、记录 `TargetLevelName`，广播 `(true, 关卡名)`，随后 `UGameplayStatics::OpenLevel` |
+| `PostLoadMapWithWorld` 收到属于其他 GameInstance 的世界 | 直接返回，不误清本子系统的加载态 |
+| 加载完成 | `bIsLoading` 复位 `false`，`TargetLevelName` 复位 `NAME_None`，广播 `(false, 完成时的关卡名)` |
+
+### 典型用法
+
+蓝图侧在 `BeginPlay` 绑定 `OnLoadingStateChanged` 控制遮罩显隐，跳转统一走 `OpenLevelWithLoading`；`IsLoading` / `GetTargetLevelName` 供纯查询与断线恢复判断。
 

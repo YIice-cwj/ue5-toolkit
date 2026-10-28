@@ -63,7 +63,11 @@ public:
     UFUNCTION(BlueprintPure, Category = "GameCore|Config")
     static FGameplayTag GetConfigGameplayTag(FName Key, FGameplayTag DefaultValue);
 
-    /** 查询配置键是否已注册 */
+    /**
+     * @brief 查询配置键是否已注册
+     * @param Key 配置键
+     * @return 已注册返回 true
+     */
     UFUNCTION(BlueprintPure, Category = "GameCore|Config")
     static bool IsConfigRegistered(FName Key);
 

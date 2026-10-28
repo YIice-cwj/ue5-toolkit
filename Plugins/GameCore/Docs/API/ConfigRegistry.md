@@ -106,14 +106,27 @@ template<typename T>
 
 | 蓝图节点 | 说明 |
 | :--- | :--- |
-| `GetConfigBool(Key, Fallback)` | 读取布尔配置 |
-| `GetConfigInt(Key, Fallback)` | 读取整型配置 |
-| `GetConfigFloat(Key, Fallback)` | 读取浮点配置 |
-| `GetConfigString(Key, Fallback)` | 读取字符串配置 |
-| `GetConfigVector(Key, Fallback)` | 读取三维向量配置 |
+| `GetConfigBool(Key, DefaultValue)` | 读取布尔配置 |
+| `GetConfigInt(Key, DefaultValue)` | 读取 int32 配置 |
+| `GetConfigInt64(Key, DefaultValue)` | 读取 int64 配置 |
+| `GetConfigFloat(Key, DefaultValue)` | 读取 float 配置 |
+| `GetConfigDouble(Key, DefaultValue)` | 读取 double 配置 |
+| `GetConfigString(Key, DefaultValue)` | 读取 FString 配置 |
+| `GetConfigName(Key, DefaultValue)` | 读取 FName 配置 |
+| `GetConfigVector(Key, DefaultValue)` | 读取 FVector 配置 |
+| `GetConfigRotator(Key, DefaultValue)` | 读取 FRotator 配置 |
+| `GetConfigGameplayTag(Key, DefaultValue)` | 读取 FGameplayTag 配置（UHT 不支持标签类型默认参数，须显式传入默认值） |
+| `IsConfigRegistered(Key)` | 检查配置键是否已注册 |
 | `SetConfigBool(Key, Value)` | 写入布尔配置 |
-| `SetConfigInt(Key, Value)` | 写入整型配置 |
-| `SetConfigFloat(Key, Value)` | 写入浮点配置 |
-| `SetConfigString(Key, Value)` | 写入字符串配置 |
-| `HasConfigKey(Key)` | 检查配置键是否存在 |
+| `SetConfigInt(Key, Value)` | 写入 int32 配置 |
+| `SetConfigInt64(Key, Value)` | 写入 int64 配置 |
+| `SetConfigFloat(Key, Value)` | 写入 float 配置 |
+| `SetConfigDouble(Key, Value)` | 写入 double 配置 |
+| `SetConfigString(Key, Value)` | 写入 FString 配置 |
+| `SetConfigName(Key, Value)` | 写入 FName 配置 |
+| `SetConfigVector(Key, Value)` | 写入 FVector 配置 |
+| `SetConfigRotator(Key, Value)` | 写入 FRotator 配置 |
+| `SetConfigGameplayTag(Key, Value)` | 写入 FGameplayTag 配置 |
+
+未注册键一律返回调用方传入的默认值；写入统一经 `FConfigRegistry::SetConfig`，只读键拒绝语义由注册表保证。
 

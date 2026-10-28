@@ -46,7 +46,7 @@ public:
      * @param InAbilitySystemComponent 目标 ASC
      * @param InAttribute 目标属性
      * @param bBroadcastImmediately 是否在绑定成功后立即以当前值广播一次
-     * @return 映射对象
+     * @return 映射对象；InAbilitySystemComponent 为空时返回 nullptr
      */
     UFUNCTION(BlueprintCallable, Category = "Game|GAS", meta = (DefaultToSelf = "Outer"))
     static UGameplayAttributeValueMapping* CreateAttributeValueMapping(
@@ -58,6 +58,10 @@ public:
 
     /**
      * @brief C++ 重载便利方法（以 InAbilitySystemComponent 为默认 Outer）
+     * @param InAbilitySystemComponent 目标 ASC
+     * @param InAttribute 目标属性
+     * @param bBroadcastImmediately 是否在绑定成功后立即以当前值广播一次
+     * @return 映射对象
      */
     static UGameplayAttributeValueMapping* CreateAttributeValueMapping(
         UAbilitySystemComponent* InAbilitySystemComponent,
@@ -67,6 +71,7 @@ public:
         return CreateAttributeValueMapping(nullptr, InAbilitySystemComponent, InAttribute, bBroadcastImmediately);
     }
 
+    /** 销毁前解绑当前属性监听，杜绝悬垂委托 */
     void BeginDestroy() override;
 
     /**

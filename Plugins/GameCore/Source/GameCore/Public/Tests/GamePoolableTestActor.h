@@ -32,6 +32,7 @@ class GAMECORE_API UGameMessageTestReceiver : public UObject {
     GENERATED_BODY()
 
 public:
+    /** 异步节点回调：累计接收次数并记录实际通道 */
     UFUNCTION()
     void OnAsyncMessageReceived(FGameplayTag ActualChannel) {
         ++ReceivedCount;
@@ -50,6 +51,7 @@ class GAMECORE_API AGamePoolableTestActor : public AActor, public IGamePoolable 
     GENERATED_BODY()
 
 public:
+    /** 构造：创建 SceneRoot 根组件（供池化生命周期演示挂载） */
     explicit AGamePoolableTestActor(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get())
         : Super(ObjectInitializer) {
         RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("SceneRoot"));

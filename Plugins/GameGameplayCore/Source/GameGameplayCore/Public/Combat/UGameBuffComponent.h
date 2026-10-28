@@ -111,12 +111,34 @@ struct GAMEGAMEPLAYCORE_API FGameActiveBuffArray : public FFastArraySerializer {
     UPROPERTY(NotReplicated)
     TObjectPtr<UGameBuffComponent> OwnerComponent = nullptr;
 
+    /**
+     * @brief 增量复制入口：委托引擎 FastArrayDeltaSerialize 同步变更条目与删除索引
+     * @param DeltaParms 增量序列化参数
+     * @return 是否成功序列化
+     */
     bool NetDeltaSerialize(FNetDeltaSerializeInfo& DeltaParms) {
         return FFastArraySerializer::FastArrayDeltaSerialize<FGameBuffInstance, FGameActiveBuffArray>(Items, DeltaParms, *this);
     }
 
+    /**
+     * @brief 客户端收到新增条目后：挂接修正器、刷新 Tick 状态并广播差异
+     * @param AddedIndices 新增条目下标
+     * @param FinalSize 复制后的条目总数
+     */
     void PostReplicatedAdd(const TArrayView<int32>& AddedIndices, int32 FinalSize);
+
+    /**
+     * @brief 客户端收到条目变更后：按新叠层重挂修正器、刷新 Tick 状态并广播差异
+     * @param ChangedIndices 变更条目下标
+     * @param FinalSize 复制后的条目总数
+     */
     void PostReplicatedChange(const TArrayView<int32>& ChangedIndices, int32 FinalSize);
+
+    /**
+     * @brief 客户端移除前：先回滚被删条目的属性修正器，再广播差异（引擎移除前回调）
+     * @param RemovedIndices 待移除条目下标
+     * @param FinalSize 移除后的条目总数
+     */
     void PreReplicatedRemove(const TArrayView<int32>& RemovedIndices, int32 FinalSize);
 };
 
@@ -147,12 +169,16 @@ class GAMEGAMEPLAYCORE_API UGameBuffComponent : public UActorComponent {
     GENERATED_BODY()
 
 public:
+    /** 构造：启用 Tick 但默认关闭、开启组件复制（无 Buff 时不产生 Tick 开销） */
     UGameBuffComponent();
 
+    /** 每帧推进到期计时：权威端移除到期实例并回滚修正器，非权威端只做本地倒计时 */
     void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 
+    /** 复制注册：`ActiveBuffs`（FastArray 增量复制） */
     void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
+    /** 初始化 FastArray 的所属组件反向引用（客户端复制回调据此回写修正器） */
     void PostInitProperties() override;
 
     /**
@@ -197,15 +223,22 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Game|Buff")
     bool RemoveBuffInstance(int32 InInstanceId);
 
+    /** 是否存在该标签的 Buff 实例 */
     UFUNCTION(BlueprintPure, Category = "Game|Buff")
     [[nodiscard]] bool HasBuff(FGameplayTag InBuffTag) const;
 
+    /** 聚合该标签所有实例的层数之和 */
     UFUNCTION(BlueprintPure, Category = "Game|Buff")
     [[nodiscard]] int32 GetBuffStacks(FGameplayTag InBuffTag) const;
 
+    /** 该标签所有实例中的最大剩余时长（永久 Buff 恒为 0） */
     UFUNCTION(BlueprintPure, Category = "Game|Buff")
     [[nodiscard]] float GetBuffRemainingTime(FGameplayTag InBuffTag) const;
 
+    /**
+     * @brief 输出当前激活的 Buff 身份标签（去重）
+     * @param OutTags 输出容器（内部先 Reset）
+     */
     UFUNCTION(BlueprintPure, Category = "Game|Buff")
     void GetActiveBuffTags(TArray<FGameplayTag>& OutTags) const;
 

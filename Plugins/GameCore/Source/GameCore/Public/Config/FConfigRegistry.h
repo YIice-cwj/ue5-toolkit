@@ -195,6 +195,7 @@ private:
 
 namespace Game::Config {
 
+/** 从配置变体中取出指定类型的值（类型不符返回 nullptr） */
 template<typename T>
 const T* FindVariantValue(const FConfigVariant& InVariant) {
     return InVariant.TryGet<T>();

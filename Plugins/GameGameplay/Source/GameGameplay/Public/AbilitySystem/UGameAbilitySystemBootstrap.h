@@ -45,9 +45,13 @@ class GAMEGAMEPLAY_API UGameAbilitySystemBootstrap : public UActorComponent {
     GENERATED_BODY()
 
 public:
+    /** 构造：关闭组件 Tick（引导全程由定时器与握手事件驱动） */
     UGameAbilitySystemBootstrap();
 
+    /** 组件就绪后立即尝试从拥有者兜底引导；正常路径仍由宿主握手钩子调 EnsureInitialized 驱动 */
     void BeginPlay() override;
+
+    /** 清理重试定时器并撤销本组件授予的全部默认能力，避免组件销毁后句柄残留 */
     void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
     /**

@@ -34,6 +34,34 @@
 
 ---
 
+## 示例 API：玩家数据与存档段
+
+### `UGamePlayerDataRegistry`（`Dynamic/GamePlayerDataRegistry.h`）
+
+普通 `UObject`（非子系统），由使用方自行创建与持有；构造函数内部调用 `ResetToDefault()`。
+
+| 成员 | 实际行为 |
+| :--- | :--- |
+| `GetProfile()` | 返回 `const FPlayerProfileData&`（`PlayerId` / `Progression{Level, Experience, Gold}` / `ArchiveVersion`） |
+| `SetProfile(InProfile)` | 覆盖当前档案，并广播 `OnProfileChanged(CurrentProfile)` |
+| `ResetToDefault()` | 等价于 `SetProfile(FPlayerProfileData())`：`Level=1`、`Experience=0`、`Gold=0`、`PlayerId` 为空、`ArchiveVersion=1`，同样触发广播 |
+| `OnProfileChanged` | 原生多播 `FOnPlayerProfileChanged(const FPlayerProfileData&)`（非动态委托，蓝图不可见） |
+
+### `UGamePlayerProfileSaveAdapter`（`Save/GamePlayerProfileSaveAdapter.h`）
+
+把玩家档案接入通用存档流程，段名为 `Player.Profile`（`SegmentName` 常量），段版本 `1`。
+
+- `Setup(SaveSubsystem, Registry)`：先执行 `Teardown()` 保证幂等；任一参数为空时直接返回、不注册段；否则保存引用并注册段回调。
+  - **Save**：经 `TWeakObjectPtr` 取注册表，取不到则 `Ar.SetError()`；取到则拷贝后按 `PlayerId → Progression.Level → Progression.Experience → Progression.Gold → ArchiveVersion` 顺序写入。
+  - **Load**：按同顺序反序列化；`Ar.IsError()` 或注册表已失效返回 `false`，否则 `SetProfile` 并返回 `true`。
+- `Teardown()`：若存在绑定则 `UnregisterSegment("Player.Profile")`，随后清空两个引用；可重复调用。
+- `BeginDestroy()`：自动调用 `Teardown()`，避免适配器销毁后残留段注册。
+- 段回调仅持有注册表的弱引用，不延长 `UGamePlayerDataRegistry` 生命周期。
+
+> 生成的静态数据子系统（`Public/Generated/Data/StaticData/UStaticDataSubsystem.h`）中的 `Get` / `IsAllDataLoaded` 等接口属于生成域，文档见 [GameData 静态数据子系统](../GameData/Docs/API/StaticDataSubsystem.md)。
+
+---
+
 ## 测试
 
 ```bash

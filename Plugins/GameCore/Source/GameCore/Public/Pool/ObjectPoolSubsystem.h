@@ -33,9 +33,21 @@ class GAMECORE_API UObjectPoolSubsystem : public UWorldSubsystem {
     GENERATED_BODY()
 
 public:
+    /**
+     * @brief 获取对象池子系统引用（不存在时断言失败）
+     * @param WorldContextObject 关联的世界上下文对象
+     * @return 子系统引用
+     */
     static UObjectPoolSubsystem& Get(const UObject* WorldContextObject);
+
+    /**
+     * @brief 安全获取对象池子系统指针（上下文无效返回 nullptr）
+     * @param WorldContextObject 关联的世界上下文对象
+     * @return 子系统指针，未就绪时返回 nullptr
+     */
     static UObjectPoolSubsystem* GetPtr(const UObject* WorldContextObject);
 
+    /** 世界销毁前清空并销毁全部空闲实例 */
     void Deinitialize() override;
 
     /**
@@ -58,7 +70,7 @@ public:
      * @brief 从池中借出或生成 Actor 实例
      * @param ActorClass 目标类
      * @param SpawnTransform 初始空间变换
-     * @return 激活的 Actor 实例指针
+     * @return 激活的 Actor 实例指针；类无效或生成失败返回 nullptr
      */
     UFUNCTION(BlueprintCallable, Category = "GameCore|Pool", meta = (DeterminesOutputType = "ActorClass"))
     AActor* AcquireActor(TSubclassOf<AActor> ActorClass, const FTransform& SpawnTransform);
@@ -101,7 +113,7 @@ public:
      * @tparam T 返回的 Actor 具体派生类型
      * @param ActorClass 目标类
      * @param SpawnTransform 初始空间变换
-     * @return 激活的 Actor 实例指针
+     * @return 激活的 Actor 实例指针；类无效、生成失败或泛型强转失败返回 nullptr
      */
     template <typename T = AActor>
     [[nodiscard]] T* AcquireActor(TSubclassOf<AActor> ActorClass, const FTransform& SpawnTransform = FTransform::Identity);

@@ -42,6 +42,7 @@ private:
     /** 监听条目：唯一 ID + 回调 + Owner 弱引用（退订只能按 ID 匹配；Owner 为空表示不绑定生命周期） */
     struct FListenerEntry {
     public:
+        /** 是否已绑定的 Owner 已失效（未绑定生命周期时恒为 false） */
         [[nodiscard]] bool IsOwnerExpired() const {
             return !Owner.IsExplicitlyNull() && !Owner.IsValid();
         }

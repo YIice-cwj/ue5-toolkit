@@ -39,7 +39,10 @@ public:
     UPROPERTY(BlueprintAssignable)
     FAsyncGameplayMessageDelegate OnMessageReceived;
 
+    /** 激活时注册消息监听并把命中消息转发到 OnMessageReceived；通道非法或子系统缺失则立即结束 */
     void Activate() override;
+
+    /** 结束异步操作时注销监听句柄 */
     void SetReadyToDestroy() override;
 
 private:

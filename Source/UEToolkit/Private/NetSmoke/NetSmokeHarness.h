@@ -35,9 +35,11 @@ class ANetSmokePawn : public APawn {
     GENERATED_BODY()
 
 public:
+    /** 构造：创建 Buff 组件 */
     ANetSmokePawn();
 
 protected:
+    /** 仅服务端施加带状态标签的 Buff，并把施放结果写入 ServerResult.txt */
     virtual void BeginPlay() override;
 
 private:
@@ -53,7 +55,10 @@ class ANetSmokePlayerController : public APlayerController {
     GENERATED_BODY()
 
 public:
+    /** 仅客户端启动轮询定时器，记录起始时刻以便超时判定 */
     virtual void BeginPlay() override;
+
+    /** 停止轮询定时器 */
     virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 private:
@@ -72,5 +77,6 @@ class ANetSmokeGameMode : public AGameModeBase {
     GENERATED_BODY()
 
 public:
+    /** 构造：指定冒烟 Pawn 与冒烟控制器类 */
     ANetSmokeGameMode();
 };

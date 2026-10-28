@@ -36,6 +36,13 @@ public:
     );
 
     /**
+     * @brief 阈值幂等闩复位：ASC 持有该标签时移除，使下一轮达阈可再次触发
+     * @param InAbilitySystemComponent 目标 ASC
+     * @param InThresholdTag 临界状态标签
+     */
+    static void ResetThreshold(UAbilitySystemComponent* InAbilitySystemComponent, const FGameplayTag& InThresholdTag);
+
+    /**
      * @brief 提取元属性当前数值并立即清零归位（避免元属性在下一结算帧残留）
      * @param MetaAttributeData 待消费并清零的元属性数据
      * @return 提取出的当前数值
@@ -72,15 +79,22 @@ public:
 ```
 - **职责**：**阈值状态幂等闩**。
 - **机制**：若目标 ASC 尚未持有 `InThresholdTag`，则为其授予该松标签并返回 `true`（代表本轮首次突破临界阈值，供业务逻辑触发一次广播）；若已持有或 ASC 为空则返回 `false`。
-- **典型场景**：残血（如生命首次低于 30%）触发狂暴或濒死警告，防止数值在临界线反复抖动时多次触发。恢复生命值时业务层可通过 `RemoveLooseGameplayTag` 复位该闩。
+- **典型场景**：残血（如生命首次低于 30%）触发狂暴或濒死警告，防止数值在临界线反复抖动时多次触发。恢复数值时业务层调用 `ResetThreshold` 复位该闩。
 
-### 2.3 `MoveMetaAttribute`
+### 2.3 `ResetThreshold`
+```cpp
+static void ResetThreshold(UAbilitySystemComponent* InAbilitySystemComponent, const FGameplayTag& InThresholdTag);
+```
+- **职责**：`BroadcastThresholdOnce` 的配对复位入口。
+- **机制**：ASC 非空且持有该松标签时将其移除，使下一次 `BroadcastThresholdOnce` 重新返回 `true`；ASC 为空或未持有该标签时不做任何操作。
+
+### 2.4 `MoveMetaAttribute`
 ```cpp
 static float MoveMetaAttribute(FGameplayAttributeData& MetaAttributeData) noexcept;
 ```
 - **职责**：提取当前元属性的值，并在提取后立即将其清零归位，避免元属性在下一个结算帧残留。常用于在 `PostGameplayEffectExecute` 中消费 ExecCalc 写入的伤害载体。
 
-### 2.4 `ApplyAttributeToLocal`
+### 2.5 `ApplyAttributeToLocal`
 ```cpp
 static void ApplyAttributeToLocal(UAbilitySystemComponent* InAbilitySystemComponent, const FGameplayAttribute& InTargetAttribute, float InDelta);
 ```

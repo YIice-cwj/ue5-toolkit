@@ -29,6 +29,7 @@ public:
      */
     static UObservableRegistrySubsystem* Get(const UObject* WorldContextObject);
 
+    /** 销毁前清空观察者注册表 */
     void Deinitialize() override;
 
     /**

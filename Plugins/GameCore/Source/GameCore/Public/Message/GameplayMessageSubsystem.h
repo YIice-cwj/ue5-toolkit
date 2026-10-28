@@ -48,6 +48,7 @@ public:
      */
     static UGameplayMessageSubsystem* GetPtr(const UObject* WorldContextObject);
 
+    /** 子系统销毁前清空全部通道监听 */
     void Deinitialize() override;
 
     /**

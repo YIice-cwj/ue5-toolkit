@@ -187,6 +187,7 @@ UnrealEditor-Cmd <Project.uproject> -ExecCmds="Automation RunTests Game.Gameplay
 - `Game.GameplayCore.Stat.ProxyMode`：外部数据源代理旁路、原生委托透明查询、解绑自持安全回退与数值缓存
 - `Game.GameplayCore.Stat.ProxyWriteContract`：代理写委托转发、未绑定写委托时拒绝写入、写入后回读一致
 - `Game.GameplayCore.Stat.TaggedSubscription`：按 Tag 订阅、订阅即回放当前值、退订后不再回调
+- `Game.GameplayCore.Stat.RegisterReplay`：未注册属性先订阅，注册时立即以初始值回放，修正器变化继续触发
 - `Game.GameplayCore.Stat.ModifierStack`：加算 / 乘算 / 覆写叠加、句柄精确移除与派生值计算
 - `Game.GameplayCore.Buff.StackAndExpire`：叠层策略、持续时长到期移除与授予标签回收
 - `Game.GameplayCore.Buff.IndependentInstances`：独立实例策略生命周期与 MaxStacks 堆叠上限拒绝校验

@@ -9,7 +9,7 @@
 
 本项目采用**分层解耦、零无序依赖、契约优先与配置驱动**的设计哲学。无论是从零起步的新项目，还是已有成熟的大型游戏工程，均可按需引入特定的独立插件或工具，亦可直接以 Git Submodule / 软链接模式快速挂载。
 
-> 当前版本 **2.0.0**。旧 API 迁移见 [MIGRATION.md](MIGRATION.md)，发布检查见 [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)，性能预算见 [Performance.md](Plugins/GameCore/Docs/Architecture/Performance.md)。
+> 当前插件版本以各插件 `.uplugin` 的 `VersionName` 为准（GameGameplayCore 为 **2.1.0**，其余插件为 **2.0.0**）。旧 API 迁移见 [MIGRATION.md](MIGRATION.md)，发布检查见 [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)，性能预算见 [Performance.md](Plugins/GameCore/Docs/Architecture/Performance.md)。
 
 ---
 

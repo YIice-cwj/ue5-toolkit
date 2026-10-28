@@ -25,6 +25,7 @@ USTRUCT(BlueprintType)
 struct GAMECORE_API FGlobalChannelState {
     GENERATED_BODY()
 
+    /** 复位为默认状态（缩放 1.0、无剩余时长、未激活） */
     void Reset() noexcept {
         *this = FGlobalChannelState{};
     }

@@ -25,6 +25,12 @@ struct GAMEGAMEPLAYCORE_API FGameDamageChannel {
 
 public:
     FGameDamageChannel() = default;
+
+    /**
+     * @brief 构造：以通道标签与基础数值创建条目
+     * @param InTag 通道标签
+     * @param InMag 基础数值
+     */
     FGameDamageChannel(const FGameplayTag& InTag, float InMag) : ChannelTag(InTag), Magnitude(InMag) {}
 
     /** 伤害通道标签（如 Damage.Channel.Physical, Damage.Channel.Spell, Damage.Channel.Fire） */
@@ -35,23 +41,27 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Game|Damage")
     float Magnitude = 0.0f;
 
+    /** 精确查找指定通道（未命中返回 nullptr） */
     [[nodiscard]] static const FGameDamageChannel* FindExact(const TArray<FGameDamageChannel>& InChannels, const FGameplayTag& InTag) noexcept {
         return InChannels.FindByPredicate([&InTag](const FGameDamageChannel& Item) {
             return Item.ChannelTag.MatchesTagExact(InTag);
         });
     }
 
+    /** 精确查找指定通道的可变版本（未命中返回 nullptr） */
     [[nodiscard]] static FGameDamageChannel* FindExactMutable(TArray<FGameDamageChannel>& InChannels, const FGameplayTag& InTag) noexcept {
         return InChannels.FindByPredicate([&InTag](const FGameDamageChannel& Item) {
             return Item.ChannelTag.MatchesTagExact(InTag);
         });
     }
 
+    /** 精确读取指定通道数值（未命中返回 DefaultValue） */
     [[nodiscard]] static float GetExact(const TArray<FGameDamageChannel>& InChannels, const FGameplayTag& InTag, float DefaultValue = 0.0f) noexcept {
         const FGameDamageChannel* Found = FindExact(InChannels, InTag);
         return Found != nullptr ? Found->Magnitude : DefaultValue;
     }
 
+    /** 汇总指定标签及其子标签的通道数值（层级继承） */
     [[nodiscard]] static float GetSum(const TArray<FGameDamageChannel>& InChannels, const FGameplayTag& InTag) noexcept {
         float Sum = 0.0f;
         for (const FGameDamageChannel& Item : InChannels) {
@@ -62,6 +72,7 @@ public:
         return Sum;
     }
 
+    /** 精确设置指定通道数值（已存在则覆盖，否则追加） */
     static void SetExact(TArray<FGameDamageChannel>& InChannels, const FGameplayTag& InTag, float InMagnitude) {
         if (FGameDamageChannel* Found = FindExactMutable(InChannels, InTag)) {
             Found->Magnitude = InMagnitude;
@@ -70,6 +81,7 @@ public:
         }
     }
 
+    /** 精确累加指定通道数值（已存在则叠加，否则以增量追加） */
     static void AddExact(TArray<FGameDamageChannel>& InChannels, const FGameplayTag& InTag, float InDelta) {
         if (FGameDamageChannel* Found = FindExactMutable(InChannels, InTag)) {
             Found->Magnitude += InDelta;
@@ -108,7 +120,7 @@ public:
     }
 
     /**
-     * @brief 设置或覆盖指定通道伤害数值（精确匹配现有通道）
+     * @brief 设置或覆盖指定通道伤害数值（精确匹配，已存在则覆盖，不存在则追加）
      * @param InChannelTag 目标通道标签
      * @param InMagnitude 伤害数值
      */
@@ -117,7 +129,7 @@ public:
     }
 
     /**
-     * @brief 累加指定通道伤害数值（精确匹配现有通道）
+     * @brief 累加指定通道伤害数值（精确匹配，已存在则叠加，不存在则以增量追加）
      * @param InChannelTag 目标通道标签
      * @param InDelta 增量数值
      */

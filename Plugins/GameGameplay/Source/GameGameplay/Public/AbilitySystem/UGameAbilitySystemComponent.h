@@ -22,7 +22,13 @@ class GAMEGAMEPLAY_API UGameAbilitySystemComponent : public UAbilitySystemCompon
     GENERATED_BODY()
 
 public:
+    /** 构造：开启默认复制，并把 GE / 能力容器注册到自身拥有者 */
     UGameAbilitySystemComponent();
 
+    /**
+     * @brief 初始化能力宿主信息（首次调用先按全局配置分配 FGameplayAbilityActorInfo，再交基类接管）
+     * @param InOwnerActor 拥有者 Actor
+     * @param InAvatarActor 附身 Actor
+     */
     void InitAbilityActorInfo(AActor* InOwnerActor, AActor* InAvatarActor) override;
 };

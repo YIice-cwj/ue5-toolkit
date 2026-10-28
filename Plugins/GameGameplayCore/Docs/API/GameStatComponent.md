@@ -190,6 +190,9 @@ public:
     [[nodiscard]] bool IsVitalAlive() const noexcept;
 
     UFUNCTION(BlueprintCallable, Category = "Game|Stat")
+    [[nodiscard]] FGameplayTag GetPrimaryVitalTag() const noexcept;
+
+    UFUNCTION(BlueprintCallable, Category = "Game|Stat")
     void ReviveVital(float FillPercent = 1.0f);
 
     // --- 外部代理接入 ---
@@ -206,6 +209,9 @@ public:
     UFUNCTION(BlueprintPure, Category = "Game|Stat")
     [[nodiscard]] bool CanWriteStat() const;
 
+    UFUNCTION(BlueprintCallable, Category = "Game|Stat")
+    [[nodiscard]] FORCEINLINE EGameStatSourceMode GetSourceMode() const noexcept;
+
     // --- 按 Tag 订阅 ---
     FDelegateHandle SubscribeStatChanged(const FGameplayTag& InStatTag, FOnGameStatChangedNative::FDelegate InDelegate);
     FDelegateHandle SubscribeStatChanged(UObject* Owner, const FGameplayTag& InStatTag,
@@ -220,9 +226,9 @@ public:
 ### 写入语义
 
 - **Standalone**：`ModifyStat` / `SetStatCurrent` / `SetStatMax` 直接修改内部值并按 `Min/Max` 钳制。
-- **Proxy**：所有写操作经 `FGameStatWriteDelegate` 转发给外部数据源；未绑定写委托时写操作返回 `false`，本地缓存不变。
-- **Proxy 代理写完整闭环**：外部写入生效后，无论该属性是否在组件内部表注册，组件均会精确计算修正器派生值，触发 `BroadcastStatChanged` 通知订阅者；若写入属性匹配 `PrimaryVitalTag`，自动评估生死状态并广播 `OnVitalStateChanged`。
-- **双模复活支持**：`ReviveVital(HealthPercent)` 统一通过 `GetStatMin` 与 `GetStatMax` 结合百分比计算目标值，并通过 `SetStatCurrent` 透传写入，无缝兼容自持模式与代理模式。
+- **Proxy**：所有写操作经 `FGameStatWriteDelegate` 转发给外部数据源；未绑定写委托时 `ModifyStat` 返回 `false`，`SetStatCurrent` / `SetStatMax` 直接放弃写入（本地缓存不变）。
+- **Proxy 代理写完整闭环**：外部写入生效后，无论该属性是否在组件内部表注册，组件均会重新计算修正器派生值；当派生当前值或派生上限发生变化时触发 `BroadcastStatChanged` 通知订阅者；若写入属性匹配 `PrimaryVitalTag`，自动评估生死状态并广播 `OnVitalStateChanged`。
+- **双模复活支持**：`ReviveVital(FillPercent)`（默认 `1.0`）以 `Min + (Max - Min) × FillPercent` 计算目标值，并通过 `SetStatCurrent` 透传写入，无缝兼容自持模式与代理模式。
 - **权威校验**：非权威端默认拒绝写入并记录 Warning；确需客户端预测时可在类默认值中开启 `bAllowNonAuthoritativeWrites`。
 - 写入后组件回读外部源，`CanWriteStat` 可提前判断当前是否允许写入。
 
@@ -232,7 +238,7 @@ public:
 - 计算后强制执行 `FMath::Max(Calculated, MinVal)` 下限钳制，杜绝属性值被负向修正乘算为负值。
 - 基础值（`GetStatCurrent/Max`）不受修正器影响，修正器只影响派生值与钳制结果。
 - `AddStatModifier` 返回句柄；`RemoveStatModifier` 按句柄精确回滚，避免多 Buff 叠加时误删他人修正。
-- 标签非法或未注册时返回 0 / 不生效。
+- 标签非法时 `AddStatModifier` 返回 0；属性尚未注册时修正器仍会被保存（此时不广播），待属性注册时随初始值广播一并计入派生值。
 
 ### 按 Tag 订阅
 

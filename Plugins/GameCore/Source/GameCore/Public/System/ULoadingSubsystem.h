@@ -43,12 +43,17 @@ public:
     UPROPERTY(BlueprintAssignable, Category = "GameCore|Loading")
     FOnLoadingStateChanged OnLoadingStateChanged;
 
+    /** 挂钩引擎 PreLoadMap / PostLoadMapWithWorld 委托 */
     void Initialize(FSubsystemCollectionBase& Collection) override;
+
+    /** 注销引擎地图加载委托 */
     void Deinitialize() override;
 
     /**
      * @brief 携带加载幕布事件的标准关卡跳转接口
      * @param LevelName 目标关卡名称
+     *
+     * 实现思路：加载中重复调用、关卡名为空或 GameInstance / 世界无效时记录警告并直接忽略，不置位加载态。
      */
     UFUNCTION(BlueprintCallable, Category = "GameCore|Loading")
     void OpenLevelWithLoading(const FName& LevelName);

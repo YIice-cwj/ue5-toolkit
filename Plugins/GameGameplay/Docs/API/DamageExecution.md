@@ -11,9 +11,9 @@
 
 通道绑定由 `FGameDamageChannelRegistry`（`AbilitySystem/FGameDamageChannelRegistry.h`）统一托管：
 
-- 按 ExecCalc 类隔离，线程安全（`FCriticalSection`）。
+- 按 ExecCalc 类隔离，线程安全（`FRWLock` + `FRWScopeLock` 读写锁，注册 / 注销走写锁、查询走读锁）。
 - 可在子类构造函数中声明，也可在运行期任意系统动态注册 / 注销。
-- 查询时沿继承链合并，派生类同名通道覆盖基类，避免基类与派生类重复绑定导致数值双算。
+- 查询时从被查询类沿继承链向上合并，同名通道以最派生类的绑定为准，避免基类与派生类重复绑定导致数值双算。
 - 类上不再有「CDO 构造后永久冻结」的写死契约，`Execute_Implementation` 也不再是 `final`，子类可按需扩展。
 
 ## 1. 结构体定义
@@ -22,7 +22,7 @@
 伤害通道到目标 GAS 元属性的输出映射规则：
 ```cpp
 struct FDamageChannelBinding {
-    /** 匹配的伤害通道标签（例如 Damage.Physical） */
+    /** 匹配的伤害通道标签（例如 Data.Damage.Physical） */
     FGameplayTag ChannelTag;
 
     /** 目标写入的 GAS 元属性（例如 PhysicalDamageAttribute） */
@@ -46,8 +46,10 @@ struct FDamageModifier {
     /** 固定加减数值（默认 0.0f，用于固定破甲或固定格挡抵扣） */
     float Additive = 0.0f;
 
-    /** 是否强制覆写数值（若为 true，忽略上述计算直接取 OverrideValue） */
+    /** 是否启用绝对覆写 */
     bool bOverride = false;
+
+    /** 绝对覆写伤害值（仅 bOverride 为 true 时生效） */
     float OverrideValue = 0.0f;
 
     FDamageModifier() = default;
@@ -151,6 +153,8 @@ protected:
 
 ---
 
+> `RegisterTargetAttribute` / `RegisterSourceAttribute` 每调用一次都会向 `RelevantAttributesToCapture` **追加**一项，请勿对同一属性重复调用，否则会产生重复捕获项。
+
 ### 运行期注册示例
 
 ```cpp
@@ -175,9 +179,15 @@ void UMyCombatBootstrap::RegisterElementChannels()
 
 ## 3. 上下文自动回写闭环
 
-在 `Execute_Implementation` 演算全部通道并向 `OutExecutionOutput` 追加 Modifier 后，框架会自动提取当前 EffectSpec 中的 `FGameGameplayEffectContext`（由 `UGameAbilitySystemGlobals` 分配）：
-1. 自动回写实际总伤害：`SetActualDamage(TotalCalculatedDamage)`；
-2. 自动回写各通道实际数值：`SetActualChannelDamage(ChannelTag, FinalDamage)`（涵盖 100% 减免/免疫输出为 0.0f 的通道，确保下游表现层准确感知已判定通道）；
-3. 触发虚函数钩子 `OnPostExecuteChannels`，允许子类根据攻击方或受击方的战斗标签容器，自由追加反馈标签（如 `Damage.Feedback.Critical`）与动态数值（如 `Damage.Feedback.HitStop`）；
-4. 后续在受击端 `PostGameplayEffectExecute` 或表现层事件中可直接通过 Context 获取实际生效的伤害与反馈标签，并无缝导出为 `FGameDamageResult`。
+`Execute_Implementation` 的真实行为边界：
+
+- **通道绑定为空** → 直接返回，不回写任何上下文数据，也不调用 `OnPostExecuteChannels`。
+- 仅当 EffectSpec 的上下文可解析为 `FGameGameplayEffectContext`（`ExtractEffectContext` 命中）时才回写与调钩子；上下文为空则只产出 `OutExecutionOutput` 的 Modifier。
+- 逐通道结算（顺序即「继承链合并后的绑定顺序」）：
+  1. `ShouldExecuteChannel` 为假则跳过（默认判据为 Spec 是否携带该通道的 SetByCaller 数值）；
+  2. `BaseDamage = GetChannelBaseDamage(...)`，`FinalDamage = ComputeChannelModifier(...).Evaluate(BaseDamage)`，公式为 `bOverride ? OverrideValue : (BaseDamage + Additive) * Multiplier`；
+  3. 只要通道通过了执行判定，就 `SetActualChannelDamage(ChannelTag, FinalDamage)` —— **包含最终为 0 的通道**（免疫 / 100% 减免同样可见）；
+  4. `FinalDamage` 非零时才向 `OutExecutionOutput` 追加 Modifier，并累加进 `TotalCalculatedDamage`。
+- 结算结束：`SetActualDamage(TotalCalculatedDamage)`（**非零通道最终值之和**），随后调用 `OnPostExecuteChannels(ExecutionParams, TotalCalculatedDamage, EffectContext)` 供子类追加反馈标签（如 `Damage.Feedback.Critical`）与动态数值（如 `Damage.Feedback.HitStop`）。
+- 受击端 `PostGameplayEffectExecute` 或表现层事件可直接从 Context 读取实际伤害与反馈标签，并无缝导出为 `FGameDamageResult`。
 
