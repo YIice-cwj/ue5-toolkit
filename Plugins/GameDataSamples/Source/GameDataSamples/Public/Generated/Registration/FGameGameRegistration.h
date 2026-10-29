@@ -1,4 +1,7 @@
-// Automatically generated game layer registration entry. Do not edit manually.
+/**
+ * @file FGameGameRegistration.h
+ * @brief 游戏层业务统一注册入口
+ */
 #pragma once
 
 #include "CoreMinimal.h"

@@ -1,5 +1,8 @@
-// Automatically generated initial interface scaffold for Shop.
-// This file will NOT be overwritten by subsequent script runs.
+/**
+ * @file ShopStaticDataInterface.h
+ * @brief 商店静态数据业务门面接口
+ */
+
 #pragma once
 
 #include "CoreMinimal.h"

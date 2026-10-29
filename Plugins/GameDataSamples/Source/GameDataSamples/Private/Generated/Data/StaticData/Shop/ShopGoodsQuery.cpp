@@ -1,5 +1,3 @@
-// Automatically generated initial query implementation for ShopGoods.
-// This file will NOT be overwritten by subsequent script runs.
 #include "Generated/Data/StaticData/Shop/ShopGoodsQuery.h"
 
 /**

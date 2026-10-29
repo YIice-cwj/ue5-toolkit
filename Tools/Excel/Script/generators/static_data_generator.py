@@ -28,7 +28,10 @@ def generate_static_data_header(cfg: Any, cat_folder: str, tables: list) -> str:
     composite_header = f"{cat_folder}CompositeData.h"
 
     lines = []
-    lines.append(f"// Automatically generated static data container for {cat_folder}. Do not edit manually.")
+    lines.append("/**")
+    lines.append(f" * @file {cat_folder}StaticData.h")
+    lines.append(f" * @brief 静态数据容器")
+    lines.append(" */")
     lines.append("#pragma once")
     lines.append("")
     lines.append('#include "CoreMinimal.h"')

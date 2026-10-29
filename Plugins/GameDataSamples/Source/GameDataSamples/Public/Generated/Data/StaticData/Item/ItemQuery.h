@@ -1,5 +1,8 @@
-// Automatically generated initial query scaffold for Item.
-// This file will NOT be overwritten by subsequent script runs.
+/**
+ * @file ItemQuery.h
+ * @brief 物品静态数据查询类
+ */
+
 #pragma once
 
 #include "CoreMinimal.h"

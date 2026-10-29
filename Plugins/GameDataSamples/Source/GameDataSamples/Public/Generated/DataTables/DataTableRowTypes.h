@@ -1,4 +1,7 @@
-// Automatically generated master aggregator header for all DataTable row types.
+/**
+ * @file DataTableRowTypes.h
+ * @brief 数据表行结构聚合总头文件
+ */
 #pragma once
 
 #include "CoreMinimal.h"

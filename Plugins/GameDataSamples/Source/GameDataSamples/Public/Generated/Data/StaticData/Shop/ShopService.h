@@ -1,5 +1,8 @@
-// Automatically generated initial service scaffold for Shop.
-// This file will NOT be overwritten by subsequent script runs.
+/**
+ * @file ShopService.h
+ * @brief 商店静态数据领域业务服务类
+ */
+
 #pragma once
 
 #include "CoreMinimal.h"

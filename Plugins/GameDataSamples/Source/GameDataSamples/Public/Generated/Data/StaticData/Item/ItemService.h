@@ -1,5 +1,8 @@
-// Automatically generated initial service scaffold for Item.
-// This file will NOT be overwritten by subsequent script runs.
+/**
+ * @file ItemService.h
+ * @brief 物品静态数据领域业务服务类
+ */
+
 #pragma once
 
 #include "CoreMinimal.h"

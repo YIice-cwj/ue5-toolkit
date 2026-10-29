@@ -86,10 +86,6 @@ private:
     TSharedRef<FObserverState<ValueType>> State;
 };
 
-// ---------------------------------------------------------------------------
-// FValueObserver 模板类外实现
-// ---------------------------------------------------------------------------
-
 template<typename T>
 FValueObserver<T>::FValueObserver(const FName& ObserverName)
     : FObserverBase(ObserverName),

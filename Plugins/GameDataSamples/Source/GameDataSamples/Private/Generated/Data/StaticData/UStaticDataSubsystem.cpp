@@ -1,12 +1,18 @@
-// Automatically generated global static data subsystem implementation. Do not edit manually.
+/**
+ * @file UStaticDataSubsystem.cpp
+ * @brief 全局静态数据子系统实现
+ */
 #include "Generated/Data/StaticData/UStaticDataSubsystem.h"
 
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
+#include "Containers/Ticker.h"
 #include "HAL/FileManager.h"
+#include "HAL/PlatformMisc.h"
 #include "HAL/PlatformTime.h"
 #include "Misc/CommandLine.h"
+#include "Misc/FileHelper.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
 #include "Tasks/FGameThreadTaskRunner.h"
@@ -96,6 +102,32 @@ bool TryLoadStagingFromBin(const FString& InBinPath, FItemStaticData& OutItemDat
     return true;
 }
 
+/**
+ * @brief 打包产物启动自检（CI 冷启动双通道对拍用）
+ * @param Subsystem 已完成冷启动装载的静态数据子系统
+ *
+ * 实现思路：仅当命令行携带 -GameStaticDataVerify 时输出内容摘要，
+ * 并把装载结果写入存档目录下的 StaticDataVerify.txt 后延迟一帧请求退出；
+ * 报告文件是 Shipping 裁剪日志、且 macOS 忽略退出码时的唯一可靠取证通道
+ */
+void VerifyOnLaunchIfRequested(const UStaticDataSubsystem& Subsystem) {
+    if (!FParse::Param(FCommandLine::Get(), TEXT("GameStaticDataVerify"))) {
+        return;
+    }
+
+    const FStaticDataContentDigest Digest = Subsystem.BuildLoadedContentDigest();
+    const bool bLoaded = Subsystem.IsAllDataLoaded() && Digest.TableCount > 0;
+    GAME_LOG(Log, TEXT("表数=%d 行数=%d 内容摘要=%s"), Digest.TableCount, Digest.RowCount, *Digest.Digest);
+    FFileHelper::SaveStringToFile(
+        FString::Printf(TEXT("loaded=%d tables=%d rows=%d digest=%s"),
+            bLoaded ? 1 : 0, Digest.TableCount, Digest.RowCount, *Digest.Digest),
+        *(FPaths::ProjectSavedDir() / TEXT("StaticDataVerify.txt")));
+    FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([bLoaded](float) {
+        FPlatformMisc::RequestExitWithStatus(false, bLoaded ? 0 : 1);
+        return false;
+    }));
+}
+
 }  // namespace
 
 /* -------------------------------------------------------------------------
@@ -105,6 +137,7 @@ bool TryLoadStagingFromBin(const FString& InBinPath, FItemStaticData& OutItemDat
 void UStaticDataSubsystem::Initialize(FSubsystemCollectionBase& Collection) {
     Super::Initialize(Collection);
     LoadAllStaticData(false);
+    VerifyOnLaunchIfRequested(*this);
 }
 
 void UStaticDataSubsystem::Deinitialize() {
@@ -165,7 +198,7 @@ FValueObserver<uint32>& UStaticDataSubsystem::GetDataVersionObserver() {
  * @brief 汇总当前在线快照的数据内容摘要（Cold-Start 基准与双通道数据对拍用）
  * @return 表数、行数与顺序无关摘要；尚未完成首次加载返回零值结构
  *
- * 实现思路：取在线快照各域数据（Item/Shop）经「登记读写器 + 仓库」重建类型擦除镜像，
+ * 实现思路：取在线快照四域数据经「登记读写器 + 仓库」重建类型擦除镜像，
  * 再由仓库按结构名/行键排序计算摘要——与装载通道无关，仅反映数据内容
  */
 FStaticDataContentDigest UStaticDataSubsystem::BuildLoadedContentDigest() const {

@@ -1,5 +1,8 @@
-// Automatically generated initial interface scaffold for Item.
-// This file will NOT be overwritten by subsequent script runs.
+/**
+ * @file ItemStaticDataInterface.h
+ * @brief 物品静态数据业务门面接口
+ */
+
 #pragma once
 
 #include "CoreMinimal.h"

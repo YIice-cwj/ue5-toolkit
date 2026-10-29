@@ -25,7 +25,10 @@ def generate_composite_data_header(cfg: Any, cat_folder: str, tables: list) -> s
     agg_header = f"{cfg.row_types_include_prefix}/{cat_folder}/{cat_folder}DataTableRowTypes.h"
 
     lines = []
-    lines.append(f"// Automatically generated composite data container for {cat_folder}. Do not edit manually.")
+    lines.append("/**")
+    lines.append(f" * @file {cat_folder}CompositeData.h")
+    lines.append(f" * @brief 复合数据容器")
+    lines.append(" */")
     lines.append("#pragma once")
     lines.append("")
     lines.append('#include "CoreMinimal.h"')

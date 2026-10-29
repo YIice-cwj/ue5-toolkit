@@ -1,4 +1,7 @@
-// Automatically generated static data cache holder implementation. Do not edit manually.
+/**
+ * @file FStaticDataCache.cpp
+ * @brief 静态数据快照缓存容器类实现
+ */
 #include "Generated/Data/StaticData/FStaticDataCache.h"
 
 void FStaticDataCache::Reset() {

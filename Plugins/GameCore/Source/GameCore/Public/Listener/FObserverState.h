@@ -71,10 +71,6 @@ private:
     mutable FRWLock ListenersLock;
 };
 
-// ---------------------------------------------------------------------------
-// FObserverState 模板类外实现
-// ---------------------------------------------------------------------------
-
 template<typename T>
 uint64 FObserverState<T>::AddListener(FListener InListener, const TWeakObjectPtr<UObject>& InOwner) {
     if (!InListener) {

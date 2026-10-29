@@ -32,8 +32,12 @@ def _emit_log(cfg: Any, verbosity: str, message: str, *args: str, indent: str = 
 
 def _subsystem_header_preamble(cfg: Any) -> list:
     """头文件前导：include、委托声明、类文档与 UCLASS 声明（至 public 段）"""
+    header_name = os.path.basename(cfg.subsystem_header_include) if hasattr(cfg, "subsystem_header_include") else "UStaticDataSubsystem.h"
     return [
-        "// Automatically generated global static data subsystem. Do not edit manually.",
+        "/**",
+        f" * @file {header_name}",
+        " * @brief 全局静态数据子系统",
+        " */",
         "#pragma once",
         "",
         '#include "CoreMinimal.h"',
@@ -230,8 +234,12 @@ def generate_static_data_subsystem_header(cfg: Any, cat_folders: list) -> str:
 
 def _subsystem_cpp_preamble(cfg: Any) -> list:
     """cpp 前导：文件头与引擎/项目 include"""
+    cpp_name = os.path.basename(cfg.subsystem_header_include).replace('.h', '.cpp') if hasattr(cfg, "subsystem_header_include") else "UStaticDataSubsystem.cpp"
     return [
-        "// Automatically generated global static data subsystem implementation. Do not edit manually.",
+        "/**",
+        f" * @file {cpp_name}",
+        " * @brief 全局静态数据子系统实现",
+        " */",
         f'#include "{cfg.subsystem_header_include}"',
         "",
         '#include "Engine/Engine.h"',

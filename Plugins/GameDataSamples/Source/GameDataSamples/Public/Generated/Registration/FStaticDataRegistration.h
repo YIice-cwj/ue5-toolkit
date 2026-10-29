@@ -1,4 +1,7 @@
-// Automatically generated static data registration entry. Do not edit manually.
+/**
+ * @file FStaticDataRegistration.h
+ * @brief 静态数据统一注册入口
+ */
 #pragma once
 
 #include "CoreMinimal.h"
@@ -10,7 +13,8 @@ class UGameInstance;
  *
  * 设计思路：各模块各自实现 F{模块}Registration（RegisterAll / UnregisterAll
  * 统一签名），由生成器按约定目录自动扫描，聚合成统一注册入口。
- * 控制台命令为进程级资源，仅首次 GameInstance 注册（幂等守卫），不随会话注销。
+ * .bin 导出命令在模块装载期静态注册；其余控制台命令为进程级资源，
+ * 仅首次 GameInstance 注册（幂等守卫），不随会话注销。
  */
 class GAMEDATASAMPLES_API FStaticDataRegistration {
 public:

@@ -1,5 +1,3 @@
-// Automatically generated initial query implementation for Item.
-// This file will NOT be overwritten by subsequent script runs.
 #include "Generated/Data/StaticData/Item/ItemQuery.h"
 
 /**

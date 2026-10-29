@@ -1,52 +1,20 @@
-#include "NetSmoke/NetSmokeHarness.h"
+#include "NetSmoke/ANetSmokePlayerController.h"
 
 #include "Buff/UGameBuffComponent.h"
 #include "GameplayTagsManager.h"
-#include "HAL/FileManager.h"
 #include "HAL/PlatformMisc.h"
 #include "HAL/PlatformTime.h"
-#include "Misc/FileHelper.h"
-#include "Misc/Paths.h"
+#include "NetSmoke/NetSmokeResult.h"
 #include "TimerManager.h"
 
 namespace {
 constexpr float PollIntervalSeconds = 0.25f;
 constexpr double TimeoutSeconds = 90.0;
 
-const FGameplayTag& GetSmokeBuffTag() {
-    static const FGameplayTag Tag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("NetSmoke.Buff")));
-    return Tag;
-}
-
 const FGameplayTag& GetSmokeStateTag() {
     static const FGameplayTag Tag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("State.NetSmoke.Active")));
     return Tag;
 }
-}
-
-void NetSmokeResult::Write(const TCHAR* InFileName, const FString& InContent) {
-    const FString Directory = FPaths::ProjectSavedDir() / TEXT("NetSmoke");
-    IFileManager::Get().MakeDirectory(*Directory, true);
-    FFileHelper::SaveStringToFile(InContent, *(Directory / InFileName));
-}
-
-ANetSmokePawn::ANetSmokePawn() {
-    BuffComponent = CreateDefaultSubobject<UGameBuffComponent>(TEXT("GameBuffComponent"));
-}
-
-void ANetSmokePawn::BeginPlay() {
-    Super::BeginPlay();
-
-    if (!HasAuthority()) {
-        return;
-    }
-
-    FGameBuffSpec Spec;
-    Spec.BuffTag = GetSmokeBuffTag();
-    Spec.GrantedTags.AddTag(GetSmokeStateTag());
-
-    const int32 InstanceId = BuffComponent->ApplyBuff(Spec);
-    NetSmokeResult::Write(TEXT("ServerResult.txt"), InstanceId != 0 ? TEXT("APPLIED") : TEXT("APPLY_FAILED"));
 }
 
 void ANetSmokePlayerController::BeginPlay() {
@@ -90,7 +58,3 @@ void ANetSmokePlayerController::Finish(const FString& InResult) {
     FGenericPlatformMisc::RequestExit(false);
 }
 
-ANetSmokeGameMode::ANetSmokeGameMode() {
-    DefaultPawnClass = ANetSmokePawn::StaticClass();
-    PlayerControllerClass = ANetSmokePlayerController::StaticClass();
-}

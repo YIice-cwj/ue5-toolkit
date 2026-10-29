@@ -1,4 +1,7 @@
-// Automatically generated static data snapshot RCU store. Do not edit manually.
+/**
+ * @file FStaticDataSnapshotStore.h
+ * @brief 静态数据快照 RCU 存储器
+ */
 #pragma once
 
 #include "CoreMinimal.h"

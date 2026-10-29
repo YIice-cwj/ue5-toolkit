@@ -1,4 +1,7 @@
-// Automatically generated game layer registration entry implementation. Do not edit manually.
+/**
+ * @file FGameGameRegistration.cpp
+ * @brief 游戏层业务统一注册入口实现
+ */
 #include "Generated/Registration/FGameGameRegistration.h"
 
 #include "Registration/FGameCoreRegistration.h"

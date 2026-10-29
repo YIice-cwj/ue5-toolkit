@@ -13,7 +13,7 @@ namespace {
  * @param InName 源名称
  * @return 含结尾符的模块名字符数组
  */
-[[nodiscard]] TArray<ANSICHAR> MakeAnsiName(const char* InName) {
+[[nodiscard]] static TArray<ANSICHAR> MakeRegistrarAnsiName(const char* InName) {
     const int32 Length = FCStringAnsi::Strlen(InName);
     TArray<ANSICHAR> Result;
     Result.SetNumUninitialized(Length + 1);
@@ -25,7 +25,7 @@ namespace {
 
 FModuleLogRegistrar::FModuleLogRegistrar(const char* InModuleName, FLogCategoryBase* InCategory) {
     if (InModuleName != nullptr && InCategory != nullptr) {
-        ModuleName = MakeAnsiName(InModuleName);
+        ModuleName = MakeRegistrarAnsiName(InModuleName);
         FGameLogRegistry::RegisterCategory(ModuleName.GetData(), InCategory);
     }
 }

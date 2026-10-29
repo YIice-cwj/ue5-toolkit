@@ -1,4 +1,7 @@
-// Automatically generated master aggregator header for all StaticData types.
+/**
+ * @file StaticDataTypes.h
+ * @brief 静态数据聚合总头文件
+ */
 #pragma once
 
 #include "CoreMinimal.h"

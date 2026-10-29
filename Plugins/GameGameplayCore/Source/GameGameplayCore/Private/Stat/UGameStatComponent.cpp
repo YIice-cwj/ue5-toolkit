@@ -5,7 +5,6 @@
 
 #include "Stat/UGameStatComponent.h"
 
-#include "Stat/UGameVitalComponent.h"
 #include "GameFramework/Actor.h"
 #include "Logging/GameLogCategories.h"
 #include "Net/UnrealNetwork.h"
@@ -19,7 +18,6 @@ void UGameStatComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& O
     Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
     DOREPLIFETIME(UGameStatComponent, ReplicatedStats);
-    DOREPLIFETIME(UGameStatComponent, bVitalAlive);
 }
 
 void UGameStatComponent::RegisterStat(const FGameplayTag& InStatTag, float InInitialCurrent, float InMax, float InMin) {
@@ -44,7 +42,6 @@ void UGameStatComponent::RegisterStat(const FGameplayTag& InStatTag, float InIni
     NewValue.Min = InMin;
 
     SyncEntryToReplicatedList(InStatTag, NewValue);
-    EvaluateVitalState();
     BroadcastStatChanged(InStatTag, PreviousEffectiveCurrent, GetStatEffectiveCurrent(InStatTag), GetStatEffectiveMax(InStatTag));
     GAME_LOG(Log, TEXT("【数值组件】宿主 [%s] 成功注册属性 [%s]: 初始值=%.2f, 范围=[%.2f, %.2f]。"),
         *GetNameSafe(GetOwner()), *InStatTag.ToString(), ClampedCurrent, InMin, ClampedMax);
@@ -65,7 +62,6 @@ bool UGameStatComponent::UnregisterStat(const FGameplayTag& InStatTag) {
         ReplicatedStats.RemoveAt(Index);
         AcknowledgedStats.Remove(InStatTag);
         RebuildStatIndex();
-        EvaluateVitalState();
         GAME_LOG(Log, TEXT("【数值组件】宿主 [%s] 成功注销属性 [%s]。"),
             *GetNameSafe(GetOwner()), *InStatTag.ToString());
         return true;
@@ -237,10 +233,6 @@ bool UGameStatComponent::ModifyStat(const FGameplayTag& InStatTag, float Delta, 
 
     FoundStat->Current = TargetValue;
 
-    if (InStatTag.MatchesTagExact(PrimaryVitalTag)) {
-        EvaluateVitalState();
-    }
-
     const float OldEffectiveValue = ModifierContainer.EvaluateModifiers(InStatTag, OldValue, false);
     const float NewEffectiveValue = ModifierContainer.EvaluateModifiers(InStatTag, TargetValue, false);
     if (!FMath::IsNearlyEqual(OldEffectiveValue, NewEffectiveValue)) {
@@ -278,10 +270,6 @@ void UGameStatComponent::SetStatCurrent(const FGameplayTag& InStatTag, float New
     }
 
     FoundStat->Current = TargetValue;
-
-    if (InStatTag.MatchesTagExact(PrimaryVitalTag)) {
-        EvaluateVitalState();
-    }
 
     const float OldEffectiveValue = ModifierContainer.EvaluateModifiers(InStatTag, OldValue, false);
     const float NewEffectiveValue = ModifierContainer.EvaluateModifiers(InStatTag, TargetValue, false);
@@ -331,43 +319,12 @@ void UGameStatComponent::SetStatMax(const FGameplayTag& InStatTag, float NewMax,
     FoundStat->Max = ClampedMax;
     FoundStat->Current = TargetCurrent;
 
-    if (InStatTag.MatchesTagExact(PrimaryVitalTag)) {
-        EvaluateVitalState();
-    }
-
     const float OldEffectiveValue = ModifierContainer.EvaluateModifiers(InStatTag, OldValue, false);
     const float NewEffectiveValue = ModifierContainer.EvaluateModifiers(InStatTag, TargetCurrent, false);
     const float EffectiveMax = ModifierContainer.EvaluateModifiers(InStatTag, ClampedMax, true);
     BroadcastStatChanged(InStatTag, OldEffectiveValue, NewEffectiveValue, EffectiveMax);
     GAME_LOG(Log, TEXT("【数值组件】宿主 [%s] 设置属性 [%s] 上限: %.2f -> %.2f (当前值同步为: %.2f)。"),
         *GetNameSafe(GetOwner()), *InStatTag.ToString(), OldMax, ClampedMax, TargetCurrent);
-}
-
-void UGameStatComponent::SetPrimaryVitalTag(const FGameplayTag& InTag) {
-    PrimaryVitalTag = InTag;
-    EvaluateVitalState();
-}
-
-bool UGameStatComponent::IsVitalAlive() const noexcept {
-    return bVitalAlive;
-}
-
-void UGameStatComponent::ReviveVital(float FillPercent) {
-    if (!PrimaryVitalTag.IsValid()) {
-        return;
-    }
-
-    const float MinVal = GetStatMin(PrimaryVitalTag);
-    const float MaxVal = GetStatMax(PrimaryVitalTag);
-    const float Range = MaxVal - MinVal;
-    if (Range <= 0.0f) {
-        return;
-    }
-
-    const float ClampedPercent = FMath::Clamp(FillPercent, 0.0f, 1.0f);
-    const float RevivedValue = MinVal + (Range * ClampedPercent);
-
-    SetStatCurrent(PrimaryVitalTag, RevivedValue);
 }
 
 void UGameStatComponent::BindStatSource(TScriptInterface<IGameStatValueSource> InSource) {
@@ -401,8 +358,6 @@ void UGameStatComponent::UnbindStatSource() {
     NativeCurrentQuery.Unbind();
     NativeMaxQuery.Unbind();
     NativeStatWriter.Unbind();
-
-    EvaluateVitalState();
 }
 
 bool UGameStatComponent::CanWriteStat() const {
@@ -462,13 +417,6 @@ void UGameStatComponent::OnRep_ReplicatedStats() {
             It.RemoveCurrent();
         }
     }
-
-    EvaluateVitalState();
-}
-
-void UGameStatComponent::OnRep_VitalAlive() {
-    OnVitalStateChanged.Broadcast(bVitalAlive, PrimaryVitalTag);
-    OnVitalStateChangedNative.Broadcast(bVitalAlive, PrimaryVitalTag);
 }
 
 int32 UGameStatComponent::ResolveStatIndex(const FGameplayTag& InStatTag) const {
@@ -495,23 +443,6 @@ void UGameStatComponent::SyncEntryToReplicatedList(const FGameplayTag& InStatTag
 
     StatIndex.Add(InStatTag, ReplicatedStats.Num());
     ReplicatedStats.Emplace(InStatTag, InValue);
-}
-
-void UGameStatComponent::EvaluateVitalState() {
-    if (!PrimaryVitalTag.IsValid()) {
-        bVitalAlive = true;
-        return;
-    }
-
-    const float CurrentVal = GetStatCurrent(PrimaryVitalTag);
-    const float MinVal = GetStatMin(PrimaryVitalTag);
-    const bool bNewAlive = (CurrentVal > MinVal);
-
-    if (bVitalAlive != bNewAlive) {
-        bVitalAlive = bNewAlive;
-        OnVitalStateChanged.Broadcast(bVitalAlive, PrimaryVitalTag);
-        OnVitalStateChangedNative.Broadcast(bVitalAlive, PrimaryVitalTag);
-    }
 }
 
 void UGameStatComponent::RebuildStatIndex() {
@@ -565,10 +496,6 @@ bool UGameStatComponent::ExecuteExternalWrite(const FGameplayTag& InStatTag, EGa
     if (FoundStat != nullptr) {
         FoundStat->Current = NewCurrent;
         FoundStat->Max = NewMax;
-    }
-
-    if (InStatTag.MatchesTagExact(PrimaryVitalTag)) {
-        EvaluateVitalState();
     }
 
     const float OldEffectiveValue = ModifierContainer.EvaluateModifiers(InStatTag, PreviousCurrent, false);

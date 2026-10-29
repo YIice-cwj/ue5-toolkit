@@ -1,4 +1,7 @@
-// Automatically generated static data container for Item. Do not edit manually.
+/**
+ * @file ItemStaticData.h
+ * @brief 静态数据容器
+ */
 #pragma once
 
 #include "CoreMinimal.h"
@@ -64,9 +67,7 @@ public:
         return ItemMap.Find(Key);
     }
 
-    /**
-     * @brief Item数据行映射表 (RowName -> FItemRow)
-     */
+    /** Item数据行 映射表 (RowName -> FItemRow) */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item|StaticData", meta = (DisplayName = "Item数据行映射表"))
     TMap<FName, FItemRow> ItemMap;
 

@@ -93,7 +93,10 @@ def generate_struct_header(
     used_nested_types = sorted({cpp_type for _, cpp_type, _ in validated_fields if cpp_type in nested_struct_types})
 
     lines = []
-    lines.append("// Automatically generated from " + xlsx_filename + ". Do not edit manually.")
+    lines.append("/**")
+    lines.append(f" * @file {header_name}")
+    lines.append(f" * @brief 数据表行数据结构（生成自 {xlsx_filename}）")
+    lines.append(" */")
     lines.append("#pragma once")
     lines.append("")
     lines.append('#include "CoreMinimal.h"')

@@ -1,4 +1,7 @@
-// Automatically generated from DT_Item.xlsx. Do not edit manually.
+/**
+ * @file ItemRow.h
+ * @brief 数据表行数据结构（生成自 DT_Item.xlsx）
+ */
 #pragma once
 
 #include "CoreMinimal.h"
@@ -14,33 +17,24 @@ struct FItemRow : public FTableRowBase {
     GENERATED_BODY()
 
 public:
-    /**
-     * @brief 物品名称
-     */
+    /** 物品名称 */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item", meta = (DisplayName = "物品名称"))
     FString ItemName;
 
-    /**
-     * @brief 基础攻击力
-     */
+    /** 基础攻击力 */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item", meta = (DisplayName = "基础攻击力"))
     int32 BaseAttack = 0;
 
-    /**
-     * @brief 金币价值
-     */
+    /** 金币价值 */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item", meta = (DisplayName = "金币价值"))
     float GoldCost = 0.0f;
 
-    /**
-     * @brief 是否可用
-     */
+    /** 是否可用 */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item", meta = (DisplayName = "是否可用"))
     bool bIsUsable = false;
 
-    /**
-     * @brief 玩法标签
-     */
+    /** 玩法标签 */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item", meta = (DisplayName = "玩法标签"))
     FGameplayTag ItemTag;
+
 };

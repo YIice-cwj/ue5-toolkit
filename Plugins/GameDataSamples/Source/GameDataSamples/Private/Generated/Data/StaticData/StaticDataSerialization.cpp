@@ -1,4 +1,8 @@
-// Automatically generated static data row serializers. Do not edit manually.
+/**
+ * @file StaticDataSerialization.cpp
+ * @brief 静态数据行序列化器实现
+ */
+
 #include "Generated/Data/StaticData/StaticDataSerialization.h"
 
 #include "GameplayTagContainer.h"

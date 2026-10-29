@@ -6,7 +6,7 @@
  * 组件遵循单一职责原则，基础属性存储与网络同步由本组件管理；
  * 修正器演算管线委托至 FGameStatModifierContainer；
  * 按 Tag 订阅与生命周期弱引用委托至 FGameStatSubscriptionHub；
- * 角色生死状态建议与专职组件 UGameVitalComponent 配合使用。
+ * 角色生死存活管理请与专职组件 UGameVitalComponent 配合使用。
  */
 
 #pragma once
@@ -22,30 +22,6 @@
 #include "Stat/FGameStatSubscriptionHub.h"
 
 #include "UGameStatComponent.generated.h"
-
-class UGameVitalComponent;
-
-/**
- * @brief 动态多播委托：存活状态变动（兼容过渡委托）
- * @param bIsAlive 当前是否存活
- * @param VitalTag 触发变动的主生命属性标签
- */
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(
-    FOnGameStatVitalStateChanged,
-    bool, bIsAlive,
-    const FGameplayTag&, VitalTag
-);
-
-/**
- * @brief 原生 C++ 多播委托：存活状态变动（兼容过渡委托）
- * @param bIsAlive 当前是否存活
- * @param VitalTag 触发变动的主生命属性标签引用
- */
-DECLARE_MULTICAST_DELEGATE_TwoParams(
-    FOnGameStatVitalStateChangedNative,
-    bool,
-    const FGameplayTag&
-);
 
 /**
  * @brief 通用数值管理组件
@@ -327,40 +303,6 @@ public:
         return SubscriptionHub;
     }
 
-    // ---------------------------------------------------------------------------------------------------------
-    // 过渡兼容接口（建议新代码迁移至独立的 UGameVitalComponent）
-    // ---------------------------------------------------------------------------------------------------------
-
-    /**
-     * @brief 设置主生命属性标签并重新评估存活状态（过渡兼容接口）
-     * @param InTag 目标生命标签
-     */
-    UFUNCTION(BlueprintCallable, Category = "Game|Stat")
-    void SetPrimaryVitalTag(const FGameplayTag& InTag);
-
-    /**
-     * @brief 读取主生命属性标签（过渡兼容接口）
-     * @return 主生命属性标签
-     */
-    UFUNCTION(BlueprintCallable, Category = "Game|Stat")
-    [[nodiscard]] FORCEINLINE FGameplayTag GetPrimaryVitalTag() const noexcept {
-        return PrimaryVitalTag;
-    }
-
-    /**
-     * @brief 查询主生命是否存活（过渡兼容接口）
-     * @return 若存活返回 true，否则返回 false
-     */
-    UFUNCTION(BlueprintCallable, Category = "Game|Stat")
-    [[nodiscard]] bool IsVitalAlive() const noexcept;
-
-    /**
-     * @brief 按百分比恢复主生命数值（过渡兼容接口）
-     * @param FillPercent 恢复填充比例（默认 1.0f 即回满）
-     */
-    UFUNCTION(BlueprintCallable, Category = "Game|Stat")
-    void ReviveVital(float FillPercent = 1.0f);
-
 public:
     /**
      * @brief 属性变动动态多播委托
@@ -373,17 +315,6 @@ public:
      */
     FOnGameStatChangedNative OnStatChangedNative;
 
-    /**
-     * @brief 存活状态变动动态多播委托（过渡兼容委托）
-     */
-    UPROPERTY(BlueprintAssignable, Category = "Game|Stat")
-    FOnGameStatVitalStateChanged OnVitalStateChanged;
-
-    /**
-     * @brief 存活状态变动原生 C++ 多播委托（过渡兼容委托）
-     */
-    FOnGameStatVitalStateChangedNative OnVitalStateChangedNative;
-
 protected:
     /**
      * @brief 属性数组网络复制到达客户端时的回调
@@ -391,18 +322,11 @@ protected:
     UFUNCTION()
     void OnRep_ReplicatedStats();
 
-    /**
-     * @brief 存活标志位网络复制到达客户端时的回调
-     */
-    UFUNCTION()
-    void OnRep_VitalAlive();
-
 private:
     [[nodiscard]] int32 ResolveStatIndex(const FGameplayTag& InStatTag) const;
     FGameStatValue* FindMutableStat(const FGameplayTag& InStatTag);
     const FGameStatValue* FindStat(const FGameplayTag& InStatTag) const;
     void SyncEntryToReplicatedList(const FGameplayTag& InStatTag, const FGameStatValue& InValue);
-    void EvaluateVitalState();
     void RebuildStatIndex();
     void BroadcastStatChanged(const FGameplayTag& InStatTag, float OldValue, float NewValue, float MaxValue);
     void NotifyIfEffectiveStatChanged(const FGameplayTag& InStatTag, bool bStatRegistered, float OldEffectiveCurrent, float OldEffectiveMax);
@@ -414,13 +338,7 @@ private:
     EGameStatSourceMode SourceMode = EGameStatSourceMode::Standalone;
 
     UPROPERTY(EditDefaultsOnly, Category = "Game|Stat")
-    FGameplayTag PrimaryVitalTag;
-
-    UPROPERTY(EditDefaultsOnly, Category = "Game|Stat")
     bool bAllowNonAuthoritativeWrites = false;
-
-    UPROPERTY(ReplicatedUsing = OnRep_VitalAlive)
-    bool bVitalAlive = true;
 
     UPROPERTY(ReplicatedUsing = OnRep_ReplicatedStats)
     TArray<FGameStatEntry> ReplicatedStats;

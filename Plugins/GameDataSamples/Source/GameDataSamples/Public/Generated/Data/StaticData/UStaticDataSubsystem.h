@@ -1,4 +1,7 @@
-// Automatically generated global static data subsystem. Do not edit manually.
+/**
+ * @file UStaticDataSubsystem.h
+ * @brief 全局静态数据子系统
+ */
 #pragma once
 
 #include "CoreMinimal.h"
@@ -109,9 +112,7 @@ public:
      */
     static bool ExportStaticDataBin();
 
-    /**
-     * @brief 静态数据重载完成事件（业务层可绑定此事件作废已缓存数据）
-     */
+    /** 静态数据重载完成事件（业务层可绑定此事件作废已缓存数据） */
     FStaticDataReloadedDelegate OnStaticDataReloaded;
 
 private:
@@ -129,19 +130,13 @@ private:
      */
     void CommitSnapshot(TSharedPtr<const FStaticDataSnapshot> InNextSnapshot);
 
-    /**
-     * @brief 是否已成功完成全量静态数据预加载（遵循 UE5 b 驼峰约定，UPROPERTY 无下划线尾缀）
-     */
+    /** 是否已成功完成全量静态数据预加载（遵循 UE5 b 驼峰约定，UPROPERTY 无下划线尾缀） */
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Game|StaticData", meta = (AllowPrivateAccess = "true"))
     bool bIsAllDataLoaded = false;
 
-    /**
-     * @brief 快照 RCU 存储（在线快照为查询唯一真源；重载门闩保证同一时刻仅一个写者）
-     */
+    /** 快照 RCU 存储（在线快照为查询唯一真源；重载门闩保证同一时刻仅一个写者） */
     FStaticDataSnapshotStore SnapshotStore;
 
-    /**
-     * @brief 数据版本号观察者（提交后 Set 广播，业务可订阅监听数据更新）
-     */
+    /** 数据版本号观察者（提交后 Set 广播，业务可订阅监听数据更新） */
     FValueObserver<uint32> DataVersionObserver{FName(TEXT("StaticData.DataVersion"))};
 };

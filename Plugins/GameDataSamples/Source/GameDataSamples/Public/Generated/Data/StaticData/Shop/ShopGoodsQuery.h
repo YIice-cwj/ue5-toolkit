@@ -1,5 +1,8 @@
-// Automatically generated initial query scaffold for ShopGoods.
-// This file will NOT be overwritten by subsequent script runs.
+/**
+ * @file ShopGoodsQuery.h
+ * @brief 商店商品静态数据查询类
+ */
+
 #pragma once
 
 #include "CoreMinimal.h"

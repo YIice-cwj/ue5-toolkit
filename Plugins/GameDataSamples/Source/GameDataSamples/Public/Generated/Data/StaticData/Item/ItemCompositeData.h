@@ -1,4 +1,7 @@
-// Automatically generated composite data container for Item. Do not edit manually.
+/**
+ * @file ItemCompositeData.h
+ * @brief 复合数据容器
+ */
 #pragma once
 
 #include "CoreMinimal.h"
@@ -14,9 +17,8 @@ struct GAMEDATASAMPLES_API FItemCompositeData {
     GENERATED_BODY()
 
 public:
-    /**
-     * @brief Item数据行
-     */
+    /** Item数据行 */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item|Composite", meta = (DisplayName = "Item数据行"))
     FItemRow Item;
+
 };

@@ -1,4 +1,7 @@
-// Automatically generated composite data container for Shop. Do not edit manually.
+/**
+ * @file ShopCompositeData.h
+ * @brief 复合数据容器
+ */
 #pragma once
 
 #include "CoreMinimal.h"
@@ -14,9 +17,8 @@ struct GAMEDATASAMPLES_API FShopCompositeData {
     GENERATED_BODY()
 
 public:
-    /**
-     * @brief ShopGoods数据行
-     */
+    /** ShopGoods数据行 */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shop|Composite", meta = (DisplayName = "ShopGoods数据行"))
     FShopGoodsRow Goods;
+
 };

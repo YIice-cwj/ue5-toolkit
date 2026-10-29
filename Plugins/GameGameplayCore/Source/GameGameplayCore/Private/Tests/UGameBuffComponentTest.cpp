@@ -296,4 +296,45 @@ bool FGameBuffRemoveStacksTest::RunTest([[maybe_unused]] const FString& Paramete
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameBuffInstanceAndQueryCoverageTest,
+    "Game.GameplayCore.Buff.InstanceAndQueryCoverage",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FGameBuffInstanceAndQueryCoverageTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UGameBuffComponent* BuffComponent = NewObject<UGameBuffComponent>(GetTransientPackage());
+    const FGameplayTag TagA = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Buff.Test.CoverageA")));
+    const FGameplayTag TagB = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Buff.Test.CoverageB")));
+
+    FGameBuffSpec SpecA;
+    SpecA.BuffTag = TagA;
+    SpecA.Duration = 10.0f;
+
+    FGameBuffSpec SpecB;
+    SpecB.BuffTag = TagB;
+    SpecB.Duration = 10.0f;
+
+    const int32 InstanceIdA = BuffComponent->ApplyBuff(SpecA);
+    const int32 InstanceIdB = BuffComponent->ApplyBuff(SpecB);
+    TestNotEqual(TEXT("实例 A 施加成功"), InstanceIdA, 0);
+    TestNotEqual(TEXT("实例 B 施加成功"), InstanceIdB, 0);
+
+    TArray<FGameplayTag> ActiveTags;
+    BuffComponent->GetActiveBuffTags(ActiveTags);
+    TestEqual(TEXT("活跃 Buff 标签总数为 2"), ActiveTags.Num(), 2);
+    TestTrue(TEXT("包含标签 A"), ActiveTags.Contains(TagA));
+    TestTrue(TEXT("包含标签 B"), ActiveTags.Contains(TagB));
+
+    TestTrue(TEXT("根据 InstanceIdA 移除成功"), BuffComponent->RemoveBuffInstance(InstanceIdA));
+    TestFalse(TEXT("根据重复 InstanceIdA 移除应失败"), BuffComponent->RemoveBuffInstance(InstanceIdA));
+
+    BuffComponent->GetActiveBuffTags(ActiveTags);
+    TestEqual(TEXT("移除后活跃 Buff 标签数为 1"), ActiveTags.Num(), 1);
+    TestFalse(TEXT("不再包含标签 A"), ActiveTags.Contains(TagA));
+    TestTrue(TEXT("仍包含标签 B"), ActiveTags.Contains(TagB));
+
+    return true;
+}
+
 #endif

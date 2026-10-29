@@ -73,7 +73,11 @@ def collect_tables(ctx: GeneratorContext) -> list:
 def generate_header(cfg: Any) -> str:
     """生成注册入口声明头（每次覆盖）"""
     lines = []
-    lines.append("// Automatically generated static data row serializers. Do not edit manually.")
+    lines.append("/**")
+    lines.append(" * @file StaticDataSerialization.h")
+    lines.append(" * @brief 静态数据行序列化器")
+    lines.append(" */")
+    lines.append("")
     lines.append("#pragma once")
     lines.append("")
     lines.append('#include "CoreMinimal.h"')
@@ -93,7 +97,11 @@ def generate_source(cfg: Any, tables: list) -> str:
     """生成逐行负载读写器与注册入口实现（每次覆盖）"""
     nested_struct_types = getattr(cfg, "nested_struct_types", {}) or {}
     lines = []
-    lines.append("// Automatically generated static data row serializers. Do not edit manually.")
+    lines.append("/**")
+    lines.append(" * @file StaticDataSerialization.cpp")
+    lines.append(" * @brief 静态数据行序列化器实现")
+    lines.append(" */")
+    lines.append("")
     lines.append(f'#include "{cfg.static_data_include_prefix}/{HEADER_NAME}"')
     lines.append("")
 

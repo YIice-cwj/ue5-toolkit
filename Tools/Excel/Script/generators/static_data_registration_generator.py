@@ -38,7 +38,10 @@ def build_watcher_header(cfg: Any) -> str:
     @return 头文件内容
     """
     return "\n".join([
-        "// Automatically generated static data hot reload watcher. Do not edit manually.",
+        "/**",
+        " * @file FStaticDataHotReloadWatcher.h",
+        " * @brief 静态数据热重载文件监听器",
+        " */",
         "#pragma once",
         "",
         '#include "CoreMinimal.h"',
@@ -76,7 +79,10 @@ def build_watcher_source(cfg: Any) -> str:
     @return 实现文件内容
     """
     return "\n".join([
-        "// Automatically generated static data hot reload watcher implementation. Do not edit manually.",
+        "/**",
+        " * @file FStaticDataHotReloadWatcher.cpp",
+        " * @brief 静态数据热重载文件监听器实现",
+        " */",
         f'#include "{WATCHER_HEADER_INCLUDE}"',
         "",
         f'#include "{DIRECTORY_WATCHER_INCLUDE}"',
@@ -161,7 +167,10 @@ def build_registration_header(cfg: Any) -> str:
     @return 头文件内容
     """
     return "\n".join([
-        "// Automatically generated static data registration entry. Do not edit manually.",
+        "/**",
+        " * @file FStaticDataRegistration.h",
+        " * @brief 静态数据统一注册入口",
+        " */",
         "#pragma once",
         "",
         '#include "CoreMinimal.h"',
@@ -204,7 +213,10 @@ def build_registration_source(cfg: Any) -> str:
     """
     command_name = f"{cfg.project_prefix}.ReloadStaticData"
     return "\n".join([
-        "// Automatically generated static data registration entry implementation. Do not edit manually.",
+        "/**",
+        " * @file FStaticDataRegistration.cpp",
+        " * @brief 静态数据统一注册入口实现",
+        " */",
         f'#include "{REGISTRATION_HEADER_INCLUDE}"',
         "",
         '#include "Engine/GameInstance.h"',

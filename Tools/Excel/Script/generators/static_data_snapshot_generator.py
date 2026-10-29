@@ -37,7 +37,10 @@ def build_snapshot_header(cfg: Any, domain_list: list) -> str:
     @return 头文件内容
     """
     lines = [
-        "// Automatically generated static data snapshot carrier. Do not edit manually.",
+        "/**",
+        " * @file FStaticDataSnapshot.h",
+        " * @brief 静态数据快照聚合载体",
+        " */",
         "#pragma once",
         "",
         '#include "CoreMinimal.h"',
@@ -84,7 +87,10 @@ def build_cache_header(cfg: Any, domain_list: list) -> str:
     @return 头文件内容
     """
     lines = [
-        "// Automatically generated static data cache holder. Do not edit manually.",
+        "/**",
+        " * @file FStaticDataCache.h",
+        " * @brief 静态数据快照缓存容器类",
+        " */",
         "#pragma once",
         "",
         '#include "CoreMinimal.h"',
@@ -140,7 +146,10 @@ def build_cache_source(cfg: Any, domain_list: list) -> str:
     @return 实现文件内容
     """
     lines = [
-        "// Automatically generated static data cache holder implementation. Do not edit manually.",
+        "/**",
+        " * @file FStaticDataCache.cpp",
+        " * @brief 静态数据快照缓存容器类实现",
+        " */",
         f'#include "{CACHE_HEADER_INCLUDE}"',
         "",
         "void FStaticDataCache::Reset() {",
@@ -166,7 +175,10 @@ def build_store_header(cfg: Any) -> str:
     @return 头文件内容
     """
     return "\n".join([
-        "// Automatically generated static data snapshot RCU store. Do not edit manually.",
+        "/**",
+        " * @file FStaticDataSnapshotStore.h",
+        " * @brief 静态数据快照 RCU 存储器",
+        " */",
         "#pragma once",
         "",
         '#include "CoreMinimal.h"',
@@ -233,7 +245,10 @@ def build_store_source(cfg: Any) -> str:
     @return 实现文件内容
     """
     return "\n".join([
-        "// Automatically generated static data snapshot RCU store implementation. Do not edit manually.",
+        "/**",
+        " * @file FStaticDataSnapshotStore.cpp",
+        " * @brief 静态数据快照 RCU 存储器实现",
+        " */",
         f'#include "{STORE_HEADER_INCLUDE}"',
         "",
         f'#include "{SNAPSHOT_HEADER_INCLUDE}"',

@@ -136,10 +136,6 @@ private:
     TMap<FName, TSharedPtr<FEventBase>> Events;
 };
 
-// ---------------------------------------------------------------------------
-// 模板实现（定义全部置于类外，顺序与类内声明 1:1 对齐）
-// ---------------------------------------------------------------------------
-
 template<typename T>
 uint64 FListenerHub::FEvent<T>::AddListener(FListener InListener) {
     if (!InListener) {

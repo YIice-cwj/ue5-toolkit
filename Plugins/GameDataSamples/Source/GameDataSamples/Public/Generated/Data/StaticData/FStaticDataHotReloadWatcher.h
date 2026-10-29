@@ -1,4 +1,7 @@
-// Automatically generated static data hot reload watcher. Do not edit manually.
+/**
+ * @file FStaticDataHotReloadWatcher.h
+ * @brief 静态数据热重载文件监听器
+ */
 #pragma once
 
 #include "CoreMinimal.h"

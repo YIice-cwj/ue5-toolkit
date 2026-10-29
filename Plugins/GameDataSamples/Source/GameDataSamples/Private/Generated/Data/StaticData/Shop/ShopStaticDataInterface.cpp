@@ -1,5 +1,3 @@
-// Automatically generated initial interface implementation for Shop.
-// This file will NOT be overwritten by subsequent script runs.
 #include "Generated/Data/StaticData/Shop/ShopStaticDataInterface.h"
 
 #include "Generated/Data/StaticData/FStaticDataCache.h"

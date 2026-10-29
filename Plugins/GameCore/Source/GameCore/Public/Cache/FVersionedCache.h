@@ -113,10 +113,6 @@ private:
     mutable int32 Tail = INDEX_NONE;
 };
 
-// ---------------------------------------------------------------------------
-// FVersionedCache 模板类外实现
-// ---------------------------------------------------------------------------
-
 template<typename T>
 FVersionedCache<T>::FVersionedCache(const FName& Domain)
     : Domain(Domain) {

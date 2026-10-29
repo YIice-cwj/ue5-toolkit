@@ -98,6 +98,8 @@ bool FGameTimePriorityStackTest::RunTest([[maybe_unused]] const FString& Paramet
 
     TimeSubsystem->RequestGlobalDilation(ETimeDilationChannel::WorldModifier, 10.0f, 0.8f);
     TestNearlyEqual(TEXT("激活 WorldModifier 通道"), TimeSubsystem->GetEffectiveGlobalTimeDilation(), 0.8f, 0.0001f);
+    TestNearlyEqual(TEXT("读取指定通道时间膨胀值"), TimeSubsystem->GetChannelTimeDilation(ETimeDilationChannel::WorldModifier), 0.8f, 0.0001f);
+    TestNearlyEqual(TEXT("未激活通道时间膨胀默认为 1.0"), TimeSubsystem->GetChannelTimeDilation(ETimeDilationChannel::SlowMo), 1.0f, 0.0001f);
 
     TimeSubsystem->RequestGlobalDilation(ETimeDilationChannel::SlowMo, 2.0f, 0.3f);
     TestNearlyEqual(TEXT("SlowMo 优先级高于 WorldModifier"), TimeSubsystem->GetEffectiveGlobalTimeDilation(), 0.3f, 0.0001f);

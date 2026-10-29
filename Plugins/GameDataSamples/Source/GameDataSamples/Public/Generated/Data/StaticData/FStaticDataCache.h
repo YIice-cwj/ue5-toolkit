@@ -1,4 +1,7 @@
-// Automatically generated static data cache holder. Do not edit manually.
+/**
+ * @file FStaticDataCache.h
+ * @brief 静态数据快照缓存容器类
+ */
 #pragma once
 
 #include "CoreMinimal.h"
@@ -36,9 +39,7 @@ public:
     [[nodiscard]] FVersionedCache<FShopCompositeData>& ShopComposites() const;
 
 private:
-    /**
-     * @brief 各域逻辑只读缓存（mutable：const 快照上允许查找与缓存内部惰性填充）
-     */
+    /** 各域逻辑只读缓存（mutable：const 快照上允许查找与缓存内部惰性填充） */
     mutable FVersionedCache<FItemCompositeData> ItemCompositesCache{FName(TEXT("Item"))};
     mutable FVersionedCache<FShopCompositeData> ShopCompositesCache{FName(TEXT("Shop"))};
 };

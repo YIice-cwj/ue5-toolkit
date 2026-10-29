@@ -78,7 +78,10 @@ def build_header(cfg: Any) -> str:
     """
     class_name = class_name_of(cfg)
     return "\n".join([
-        "// Automatically generated game layer registration entry. Do not edit manually.",
+        "/**",
+        " * @file FGameGameRegistration.h",
+        " * @brief 游戏层业务统一注册入口",
+        " */",
         "#pragma once",
         "",
         '#include "CoreMinimal.h"',
@@ -125,7 +128,10 @@ def build_source(cfg: Any, domain_list: list) -> str:
     class_name = class_name_of(cfg)
     defaults = dict(getattr(cfg, "game_config_defaults", {}))
     lines = [
-        "// Automatically generated game layer registration entry implementation. Do not edit manually.",
+        "/**",
+        " * @file FGameGameRegistration.cpp",
+        " * @brief 游戏层业务统一注册入口实现",
+        " */",
         f'#include "{header_include_of(cfg)}"',
         "",
     ]

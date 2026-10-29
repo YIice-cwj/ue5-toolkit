@@ -1,4 +1,7 @@
-// Automatically generated static data container for Shop. Do not edit manually.
+/**
+ * @file ShopStaticData.h
+ * @brief 静态数据容器
+ */
 #pragma once
 
 #include "CoreMinimal.h"
@@ -64,9 +67,7 @@ public:
         return GoodsMap.Find(Key);
     }
 
-    /**
-     * @brief ShopGoods数据行映射表 (RowName -> FShopGoodsRow)
-     */
+    /** ShopGoods数据行 映射表 (RowName -> FShopGoodsRow) */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shop|StaticData", meta = (DisplayName = "ShopGoods数据行映射表"))
     TMap<FName, FShopGoodsRow> GoodsMap;
 

@@ -1,4 +1,7 @@
-// Automatically generated static data snapshot carrier. Do not edit manually.
+/**
+ * @file FStaticDataSnapshot.h
+ * @brief 静态数据快照聚合载体
+ */
 #pragma once
 
 #include "CoreMinimal.h"
@@ -11,24 +14,16 @@
  */
 class GAMEDATASAMPLES_API FStaticDataSnapshot {
 public:
-    /**
-     * @brief 数据版本号（与快照同代绑定，自 1 起递增）
-     */
+    /** 数据版本号（与快照同代绑定，自 1 起递增） */
     uint32 DataVersion = 0;
 
-    /**
-     * @brief 各域复合聚合缓存（行 join 后的强类型视图）
-     */
+    /** 各域复合聚合缓存（行 join 后的强类型视图） */
     FStaticDataCache Cache;
 
-    /**
-     * @brief Item 域静态数据行表
-     */
+    /** Item 域行表 */
     FItemStaticData ItemData;
 
-    /**
-     * @brief Shop 域静态数据行表
-     */
+    /** Shop 域行表 */
     FShopStaticData ShopData;
 
     FStaticDataSnapshot() = default;

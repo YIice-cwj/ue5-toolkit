@@ -115,10 +115,6 @@ private:
     TMap<FName, FEntry> Entries;
 };
 
-// ---------------------------------------------------------------------------
-// 模板实现（定义全部置于类外，随头文件对使用方可见）
-// ---------------------------------------------------------------------------
-
 template<typename T>
 FValueObserver<T>* FObservableRegistry::Register(const FName& Key) {
     if (Key.IsNone()) {

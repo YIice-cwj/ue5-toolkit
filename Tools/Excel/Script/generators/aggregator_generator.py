@@ -45,14 +45,20 @@ def generate(ctx: GeneratorContext) -> list:
 
     for cat_folder, headers in ctx.category_headers.items():
         content = write_agg_header(
-            f"// Automatically generated aggregator header for {cat_folder} DataTable rows.",
+            f"""/**
+ * @file {cat_folder}DataTableRowTypes.h
+ * @brief 物品/商店等分类数据表行聚合头文件
+ */""",
             headers,
         )
         out_path = os.path.join(ctx.cfg.cpp_output_base_dir, cat_folder, f"{cat_folder}DataTableRowTypes.h")
         files.append(GeneratedFile(path=out_path, content=content, policy="overwrite"))
 
     content = write_agg_header(
-        "// Automatically generated master aggregator header for all DataTable row types.",
+        """/**
+ * @file DataTableRowTypes.h
+ * @brief 数据表行结构聚合总头文件
+ */""",
         [f"{cat_folder}/{cat_folder}DataTableRowTypes.h" for cat_folder in sorted(ctx.category_headers.keys())],
     )
     files.append(GeneratedFile(
@@ -66,7 +72,10 @@ def generate(ctx: GeneratorContext) -> list:
         static_agg_includes.append(f"{cat_folder}/{cat_folder}CompositeData.h")
         static_agg_includes.append(f"{cat_folder}/{cat_folder}StaticData.h")
     content = write_agg_header(
-        "// Automatically generated master aggregator header for all StaticData types.",
+        """/**
+ * @file StaticDataTypes.h
+ * @brief 静态数据聚合总头文件
+ */""",
         static_agg_includes,
     )
     files.append(GeneratedFile(

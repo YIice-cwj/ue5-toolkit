@@ -77,33 +77,26 @@ bool FGameStatMultiRegistrationTest::RunTest([[maybe_unused]] const FString& Par
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-    FGameStatPrimaryVitalTest,
-    "Game.GameplayCore.Stat.PrimaryVital",
+    FGameStatBoundaryClampingTest,
+    "Game.GameplayCore.Stat.BoundaryClamping",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
-bool FGameStatPrimaryVitalTest::RunTest([[maybe_unused]] const FString& Parameters) {
+bool FGameStatBoundaryClampingTest::RunTest([[maybe_unused]] const FString& Parameters) {
     UGameStatComponent* Comp = NewObject<UGameStatComponent>();
-    const FGameplayTag HealthTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Attribute.Health.Vital")));
+    const FGameplayTag HealthTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Attribute.Health.ClampTest")));
 
     Comp->RegisterStat(HealthTag, 100.0f, 100.0f, 0.0f);
-    Comp->SetPrimaryVitalTag(HealthTag);
+    TestEqual(TEXT("初始属性值正确"), Comp->GetStatCurrent(HealthTag), 100.0f);
 
-    TestTrue(TEXT("Initially vital alive"), Comp->IsVitalAlive());
+    float ActualDelta = 0.0f;
+    Comp->ModifyStat(HealthTag, -150.0f, ActualDelta);
+    TestEqual(TEXT("数值扣减超出下限时应 Clamp 到 Min"), Comp->GetStatCurrent(HealthTag), 0.0f);
+    TestEqual(TEXT("实际增量应为 -100"), ActualDelta, -100.0f);
 
-    bool bObservedAliveState = true;
-    Comp->OnVitalStateChangedNative.AddLambda([&bObservedAliveState](bool bIsAlive, const FGameplayTag&) {
-        bObservedAliveState = bIsAlive;
-    });
-
-    Comp->ModifyStat(HealthTag, -100.0f);
-    TestFalse(TEXT("Vital should be dead after depletion"), Comp->IsVitalAlive());
-    TestFalse(TEXT("Delegate should broadcast death"), bObservedAliveState);
-
-    Comp->ReviveVital(1.0f);
-    TestTrue(TEXT("Vital should be alive after revive"), Comp->IsVitalAlive());
-    TestEqual(TEXT("Health should be restored to max"), Comp->GetStatCurrent(HealthTag), 100.0f);
-    TestTrue(TEXT("Delegate should broadcast revive"), bObservedAliveState);
+    Comp->ModifyStat(HealthTag, 200.0f, ActualDelta);
+    TestEqual(TEXT("数值增加超出上限时应 Clamp 到 Max"), Comp->GetStatCurrent(HealthTag), 100.0f);
+    TestEqual(TEXT("实际增量应为 100"), ActualDelta, 100.0f);
 
     return true;
 }
@@ -425,28 +418,64 @@ bool FGameStatProxyReviveAndVitalTest::RunTest([[maybe_unused]] const FString& P
         }
     ));
 
-    Comp->SetPrimaryVitalTag(HealthTag);
-    TestTrue(TEXT("代理模式下 Vital 初始存活"), Comp->IsVitalAlive());
-
-    bool bObservedAlive = true;
-    Comp->OnVitalStateChangedNative.AddLambda([&bObservedAlive](bool bIsAlive, const FGameplayTag&) {
-        bObservedAlive = bIsAlive;
-    });
-
     float ActualDelta = 0.0f;
-    Comp->ModifyStat(HealthTag, -100.0f, ActualDelta);
-    TestEqual(TEXT("外部数值已扣减为 0"), ExternalCurrent, 0.0f);
-    TestFalse(TEXT("Vital 判定死亡"), Comp->IsVitalAlive());
-    TestFalse(TEXT("广播死亡状态"), bObservedAlive);
+    Comp->ModifyStat(HealthTag, -40.0f, ActualDelta);
+    TestEqual(TEXT("外部数值已扣减为 60"), ExternalCurrent, 60.0f);
+    TestEqual(TEXT("实际增量应为 -40"), ActualDelta, -40.0f);
 
-    Comp->ReviveVital(0.5f);
-    TestEqual(TEXT("代理复活成功恢复 50% 生命"), ExternalCurrent, 50.0f);
-    TestTrue(TEXT("Vital 判定复活"), Comp->IsVitalAlive());
-    TestTrue(TEXT("广播复活状态"), bObservedAlive);
+    Comp->SetStatCurrent(HealthTag, 80.0f);
+    TestEqual(TEXT("代理设置当前值成功同步为 80"), ExternalCurrent, 80.0f);
 
     const FGameStatModifier MultMod = FGameStatModifier::MakeMultiplier(1.5f);
     TestEqual(TEXT("MakeMultiplier 构造的 Op 为 Multiply"), static_cast<uint8>(MultMod.Op), static_cast<uint8>(EGameStatModifierOp::Multiply));
     TestEqual(TEXT("MakeMultiplier 构造的值正确"), MultMod.Value, 1.5f);
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameStatFullApiCoverageTest,
+    "Game.GameplayCore.Stat.FullApiCoverage",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FGameStatFullApiCoverageTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UGameStatComponent* Comp = NewObject<UGameStatComponent>();
+    const FGameplayTag TagA = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Attribute.Test.CovA")));
+    const FGameplayTag TagB = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Attribute.Test.CovB")));
+
+    Comp->RegisterStat(TagA, 50.0f, 100.0f, 0.0f);
+    Comp->RegisterStat(TagB, 20.0f, 50.0f, 0.0f);
+
+    TArray<FGameplayTag> AllTags;
+    Comp->GetAllStatTags(AllTags);
+    TestEqual(TEXT("已注册属性标签总数为 2"), AllTags.Num(), 2);
+    TestTrue(TEXT("包含标签 A"), AllTags.Contains(TagA));
+    TestTrue(TEXT("包含标签 B"), AllTags.Contains(TagB));
+
+    FGameStatValue ValueA;
+    TestTrue(TEXT("读取存在的属性成功"), Comp->GetStatValue(TagA, ValueA));
+    TestEqual(TEXT("Current 值为 50"), ValueA.Current, 50.0f);
+    TestEqual(TEXT("Max 值为 100"), ValueA.Max, 100.0f);
+
+    FGameStatValue MissingValue;
+    const FGameplayTag InvalidTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Attribute.Test.Invalid")));
+    TestFalse(TEXT("读取未注册属性返回 false"), Comp->GetStatValue(InvalidTag, MissingValue));
+
+    TestNearlyEqual(TEXT("有效百分比应为 0.5"), Comp->GetStatEffectivePercent(TagA), 0.5f, 0.0001f);
+    TestNearlyEqual(TEXT("未注册属性有效百分比应为 0.0"), Comp->GetStatEffectivePercent(InvalidTag), 0.0f, 0.0001f);
+
+    TestTrue(TEXT("注销属性 TagA 成功"), Comp->UnregisterStat(TagA));
+    TestFalse(TEXT("TagA 不再存在"), Comp->HasStat(TagA));
+    TestFalse(TEXT("重复注销 TagA 返回 false"), Comp->UnregisterStat(TagA));
+
+    Comp->GetAllStatTags(AllTags);
+    TestEqual(TEXT("注销后标签总数变为 1"), AllTags.Num(), 1);
+    TestFalse(TEXT("不再包含标签 A"), AllTags.Contains(TagA));
+    TestTrue(TEXT("仍包含标签 B"), AllTags.Contains(TagB));
+
+    Comp->BindStatSource(nullptr);
+    TestFalse(TEXT("未绑定代理写接口时 CanWriteStat 返回 false"), Comp->CanWriteStat());
 
     return true;
 }

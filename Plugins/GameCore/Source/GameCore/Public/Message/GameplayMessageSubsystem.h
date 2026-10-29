@@ -153,10 +153,6 @@ private:
     int64 NextListenerId = 0;
 };
 
-// ---------------------------------------------------------------------------
-// 模板实现（定义全部置于类外，随头文件对使用方可见）
-// ---------------------------------------------------------------------------
-
 template <typename TMessageStructType>
 void UGameplayMessageSubsystem::BroadcastMessage(FGameplayTag Channel, const TMessageStructType& Message) {
     const UScriptStruct* StructType = TBaseStructure<TMessageStructType>::Get();

@@ -165,10 +165,6 @@ private:
     uint32 GlobalVersion = 0;
 };
 
-// ---------------------------------------------------------------------------
-// 模板实现（定义全部置于类外，顺序与声明严格 1:1 对齐）
-// ---------------------------------------------------------------------------
-
 template<typename T>
 void FConfigRegistry::RegisterConfig(FName Name, T DefaultValue) {
     ApplyRegister(Name, FConfigVariant(TInPlaceType<T>{}, MoveTemp(DefaultValue)));

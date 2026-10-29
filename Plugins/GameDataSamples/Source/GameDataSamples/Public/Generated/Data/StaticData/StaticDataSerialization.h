@@ -1,4 +1,8 @@
-// Automatically generated static data row serializers. Do not edit manually.
+/**
+ * @file StaticDataSerialization.h
+ * @brief 静态数据行序列化器
+ */
+
 #pragma once
 
 #include "CoreMinimal.h"

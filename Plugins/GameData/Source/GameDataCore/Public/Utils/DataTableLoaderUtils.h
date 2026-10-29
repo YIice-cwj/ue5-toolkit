@@ -33,10 +33,6 @@ public:
     [[nodiscard]] static bool LoadTableFromJson(const FString& FilePath, TMap<FName, TRowType>& OutMap);
 };
 
-// ---------------------------------------------------------------------------
-// 模板实现（定义全部置于类外，随头文件对使用方可见）
-// ---------------------------------------------------------------------------
-
 template <typename TRowType>
 bool FDataTableLoaderUtils::LoadTableFromJson(const FString& FilePath, TMap<FName, TRowType>& OutMap) {
     if (!FPaths::FileExists(FilePath)) {
