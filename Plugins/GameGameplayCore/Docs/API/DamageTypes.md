@@ -3,8 +3,8 @@
 本文档介绍 `GameGameplayCore` 战斗管线中的核心数据结构。
 
 头文件：
-- `#include "Combat/FGameDamageContext.h"`
-- `#include "Combat/FGameDamageResult.h"`
+- `#include "Damage/FGameDamageContext.h"`
+- `#include "Damage/FGameDamageResult.h"`
 
 ---
 

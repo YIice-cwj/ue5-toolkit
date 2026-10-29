@@ -2,7 +2,7 @@
 
 `UGameGasBuffBridge` 是 GAS 项目中承载 Buff 的统一入口：时长、叠层、标签与属性修改仍由 `GameplayEffect` 原生完成，桥接层只收敛「施加 / 移除 / 查询」样板代码，不引入任何具体 Buff 类型或业务数值。
 
-- 头文件：`#include "AbilitySystem/UGameGasBuffBridge.h"`
+- 头文件：`#include "Bridge/UGameGasBuffBridge.h"`
 - 形态：纯静态函数，无状态
 - 适用：已接入 GAS 的项目；非 GAS 项目使用 `GameGameplayCore` 的 `UGameBuffComponent`
 
@@ -68,7 +68,7 @@ public:
 ## 3. 示例
 
 ```cpp
-#include "AbilitySystem/UGameGasBuffBridge.h"
+#include "Bridge/UGameGasBuffBridge.h"
 
 void UMyBuffService::ApplyHaste(UAbilitySystemComponent* ASC, TSubclassOf<UGameplayEffect> HasteEffect)
 {

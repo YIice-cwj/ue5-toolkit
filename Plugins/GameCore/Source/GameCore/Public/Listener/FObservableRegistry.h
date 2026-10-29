@@ -27,13 +27,6 @@ GAMECORE_API DECLARE_LOG_CATEGORY_EXTERN(LogGameObservableRegistry, Log, All);
  * @brief 任意类型观察者注册表（模板方法，无额外堆分配）
  */
 class GAMECORE_API FObservableRegistry {
-private:
-    /** 注册项：类型指纹 + 观察者（以非模板基类持有共享所有权） */
-    struct FEntry {
-        uint64 TypeFingerprint = 0;
-        TSharedPtr<FObserverBase> Observer;
-    };
-
 public:
     /**
      * @brief 注册（或复用）指定 Key 的类型化观察者
@@ -110,6 +103,14 @@ public:
     void Reset();
 
 private:
+    /**
+     * @brief 注册项结构（以 64 位编译期类型指纹与非模板基类持有观察者共享所有权）
+     */
+    struct FEntry {
+        uint64 TypeFingerprint = 0;
+        TSharedPtr<FObserverBase> Observer;
+    };
+
     mutable FRWLock RegistryLock;
     TMap<FName, FEntry> Entries;
 };

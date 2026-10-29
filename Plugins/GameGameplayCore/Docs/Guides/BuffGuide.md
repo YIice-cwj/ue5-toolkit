@@ -7,8 +7,8 @@
 ## 1. 在 Actor 上挂载组件
 
 ```cpp
-#include "Combat/UGameBuffComponent.h"
-#include "Combat/UGameStatComponent.h"
+#include "Buff/UGameBuffComponent.h"
+#include "Stat/UGameStatComponent.h"
 
 ACombatCharacter::ACombatCharacter()
 {

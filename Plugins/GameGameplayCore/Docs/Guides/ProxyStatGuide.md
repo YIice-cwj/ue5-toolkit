@@ -14,7 +14,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
-#include "Combat/IGameStatValueSource.h"
+#include "Stat/IGameStatValueSource.h"
 #include "CustomHero.generated.h"
 
 UCLASS()

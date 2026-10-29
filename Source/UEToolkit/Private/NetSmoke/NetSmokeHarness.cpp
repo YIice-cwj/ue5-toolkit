@@ -1,6 +1,6 @@
 #include "NetSmoke/NetSmokeHarness.h"
 
-#include "Combat/UGameBuffComponent.h"
+#include "Buff/UGameBuffComponent.h"
 #include "GameplayTagsManager.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformMisc.h"

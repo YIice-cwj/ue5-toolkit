@@ -109,7 +109,7 @@ if (const TSharedPtr<const FItemCompositeData> Composite = FItemStaticDataInterf
 ### 3. 注册存档段
 
 ```cpp
-#include "Persistence/USaveGameSubsystem.h"
+#include "Save/USaveGameSubsystem.h"
 
 USaveGameSubsystem* SaveSubsystem = GetGameInstance()->GetSubsystem<USaveGameSubsystem>();
 

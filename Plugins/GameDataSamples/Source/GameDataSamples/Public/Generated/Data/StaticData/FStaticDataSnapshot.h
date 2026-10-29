@@ -11,16 +11,24 @@
  */
 class GAMEDATASAMPLES_API FStaticDataSnapshot {
 public:
-    /** 数据版本号（与快照同代绑定，自 1 起递增） */
+    /**
+     * @brief 数据版本号（与快照同代绑定，自 1 起递增）
+     */
     uint32 DataVersion = 0;
 
-    /** 各域复合聚合缓存（行 join 后的强类型视图） */
+    /**
+     * @brief 各域复合聚合缓存（行 join 后的强类型视图）
+     */
     FStaticDataCache Cache;
 
-    /** Item 域行表 */
+    /**
+     * @brief Item 域静态数据行表
+     */
     FItemStaticData ItemData;
 
-    /** Shop 域行表 */
+    /**
+     * @brief Shop 域静态数据行表
+     */
     FShopStaticData ShopData;
 
     FStaticDataSnapshot() = default;

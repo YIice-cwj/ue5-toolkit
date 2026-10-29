@@ -20,9 +20,14 @@ class GAMEDATASAMPLES_API UGamePlayerDataRegistry : public UObject {
     GENERATED_BODY()
 
 public:
+    /**
+     * @brief 玩家档案变更原生多播委托
+     */
     FOnPlayerProfileChanged OnProfileChanged;
 
-    /** 构造：把档案初始化为默认值 */
+    /**
+     * @brief 构造函数：把档案初始化为默认值
+     */
     UGamePlayerDataRegistry();
 
     /**

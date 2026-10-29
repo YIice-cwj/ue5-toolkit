@@ -35,14 +35,20 @@ public:
         EGameplayMessageMatch MatchRule = EGameplayMessageMatch::ExactMatch
     );
 
-    /** 收到匹配消息时触发的执行引脚 */
+    /**
+     * @brief 收到匹配消息时触发的蓝图执行引脚
+     */
     UPROPERTY(BlueprintAssignable)
     FAsyncGameplayMessageDelegate OnMessageReceived;
 
-    /** 激活时注册消息监听并把命中消息转发到 OnMessageReceived；通道非法或子系统缺失则立即结束 */
+    /**
+     * @brief 节点激活回调：注册通道消息监听并将命中的消息转发至 OnMessageReceived 委托
+     */
     void Activate() override;
 
-    /** 结束异步操作时注销监听句柄 */
+    /**
+     * @brief 终止异步操作并安全注销监听句柄
+     */
     void SetReadyToDestroy() override;
 
 private:

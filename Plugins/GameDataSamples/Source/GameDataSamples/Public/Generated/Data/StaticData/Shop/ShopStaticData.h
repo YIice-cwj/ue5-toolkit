@@ -5,7 +5,7 @@
 
 #include "Misc/Paths.h"
 #include "Utils/DataTableLoaderUtils.h"
-#include "Data/StaticData/FStaticDataRepository.h"
+#include "StaticData/FStaticDataRepository.h"
 #include "Generated/DataTables/Shop/ShopDataTableRowTypes.h"
 #include "ShopCompositeData.h"
 #include "ShopStaticData.generated.h"
@@ -64,7 +64,9 @@ public:
         return GoodsMap.Find(Key);
     }
 
-    /** ShopGoods数据行 映射表 (RowName -> FShopGoodsRow) */
+    /**
+     * @brief ShopGoods数据行映射表 (RowName -> FShopGoodsRow)
+     */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shop|StaticData", meta = (DisplayName = "ShopGoods数据行映射表"))
     TMap<FName, FShopGoodsRow> GoodsMap;
 

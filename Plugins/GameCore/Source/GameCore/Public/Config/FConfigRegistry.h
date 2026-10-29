@@ -17,37 +17,9 @@
 #include "CoreMinimal.h"
 #include "GameplayTagContainer.h"
 #include "Misc/ScopeRWLock.h"
-#include "Misc/TVariant.h"
 
+#include "Config/FConfigVariant.h"
 #include "Listener/FObserverSubscription.h"
-
-namespace Game::Config {
-
-/** 类型擦除变体：补齐常用标量与引擎数学类型（强类型严格匹配，不隐式数值转换）；成员上限 24B */
-using FConfigVariant = TVariant<bool, int32, int64, float, double, FString, FName, FVector, FRotator, FGameplayTag>;
-
-/**
- * @brief 从变体中按强类型取指针
- * @tparam T 目标类型
- * @param InVariant 源变体
- * @return 指向内部值的指针，类型不匹配返回 nullptr
- */
-template<typename T>
-const T* FindVariantValue(const FConfigVariant& InVariant);
-
-}  // namespace Game::Config
-
-/**
- * @brief SetConfig 写入结果码
- *
- * 可选诊断值：只读拒绝语义由校验门（ensureMsgf）保证，忽略返回值不构成缺陷，故不标 [[nodiscard]]。
- */
-enum class ESetConfigResult : uint8 {
-    /** 已写入（含首次注册） */
-    Applied,
-    /** 只读键拒绝写入（Env.* 恒只读；未开启对应编译开关时 Dev.* / Feature.GM 只读） */
-    RejectedReadOnly,
-};
 
 /**
  * @brief 全局配置注册表（函数局部静态单例：C++11 线程安全初始化，无堆分配）
@@ -57,21 +29,18 @@ enum class ESetConfigResult : uint8 {
  * 作用域边界：工程级单例，不做 World/PIE 实例隔离；世界相关数据严禁塞入本表。
  */
 class GAMECORE_API FConfigRegistry {
-private:
-    /** 类型擦除变体的类内别名（隔离全局命名空间，类外不可见） */
+public:
+    /**
+     * @brief 类型擦除配置变体别名
+     */
     using FConfigVariant = Game::Config::FConfigVariant;
 
-    /** 注册项：值 + 版本号 + 只读标记（按键域在注册时置位） */
-    struct FEntry {
-        FConfigVariant Value;
-        uint32 Version = 0;
-        bool bReadOnly = false;
-    };
+    /**
+     * @brief 获取全局单例
+     * @return 单例引用
+     */
+    static FConfigRegistry& Get();
 
-    /** 单键订阅状态（懒创建，随注册表生命周期常驻） */
-    class FWatcherState;
-
-public:
     /**
      * @brief 注册默认值（仅未注册时写入，已有值不覆盖）
      * @tparam T 支持类型
@@ -167,13 +136,6 @@ private:
     template<typename T>
     FString DescribeMismatch(FName Name, const FConfigVariant& InValue) const;
 
-public:
-    /**
-     * @brief 获取全局单例
-     * @return 单例引用
-     */
-    static FConfigRegistry& Get();
-
 private:
     /**
      * @brief 取变体当前承载的类型名（诊断用）
@@ -183,6 +145,20 @@ private:
     static FString VariantTypeName(const FConfigVariant& InVariant);
 
 private:
+    /**
+     * @brief 注册项数据结构（包含值变体、版本号及只读标记）
+     */
+    struct FEntry {
+        FConfigVariant Value;
+        uint32 Version = 0;
+        bool bReadOnly = false;
+    };
+
+    /**
+     * @brief 单键订阅状态（懒创建，随注册表生命周期常驻）
+     */
+    class FWatcherState;
+
     mutable FRWLock RwLock;
     TMap<FName, FEntry> Entries;
     TMap<FName, TSharedPtr<FWatcherState>> Watchers;
@@ -192,16 +168,6 @@ private:
 // ---------------------------------------------------------------------------
 // 模板实现（定义全部置于类外，顺序与声明严格 1:1 对齐）
 // ---------------------------------------------------------------------------
-
-namespace Game::Config {
-
-/** 从配置变体中取出指定类型的值（类型不符返回 nullptr） */
-template<typename T>
-const T* FindVariantValue(const FConfigVariant& InVariant) {
-    return InVariant.TryGet<T>();
-}
-
-}  // namespace Game::Config
 
 template<typename T>
 void FConfigRegistry::RegisterConfig(FName Name, T DefaultValue) {

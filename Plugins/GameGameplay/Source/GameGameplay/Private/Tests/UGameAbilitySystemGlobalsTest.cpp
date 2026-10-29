@@ -3,18 +3,18 @@
  * @brief GameGameplay 模块自动化测试套件（Globals、EffectContext、AttributeSet、ValueMapping、Bootstrap）
  */
 
-#include "AbilitySystem/FGameGameplayEffectContext.h"
+#include "Damage/FGameGameplayEffectContext.h"
 
 #if WITH_AUTOMATION_TESTS
 
-#include "AbilitySystem/FGameDamageChannelRegistry.h"
-#include "AbilitySystem/UGameDamageExecution.h"
-#include "AbilitySystem/UGameGameplayAbility.h"
-#include "AbilitySystem/UGameAbilitySystemGlobals.h"
-#include "AbilitySystem/UGameplayAttributeValueMapping.h"
-#include "AbilitySystem/UGameAbilitySystemBootstrap.h"
-#include "AbilitySystem/UGameAbilitySystemComponent.h"
-#include "AbilitySystem/UGameBaseAttributeSet.h"
+#include "Damage/FGameDamageChannelRegistry.h"
+#include "Damage/UGameDamageExecution.h"
+#include "Ability/UGameGameplayAbility.h"
+#include "Ability/UGameAbilitySystemGlobals.h"
+#include "Attribute/UGameplayAttributeValueMapping.h"
+#include "Ability/UGameAbilitySystemBootstrap.h"
+#include "Ability/UGameAbilitySystemComponent.h"
+#include "Attribute/UGameBaseAttributeSet.h"
 #include "AbilitySystemTestAttributeSet.h"
 #include "GameplayAbilitiesDeveloperSettings.h"
 #include "GameplayTagsManager.h"

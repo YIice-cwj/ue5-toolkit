@@ -4,6 +4,9 @@
 #include "Engine/World.h"
 #include "Engine/Engine.h"
 #include "GameFramework/WorldSettings.h"
+#include "Config/GameCompileSwitches.h"
+
+DEFINE_LOG_CATEGORY_STATIC(LogGameTimeDilation, Log, All);
 
 UTimeDilationSubsystem::UTimeDilationSubsystem() {
     ChannelStates.SetNum(static_cast<int32>(ETimeDilationChannel::Count));
@@ -28,9 +31,15 @@ void UTimeDilationSubsystem::Initialize(FSubsystemCollectionBase& Collection) {
     EffectiveGlobalTimeDilation = 1.0f;
     ChannelStates.SetNum(static_cast<int32>(ETimeDilationChannel::Count));
     ActiveActorHitStops.Empty();
+    if constexpr (Game::Config::bEnableLog) {
+        UE_LOG(LogGameTimeDilation, Log, TEXT("【时间膨胀】时间膨胀子系统初始化就绪。"));
+    }
 }
 
 void UTimeDilationSubsystem::Deinitialize() {
+    if constexpr (Game::Config::bEnableLog) {
+        UE_LOG(LogGameTimeDilation, Log, TEXT("【时间膨胀】子系统注销，清理所有定格与通道膨胀。"));
+    }
     ClearAllHitStops();
     ClearAllGlobalDilations();
     Super::Deinitialize();
@@ -61,6 +70,9 @@ bool UTimeDilationSubsystem::IsTickableWhenPaused() const {
 
 void UTimeDilationSubsystem::RequestHitStop(AActor* Target, float Duration, float TimeDilation) {
     if (!Target || Duration <= 0.0f) {
+        if constexpr (Game::Config::bEnableLog) {
+            UE_LOG(LogGameTimeDilation, Warning, TEXT("【时间膨胀】请求定格失败：目标为空或时长 <= 0。"));
+        }
         return;
     }
 
@@ -80,6 +92,11 @@ void UTimeDilationSubsystem::RequestHitStop(AActor* Target, float Duration, floa
         Target->CustomTimeDilation = ClampedDilation;
         ActiveActorHitStops.Add(Target, NewState);
     }
+
+    if constexpr (Game::Config::bEnableLog) {
+        UE_LOG(LogGameTimeDilation, Log, TEXT("【时间膨胀】请求定格成功: 目标=[%s], 时长=%.3f 秒, 膨胀系数=%.3f"),
+            *GetNameSafe(Target), Duration, ClampedDilation);
+    }
 }
 
 void UTimeDilationSubsystem::ClearHitStop(AActor* Target) {
@@ -91,6 +108,10 @@ void UTimeDilationSubsystem::ClearHitStop(AActor* Target) {
     if (ExistingState) {
         Target->CustomTimeDilation = ExistingState->OriginalCustomTimeDilation;
         ActiveActorHitStops.Remove(Target);
+        if constexpr (Game::Config::bEnableLog) {
+            UE_LOG(LogGameTimeDilation, Verbose, TEXT("【时间膨胀】恢复定格目标: [%s], 恢复膨胀系数=%.3f"),
+                *GetNameSafe(Target), Target->CustomTimeDilation);
+        }
     }
 }
 
@@ -124,6 +145,10 @@ void UTimeDilationSubsystem::RequestGlobalDilation(ETimeDilationChannel Channel,
     State.bActive = true;
 
     UpdateEffectiveGlobalTimeDilation();
+    if constexpr (Game::Config::bEnableLog) {
+        UE_LOG(LogGameTimeDilation, Log, TEXT("【时间膨胀】设置全局通道膨胀: 通道=%d, 系数=%.3f, 时长=%.3f 秒, 淡出时长=%.3f 秒"),
+            Index, State.TargetDilation, State.TotalDuration, State.BlendOutDuration);
+    }
 }
 
 void UTimeDilationSubsystem::ClearGlobalDilation(ETimeDilationChannel Channel) {
@@ -131,6 +156,9 @@ void UTimeDilationSubsystem::ClearGlobalDilation(ETimeDilationChannel Channel) {
     if (ChannelStates.IsValidIndex(Index) && ChannelStates[Index].bActive) {
         ChannelStates[Index].Reset();
         UpdateEffectiveGlobalTimeDilation();
+        if constexpr (Game::Config::bEnableLog) {
+            UE_LOG(LogGameTimeDilation, Log, TEXT("【时间膨胀】清除全局通道膨胀: 通道=%d"), Index);
+        }
     }
 }
 

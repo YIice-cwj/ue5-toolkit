@@ -7,8 +7,11 @@
 
 #include "Async/Async.h"
 #include "Config/FConfigRegistry.h"
+#include "Config/GameCompileSwitches.h"
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
+
+DEFINE_LOG_CATEGORY_STATIC(LogGameDirectoryWatcher, Log, All);
 
 namespace {
 
@@ -68,8 +71,16 @@ void FDirectoryChangeWatcher::Start() {
     if (!bTickerActive) {
         LastObservedTimestamp = ScanLatestTimestamp();
     }
+    const float Interval = ResolveIntervalSeconds();
     TickerHandle = FTSTicker::GetCoreTicker().AddTicker(
-        FTickerDelegate::CreateRaw(this, &FDirectoryChangeWatcher::Tick), ResolveIntervalSeconds());
+        FTickerDelegate::CreateRaw(this, &FDirectoryChangeWatcher::Tick), Interval);
+    if constexpr (Game::Config::bEnableLog) {
+        const TOptional<FScanConfig> ScanConfig = ResolveScanConfig();
+        UE_LOG(LogGameDirectoryWatcher, Log, TEXT("【目录监听】启动目录监听 [%s]: 目录=[%s], 扩展名=[%s], 递归=%s, 轮询间隔=%.2f 秒"),
+            *WatcherName.ToString(), ScanConfig.IsSet() ? *ScanConfig->WatchDirectory : TEXT("未配置"),
+            ScanConfig.IsSet() ? *ScanConfig->Extension : TEXT(""),
+            (ScanConfig.IsSet() && ScanConfig->bRecursive) ? TEXT("True") : TEXT("False"), Interval);
+    }
 }
 
 /**
@@ -79,8 +90,13 @@ void FDirectoryChangeWatcher::Stop() {
     if (Context.IsValid()) {
         Context->bIsStopped.store(true, std::memory_order_release);
     }
-    FTSTicker::GetCoreTicker().RemoveTicker(TickerHandle);
-    TickerHandle.Reset();
+    if (TickerHandle.IsValid()) {
+        FTSTicker::GetCoreTicker().RemoveTicker(TickerHandle);
+        TickerHandle.Reset();
+        if constexpr (Game::Config::bEnableLog) {
+            UE_LOG(LogGameDirectoryWatcher, Log, TEXT("【目录监听】停止目录监听 [%s]。"), *WatcherName.ToString());
+        }
+    }
 }
 
 /**
@@ -185,6 +201,10 @@ bool FDirectoryChangeWatcher::Tick([[maybe_unused]] float DeltaTime) {
             if (ScannedTimestamp > LastObservedTimestamp) {
                 LastObservedTimestamp = ScannedTimestamp;
                 ++ChangeCount;
+                if constexpr (Game::Config::bEnableLog) {
+                    UE_LOG(LogGameDirectoryWatcher, Log, TEXT("【目录监听】检测到文件变更 [%s]: 变更计数值=%u"),
+                        *WatcherName.ToString(), ChangeCount);
+                }
                 ChangeObserver.Set(ChangeCount);
             }
         });

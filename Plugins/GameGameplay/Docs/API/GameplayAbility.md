@@ -2,7 +2,7 @@
 
 `UGameGameplayAbility` 是全项目所有 GameplayAbility 的通用父类。它规范了激活前否决条件（Veto Guards）、触发来源记账与网络预测护栏。
 
-头文件：`#include "AbilitySystem/UGameGameplayAbility.h"`  
+头文件：`#include "Ability/UGameGameplayAbility.h"`  
 基类：`UGameplayAbility`
 
 ---

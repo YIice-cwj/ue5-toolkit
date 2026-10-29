@@ -16,23 +16,6 @@ UCLASS()
 class GAMECORE_API UGameplayMessageSubsystem : public UGameInstanceSubsystem {
     GENERATED_BODY()
 
-private:
-    friend struct FGameplayMessageListenerHandle;
-    friend class UAsyncAction_ListenForGameplayMessage;
-
-    using FRawMessageCallback = TFunction<void(FGameplayTag, const UScriptStruct*, const void*)>;
-
-    struct FListenerEntry {
-        int64 Id = 0;
-        EGameplayMessageMatch MatchRule = EGameplayMessageMatch::ExactMatch;
-        TWeakObjectPtr<const UScriptStruct> ExpectedStructType;
-        FRawMessageCallback Callback;
-    };
-
-    struct FChannelListenerList {
-        TArray<FListenerEntry> Listeners;
-    };
-
 public:
     /**
      * @brief 获取子系统单例引用（断言有效）
@@ -48,7 +31,9 @@ public:
      */
     static UGameplayMessageSubsystem* GetPtr(const UObject* WorldContextObject);
 
-    /** 子系统销毁前清空全部通道监听 */
+    /**
+     * @brief 子系统销毁生命周期回调：清空并注销所有通道上的消息监听器
+     */
     void Deinitialize() override;
 
     /**
@@ -134,6 +119,22 @@ public:
     [[nodiscard]] int32 GetListenerCount() const;
 
 private:
+    friend struct FGameplayMessageListenerHandle;
+    friend class UAsyncAction_ListenForGameplayMessage;
+
+    using FRawMessageCallback = TFunction<void(FGameplayTag, const UScriptStruct*, const void*)>;
+
+    struct FListenerEntry {
+        int64 Id = 0;
+        EGameplayMessageMatch MatchRule = EGameplayMessageMatch::ExactMatch;
+        TWeakObjectPtr<const UScriptStruct> ExpectedStructType;
+        FRawMessageCallback Callback;
+    };
+
+    struct FChannelListenerList {
+        TArray<FListenerEntry> Listeners;
+    };
+
     FGameplayMessageListenerHandle RegisterListenerInternal(
         FGameplayTag Channel,
         const UScriptStruct* StructType,

@@ -6,7 +6,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Persistence/GameSaveArchive.h"
+#include "Save/GameSaveArchive.h"
 
 #include "GamePlayerProfileSaveAdapter.generated.h"
 
@@ -24,34 +24,40 @@ class GAMEDATASAMPLES_API UGamePlayerProfileSaveAdapter : public UObject {
     GENERATED_BODY()
 
 public:
-    /** 玩家档案存档段名 */
+    /**
+     * @brief 玩家档案存档段固定标识名称
+     */
     static const FName SegmentName;
 
-    /** 销毁前注销档案存档段并释放子系统与注册表引用 */
+    /**
+     * @brief 对象销毁生命周期回调：注销档案存档段并释放子系统与注册表引用
+     */
     void BeginDestroy() override;
 
     /**
-     * @brief 绑定存档子系统与玩家数据注册表，并注册档案存档段
-     * @param InSaveSubsystem 通用存档子系统
-     * @param InRegistry 玩家数据注册表
-     *
-     * 实现思路：先解除既有绑定；任一参数为空则只保留解除后的空状态，不注册新段。
+     * @brief 绑定存档子系统与玩家数据注册表，并注册档案存档段契约
+     * @param InSaveSubsystem 通用存档子系统指针
+     * @param InRegistry 玩家数据注册表中枢指针
      */
     UFUNCTION(BlueprintCallable, Category = "GameDataSamples|Save")
     void Setup(USaveGameSubsystem* InSaveSubsystem, UGamePlayerDataRegistry* InRegistry);
 
     /**
-     * @brief 注销档案存档段并释放引用
+     * @brief 手动注销档案存档段并清空引用
      */
     UFUNCTION(BlueprintCallable, Category = "GameDataSamples|Save")
     void Teardown();
 
 private:
-    /** 通用存档子系统（Setup 后有效） */
+    /**
+     * @brief 绑定的通用存档子系统指针（Setup 成功后有效）
+     */
     UPROPERTY()
     TObjectPtr<USaveGameSubsystem> SaveSubsystem;
 
-    /** 关联的玩家数据注册表 */
+    /**
+     * @brief 关联的玩家数据注册表中枢指针
+     */
     UPROPERTY()
     TObjectPtr<UGamePlayerDataRegistry> DataRegistry;
 };

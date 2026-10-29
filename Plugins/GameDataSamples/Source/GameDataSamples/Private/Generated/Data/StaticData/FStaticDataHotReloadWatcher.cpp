@@ -4,6 +4,7 @@
 #include "IO/FDirectoryChangeWatcher.h"
 #include "Generated/Data/StaticData/UStaticDataSubsystem.h"
 #include "Config/GameCompileSwitches.h"
+#include "Logging/GameLogCategories.h"
 
 namespace {
 
@@ -45,11 +46,13 @@ void FStaticDataHotReloadWatcher::Start() {
             GDirectoryWatcher = MakeUnique<FDirectoryChangeWatcher>(
                 StaticDataWatcherName, StaticDataHotReloadEnabledKey, StaticDataJsonDirectory);
             GChangeSubscription = GDirectoryWatcher->GetChangeObserver().Subscribe(
-                [](const uint32&) {
+                [](const uint32& ChangeId) {
+                    GAME_LOG(Log, TEXT("【静态数据热更监听】检测到数据表文件变更 (变更序号: %u)，触发全局重新装载。"), ChangeId);
                     UStaticDataSubsystem::ReloadAllWorldStaticData();
                 });
         }
         GDirectoryWatcher->Start();
+        GAME_LOG(Log, TEXT("【静态数据热更监听】已启动静态数据热更监听 (会话引用计数: %d)。"), GWatcherRefCount);
     }
 }
 
@@ -70,5 +73,6 @@ void FStaticDataHotReloadWatcher::Stop() {
         }
         GChangeSubscription.Reset();
         GDirectoryWatcher.Reset();
+        GAME_LOG(Log, TEXT("【静态数据热更监听】全部会话已退出，彻底注销静态数据热更监听器。"));
     }
 }

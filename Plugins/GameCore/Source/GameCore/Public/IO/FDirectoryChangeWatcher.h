@@ -23,20 +23,6 @@
  * @brief 通用目录变更监听器（一个实例对应一个被监听目录，禁止拷贝与移动）
  */
 class GAMECORE_API FDirectoryChangeWatcher {
-private:
-    /** 异步扫描上下文（防 UAF 与重叠并发） */
-    struct FWatcherContext {
-        std::atomic<bool> bIsScanning{false};
-        std::atomic<bool> bIsStopped{false};
-    };
-
-    /** 目录扫描配置快照 */
-    struct FScanConfig {
-        FString WatchDirectory;
-        FString Extension;
-        bool bRecursive = true;
-    };
-
 public:
     /**
      * @brief 构造（幂等注册本实例配置键默认值）
@@ -70,6 +56,24 @@ public:
      * @return 通知器引用（载荷为递增的变更序号）
      */
     [[nodiscard]] FValueObserver<uint32>& GetChangeObserver();
+
+private:
+    /**
+     * @brief 异步扫描上下文（防 UAF 与重叠并发）
+     */
+    struct FWatcherContext {
+        std::atomic<bool> bIsScanning{false};
+        std::atomic<bool> bIsStopped{false};
+    };
+
+    /**
+     * @brief 目录扫描配置快照
+     */
+    struct FScanConfig {
+        FString WatchDirectory;
+        FString Extension;
+        bool bRecursive = true;
+    };
 
 private:
     /**
@@ -117,30 +121,48 @@ private:
     void OnIntervalConfigChanged(float NewInterval);
 
 private:
-    /** 监听器名称（派生配置键与通知器名称） */
+    /**
+     * @brief 监听器名称（用于派生配置键与通知器名称）
+     */
     FName WatcherName;
 
-    /** 启停开关配置键（语义由消费方定义：关闭即冻结观察基线） */
+    /**
+     * @brief 启停开关配置键（语义由消费方定义：关闭即冻结观察基线）
+     */
     FName EnabledConfigKey;
 
-    /** 最近一次观察到的目录内文件最大修改时间戳 */
+    /**
+     * @brief 最近一次观察到的目录内文件最大修改时间戳
+     */
     FDateTime LastObservedTimestamp = FDateTime::MinValue();
 
-    /** 已发生的变更序号（递增，作为通知载荷） */
+    /**
+     * @brief 已发生的变更序号（递增计数，作为通知载荷）
+     */
     uint32 ChangeCount = 0;
 
-    /** 轮询句柄 */
+    /**
+     * @brief Ticker 轮询委托句柄
+     */
     FTSTicker::FDelegateHandle TickerHandle;
 
-    /** 轮询间隔配置订阅守卫 */
+    /**
+     * @brief 轮询间隔配置订阅守卫
+     */
     TSharedPtr<FObserverSubscription> IntervalSubscription;
 
-    /** 变更通知器（载荷为递增的变更序号） */
+    /**
+     * @brief 变更通知器（载荷为递增的变更序号）
+     */
     FValueObserver<uint32> ChangeObserver;
 
-    /** 异步上下文 */
+    /**
+     * @brief 异步扫描上下文状态指针
+     */
     TSharedPtr<FWatcherContext> Context;
 
-    /** 存活令牌（防止 Watch 回调快照析构竞态） */
+    /**
+     * @brief 存活令牌（防止 Watch 回调快照析构竞态）
+     */
     TSharedRef<std::atomic<bool>> AliveToken;
 };

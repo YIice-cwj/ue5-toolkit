@@ -4,39 +4,9 @@
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
+#include "Config/GameCompileSwitches.h"
 
-FGameplayMessageListenerHandle::FListenerRegistration::~FListenerRegistration() {
-    Unregister();
-}
-
-void FGameplayMessageListenerHandle::FListenerRegistration::Unregister() {
-    if (ListenerId != 0) {
-        if (UGameplayMessageSubsystem* Subsystem = SubsystemWeak.Get()) {
-            Subsystem->UnregisterListener(Channel, ListenerId);
-        }
-        SubsystemWeak.Reset();
-        ListenerId = 0;
-        Channel = FGameplayTag();
-    }
-}
-
-void FGameplayMessageListenerHandle::Unregister() {
-    if (Registration.IsValid()) {
-        Registration->Unregister();
-        Registration.Reset();
-    }
-}
-
-bool FGameplayMessageListenerHandle::IsValid() const noexcept {
-    return Registration.IsValid() && Registration->ListenerId != 0 && Registration->SubsystemWeak.IsValid();
-}
-
-FGameplayMessageListenerHandle::FGameplayMessageListenerHandle(UGameplayMessageSubsystem* InSubsystem, FGameplayTag InChannel, int64 InId) {
-    Registration = MakeShared<FListenerRegistration>();
-    Registration->SubsystemWeak = InSubsystem;
-    Registration->Channel = InChannel;
-    Registration->ListenerId = InId;
-}
+DEFINE_LOG_CATEGORY_STATIC(LogGameplayMessage, Log, All);
 
 UGameplayMessageSubsystem& UGameplayMessageSubsystem::Get(const UObject* WorldContextObject) {
     UGameplayMessageSubsystem* Subsystem = GetPtr(WorldContextObject);
@@ -57,6 +27,9 @@ UGameplayMessageSubsystem* UGameplayMessageSubsystem::GetPtr(const UObject* Worl
 }
 
 void UGameplayMessageSubsystem::Deinitialize() {
+    if constexpr (Game::Config::bEnableLog) {
+        UE_LOG(LogGameplayMessage, Log, TEXT("【消息子系统】子系统注销，清空 %d 个通道的监听器。"), ListenerMap.Num());
+    }
     ListenerMap.Empty();
     Super::Deinitialize();
 }
@@ -98,9 +71,14 @@ void UGameplayMessageSubsystem::UnregisterListener(FGameplayTag Channel, int64 L
         return;
     }
     if (FChannelListenerList* List = ListenerMap.Find(Channel)) {
-        List->Listeners.RemoveAll([ListenerId](const FListenerEntry& Entry) {
+        const int32 RemovedCount = List->Listeners.RemoveAll([ListenerId](const FListenerEntry& Entry) {
             return Entry.Id == ListenerId;
         });
+        if constexpr (Game::Config::bEnableLog) {
+            if (RemovedCount > 0) {
+                UE_LOG(LogGameplayMessage, Verbose, TEXT("【消息子系统】注销监听器成功: 通道 [%s], 监听器 ID=%lld"), *Channel.ToString(), ListenerId);
+            }
+        }
         if (List->Listeners.IsEmpty()) {
             ListenerMap.Remove(Channel);
         }
@@ -124,6 +102,9 @@ FGameplayMessageListenerHandle UGameplayMessageSubsystem::RegisterListenerIntern
 ) {
     check(IsInGameThread());
     if (!Channel.IsValid() || !Callback) {
+        if constexpr (Game::Config::bEnableLog) {
+            UE_LOG(LogGameplayMessage, Warning, TEXT("【消息子系统】注册监听器失败：通道标签无效或回调为空。"));
+        }
         return FGameplayMessageListenerHandle();
     }
 
@@ -136,6 +117,11 @@ FGameplayMessageListenerHandle UGameplayMessageSubsystem::RegisterListenerIntern
         MoveTemp(Callback)
     });
 
+    if constexpr (Game::Config::bEnableLog) {
+        UE_LOG(LogGameplayMessage, Verbose, TEXT("【消息子系统】注册监听器成功: 通道 [%s], 监听器 ID=%lld, 结构体=[%s], 匹配规则=%d"),
+            *Channel.ToString(), ListenerId, StructType ? *StructType->GetName() : TEXT("None"), static_cast<int32>(MatchRule));
+    }
+
     return FGameplayMessageListenerHandle(this, Channel, ListenerId);
 }
 
@@ -146,6 +132,9 @@ void UGameplayMessageSubsystem::BroadcastMessageInternal(
 ) {
     check(IsInGameThread());
     if (!Channel.IsValid() || !StructType) {
+        if constexpr (Game::Config::bEnableLog) {
+            UE_LOG(LogGameplayMessage, Warning, TEXT("【消息子系统】广播消息失败：通道标签无效或结构体类型为空。"));
+        }
         return;
     }
 
@@ -179,6 +168,11 @@ void UGameplayMessageSubsystem::BroadcastMessageInternal(
                 }
             }
         }
+    }
+
+    if constexpr (Game::Config::bEnableLog) {
+        UE_LOG(LogGameplayMessage, Verbose, TEXT("【消息子系统】广播消息: 通道 [%s], 载荷类型=[%s], 匹配触发监听器数=%d"),
+            *Channel.ToString(), *StructType->GetName(), ListenersToInvoke.Num());
     }
 
     for (const FListenerEntry& Entry : ListenersToInvoke) {

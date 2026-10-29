@@ -6,24 +6,9 @@
 #include "Subsystems/WorldSubsystem.h"
 #include "Templates/SubclassOf.h"
 #include "GameFramework/Actor.h"
+#include "Pool/ObjectPoolTypes.h"
 
 #include "ObjectPoolSubsystem.generated.h"
-
-USTRUCT()
-struct FPoolBucket {
-    GENERATED_BODY()
-
-    UPROPERTY()
-    TArray<TObjectPtr<AActor>> IdleActors;
-
-    UPROPERTY()
-    TSet<TObjectPtr<AActor>> IdleActorSet;
-
-    int32 ActiveCount = 0;
-
-    /** 单类对象池最大空闲缓存数（<=0 表示不限制容量，默认 100） */
-    int32 MaxIdleCount = 100;
-};
 
 /**
  * @brief 世界级通用对象池子系统（Actor 自动化复用、休眠、唤醒与防 GC 顿卡）
@@ -47,7 +32,9 @@ public:
      */
     static UObjectPoolSubsystem* GetPtr(const UObject* WorldContextObject);
 
-    /** 世界销毁前清空并销毁全部空闲实例 */
+    /**
+     * @brief 世界销毁生命周期回调：清空并销毁全部缓存的空闲 Actor 实例
+     */
     void Deinitialize() override;
 
     /**

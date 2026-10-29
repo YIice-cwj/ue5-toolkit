@@ -2,7 +2,7 @@
 
 `UGameBuffComponent` 是与 GAS 无关的通用 Buff / 状态运行时。框架不定义任何具体 Buff（中毒、加速、护盾、冷却等），只提供叠层、持续时长、状态标签聚合与属性修正器挂接。
 
-- 头文件：`#include "Combat/UGameBuffComponent.h"`
+- 头文件：`#include "Buff/UGameBuffComponent.h"`
 - 依赖组件：`UGameStatComponent`（可在 Owner 上自动查找，或显式 `BindStatComponent` 绑定）
 - 适用：非 GAS 项目直接使用；GAS 项目使用 `GameGameplay` 的 `UGameGasBuffBridge`
 

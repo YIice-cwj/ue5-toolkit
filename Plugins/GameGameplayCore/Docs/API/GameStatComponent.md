@@ -3,8 +3,8 @@
 `UGameStatComponent` 是一个纯事件驱动、全 Tag 驱动注册、支持双模（自持/代理）自适应且支持网络同步的通用数值管理组件。
 
 头文件：
-- `#include "Combat/UGameStatComponent.h"`
-- `#include "Combat/IGameStatValueSource.h"`
+- `#include "Stat/UGameStatComponent.h"`
+- `#include "Stat/IGameStatValueSource.h"`
 
 ---
 

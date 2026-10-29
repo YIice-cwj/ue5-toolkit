@@ -13,7 +13,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
 #include "AbilitySystemInterface.h"
-#include "Combat/IDamageable.h"
+#include "Damage/IDamageable.h"
 #include "HeroCharacter.generated.h"
 
 class UGameAbilitySystemComponent;
@@ -55,8 +55,8 @@ private:
 ### 源文件 `HeroCharacter.cpp`
 ```cpp
 #include "HeroCharacter.h"
-#include "AbilitySystem/UGameAbilitySystemComponent.h"
-#include "AbilitySystem/UGameAbilitySystemBootstrap.h"
+#include "Ability/UGameAbilitySystemComponent.h"
+#include "Ability/UGameAbilitySystemBootstrap.h"
 #include "MyHeroAttributeSet.h"
 
 AHeroCharacter::AHeroCharacter()

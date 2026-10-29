@@ -29,7 +29,9 @@ public:
      */
     static UObservableRegistrySubsystem* Get(const UObject* WorldContextObject);
 
-    /** 销毁前清空观察者注册表 */
+    /**
+     * @brief 世界销毁生命周期回调：清空观察者注册表与所有已注册观察者
+     */
     void Deinitialize() override;
 
     /**

@@ -3,7 +3,7 @@
  * @brief 静态数据仓库模块内自动化测试（脱机导出/反序列化往返与损坏检测），Shipping 构建自动剔除
  */
 
-#include "Data/StaticData/FStaticDataRepository.h"
+#include "StaticData/FStaticDataRepository.h"
 
 #if WITH_AUTOMATION_TESTS
 

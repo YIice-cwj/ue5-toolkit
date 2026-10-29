@@ -1,0 +1,99 @@
+# Doxygen 配置：仅收录各插件 Public 头文件，输出到 Docs/ApiReference
+# 用法：在仓库根目录执行 doxygen Doxyfile
+
+PROJECT_NAME           = "UEToolkit API Reference"
+PROJECT_BRIEF          = "由源码 Doxygen 注释自动生成"
+OUTPUT_DIRECTORY       = Docs/ApiReference
+OUTPUT_LANGUAGE        = Chinese
+CREATE_SUBDIRS         = NO
+
+INPUT                  = Plugins/GameCore/Source/GameCore/Public \
+                         Plugins/GameData/Source/GameDataCore/Public \
+                         Plugins/GameDataSamples/Source/GameDataSamples/Public \
+                         Plugins/GameGameplay/Source/GameGameplay/Public \
+                         Plugins/GameGameplayCore/Source/GameGameplayCore/Public \
+                         Plugins/GameLogging/Source/GameLogging/Public \
+                         Source/UEToolkit/Public
+FILE_PATTERNS          = *.h
+RECURSIVE              = YES
+EXCLUDE_PATTERNS       = */Private/* */Intermediate/* */Binaries/*
+EXAMPLE_PATH           =
+INPUT_ENCODING         = UTF-8
+
+STRIP_FROM_PATH        = /Users/yiice/code/UE5/UEToolkit
+FULL_PATH_NAMES        = YES
+SHORT_NAMES            = NO
+
+EXTRACT_ALL            = NO
+EXTRACT_PRIVATE        = NO
+EXTRACT_PACKAGE        = NO
+EXTRACT_STATIC         = NO
+EXTRACT_LOCAL_CLASSES  = YES
+HIDE_UNDOC_MEMBERS     = YES
+HIDE_UNDOC_CLASSES     = YES
+HIDE_FRIEND_COMPOUNDS  = YES
+HIDE_IN_BODY_DOCS      = NO
+
+SORT_MEMBER_DOCS       = NO
+SORT_BRIEF_DOCS        = NO
+SORT_GROUP_NAMES       = NO
+SORT_BY_SCOPE_NAME     = NO
+
+JAVADOC_AUTOBRIEF      = NO
+QT_AUTOBRIEF           = NO
+MULTILINE_CPP_IS_BRIEF = NO
+TAB_SIZE               = 4
+MARKDOWN_SUPPORT       = YES
+AUTOLINK_SUPPORT       = YES
+
+BUILTIN_STL_SUPPORT    = YES
+CPP_CLI_SUPPORT        = NO
+DISTRIBUTE_GROUP_DOC   = NO
+SUBGROUPING            = YES
+
+ENABLE_PREPROCESSING   = YES
+MACRO_EXPANSION        = YES
+EXPAND_ONLY_PREDEF     = YES
+SEARCH_INCLUDES        = NO
+INCLUDE_PATH           =
+# UHT 标记宏的实参含嵌套括号，Doxygen 预处理器无法可靠展开，
+# 故在解析前用 INPUT_FILTER 整行剔除；源码浏览器页仍保留原貌（FILTER_SOURCE_FILES 默认关闭）
+INPUT_FILTER           = "sed -E -e '/^[[:space:]]*(UCLASS|USTRUCT|UENUM|UFUNCTION|UPROPERTY|UMETA|DECLARE_[A-Za-z0-9_]*)[[:space:]]*[(]/d' -e 's/UMETA[(][^)]*[)]//g'"
+PREDEFINED             = GENERATED_BODY()= \
+                         GENERATED_UCLASS_BODY()= \
+                         GENERATED_USTRUCT_BODY()= \
+                         GAMECORE_API= \
+                         GAMEGAMEPLAY_API= \
+                         GAMEGAMEPLAYCORE_API= \
+                         GAMEDATACORE_API= \
+                         GAMEDATASAMPLES_API= \
+                         GAMELOGGING_API= \
+                         UETOOLKIT_API= \
+                         FORCEINLINE=inline
+
+GENERATE_HTML          = YES
+HTML_OUTPUT            = html
+HTML_COLORSTYLE        = LIGHT
+HTML_DYNAMIC_SECTIONS  = YES
+GENERATE_TREEVIEW      = YES
+SEARCHENGINE           = YES
+DISABLE_INDEX          = NO
+SHOW_INCLUDE_FILES     = NO
+SHOW_USED_FILES        = YES
+GENERATE_DEPRECATEDLIST= YES
+
+GENERATE_LATEX         = NO
+GENERATE_XML           = NO
+GENERATE_MAN           = NO
+GENERATE_RTF           = NO
+GENERATE_DOCBOOK       = NO
+
+HAVE_DOT               = NO
+
+QUIET                  = NO
+WARNINGS               = YES
+WARN_IF_UNDOCUMENTED   = NO
+WARN_IF_DOC_ERROR      = YES
+WARN_NO_PARAMDOC       = NO
+WARN_AS_ERROR          = NO
+WARN_LOGFILE           =

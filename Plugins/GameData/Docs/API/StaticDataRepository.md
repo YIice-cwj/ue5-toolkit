@@ -2,7 +2,7 @@
 
 `FStaticDataRepository` 是类型擦除的 `.bin` 静态数据仓库：对所有行类型零知识，行负载读写由生成管线产出的序列化器承担。纯 C++ 实现，不依赖 `UWorld` / `UGameInstance`，可在脱机脚本与测试中实例化。
 
-- 头文件：`#include "Data/StaticData/FStaticDataRepository.h"`
+- 头文件：`#include "StaticData/FStaticDataRepository.h"`
 - 模块：`GameDataCore`（`GAMEDATACORE_API`）
 - 边界：仓库不携带数据版本（版本归 `FStaticDataSnapshot`），不参与运行期查询路径，仅承接 `.bin` 反序列化结果与 Cook 前置导出。
 
@@ -98,7 +98,7 @@ public:
 ## 5. 使用示例
 
 ```cpp
-#include "Data/StaticData/FStaticDataRepository.h"
+#include "StaticData/FStaticDataRepository.h"
 #include "Generated/Data/StaticData/StaticDataSerialization.h"
 
 FStaticDataRepository Repository;

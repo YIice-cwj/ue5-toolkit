@@ -2,7 +2,7 @@
 
 `UGameBaseAttributeSet` 定位于**纯粹通用机制基类（零具体业务属性假设）**：它不硬编码任何具体属性（如生命、物理伤害、法术伤害），彻底放开由开发者在派生子类中自由声明与定义，同时为整个战斗框架提供标准的数值上下限钳制工具、阈值状态幂等闩、元属性归零搬运与增量落地接口。
 
-头文件：`#include "AbilitySystem/UGameBaseAttributeSet.h"`  
+头文件：`#include "Attribute/UGameBaseAttributeSet.h"`  
 基类：`UAttributeSet`
 
 ---
@@ -110,7 +110,7 @@ static void ApplyAttributeToLocal(UAbilitySystemComponent* InAbilitySystemCompon
 #pragma once
 
 #include "CoreMinimal.h"
-#include "AbilitySystem/UGameBaseAttributeSet.h"
+#include "Attribute/UGameBaseAttributeSet.h"
 #include "MyHeroAttributeSet.generated.h"
 
 UCLASS()

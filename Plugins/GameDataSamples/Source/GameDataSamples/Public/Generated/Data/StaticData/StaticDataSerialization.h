@@ -3,7 +3,7 @@
 
 #include "CoreMinimal.h"
 
-#include "Data/StaticData/FStaticDataRepository.h"
+#include "StaticData/FStaticDataRepository.h"
 
 /**
  * @brief 注册全部生成式行负载读写器（免反射，供 FStaticDataRepository 按结构名调度）

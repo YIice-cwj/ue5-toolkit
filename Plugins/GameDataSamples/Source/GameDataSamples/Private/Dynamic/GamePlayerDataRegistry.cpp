@@ -4,6 +4,7 @@
  */
 
 #include "Dynamic/GamePlayerDataRegistry.h"
+#include "Logging/GameLogCategories.h"
 
 UGamePlayerDataRegistry::UGamePlayerDataRegistry() {
     ResetToDefault();
@@ -11,9 +12,12 @@ UGamePlayerDataRegistry::UGamePlayerDataRegistry() {
 
 void UGamePlayerDataRegistry::SetProfile(const FPlayerProfileData& InProfile) {
     CurrentProfile = InProfile;
+    GAME_LOG(Log, TEXT("【玩家数据中枢】更新玩家档案: PlayerId=%s, Level=%d, Gold=%lld。"),
+        *InProfile.PlayerId, InProfile.Progression.Level, InProfile.Progression.Gold);
     OnProfileChanged.Broadcast(CurrentProfile);
 }
 
 void UGamePlayerDataRegistry::ResetToDefault() {
+    GAME_LOG(Log, TEXT("【玩家数据中枢】重置玩家档案为默认初始值。"));
     SetProfile(FPlayerProfileData());
 }

@@ -78,7 +78,7 @@ def generate_header(cfg: Any) -> str:
     lines.append("")
     lines.append('#include "CoreMinimal.h"')
     lines.append("")
-    lines.append('#include "Data/StaticData/FStaticDataRepository.h"')
+    lines.append('#include "StaticData/FStaticDataRepository.h"')
     lines.append("")
     lines.append("/**")
     lines.append(" * @brief 注册全部生成式行负载读写器（免反射，供 FStaticDataRepository 按结构名调度）")

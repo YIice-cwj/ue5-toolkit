@@ -35,7 +35,7 @@ def generate_static_data_header(cfg: Any, cat_folder: str, tables: list) -> str:
     lines.append("")
     lines.append('#include "Misc/Paths.h"')
     lines.append('#include "Utils/DataTableLoaderUtils.h"')
-    lines.append('#include "Data/StaticData/FStaticDataRepository.h"')
+    lines.append('#include "StaticData/FStaticDataRepository.h"')
     lines.append(f'#include "{agg_header}"')
     lines.append(f'#include "{composite_header}"')
     lines.append(f'#include "{generated_header}"')

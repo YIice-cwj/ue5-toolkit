@@ -39,21 +39,26 @@ public:
     UFUNCTION(BlueprintPure, Category = "GameCore|Loading", meta = (WorldContext = "WorldContextObject"))
     static ULoadingSubsystem* Get(const UObject* WorldContextObject);
 
-    /** 加载状态变动多播委托 */
+    /**
+     * @brief 加载状态变动多播委托（关卡加载开始与结束时广播）
+     */
     UPROPERTY(BlueprintAssignable, Category = "GameCore|Loading")
     FOnLoadingStateChanged OnLoadingStateChanged;
 
-    /** 挂钩引擎 PreLoadMap / PostLoadMapWithWorld 委托 */
+    /**
+     * @brief 子系统初始化生命周期回调：挂钩引擎 PreLoadMap 与 PostLoadMapWithWorld 委托
+     * @param Collection 子系统管理器集合
+     */
     void Initialize(FSubsystemCollectionBase& Collection) override;
 
-    /** 注销引擎地图加载委托 */
+    /**
+     * @brief 子系统销毁生命周期回调：注销引擎地图加载委托
+     */
     void Deinitialize() override;
 
     /**
      * @brief 携带加载幕布事件的标准关卡跳转接口
      * @param LevelName 目标关卡名称
-     *
-     * 实现思路：加载中重复调用、关卡名为空或 GameInstance / 世界无效时记录警告并直接忽略，不置位加载态。
      */
     UFUNCTION(BlueprintCallable, Category = "GameCore|Loading")
     void OpenLevelWithLoading(const FName& LevelName);
@@ -67,7 +72,7 @@ public:
 
     /**
      * @brief 获取当前正在加载的目标关卡名称
-     * @return 目标关卡名称
+     * @return 目标关卡名称；未加载时返回 NAME_None
      */
     UFUNCTION(BlueprintPure, Category = "GameCore|Loading")
     FName GetTargetLevelName() const;
@@ -86,11 +91,15 @@ private:
     void OnPostLoadMap(UWorld* LoadedWorld);
 
 private:
-    /** 当前是否正处于关卡加载中 */
+    /**
+     * @brief 当前是否正处于关卡加载中
+     */
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GameCore|Loading", meta = (AllowPrivateAccess = "true"))
     bool bIsLoading = false;
 
-    /** 当前加载目标关卡名称 */
+    /**
+     * @brief 当前加载目标关卡名称
+     */
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GameCore|Loading", meta = (AllowPrivateAccess = "true"))
     FName TargetLevelName = NAME_None;
 };

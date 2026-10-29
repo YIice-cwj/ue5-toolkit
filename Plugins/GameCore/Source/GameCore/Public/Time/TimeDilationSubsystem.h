@@ -18,7 +18,9 @@ class GAMECORE_API UTimeDilationSubsystem : public UTickableWorldSubsystem {
     GENERATED_BODY()
 
 public:
-    /** 构造：按通道枚举数量预分配通道状态数组 */
+    /**
+     * @brief 构造函数：按通道枚举数量预分配通道状态数组
+     */
     UTimeDilationSubsystem();
 
     /**
@@ -35,10 +37,15 @@ public:
      */
     static UTimeDilationSubsystem* GetPtr(const UObject* WorldContextObject);
 
-    /** 初始化时间基准、通道状态数组与顿帧表 */
+    /**
+     * @brief 子系统初始化生命周期回调：初始化时间基准、通道状态数组与顿帧表
+     * @param Collection 子系统管理器集合
+     */
     void Initialize(FSubsystemCollectionBase& Collection) override;
 
-    /** 清理全部顿帧与全局时间膨胀通道 */
+    /**
+     * @brief 子系统销毁生命周期回调：清理全部顿帧记录与全局时间膨胀通道
+     */
     void Deinitialize() override;
 
     /**

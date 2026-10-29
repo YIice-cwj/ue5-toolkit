@@ -1,9 +1,9 @@
 # GameGameplay ASC 与 Globals API 参考
 
 头文件：
-- `#include "AbilitySystem/UGameAbilitySystemComponent.h"`
-- `#include "AbilitySystem/UGameAbilitySystemGlobals.h"`
-- `#include "AbilitySystem/FGameGameplayEffectContext.h"`
+- `#include "Ability/UGameAbilitySystemComponent.h"`
+- `#include "Ability/UGameAbilitySystemGlobals.h"`
+- `#include "Damage/FGameGameplayEffectContext.h"`
 
 ---
 

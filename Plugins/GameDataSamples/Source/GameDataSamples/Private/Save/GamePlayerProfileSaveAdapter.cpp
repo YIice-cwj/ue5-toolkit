@@ -6,8 +6,9 @@
 #include "Save/GamePlayerProfileSaveAdapter.h"
 
 #include "Dynamic/GamePlayerDataRegistry.h"
-#include "Persistence/USaveGameSubsystem.h"
+#include "Save/USaveGameSubsystem.h"
 #include "Serialization/Archive.h"
+#include "Logging/GameLogCategories.h"
 
 const FName UGamePlayerProfileSaveAdapter::SegmentName(TEXT("Player.Profile"));
 
@@ -31,6 +32,7 @@ void UGamePlayerProfileSaveAdapter::BeginDestroy() {
 void UGamePlayerProfileSaveAdapter::Setup(USaveGameSubsystem* InSaveSubsystem, UGamePlayerDataRegistry* InRegistry) {
     Teardown();
     if (InSaveSubsystem == nullptr || InRegistry == nullptr) {
+        GAME_LOG(Warning, TEXT("【玩家档案存档适配器】Setup 失败：SaveSubsystem 或 InRegistry 为空。"));
         return;
     }
 
@@ -65,11 +67,13 @@ void UGamePlayerProfileSaveAdapter::Setup(USaveGameSubsystem* InSaveSubsystem, U
     };
 
     SaveSubsystem->RegisterSegment(Segment);
+    GAME_LOG(Log, TEXT("【玩家档案存档适配器】成功建立绑定并注册存档段 [%s]。"), *SegmentName.ToString());
 }
 
 void UGamePlayerProfileSaveAdapter::Teardown() {
     if (SaveSubsystem != nullptr) {
         SaveSubsystem->UnregisterSegment(SegmentName);
+        GAME_LOG(Log, TEXT("【玩家档案存档适配器】已注销存档段 [%s]。"), *SegmentName.ToString());
     }
     SaveSubsystem = nullptr;
     DataRegistry = nullptr;

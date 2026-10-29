@@ -2,9 +2,9 @@
 #include "Misc/AutomationTest.h"
 #include "GameplayTagContainer.h"
 #include "GameplayTagsManager.h"
-#include "Combat/FGameDamageContext.h"
-#include "Combat/FGameDamageResult.h"
-#include "Combat/UGameStatComponent.h"
+#include "Damage/FGameDamageContext.h"
+#include "Damage/FGameDamageResult.h"
+#include "Stat/UGameStatComponent.h"
 
 #if WITH_AUTOMATION_TESTS
 

@@ -12,7 +12,7 @@
 #include "Tasks/FGameThreadTaskRunner.h"
 
 #include "Config/GameCompileSwitches.h"
-#include "Data/StaticData/FStaticDataRepository.h"
+#include "StaticData/FStaticDataRepository.h"
 #include "Logging/GameLogCategories.h"
 
 #include "Generated/Data/StaticData/StaticDataSerialization.h"

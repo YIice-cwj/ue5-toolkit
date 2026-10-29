@@ -2,7 +2,7 @@
 
 `IDamageable` 是所有能够接收伤害并产生打击反馈的实体契约。
 
-头文件：`#include "Combat/IDamageable.h"`  
+头文件：`#include "Damage/IDamageable.h"`  
 反射类：`UDamageable`  
 接口类：`IDamageable`
 

@@ -57,7 +57,7 @@ void AMyGameMode::CheckPlayerItem(FName ItemId)
 存档按「段」注册，子系统不感知任何业务字段。每个业务系统注册自己的段名、段版本与序列化委托：
 
 ```cpp
-#include "Persistence/USaveGameSubsystem.h"
+#include "Save/USaveGameSubsystem.h"
 
 FGameSaveSegment UMyProgressSubsystem::BuildProgressSegment()
 {

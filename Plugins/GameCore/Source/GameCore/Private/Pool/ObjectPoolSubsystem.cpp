@@ -9,6 +9,9 @@
 #include "TimerManager.h"
 #include "Pool/IGamePoolable.h"
 #include "Time/TimeDilationSubsystem.h"
+#include "Config/GameCompileSwitches.h"
+
+DEFINE_LOG_CATEGORY_STATIC(LogGameObjectPool, Log, All);
 
 namespace {
 
@@ -59,6 +62,9 @@ UObjectPoolSubsystem* UObjectPoolSubsystem::GetPtr(const UObject* WorldContextOb
 }
 
 void UObjectPoolSubsystem::Deinitialize() {
+    if constexpr (Game::Config::bEnableLog) {
+        UE_LOG(LogGameObjectPool, Log, TEXT("【对象池】子系统注销，清空 %d 个对象池。"), PoolMap.Num());
+    }
     ClearAllPools();
     Super::Deinitialize();
 }
@@ -66,6 +72,9 @@ void UObjectPoolSubsystem::Deinitialize() {
 void UObjectPoolSubsystem::Prewarm(TSubclassOf<AActor> ActorClass, int32 PrewarmCount) {
     UWorld* World = GetWorld();
     if (!ActorClass || PrewarmCount <= 0) {
+        if constexpr (Game::Config::bEnableLog) {
+            UE_LOG(LogGameObjectPool, Warning, TEXT("【对象池】预热失败：ActorClass 为空或预热数量 <= 0。"));
+        }
         return;
     }
 
@@ -80,6 +89,11 @@ void UObjectPoolSubsystem::Prewarm(TSubclassOf<AActor> ActorClass, int32 Prewarm
             Bucket.IdleActors.Add(NewActor);
             Bucket.IdleActorSet.Add(NewActor);
         }
+    }
+
+    if constexpr (Game::Config::bEnableLog) {
+        UE_LOG(LogGameObjectPool, Log, TEXT("【对象池】预热完成: 类=[%s], 请求数量=%d, 当前空闲池大小=%d"),
+            *ActorClass->GetName(), PrewarmCount, Bucket.IdleActors.Num());
     }
 }
 
@@ -103,6 +117,9 @@ void UObjectPoolSubsystem::SetMaxPoolCapacity(TSubclassOf<AActor> ActorClass, in
 AActor* UObjectPoolSubsystem::AcquireActor(TSubclassOf<AActor> ActorClass, const FTransform& SpawnTransform) {
     UWorld* World = GetWorld();
     if (!ActorClass) {
+        if constexpr (Game::Config::bEnableLog) {
+            UE_LOG(LogGameObjectPool, Warning, TEXT("【对象池】借出 Actor 失败：ActorClass 为空。"));
+        }
         return nullptr;
     }
 
@@ -131,6 +148,9 @@ AActor* UObjectPoolSubsystem::AcquireActor(TSubclassOf<AActor> ActorClass, const
     }
 
     if (!ResultActor) {
+        if constexpr (Game::Config::bEnableLog) {
+            UE_LOG(LogGameObjectPool, Error, TEXT("【对象池】生成 Actor 实例失败：类=[%s]"), *ActorClass->GetName());
+        }
         return nullptr;
     }
 
@@ -148,17 +168,27 @@ AActor* UObjectPoolSubsystem::AcquireActor(TSubclassOf<AActor> ActorClass, const
     InvokePoolableCallback(ResultActor, true);
 
     ++Bucket.ActiveCount;
+    if constexpr (Game::Config::bEnableLog) {
+        UE_LOG(LogGameObjectPool, Verbose, TEXT("【对象池】借出 Actor 成功: 类=[%s], 实例=[%s], 活跃数=%d, 剩余空闲数=%d"),
+            *ActorClass->GetName(), *GetNameSafe(ResultActor), Bucket.ActiveCount, Bucket.IdleActors.Num());
+    }
     return ResultActor;
 }
 
 void UObjectPoolSubsystem::ReleaseActor(AActor* Actor) {
     if (!IsValid(Actor)) {
+        if constexpr (Game::Config::bEnableLog) {
+            UE_LOG(LogGameObjectPool, Warning, TEXT("【对象池】归还 Actor 失败：Actor 无效。"));
+        }
         return;
     }
 
     TSubclassOf<AActor> ActorClass = Actor->GetClass();
     FPoolBucket& Bucket = PoolMap.FindOrAdd(ActorClass);
     if (Bucket.IdleActorSet.Contains(Actor)) {
+        if constexpr (Game::Config::bEnableLog) {
+            UE_LOG(LogGameObjectPool, Warning, TEXT("【对象池】归还警告：Actor [%s] 已在空闲池中，避免重复归还。"), *GetNameSafe(Actor));
+        }
         return;
     }
 
@@ -210,6 +240,11 @@ void UObjectPoolSubsystem::ReleaseActor(AActor* Actor) {
     if (Bucket.ActiveCount > 0) {
         --Bucket.ActiveCount;
     }
+
+    if constexpr (Game::Config::bEnableLog) {
+        UE_LOG(LogGameObjectPool, Verbose, TEXT("【对象池】归还 Actor 成功: 类=[%s], 实例=[%s], 剩余活跃数=%d, 当前空闲数=%d"),
+            *ActorClass->GetName(), *GetNameSafe(Actor), Bucket.ActiveCount, Bucket.IdleActors.Num());
+    }
 }
 
 void UObjectPoolSubsystem::GetPoolStats(
@@ -231,7 +266,11 @@ void UObjectPoolSubsystem::GetPoolStats(
 
 void UObjectPoolSubsystem::ClearPool(TSubclassOf<AActor> ActorClass) {
     if (FPoolBucket* Bucket = PoolMap.Find(ActorClass)) {
+        const int32 Count = Bucket->IdleActors.Num();
         DestroyBucketIdleActors(*Bucket);
+        if constexpr (Game::Config::bEnableLog) {
+            UE_LOG(LogGameObjectPool, Log, TEXT("【对象池】清理对象池: 类=[%s], 销毁 Actor 数=%d"), *ActorClass->GetName(), Count);
+        }
     }
 }
 

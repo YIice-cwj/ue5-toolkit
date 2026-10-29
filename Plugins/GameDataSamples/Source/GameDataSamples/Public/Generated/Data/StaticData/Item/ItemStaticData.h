@@ -5,7 +5,7 @@
 
 #include "Misc/Paths.h"
 #include "Utils/DataTableLoaderUtils.h"
-#include "Data/StaticData/FStaticDataRepository.h"
+#include "StaticData/FStaticDataRepository.h"
 #include "Generated/DataTables/Item/ItemDataTableRowTypes.h"
 #include "ItemCompositeData.h"
 #include "ItemStaticData.generated.h"
@@ -64,7 +64,9 @@ public:
         return ItemMap.Find(Key);
     }
 
-    /** Item数据行 映射表 (RowName -> FItemRow) */
+    /**
+     * @brief Item数据行映射表 (RowName -> FItemRow)
+     */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item|StaticData", meta = (DisplayName = "Item数据行映射表"))
     TMap<FName, FItemRow> ItemMap;
 

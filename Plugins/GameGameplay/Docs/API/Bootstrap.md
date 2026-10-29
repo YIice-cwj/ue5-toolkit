@@ -2,7 +2,7 @@
 
 `UGameAbilitySystemBootstrap` 作为一个 ActorComponent，将复杂的网络握手时序收敛在框架内部，使业务角色的初始化代码保持极致精简。
 
-头文件：`#include "AbilitySystem/UGameAbilitySystemBootstrap.h"`  
+头文件：`#include "Ability/UGameAbilitySystemBootstrap.h"`  
 基类：`UActorComponent`
 
 ---

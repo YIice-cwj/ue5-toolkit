@@ -17,6 +17,20 @@ public:
     FGameDataModule& operator=(const FGameDataModule&) = delete;
     FGameDataModule(FGameDataModule&&) = delete;
     FGameDataModule& operator=(FGameDataModule&&) = delete;
+
+    /**
+     * @brief 模块启动入口，记录数据宿主模块加载里程碑
+     */
+    void StartupModule() override {
+        GAME_LOG(Log, TEXT("【GameData】数据宿主模块初始化完成。"));
+    }
+
+    /**
+     * @brief 模块卸载入口，记录数据宿主模块卸载里程碑
+     */
+    void ShutdownModule() override {
+        GAME_LOG(Log, TEXT("【GameData】数据宿主模块卸载完成。"));
+    }
 };
 
 IMPLEMENT_MODULE(FGameDataModule, GameData);

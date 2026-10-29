@@ -9,6 +9,8 @@
 
 #include "Config/GameCompileSwitches.h"
 
+DEFINE_LOG_CATEGORY_STATIC(LogGameConfig, Log, All);
+
 namespace {
 
 /**
@@ -131,6 +133,10 @@ void FConfigRegistry::ApplyRegister(FName Name, FConfigVariant&& DefaultValue) {
     Entry.bReadOnly = IsReadOnlyKeyName(Name);
     ++Entry.Version;
     ++GlobalVersion;
+    if constexpr (Game::Config::bEnableLog) {
+        UE_LOG(LogGameConfig, Log, TEXT("【配置注册表】注册配置项: 键=[%s], 类型=[%s], 只读=%s"),
+            *Name.ToString(), *VariantTypeName(Entry.Value), Entry.bReadOnly ? TEXT("True") : TEXT("False"));
+    }
 }
 
 ESetConfigResult FConfigRegistry::ApplySet(FName Name, FConfigVariant&& NewValue) {
@@ -157,7 +163,14 @@ ESetConfigResult FConfigRegistry::ApplySet(FName Name, FConfigVariant&& NewValue
     }
     if (bRejected) {
         ensureMsgf(false, TEXT("【配置注册表】SetConfig 拒绝：只读配置键 [%s] 不可覆盖！"), *Name.ToString());
+        if constexpr (Game::Config::bEnableLog) {
+            UE_LOG(LogGameConfig, Warning, TEXT("【配置注册表】设置配置失败：只读配置键 [%s] 不可覆盖。"), *Name.ToString());
+        }
         return ESetConfigResult::RejectedReadOnly;
+    }
+    if constexpr (Game::Config::bEnableLog) {
+        UE_LOG(LogGameConfig, Log, TEXT("【配置注册表】更新配置项: 键=[%s], 类型=[%s]"),
+            *Name.ToString(), *VariantTypeName(BroadcastValue));
     }
     if (Watcher.IsValid()) {
         Watcher->Broadcast(BroadcastValue);
@@ -176,6 +189,9 @@ TSharedRef<FObserverSubscription> FConfigRegistry::AddWatcher(FName Name, TFunct
         State = Slot;
     }
     const uint64 SubscriptionId = State->AddListener(MoveTemp(InListener));
+    if constexpr (Game::Config::bEnableLog) {
+        UE_LOG(LogGameConfig, Verbose, TEXT("【配置注册表】添加配置监听: 键=[%s], 订阅 ID=%llu"), *Name.ToString(), SubscriptionId);
+    }
     const TSharedRef<FObserverSubscription> Subscription = MakeShared<FObserverSubscription>();
     Subscription->Initialize(State.ToSharedRef(), SubscriptionId);
     return Subscription;

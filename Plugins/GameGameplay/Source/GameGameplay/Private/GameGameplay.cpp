@@ -21,6 +21,20 @@ public:
     FGameGameplayModule& operator=(const FGameGameplayModule&) = delete;
     FGameGameplayModule(FGameGameplayModule&&) = delete;
     FGameGameplayModule& operator=(FGameGameplayModule&&) = delete;
+
+    /**
+     * @brief 模块启动入口，记录 Gameplay 模块加载里程碑
+     */
+    void StartupModule() override {
+        GAME_LOG(Log, TEXT("【GameGameplay】GAS 绑定与伤害管线模块初始化完成。"));
+    }
+
+    /**
+     * @brief 模块卸载入口，记录 Gameplay 模块卸载里程碑
+     */
+    void ShutdownModule() override {
+        GAME_LOG(Log, TEXT("【GameGameplay】GAS 绑定与伤害管线模块卸载完成。"));
+    }
 };
 
 IMPLEMENT_MODULE(FGameGameplayModule, GameGameplay);

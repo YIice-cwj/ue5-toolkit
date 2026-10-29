@@ -1,17 +1,6 @@
 /**
  * @file FVersionedCache.h
  * @brief 三策略聚合缓存（Eager / Lazy / LRU）：不可变快照 + 索引节点池 + 引用计数兜底
- *
- * 设计思路：
- * - 指针稳定化：值统一以 TSharedPtr<const ValueType> 持有，容器扩容搬移不改变对象地址；
- *   驱逐与 Rebuild 期间由引用计数兜底，已持有 FindShared 的调用方绝不悬垂；
- * - Eager 档：不可变映射 TSharedPtr<const TMap<...>>，构建在锁外完成后原子换新，读路径仅瞬态读锁；
- * - LRU 档：连续节点池 TArray<FLruNode> + int32 索引链 + 空闲槽回收，取代 TDoubleLinkedList 与
- *   Node* 裸指针映射——O(1) 触达与驱逐、零每 key 堆分配，RemoveNode 参数类 UAF 随结构消亡；
- * - 策略自适应：FCachePolicy::Resolve(Domain) 从 FConfigRegistry 读取策略与阈值，Rebuild 按主表行数落定；
- * - 并发：内部 FRWLock 保护惰性填充与 LRU 簿记，簿记不逃逸锁；临界区内只做指针交换，
- *   旧快照/旧条目经 RetireAllStorage 腾挪到局部对象、出锁后再析构（锁内不做耗时操作）；
- * - Const 正确性：查询接口为 const（逻辑只读），惰性填充经 mutable 成员完成。
  */
 
 #pragma once
@@ -20,47 +9,11 @@
 #include "Misc/EngineVersionComparison.h"
 #include "Misc/ScopeRWLock.h"
 
+#include "Cache/FCachePolicy.h"
 #include "Config/FConfigRegistry.h"
 
 /**
- * @brief 缓存策略枚举
- */
-enum class ECacheStrategy : uint8 {
-    /** 按表体量阈值自动判定 */
-    Automatic,
-    /** 全量预热 */
-    Eager,
-    /** 惰性构建 */
-    Lazy,
-    /** LRU 限长淘汰 */
-    Lru,
-};
-
-/**
- * @brief 缓存策略配置（从 FConfigRegistry 按命名约定键解析）
- */
-struct GAMECORE_API FCachePolicy {
-public:
-    /**
-     * @brief 从 FConfigRegistry 按命名约定键解析域策略
-     * @param Domain 域名称（键前缀 Cache.{Domain}.）
-     * @return 解析后的策略（未注册键回退默认）
-     */
-    static FCachePolicy Resolve(const FName& Domain);
-
-public:
-    /** 生效策略（Automatic 时由 Rebuild 按行数判定） */
-    ECacheStrategy Strategy = ECacheStrategy::Automatic;
-    /** auto 判定：行数 >= 该值 → lazy */
-    int64 LazyMinRows = MAX_int64;
-    /** auto 判定：行数 >= 该值 → lru（优先于 lazy） */
-    int64 LruMinRows = MAX_int64;
-    /** lru 容量上限（超出淘汰最久未用） */
-    int64 LruCapacity = 10000;
-};
-
-/**
- * @brief 三策略缓存容器模板（模板类，无导出宏，实现定义于本头文件类外）
+ * @brief 三策略缓存容器模板（模板类，声明与接口契约）
  * @tparam T 缓存值类型
  */
 template<typename T>
@@ -71,14 +24,18 @@ public:
     using ValueMap = TMap<FName, ValueTypePtr>;
 
 private:
-    /** LRU 池节点：连续内存，prev/next 为池索引链 */
+    /**
+     * @brief LRU 池节点（连续内存，Prev/Next 为池内索引链）
+     */
     struct FLruNode {
         FName Key;
         int32 Prev = INDEX_NONE;
         int32 Next = INDEX_NONE;
     };
 
-    /** 待析构旧状态：锁内腾挪、出锁后自然析构，严禁在临界区内释放大对象 */
+    /**
+     * @brief 待析构旧状态（在锁内转移所有权，出锁后离开作用域自然析构，消除锁内析构延迟）
+     */
     struct FRetiredStorage {
         TSharedPtr<const ValueMap> EagerMap;
         TSet<FName> ValidKeys;
@@ -87,66 +44,49 @@ private:
 
 public:
     /**
-     * @brief 构造（按域名解析策略）
-     * @param Domain 域名称
+     * @brief 构造三策略缓存容器实例
+     * @param Domain 缓存业务域名称（用于解析缓存策略）
      */
     explicit FVersionedCache(const FName& Domain);
 
     /**
-     * @brief 预热入口：传入主表全部键与单条构建函数（闭包仅此一次传入并保存）
-     * @param AllKeys 主表全部键
-     * @param InBuildFn 单条构建函数（含外键校验；惰性填充路径下于锁外乐观调用）
+     * @brief 预热重构入口：传入主表全部键与单条构建闭包
+     * @param AllKeys 主表包含的全部键名列表
+     * @param InBuildFn 单条条目构建函数（入参为条目键，返回构建后的数据实例）
      */
     void Rebuild(const TArray<FName>& AllKeys, TFunction<ValueType(FName Key)> InBuildFn);
 
     /**
-     * @brief 安全持有查找（任意策略可用；驱逐、Rebuild 与 Reset 期间由引用计数兜底）
-     * @param Key 缓存键
-     * @return 缓存值共享指针；未命中返回空
-     *
-     * 实现思路：Eager 档与 Lazy 命中均在读锁内直接完成查表，读者互不阻塞；
-     * LRU 命中且节点已是链表头时同样在读锁内直接出值，避免无谓写锁重排；
-     * 未命中或需重排时于锁外乐观调用 BuildFn 构建值，再经瞬态写锁换入
-     * （杜绝锁内调用用户代码与死锁隐患；写锁内二次判定策略与既有键防竞态重复插入）。
+     * @brief 安全持有查找（并发安全，返回共享指针以保证脱锁生命周期安全）
+     * @param Key 目标缓存键
+     * @return 缓存数据只读共享指针；若未命中且惰性构建失败则返回空指针
      */
     [[nodiscard]] ValueTypePtr FindShared(FName Key) const;
 
     /**
-     * @brief 清空缓存（Eager 快照与 LRU 簿记全清；已由 FindShared 持有的值由引用计数兜底，不受影响）
+     * @brief 清空并重置缓存容器的所有内部状态与已缓存数据
      */
     void Reset();
 
     /**
-     * @brief 精确失效单个键的缓存（单条淘汰，无需整表 Rebuild）
-     * @param Key 目标键
-     * @return 键原本在有效键集或缓存条目中并成功剔除返回 true；完全未知返回 false
-     *
-     * 实现思路：Eager 档从只读快照剔除；惰性 / LRU 档同时移出有效键集、值表与 LRU 链表节点，
-     * 因此即便该键尚未构建过值，只要仍在有效键集内即视为失效成功。
+     * @brief 精确失效单个键的缓存数据
+     * @param Key 待失效的目标缓存键
+     * @return 成功剔除缓存条目返回 true；若该键原本未缓存则返回 false
      */
     bool Invalidate(FName Key);
 
     /**
-     * @brief 当前条目数
-     * @return 条目数
+     * @brief 获取当前有效缓存条目数量
+     * @return 活跃条目数
      */
     [[nodiscard]] int32 Num() const;
 
 private:
     int32 AcquireNode(FName Key) const;
-
     void LinkHead(int32 NodeIndex) const;
-
     void Unlink(int32 NodeIndex) const;
-
     void TouchLru(FName Key) const;
-
     void EvictIfNeeded() const;
-
-    /**
-     * @brief 腾挪并清空全部存储与策略（调用方必须已持写锁）
-     * @return 待析构旧状态，由调用方在出锁后释放
-     */
     FRetiredStorage RetireAllStorage();
 
 private:
@@ -158,13 +98,14 @@ private:
     ECacheStrategy EffectiveStrategy = ECacheStrategy::Eager;
     TFunction<ValueType(FName Key)> BuildFn;
 
-    /** 存储代际号（Rebuild / Reset 自增；惰性构建窗口内代际变化即丢弃旧构建结果并重试） */
     uint32 Generation = 0;
 
     mutable FRWLock CacheLock;
     TSharedPtr<const ValueMap> EagerMap;
-    TSet<FName> ValidKeys;
+
+    mutable TSet<FName> ValidKeys;
     mutable ValueMap Entries;
+
     mutable TMap<FName, int32> LruIndex;
     mutable TArray<FLruNode> NodePool;
     mutable TArray<int32> FreeList;
@@ -173,7 +114,7 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-// 模板实现（定义全部置于类外，随头文件对使用方可见）
+// FVersionedCache 模板类外实现
 // ---------------------------------------------------------------------------
 
 template<typename T>

@@ -36,7 +36,9 @@ public:
     [[nodiscard]] FVersionedCache<FShopCompositeData>& ShopComposites() const;
 
 private:
-    /** 各域逻辑只读缓存（mutable：const 快照上允许查找与缓存内部惰性填充） */
+    /**
+     * @brief 各域逻辑只读缓存（mutable：const 快照上允许查找与缓存内部惰性填充）
+     */
     mutable FVersionedCache<FItemCompositeData> ItemCompositesCache{FName(TEXT("Item"))};
     mutable FVersionedCache<FShopCompositeData> ShopCompositesCache{FName(TEXT("Shop"))};
 };

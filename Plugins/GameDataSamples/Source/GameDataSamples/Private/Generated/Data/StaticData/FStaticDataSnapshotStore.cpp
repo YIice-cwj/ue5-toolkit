@@ -2,6 +2,7 @@
 #include "Generated/Data/StaticData/FStaticDataSnapshotStore.h"
 
 #include "Generated/Data/StaticData/FStaticDataSnapshot.h"
+#include "Logging/GameLogCategories.h"
 
 /**
  * @brief 瞬态读锁拷贝在线快照指针后出锁
@@ -29,11 +30,13 @@ uint32 FStaticDataSnapshotStore::GetVersion() const {
  */
 void FStaticDataSnapshotStore::Publish(TSharedPtr<const FStaticDataSnapshot> NextSnapshot) {
     TSharedPtr<const FStaticDataSnapshot> RetiredSnapshot;
+    const uint32 NewVersion = NextSnapshot.IsValid() ? NextSnapshot->DataVersion : 0;
     {
         FWriteScopeLock WriteLock(SnapshotLock);
         RetiredSnapshot = MoveTemp(OnlineSnapshot);
         OnlineSnapshot = MoveTemp(NextSnapshot);
     }
+    GAME_LOG(Log, TEXT("【静态数据快照仓储】原子发布新版本快照: 版本号=%u。"), NewVersion);
 }
 
 /**

@@ -14,24 +14,33 @@ struct FItemRow : public FTableRowBase {
     GENERATED_BODY()
 
 public:
-    /** 物品名称 */
+    /**
+     * @brief 物品名称
+     */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item", meta = (DisplayName = "物品名称"))
     FString ItemName;
 
-    /** 基础攻击力 */
+    /**
+     * @brief 基础攻击力
+     */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item", meta = (DisplayName = "基础攻击力"))
     int32 BaseAttack = 0;
 
-    /** 金币价值 */
+    /**
+     * @brief 金币价值
+     */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item", meta = (DisplayName = "金币价值"))
     float GoldCost = 0.0f;
 
-    /** 是否可用 */
+    /**
+     * @brief 是否可用
+     */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item", meta = (DisplayName = "是否可用"))
     bool bIsUsable = false;
 
-    /** 玩法标签 */
+    /**
+     * @brief 玩法标签
+     */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item", meta = (DisplayName = "玩法标签"))
     FGameplayTag ItemTag;
-
 };

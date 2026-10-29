@@ -63,8 +63,8 @@ sequenceDiagram
 ### 1. 为目标 Actor 添加 `UGameStatComponent` 并实现 `IDamageable`
 
 ```cpp
-#include "Combat/IDamageable.h"
-#include "Combat/UGameStatComponent.h"
+#include "Damage/IDamageable.h"
+#include "Stat/UGameStatComponent.h"
 #include "GameplayTagsManager.h"
 
 UCLASS()

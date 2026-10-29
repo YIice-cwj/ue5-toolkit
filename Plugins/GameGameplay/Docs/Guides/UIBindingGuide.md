@@ -10,7 +10,7 @@
 
 ```cpp
 #include "Blueprint/UserWidget.h"
-#include "AbilitySystem/UGameplayAttributeValueMapping.h"
+#include "Attribute/UGameplayAttributeValueMapping.h"
 #include "MyHeroAttributeSet.h"
 #include "Components/ProgressBar.h"
 #include "MyHealthWidget.generated.h"

@@ -15,10 +15,14 @@ class UGameplayMessageSubsystem;
  */
 UENUM(BlueprintType)
 enum class EGameplayMessageMatch : uint8 {
-    /** 精确匹配：仅当广播通道与监听通道完全相同时触发 */
+    /**
+     * @brief 精确匹配：仅当广播通道与监听通道完全相同时触发
+     */
     ExactMatch,
 
-    /** 部分/前缀匹配：广播通道为监听通道的子标签（MatchesTag）时也会触发 */
+    /**
+     * @brief 部分/前缀匹配：广播通道为监听通道的子标签（MatchesTag）时也会触发
+     */
     PartialMatch
 };
 

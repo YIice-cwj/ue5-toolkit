@@ -28,8 +28,8 @@ PublicDependencyModuleNames.AddRange(new string[] {
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
-#include "Combat/IDamageable.h"
-#include "Combat/UGameStatComponent.h"
+#include "Damage/IDamageable.h"
+#include "Stat/UGameStatComponent.h"
 #include "DummyTarget.generated.h"
 
 UCLASS()

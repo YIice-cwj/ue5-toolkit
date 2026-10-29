@@ -9,7 +9,7 @@
 创建子类 `UMyCombatDamageExecution`并在构造函数中绑定通道：
 
 ```cpp
-#include "AbilitySystem/UGameDamageExecution.h"
+#include "Damage/UGameDamageExecution.h"
 #include "MyHeroAttributeSet.h"
 #include "MyCombatDamageExecution.generated.h"
 

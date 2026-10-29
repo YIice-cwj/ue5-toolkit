@@ -39,6 +39,9 @@ compile_commands.json
 # 发布加密密钥（阶段四 K1：密钥不入库，由平台安全通道注入）
 Config/DefaultCrypto.ini
 
+# Doxygen generated documentation (keep Doxyfile in git, exclude generated output)
+Docs/ApiReference/
+
 # Operating System temporary files
 .DS_Store
 .DS_Store?

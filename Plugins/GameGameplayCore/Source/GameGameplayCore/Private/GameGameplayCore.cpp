@@ -21,6 +21,20 @@ public:
     FGameGameplayCoreModule& operator=(const FGameGameplayCoreModule&) = delete;
     FGameGameplayCoreModule(FGameGameplayCoreModule&&) = delete;
     FGameGameplayCoreModule& operator=(FGameGameplayCoreModule&&) = delete;
+
+    /**
+     * @brief 模块启动入口，记录战斗核心模块加载里程碑
+     */
+    void StartupModule() override {
+        GAME_LOG(Log, TEXT("【GameGameplayCore】战斗核心模块初始化完成。"));
+    }
+
+    /**
+     * @brief 模块卸载入口，记录战斗核心模块卸载里程碑
+     */
+    void ShutdownModule() override {
+        GAME_LOG(Log, TEXT("【GameGameplayCore】战斗核心模块卸载完成。"));
+    }
 };
 
 IMPLEMENT_MODULE(FGameGameplayCoreModule, GameGameplayCore);

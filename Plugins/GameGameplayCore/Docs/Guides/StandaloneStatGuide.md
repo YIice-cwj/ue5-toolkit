@@ -20,8 +20,8 @@
 
 ```cpp
 #include "GameFramework/Actor.h"
-#include "Combat/IDamageable.h"
-#include "Combat/UGameStatComponent.h"
+#include "Damage/IDamageable.h"
+#include "Stat/UGameStatComponent.h"
 #include "Components/StaticMeshComponent.h"
 
 UCLASS()

@@ -3,7 +3,7 @@
  * @brief GameGameplayCore 数值组件查询吞吐基准，Shipping 构建自动剔除
  */
 
-#include "Combat/UGameStatComponent.h"
+#include "Stat/UGameStatComponent.h"
 
 #if WITH_AUTOMATION_TESTS
 

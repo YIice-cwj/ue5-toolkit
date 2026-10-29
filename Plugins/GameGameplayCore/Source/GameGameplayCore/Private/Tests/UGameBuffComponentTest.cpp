@@ -10,8 +10,8 @@
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
-#include "Combat/UGameBuffComponent.h"
-#include "Combat/UGameStatComponent.h"
+#include "Buff/UGameBuffComponent.h"
+#include "Stat/UGameStatComponent.h"
 
 #if WITH_AUTOMATION_TESTS
 

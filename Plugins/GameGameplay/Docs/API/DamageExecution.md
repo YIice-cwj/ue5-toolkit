@@ -2,7 +2,7 @@
 
 `UGameDamageExecution` 是一个动态通道化、无具体业务假设的泛型伤害结算计算基类。
 
-头文件：`#include "AbilitySystem/UGameDamageExecution.h"`  
+头文件：`#include "Damage/UGameDamageExecution.h"`  
 基类：`UGameplayEffectExecutionCalculation`
 
 ---

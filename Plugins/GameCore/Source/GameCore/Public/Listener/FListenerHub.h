@@ -28,8 +28,36 @@ GAMECORE_API DECLARE_LOG_CATEGORY_EXTERN(LogGameListenerHub, Log, All);
  * @brief 中央监听总线（函数局部静态单例：C++11 线程安全初始化，无堆分配）
  */
 class GAMECORE_API FListenerHub {
+public:
+    /**
+     * @brief 获取全局单例
+     * @return 单例引用
+     */
+    static FListenerHub& Get();
+
+    /**
+     * @brief 注册事件监听（事件不存在则自动创建）
+     * @tparam T 载荷类型
+     * @param EventName 事件名
+     * @param InListener 回调（收到载荷）
+     * @return RAII 订阅守卫，业务方必须持有；析构守卫即注销
+     */
+    template<typename T>
+    TSharedRef<FObserverSubscription> Subscribe(const FName& EventName, TFunction<void(const T&)> InListener);
+
+    /**
+     * @brief 触发事件广播（事件不存在或载荷双指纹不匹配时静默忽略）
+     * @tparam T 载荷类型
+     * @param EventName 事件名
+     * @param Payload 载荷
+     */
+    template<typename T>
+    void Emit(const FName& EventName, const T& Payload);
+
 private:
-    /** 类型擦除事件基类（继承观察者状态基类以复用 RAII 订阅守卫） */
+    /**
+     * @brief 类型擦除事件基类（继承观察者状态基类以复用 RAII 订阅守卫）
+     */
     class FEventBase : public FObserverStateBase {
     public:
         FEventBase() = default;
@@ -48,13 +76,18 @@ private:
         [[nodiscard]] virtual uint32 GetPayloadSize() const noexcept = 0;
     };
 
-    /** 类型化事件（持 COW 回调快照） */
+    /**
+     * @brief 类型化事件（持 COW 回调快照，并发读取安全）
+     * @tparam T 载荷类型
+     */
     template<typename T>
     class FEvent : public FEventBase {
     public:
         using FListener = TFunction<void(const T&)>;
 
-        /** 监听条目：唯一订阅 ID + 回调 */
+        /**
+         * @brief 监听条目结构（包含唯一订阅 ID 与回调函数闭包）
+         */
         struct FHandlerEntry {
             uint64 SubscriptionId = 0;
             FListener Callback;
@@ -88,26 +121,6 @@ private:
         uint64 NextId = 0;
     };
 
-public:
-    /**
-     * @brief 注册事件监听（事件不存在则自动创建）
-     * @tparam T 载荷类型
-     * @param EventName 事件名
-     * @param InListener 回调（收到载荷）
-     * @return RAII 订阅守卫，业务方必须持有；析构守卫即注销
-     */
-    template<typename T>
-    TSharedRef<FObserverSubscription> Subscribe(const FName& EventName, TFunction<void(const T&)> InListener);
-
-    /**
-     * @brief 触发事件广播（事件不存在或载荷双指纹不匹配时静默忽略）
-     * @tparam T 载荷类型
-     * @param EventName 事件名
-     * @param Payload 载荷
-     */
-    template<typename T>
-    void Emit(const FName& EventName, const T& Payload);
-
 private:
     /**
      * @brief 获取事件（不存在则创建，类型指纹不一致时返回空并记录错误）
@@ -117,13 +130,6 @@ private:
      */
     template<typename T>
     TSharedPtr<FEvent<T>> GetOrCreateEvent(const FName& EventName);
-
-public:
-    /**
-     * @brief 获取全局单例
-     * @return 单例引用
-     */
-    static FListenerHub& Get();
 
 private:
     mutable FRWLock EventsLock;

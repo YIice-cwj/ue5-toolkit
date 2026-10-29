@@ -2,7 +2,7 @@
 
 `UGameplayAttributeValueMapping` 将 ASC 复杂的底层复制委托封装为轻量、弱引用保护且对 UMG 和原生 C++ 友好的双轨多播映射器。
 
-头文件：`#include "AbilitySystem/UGameplayAttributeValueMapping.h"`  
+头文件：`#include "Attribute/UGameplayAttributeValueMapping.h"`  
 基类：`UObject`
 
 ---

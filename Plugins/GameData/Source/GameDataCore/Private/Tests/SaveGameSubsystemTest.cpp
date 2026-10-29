@@ -3,7 +3,7 @@
  * @brief 存档子系统自动化测试（段注册、版本迁移、槽位白名单、原子写保护与容灾恢复），Shipping 构建自动剔除
  */
 
-#include "Persistence/USaveGameSubsystem.h"
+#include "Save/USaveGameSubsystem.h"
 
 #if WITH_AUTOMATION_TESTS
 
