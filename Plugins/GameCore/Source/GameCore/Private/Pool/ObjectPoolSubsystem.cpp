@@ -78,7 +78,6 @@ void UObjectPoolSubsystem::Prewarm(TSubclassOf<AActor> ActorClass, int32 Prewarm
         return;
     }
 
-    FPoolBucket& Bucket = PoolMap.FindOrAdd(ActorClass);
     FActorSpawnParameters SpawnParams;
     SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 
@@ -86,6 +85,7 @@ void UObjectPoolSubsystem::Prewarm(TSubclassOf<AActor> ActorClass, int32 Prewarm
         AActor* NewActor = World->SpawnActor<AActor>(ActorClass, FTransform::Identity, SpawnParams);
         if (NewActor) {
             DeactivateActorForPool(NewActor);
+            FPoolBucket& Bucket = PoolMap.FindOrAdd(ActorClass);
             Bucket.IdleActors.Add(NewActor);
             Bucket.IdleActorSet.Add(NewActor);
         }
@@ -93,7 +93,7 @@ void UObjectPoolSubsystem::Prewarm(TSubclassOf<AActor> ActorClass, int32 Prewarm
 
     if constexpr (Game::Config::bEnableLog) {
         UE_LOG(LogGameObjectPool, Log, TEXT("【对象池】预热完成: 类=[%s], 请求数量=%d, 当前空闲池大小=%d"),
-            *ActorClass->GetName(), PrewarmCount, Bucket.IdleActors.Num());
+            *ActorClass->GetName(), PrewarmCount, PoolMap.FindOrAdd(ActorClass).IdleActors.Num());
     }
 }
 
@@ -102,11 +102,17 @@ void UObjectPoolSubsystem::SetMaxPoolCapacity(TSubclassOf<AActor> ActorClass, in
         return;
     }
 
-    FPoolBucket& Bucket = PoolMap.FindOrAdd(ActorClass);
-    Bucket.MaxIdleCount = InMaxIdleCount;
-    while (InMaxIdleCount > 0 && Bucket.IdleActors.Num() > InMaxIdleCount) {
-        TObjectPtr<AActor> ExcessActor = Bucket.IdleActors.Pop();
-        Bucket.IdleActorSet.Remove(ExcessActor);
+    PoolMap.FindOrAdd(ActorClass).MaxIdleCount = InMaxIdleCount;
+    while (true) {
+        TObjectPtr<AActor> ExcessActor;
+        {
+            FPoolBucket& Bucket = PoolMap.FindOrAdd(ActorClass);
+            if (InMaxIdleCount <= 0 || Bucket.IdleActors.Num() <= InMaxIdleCount) {
+                break;
+            }
+            ExcessActor = Bucket.IdleActors.Pop();
+            Bucket.IdleActorSet.Remove(ExcessActor);
+        }
         if (IsValid(ExcessActor.Get())) {
             ExcessActor->OnDestroyed.RemoveAll(this);
             ExcessActor->Destroy();
@@ -123,12 +129,18 @@ AActor* UObjectPoolSubsystem::AcquireActor(TSubclassOf<AActor> ActorClass, const
         return nullptr;
     }
 
-    FPoolBucket& Bucket = PoolMap.FindOrAdd(ActorClass);
     AActor* ResultActor = nullptr;
 
-    while (!Bucket.IdleActors.IsEmpty()) {
-        TObjectPtr<AActor> Candidate = Bucket.IdleActors.Pop();
-        Bucket.IdleActorSet.Remove(Candidate);
+    while (true) {
+        TObjectPtr<AActor> Candidate;
+        {
+            FPoolBucket& Bucket = PoolMap.FindOrAdd(ActorClass);
+            if (Bucket.IdleActors.IsEmpty()) {
+                break;
+            }
+            Candidate = Bucket.IdleActors.Pop();
+            Bucket.IdleActorSet.Remove(Candidate);
+        }
         if (IsValid(Candidate.Get())) {
             ResultActor = Candidate.Get();
             break;
@@ -165,12 +177,21 @@ AActor* UObjectPoolSubsystem::AcquireActor(TSubclassOf<AActor> ActorClass, const
     ResultActor->CustomTimeDilation = DefaultTimeDilation;
 
     ResultActor->OnDestroyed.AddUniqueDynamic(this, &UObjectPoolSubsystem::OnPooledActorDestroyed);
-    InvokePoolableCallback(ResultActor, true);
+    {
+        FPoolBucket& Bucket = PoolMap.FindOrAdd(ActorClass);
+        Bucket.ActiveActorSet.Add(ResultActor);
+        ++Bucket.ActiveCount;
+    }
 
-    ++Bucket.ActiveCount;
+    InvokePoolableCallback(ResultActor, true);
+    const FPoolBucket* Bucket = PoolMap.Find(ActorClass);
+    if (!IsValid(ResultActor) || Bucket == nullptr || !Bucket->ActiveActorSet.Contains(ResultActor)) {
+        return nullptr;
+    }
+
     if constexpr (Game::Config::bEnableLog) {
         UE_LOG(LogGameObjectPool, Verbose, TEXT("【对象池】借出 Actor 成功: 类=[%s], 实例=[%s], 活跃数=%d, 剩余空闲数=%d"),
-            *ActorClass->GetName(), *GetNameSafe(ResultActor), Bucket.ActiveCount, Bucket.IdleActors.Num());
+            *ActorClass->GetName(), *GetNameSafe(ResultActor), Bucket->ActiveCount, Bucket->IdleActors.Num());
     }
     return ResultActor;
 }
@@ -184,16 +205,20 @@ void UObjectPoolSubsystem::ReleaseActor(AActor* Actor) {
     }
 
     TSubclassOf<AActor> ActorClass = Actor->GetClass();
-    FPoolBucket& Bucket = PoolMap.FindOrAdd(ActorClass);
-    if (Bucket.IdleActorSet.Contains(Actor)) {
+    FPoolBucket* Bucket = PoolMap.Find(ActorClass);
+    if (Bucket == nullptr || Bucket->ActiveActorSet.Remove(Actor) == 0) {
         if constexpr (Game::Config::bEnableLog) {
-            UE_LOG(LogGameObjectPool, Warning, TEXT("【对象池】归还警告：Actor [%s] 已在空闲池中，避免重复归还。"), *GetNameSafe(Actor));
+            UE_LOG(LogGameObjectPool, Warning, TEXT("【对象池】归还警告：Actor [%s] 不是当前活跃池属实例，已忽略归还。"), *GetNameSafe(Actor));
         }
         return;
     }
+    --Bucket->ActiveCount;
 
     Actor->OnDestroyed.RemoveAll(this);
     InvokePoolableCallback(Actor, false);
+    if (!IsValid(Actor)) {
+        return;
+    }
 
     Actor->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
 
@@ -228,22 +253,29 @@ void UObjectPoolSubsystem::ReleaseActor(AActor* Actor) {
         }
     }
 
+    if (!IsValid(Actor)) {
+        return;
+    }
     DeactivateActorForPool(Actor);
 
-    if (Bucket.MaxIdleCount > 0 && Bucket.IdleActors.Num() >= Bucket.MaxIdleCount) {
-        Actor->Destroy();
-    } else {
-        Bucket.IdleActors.Add(Actor);
-        Bucket.IdleActorSet.Add(Actor);
+    bool bDestroyActor = false;
+    {
+        FPoolBucket& CurrentBucket = PoolMap.FindOrAdd(ActorClass);
+        if (CurrentBucket.MaxIdleCount > 0 && CurrentBucket.IdleActors.Num() >= CurrentBucket.MaxIdleCount) {
+            bDestroyActor = true;
+        } else {
+            CurrentBucket.IdleActors.Add(Actor);
+            CurrentBucket.IdleActorSet.Add(Actor);
+        }
     }
-
-    if (Bucket.ActiveCount > 0) {
-        --Bucket.ActiveCount;
+    if (bDestroyActor) {
+        Actor->Destroy();
     }
 
     if constexpr (Game::Config::bEnableLog) {
+        const FPoolBucket* CurrentBucket = PoolMap.Find(ActorClass);
         UE_LOG(LogGameObjectPool, Verbose, TEXT("【对象池】归还 Actor 成功: 类=[%s], 实例=[%s], 剩余活跃数=%d, 当前空闲数=%d"),
-            *ActorClass->GetName(), *GetNameSafe(Actor), Bucket.ActiveCount, Bucket.IdleActors.Num());
+            *ActorClass->GetName(), *GetNameSafe(Actor), CurrentBucket->ActiveCount, CurrentBucket->IdleActors.Num());
     }
 }
 
@@ -275,8 +307,12 @@ void UObjectPoolSubsystem::ClearPool(TSubclassOf<AActor> ActorClass) {
 }
 
 void UObjectPoolSubsystem::ClearAllPools() {
-    for (auto& Pair : PoolMap) {
-        DestroyBucketIdleActors(Pair.Value);
+    TArray<TSubclassOf<AActor>> ActorClasses;
+    PoolMap.GenerateKeyArray(ActorClasses);
+    for (const TSubclassOf<AActor>& ActorClass : ActorClasses) {
+        if (FPoolBucket* Bucket = PoolMap.Find(ActorClass)) {
+            DestroyBucketIdleActors(*Bucket);
+        }
     }
 }
 
@@ -289,19 +325,20 @@ void UObjectPoolSubsystem::OnPooledActorDestroyed(AActor* DestroyedActor) {
     if (FPoolBucket* Bucket = PoolMap.Find(ActorClass)) {
         Bucket->IdleActorSet.Remove(DestroyedActor);
         Bucket->IdleActors.Remove(DestroyedActor);
-        if (Bucket->ActiveCount > 0) {
+        if (Bucket->ActiveActorSet.Remove(DestroyedActor) > 0) {
             --Bucket->ActiveCount;
         }
     }
 }
 
 void UObjectPoolSubsystem::DestroyBucketIdleActors(FPoolBucket& Bucket) {
-    for (TObjectPtr<AActor>& IdleActor : Bucket.IdleActors) {
+    TArray<TObjectPtr<AActor>> IdleActors = MoveTemp(Bucket.IdleActors);
+    Bucket.IdleActors.Empty();
+    Bucket.IdleActorSet.Empty();
+    for (TObjectPtr<AActor>& IdleActor : IdleActors) {
         if (IsValid(IdleActor.Get())) {
             IdleActor->OnDestroyed.RemoveAll(this);
             IdleActor->Destroy();
         }
     }
-    Bucket.IdleActors.Empty();
-    Bucket.IdleActorSet.Empty();
 }

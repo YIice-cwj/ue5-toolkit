@@ -1,15 +1,12 @@
 /**
  * @file FStaticDataRepository.h
- * @brief 类型擦除泛型静态数据仓库（纯 C++ 脱机可实例化，仅作 .bin I/O 与导出）
+ * @brief 类型擦除泛型静态数据仓库（纯 C++ 脱机可实例化，行负载容器与序列化器注册）
  *
  * 设计思路：仓库对行类型零知识——所有行以二进制负载存储，负载读写由**生成式序列化器**
  * （数据表生成管线的 serialization_generator 产出，经 RegisterRowSerializer 登记）承担，
  * 仓库仅按结构名调度，全程不经 UScriptStruct 反射；不依赖 UWorld/UGameInstance，可脱机实例化。
- * 边界声明：本仓库不携带数据版本（版本仍归 FStaticDataSnapshot），
- * 不接入运行时查询路径，仅承接 .bin 反序列化结果与 Cook 前置导出。
- * 文件格式（平台端序直写，不作跨端序承诺）：
- *   [magic:4] [格式版本:4] [表数:4] { [结构名 FString] [行数:4] { [行键 FString] [行负载长度:4] [行负载字节] } } [CRC32:4]
- * 其中 CRC32 覆盖自格式版本起至末行负载的全部字节——校验不符即整体拒绝加载。
+ * 边界声明：本仓库不携带数据版本（版本仍归 FStaticDataSnapshot），不接入运行时查询路径；
+ * `.bin` 文件格式编解码（Magic / 版本 / CRC32 / 摘要）由 `FStaticDataBinCodec` 承担。
  */
 
 #pragma once
@@ -21,7 +18,7 @@
 class FMemoryReader;
 
 /**
- * @brief 类型擦除泛型静态数据仓库（.bin 出入通道，纯 C++ 可脱机实例化）
+ * @brief 类型擦除泛型静态数据仓库（.bin 行负载容器，纯 C++ 可脱机实例化）
  */
 class GAMEDATACORE_API FStaticDataRepository {
 public:
@@ -29,15 +26,6 @@ public:
      * @brief 行负载读写函数指针（生成式免反射；RowPtr 指向行结构体，实现按 Ar.IsSaving() 分流读写）
      */
     using FRowPayloadFunc = bool (*)(FArchive& Ar, void* RowPtr);
-
-private:
-    /**
-     * @brief 单表二进制镜像：结构名 + 行键到行负载的映射
-     */
-    struct FBinaryTable {
-        FString StructName;
-        TMap<FName, TArray<uint8>> Rows;
-    };
 
 public:
     FStaticDataRepository() = default;
@@ -82,16 +70,16 @@ public:
     void Reset() noexcept;
 
     /**
-     * @brief 导出全部装载表至 .bin 文件（脱机导出，Cook 前置）
+     * @brief 导出全部装载表至 .bin 文件（脱机导出，Cook 前置；字节编码委托 FStaticDataBinCodec）
      * @param FilePath 目标文件绝对路径
-     * @return 成功返回 true；写盘失败返回 false（置 IoFailure）
+     * @return 成功返回 true；编码或写盘失败返回 false（置 IoFailure）
      */
     [[nodiscard]] bool ExportToFile(const FString& FilePath) const;
 
     /**
-     * @brief 自 .bin 文件装载全部表（校验 magic/版本/CRC，失败保持原状）
+     * @brief 自 .bin 文件装载全部表（校验 Magic / 版本 / CRC，失败保持原状）
      * @param FilePath 源文件绝对路径
-     * @return 成功返回 true；任一校验失败返回 false（置对应错误码，已装载数据零触碰）
+     * @return 成功返回 true；读取或解码失败返回 false（置对应错误码，已装载数据零触碰）
      */
     [[nodiscard]] bool ImportFromFile(const FString& FilePath);
 
@@ -103,10 +91,9 @@ public:
 
     /**
      * @brief 计算仓库内容摘要（与装载顺序无关，供双通道数据一致性对拍）
-     * @return 表数、总行数与 SHA1 摘要（空仓库摘要为空串）
+     * @return 表数、总行数与 SHA-1 摘要；空仓库返回 SHA-1 空输入摘要
      *
-     * 实现思路：表按结构名、行按行键排序后逐项并入「结构名 + 行数 + 行键 + 行负载」字节流，
-     * 与装载顺序解耦——同一批数据无论经 .bin 还是 JSON 通道装载，摘要必须一致
+     * 实现思路：摘要计算委托 FStaticDataBinCodec，表按结构名、行按行键排序后并入字节流
      */
     [[nodiscard]] FStaticDataContentDigest ComputeContentDigest() const;
 
@@ -129,15 +116,7 @@ private:
      */
     bool DeserializeRowFromPayload(const FName& StructName, const TArray<uint8>& InPayload, void* OutRowPtr) const;
 
-    /**
-     * @brief 解析负载区为表集合（临时装载，供 Import 成功时原子换入）
-     * @param PayloadReader 已定位到版本字段的读取器（magic 已剥离）
-     * @param OutTables 输出表集合
-     * @return 解析成功返回 true
-     */
-    static bool ParseTables(FMemoryReader& PayloadReader, TMap<FName, FBinaryTable>& OutTables);
-
-    TMap<FName, FBinaryTable> Tables;
+    TMap<FName, FStaticDataBinaryTable> Tables;
     TMap<FName, FRowPayloadFunc> RowPayloadFuncs;
     mutable EStaticDataBinError LastError = EStaticDataBinError::None;
 };
@@ -145,7 +124,7 @@ private:
 template <typename TRowType>
 bool FStaticDataRepository::AddTable(const TMap<FName, TRowType>& InRows) {
     const FName StructName(TRowType::StaticStruct()->GetName());
-    FBinaryTable Table;
+    FStaticDataBinaryTable Table;
     Table.StructName = StructName.ToString();
     Table.Rows.Reserve(InRows.Num());
     for (const TPair<FName, TRowType>& Pair : InRows) {
@@ -162,7 +141,7 @@ bool FStaticDataRepository::AddTable(const TMap<FName, TRowType>& InRows) {
 template <typename TRowType>
 bool FStaticDataRepository::ExtractTable(TMap<FName, TRowType>& OutRows) const {
     const FName StructName(TRowType::StaticStruct()->GetName());
-    const FBinaryTable* Table = Tables.Find(StructName);
+    const FStaticDataBinaryTable* Table = Tables.Find(StructName);
     if (Table == nullptr) {
         LastError = EStaticDataBinError::TableNotFound;
         return false;

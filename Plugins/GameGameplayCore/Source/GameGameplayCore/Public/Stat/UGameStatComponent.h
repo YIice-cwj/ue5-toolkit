@@ -16,8 +16,8 @@
 #include "GameplayTagContainer.h"
 #include "UObject/WeakObjectPtrTemplates.h"
 
-#include "Stat/IGameStatValueSource.h"
 #include "Stat/FGameStatTypes.h"
+#include "Stat/FGameStatAcknowledgedDiff.h"
 #include "Stat/FGameStatModifierContainer.h"
 #include "Stat/FGameStatSubscriptionHub.h"
 
@@ -202,48 +202,6 @@ public:
     void SetStatMax(const FGameplayTag& InStatTag, float NewMax, bool bKeepRelativePercent = true);
 
     /**
-     * @brief 绑定外部数值源接口并切换到代理模式
-     * @param InSource 实现了 IGameStatValueSource 的外部数值源对象接口
-     */
-    UFUNCTION(BlueprintCallable, Category = "Game|Stat")
-    void BindStatSource(TScriptInterface<IGameStatValueSource> InSource);
-
-    /**
-     * @brief 绑定原生 C++ 查询委托并切换到代理模式
-     * @param InCurrentQuery 读取当前值的委托
-     * @param InMaxQuery 读取上限值的委托
-     */
-    void BindNativeStatQueries(FGameStatQueryDelegate InCurrentQuery, FGameStatQueryDelegate InMaxQuery);
-
-    /**
-     * @brief 绑定代理模式下的外部写委托
-     * @param InWriter 执行写入操作的委托
-     */
-    void BindNativeStatWriter(FGameStatWriteDelegate InWriter);
-
-    /**
-     * @brief 解绑外部代理源并回落到自持独立模式
-     */
-    UFUNCTION(BlueprintCallable, Category = "Game|Stat")
-    void UnbindStatSource();
-
-    /**
-     * @brief 读取当前组件所处的数值来源模式（自持模式或代理模式）
-     * @return 当前数值来源枚举
-     */
-    UFUNCTION(BlueprintCallable, Category = "Game|Stat")
-    [[nodiscard]] FORCEINLINE EGameStatSourceMode GetSourceMode() const noexcept {
-        return SourceMode;
-    }
-
-    /**
-     * @brief 查询当前端是否允许执行数值写入操作
-     * @return 允许写入返回 true，否则返回 false
-     */
-    UFUNCTION(BlueprintPure, Category = "Game|Stat")
-    [[nodiscard]] bool CanWriteStat() const;
-
-    /**
      * @brief 订阅单个属性的变动通知（原生委托句柄版本）
      * @param InStatTag 目标属性标签
      * @param InDelegate 订阅回调委托
@@ -252,7 +210,7 @@ public:
     FDelegateHandle SubscribeStatChanged(const FGameplayTag& InStatTag, FOnGameStatChangedNative::FDelegate InDelegate);
 
     /**
-     * @brief 订阅单个属性的变动通知（绑定 Owner 生命周期的 Lambda 闭包版本）
+     * @brief 订阅单个属性的变动通知，并仅向本次新订阅者回放当前值（绑定 Owner 生命周期）
      * @param Owner 归属的 UObject 对象指针
      * @param InStatTag 目标属性标签
      * @param InCallback 属性变动时的回调闭包
@@ -271,37 +229,83 @@ public:
      */
     void UnsubscribeStatChanged(const FGameplayTag& InStatTag, FDelegateHandle InHandle);
 
+protected:
     /**
-     * @brief 获取内部修正器容器的常量只读引用
-     * @return 修正器容器只读引用
+     * @brief 属性数组网络复制到达客户端时的回调
      */
-    [[nodiscard]] const FGameStatModifierContainer& GetModifierContainer() const noexcept {
-        return ModifierContainer;
-    }
+    UFUNCTION()
+    void OnRep_ReplicatedStats();
+
+private:
+    /**
+     * @brief 从标签索引表读取属性所在复制数组下标
+     * @param InStatTag 目标属性标签
+     * @return 属性下标；未注册时返回 INDEX_NONE
+     */
+    [[nodiscard]] int32 ResolveStatIndex(const FGameplayTag& InStatTag) const;
 
     /**
-     * @brief 获取内部修正器容器的可变引用
-     * @return 修正器容器可变引用
+     * @brief 查找指定标签的可写基础属性值
+     * @param InStatTag 目标属性标签
+     * @return 可写属性值指针；未注册时返回 nullptr
      */
-    [[nodiscard]] FGameStatModifierContainer& GetModifierContainer() noexcept {
-        return ModifierContainer;
-    }
+    FGameStatValue* FindMutableStat(const FGameplayTag& InStatTag);
 
     /**
-     * @brief 获取内部订阅中心的常量只读引用
-     * @return 订阅中心只读引用
+     * @brief 查找指定标签的只读基础属性值
+     * @param InStatTag 目标属性标签
+     * @return 只读属性值指针；未注册时返回 nullptr
      */
-    [[nodiscard]] const FGameStatSubscriptionHub& GetSubscriptionHub() const noexcept {
-        return SubscriptionHub;
-    }
+    const FGameStatValue* FindStat(const FGameplayTag& InStatTag) const;
 
     /**
-     * @brief 获取内部订阅中心的可变引用
-     * @return 订阅中心可变引用
+     * @brief 更新或新增指定属性的复制条目并同步标签索引
+     * @param InStatTag 目标属性标签
+     * @param InValue 待写入的基础属性值
      */
-    [[nodiscard]] FGameStatSubscriptionHub& GetSubscriptionHub() noexcept {
-        return SubscriptionHub;
-    }
+    void SyncEntryToReplicatedList(const FGameplayTag& InStatTag, const FGameStatValue& InValue);
+
+    /**
+     * @brief 按当前复制数组顺序重建标签到下标的映射
+     */
+    void RebuildStatIndex();
+
+    /**
+     * @brief 记录已确认有效值并向动态、原生及按标签订阅者广播属性变化
+     * @param InStatTag 目标属性标签
+     * @param OldValue 变化前的有效当前值
+     * @param NewValue 变化后的有效当前值
+     * @param MaxValue 当前有效上限
+     */
+    void BroadcastStatChanged(const FGameplayTag& InStatTag, float OldValue, float NewValue, float MaxValue);
+
+    /**
+     * @brief 修正器操作后重新计算有效值，并仅在当前值或上限变化时广播
+     * @param InStatTag 目标属性标签
+     * @param bStatRegistered 操作前属性是否已注册
+     * @param OldEffectiveCurrent 操作前的有效当前值
+     * @param OldEffectiveMax 操作前的有效上限
+     */
+    void NotifyIfEffectiveStatChanged(const FGameplayTag& InStatTag, bool bStatRegistered, float OldEffectiveCurrent, float OldEffectiveMax);
+
+    /**
+     * @brief 根据宿主网络权限与组件配置判断是否允许写入属性
+     * @return 允许写入返回 true，否则返回 false
+     */
+    bool IsAuthoritativeWriteAllowed() const;
+
+private:
+    UPROPERTY(EditDefaultsOnly, Category = "Game|Stat")
+    bool bAllowNonAuthoritativeWrites = false;
+
+    UPROPERTY(ReplicatedUsing = OnRep_ReplicatedStats)
+    TArray<FGameStatEntry> ReplicatedStats;
+
+    TMap<FGameplayTag, int32> StatIndex;
+
+    FGameStatModifierContainer ModifierContainer;
+    FGameStatSubscriptionHub SubscriptionHub;
+    FGameStatAcknowledgedDiff AcknowledgedDiff;
 
 public:
     /**
@@ -314,45 +318,4 @@ public:
      * @brief 属性变动原生 C++ 多播委托
      */
     FOnGameStatChangedNative OnStatChangedNative;
-
-protected:
-    /**
-     * @brief 属性数组网络复制到达客户端时的回调
-     */
-    UFUNCTION()
-    void OnRep_ReplicatedStats();
-
-private:
-    [[nodiscard]] int32 ResolveStatIndex(const FGameplayTag& InStatTag) const;
-    FGameStatValue* FindMutableStat(const FGameplayTag& InStatTag);
-    const FGameStatValue* FindStat(const FGameplayTag& InStatTag) const;
-    void SyncEntryToReplicatedList(const FGameplayTag& InStatTag, const FGameStatValue& InValue);
-    void RebuildStatIndex();
-    void BroadcastStatChanged(const FGameplayTag& InStatTag, float OldValue, float NewValue, float MaxValue);
-    void NotifyIfEffectiveStatChanged(const FGameplayTag& InStatTag, bool bStatRegistered, float OldEffectiveCurrent, float OldEffectiveMax);
-    bool ExecuteExternalWrite(const FGameplayTag& InStatTag, EGameStatWriteOp Op, float InValue, float& OutAppliedDelta);
-    bool IsAuthoritativeWriteAllowed() const;
-
-private:
-    UPROPERTY(EditDefaultsOnly, Category = "Game|Stat")
-    EGameStatSourceMode SourceMode = EGameStatSourceMode::Standalone;
-
-    UPROPERTY(EditDefaultsOnly, Category = "Game|Stat")
-    bool bAllowNonAuthoritativeWrites = false;
-
-    UPROPERTY(ReplicatedUsing = OnRep_ReplicatedStats)
-    TArray<FGameStatEntry> ReplicatedStats;
-
-    UPROPERTY(Transient)
-    TScriptInterface<IGameStatValueSource> ProxySource;
-
-    FGameStatQueryDelegate NativeCurrentQuery;
-    FGameStatQueryDelegate NativeMaxQuery;
-    FGameStatWriteDelegate NativeStatWriter;
-
-    TMap<FGameplayTag, int32> StatIndex;
-    TMap<FGameplayTag, FGameStatValue> AcknowledgedStats;
-
-    FGameStatModifierContainer ModifierContainer;
-    FGameStatSubscriptionHub SubscriptionHub;
 };

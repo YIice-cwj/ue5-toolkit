@@ -23,8 +23,8 @@ from typing import Dict, List, Optional, Tuple
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(SCRIPT_DIR) if os.path.basename(SCRIPT_DIR) == ".scripts" else SCRIPT_DIR
 INSTALL_SCRIPT = os.path.join(SCRIPT_DIR, "install.py")
-REQUIRED_PLUGINS = ("GameCore", "GameLogging", "GameData", "GameGameplayCore", "GameGameplay")
-TEST_PREFIX = "Game.Data"
+REQUIRED_PLUGINS = ("GameCore", "GameLogging", "GameData", "GameGameplayCore", "GameGameplay", "GameFeedback")
+TEST_PREFIXES = ("Game.Data", "Game.Feedback")
 SUPPORTED_MINOR_MIN = 1
 SUPPORTED_MINOR_MAX = 8
 SUPPORTED_ENGINE_RANGE_DESC = f"5.{SUPPORTED_MINOR_MIN} ~ 5.{SUPPORTED_MINOR_MAX}"
@@ -354,7 +354,7 @@ def main() -> None:
         test_command = [
             editor,
             uproject_path,
-            f"-ExecCmds=Automation RunTests {TEST_PREFIX}; Quit",
+            f"-ExecCmds={'; '.join('Automation RunTests ' + prefix for prefix in TEST_PREFIXES)}; Quit",
             "-unattended",
             "-nullrhi",
             "-nosplash",

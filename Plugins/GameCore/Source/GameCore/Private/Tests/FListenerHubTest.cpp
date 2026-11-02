@@ -29,7 +29,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameListenerHubSnapshotTest, "Game.Core.Listen
  * 实现思路：首订阅者在回调内追加第二订阅者，断言当轮仍只有首订阅者收到；
  * 再经守卫 Reset 退订首订阅者，断言仅第二订阅者继续收到
  */
-bool FGameListenerHubSnapshotTest::RunTest([[maybe_unused]] const FString& Parameters) {
+bool FGameListenerHubSnapshotTest::RunTest(const FString& Parameters) {
     FListenerHub& Hub = FListenerHub::Get();
     static const FName EventName(TEXT("UnitTest.Listener.HubSnapshot"));
 
@@ -76,7 +76,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameListenerHubTypeFingerprintTest, "Game.Core
  * 实现思路：两个独立事件分别以结构体与标量为载荷注册，断言各自广播互不触发对方回调；
  * 同时校验同一类型指纹在不同事件的多次求值稳定一致
  */
-bool FGameListenerHubTypeFingerprintTest::RunTest([[maybe_unused]] const FString& Parameters) {
+bool FGameListenerHubTypeFingerprintTest::RunTest(const FString& Parameters) {
     FListenerHub& Hub = FListenerHub::Get();
     static const FName StructEventName(TEXT("UnitTest.Listener.PayloadStruct"));
     static const FName ScalarEventName(TEXT("UnitTest.Listener.PayloadScalar"));

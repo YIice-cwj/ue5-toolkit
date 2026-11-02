@@ -20,6 +20,9 @@ struct GAMECORE_API FPoolBucket {
     UPROPERTY()
     TSet<TObjectPtr<AActor>> IdleActorSet;
 
+    UPROPERTY()
+    TSet<TObjectPtr<AActor>> ActiveActorSet;
+
     int32 ActiveCount = 0;
 
     /**

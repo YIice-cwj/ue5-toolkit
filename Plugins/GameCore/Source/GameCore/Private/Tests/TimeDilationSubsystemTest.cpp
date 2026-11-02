@@ -208,5 +208,24 @@ bool FGameTimePersistentBlendOutTest::RunTest([[maybe_unused]] const FString& Pa
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameTimeDilationMixerCrossBoundaryTest, "Game.Core.Time.DilationMixerCrossBoundary",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+/**
+ * @brief 验证单次大 Delta 先耗尽持续阶段，再以剩余 Delta 推进淡出插值
+ * @param Parameters 自动化框架参数（未使用）
+ * @return 全部断言通过返回 true
+ */
+bool FGameTimeDilationMixerCrossBoundaryTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    FGlobalDilationMixer Mixer;
+    Mixer.Request(ETimeDilationChannel::SlowMo, 1.0f, 0.2f, 1.0f);
+    Mixer.Advance(1.5f);
+
+    TestTrue(TEXT("跨越持续边界后淡出通道仍激活"), Mixer.IsActive(ETimeDilationChannel::SlowMo));
+    TestNearlyEqual(TEXT("剩余半秒用于淡出插值"), Mixer.GetChannelDilation(ETimeDilationChannel::SlowMo), 0.6f, 0.0001f);
+    TestNearlyEqual(TEXT("生效值同步到跨阶段插值"), Mixer.GetEffectiveDilation(), 0.6f, 0.0001f);
+    return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS
 

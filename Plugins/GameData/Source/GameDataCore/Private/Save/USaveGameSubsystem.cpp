@@ -24,6 +24,7 @@ FString USaveGameSubsystem::GetSaveSlotTempFilePath(const FString& SlotName) {
 void USaveGameSubsystem::Deinitialize() {
     SegmentRegistry.Reset();
     AllowedSlotNames.Empty();
+    AsyncLoadGenerations.Empty();
     Super::Deinitialize();
 }
 
@@ -140,29 +141,35 @@ bool USaveGameSubsystem::LoadGameFromSlotAsync(const FString& SlotName) {
         return false;
     }
 
+    const uint64 LoadGeneration = ++AsyncLoadGenerations.FindOrAdd(SlotName);
     TWeakObjectPtr<USaveGameSubsystem> WeakThis(this);
-    FGameThreadTaskRunner::Run(WeakThis, [WeakThis, SlotName]() {
+    FGameThreadTaskRunner::Run(WeakThis, [WeakThis, SlotName, LoadGeneration]() {
         TArray<uint8> Bytes;
         const bool bReadSuccess = FSaveGameFileIO::ReadSlotBytes(SlotName, Bytes);
 
-        FGameThreadTaskRunner::RunOnGameThread(WeakThis, [WeakThis, SlotName, bReadSuccess, Payload = MoveTemp(Bytes)]() mutable {
-            bool bSuccess = false;
-            if (bReadSuccess) {
-                USaveGame* LoadedObject = UGameplayStatics::LoadGameFromMemory(Payload);
-                if (LoadedObject != nullptr && LoadedObject->IsA(WeakThis->SaveGameClass)) {
-                    UGameSaveArchive* Archive = CastChecked<UGameSaveArchive>(LoadedObject);
-                    bSuccess = Archive->Metadata.ArchiveVersion <= UGameSaveArchive::CurrentArchiveVersion
-                        && WeakThis->SegmentRegistry.ApplyArchive(SlotName, *Archive);
+        FGameThreadTaskRunner::RunOnGameThread(WeakThis,
+            [WeakThis, SlotName, LoadGeneration, bReadSuccess, Payload = MoveTemp(Bytes)]() mutable {
+                const uint64* LatestGeneration = WeakThis->AsyncLoadGenerations.Find(SlotName);
+                const bool bIsLatest = LatestGeneration != nullptr && *LatestGeneration == LoadGeneration;
+                bool bSuccess = false;
+                if (bIsLatest && bReadSuccess) {
+                    USaveGame* LoadedObject = UGameplayStatics::LoadGameFromMemory(Payload);
+                    if (LoadedObject != nullptr && LoadedObject->IsA(WeakThis->SaveGameClass)) {
+                        UGameSaveArchive* Archive = CastChecked<UGameSaveArchive>(LoadedObject);
+                        bSuccess = Archive->Metadata.ArchiveVersion <= UGameSaveArchive::CurrentArchiveVersion
+                            && WeakThis->SegmentRegistry.ApplyArchive(SlotName, *Archive);
+                    }
                 }
-            }
 
-            if (bSuccess) {
-                GAME_LOG(Log, TEXT("【存档子系统】异步成功装载槽位: %s"), *SlotName);
-            } else {
-                GAME_LOG(Error, TEXT("【存档子系统】异步装载槽位失败: %s"), *SlotName);
-            }
-            WeakThis->OnLoadComplete.Broadcast(SlotName, bSuccess);
-        });
+                if (!bIsLatest) {
+                    GAME_LOG(Log, TEXT("【存档子系统】过期异步加载已取消: %s"), *SlotName);
+                } else if (bSuccess) {
+                    GAME_LOG(Log, TEXT("【存档子系统】异步成功装载槽位: %s"), *SlotName);
+                } else {
+                    GAME_LOG(Error, TEXT("【存档子系统】异步装载槽位失败: %s"), *SlotName);
+                }
+                WeakThis->OnLoadComplete.Broadcast(SlotName, bSuccess);
+            });
     });
 
     return true;
@@ -216,6 +223,7 @@ bool USaveGameSubsystem::DeleteSaveSlot(const FString& SlotName) {
         return false;
     }
     SegmentRegistry.ClearPreservedSegmentsForSlot(SlotName);
+    ++AsyncLoadGenerations.FindOrAdd(SlotName);
     return FSaveGameFileIO::DeleteSaveSlot(SlotName);
 }
 

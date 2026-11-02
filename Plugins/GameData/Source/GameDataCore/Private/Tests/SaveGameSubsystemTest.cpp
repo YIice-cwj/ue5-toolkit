@@ -1,6 +1,6 @@
 /**
  * @file SaveGameSubsystemTest.cpp
- * @brief 存档子系统自动化测试（段注册、版本迁移、槽位白名单、原子写保护与容灾恢复），Shipping 构建自动剔除
+ * @brief 存档子系统自动化测试（段迁移、代次防竞争、最新异步加载与容灾恢复），Shipping 构建自动剔除
  */
 
 #include "Save/USaveGameSubsystem.h"
@@ -16,6 +16,15 @@
 
 #include "Tests/GameSaveTestTypes.h"
 
+/**
+ * @brief 记录一次异步加载完成结果
+ * @param SlotName 完成回调对应的槽位名称
+ * @param bSuccess 加载是否成功
+ */
+void UGameSaveTestEventListener::RecordLoadComplete(const FString&, bool bSuccess) {
+    CompletionResults.Add(bSuccess);
+}
+
 namespace {
 
 const FString TestSlotName = TEXT("UnitTest_SaveSlot_01");
@@ -29,12 +38,23 @@ struct FSaveSegmentState {
     FString Label;
 };
 
+/**
+ * @brief 创建独立 GameInstance 并获取其存档子系统
+ * @param OutGameInstance 输出由测试负责关闭的 GameInstance
+ * @return 独立 GameInstance 上的存档子系统
+ */
 USaveGameSubsystem* CreateTestSubsystem(UGameInstance*& OutGameInstance) {
     OutGameInstance = NewObject<UGameInstance>(GEngine);
     OutGameInstance->InitializeStandalone(FName(TEXT("SaveGameSubsystemTestWorld")));
     return OutGameInstance->GetSubsystem<USaveGameSubsystem>();
 }
 
+/**
+ * @brief 注册可执行版本迁移的测试存档段
+ * @param Subsystem 目标存档子系统
+ * @param State 保存与加载委托共享的测试状态
+ * @param Version 当前测试段版本
+ */
 void RegisterTestSegment(USaveGameSubsystem* Subsystem, FSaveSegmentState& State, int32 Version) {
     FGameSaveSegment Segment;
     Segment.SegmentName = FName(TEXT("UnitTest.Segment"));
@@ -56,6 +76,57 @@ void RegisterTestSegment(USaveGameSubsystem* Subsystem, FSaveSegmentState& State
     };
     Subsystem->RegisterSegment(Segment);
 }
+
+/**
+ * @brief 最新异步加载测试的跨续体共享状态
+ */
+struct FAsyncLoadLatestTestState {
+    TStrongObjectPtr<UGameInstance> GameInstance;
+    TStrongObjectPtr<UGameSaveTestEventListener> Listener;
+    TWeakObjectPtr<USaveGameSubsystem> Subsystem;
+    FString SlotName;
+    int32 SourceValue = 77;
+    int32 LoadedValue = 0;
+    int32 ApplyCount = 0;
+};
+
+/**
+ * @brief 等待最新异步加载测试的全部完成回调并验证结果
+ */
+class FWaitForAsyncLoadLatestCommand : public IAutomationLatentCommand {
+public:
+    /**
+     * @brief 构造等待命令
+     * @param InTest 当前自动化测试上下文
+     * @param InState 跨后台任务与主线程续体共享的状态
+     */
+    FWaitForAsyncLoadLatestCommand(FAutomationTestBase& InTest, const TSharedRef<FAsyncLoadLatestTestState>& InState)
+        : Test(InTest)
+        , State(InState) {
+    }
+
+    /**
+     * @brief 在回调未收齐时继续等待，收齐后验证并结束命令
+     * @return 两个完成回调均已到达并执行断言返回 true，否则返回 false
+     */
+    bool Update() override {
+        if (State->Listener->CompletionResults.Num() < 2) {
+            return false;
+        }
+
+        Test.TestEqual(TEXT("只有最新请求应用业务段"), State->ApplyCount, 1);
+        Test.TestEqual(TEXT("最新请求应用了存档值"), State->LoadedValue, State->SourceValue);
+        Test.TestTrue(TEXT("过期请求以取消结束"), State->Listener->CompletionResults.Contains(false));
+        Test.TestTrue(TEXT("最新请求成功完成"), State->Listener->CompletionResults.Contains(true));
+        State->Subsystem->DeleteSaveSlot(State->SlotName);
+        State->GameInstance->Shutdown();
+        return true;
+    }
+
+private:
+    FAutomationTestBase& Test;
+    TSharedRef<FAsyncLoadLatestTestState> State;
+};
 
 }  // namespace
 
@@ -172,6 +243,103 @@ bool FSaveGameSubsystemGenericTest::RunTest([[maybe_unused]] const FString& Para
     TestFalse(TEXT("删除后恢复文件不存在"), FPaths::FileExists(RecoveryFinalPath));
 
     GameInstance->Shutdown();
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FSaveGameGenerationTest,
+    "Game.Data.SaveGeneration",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证删除槽位后旧保存代次不能覆盖新档
+ * @param Parameters 自动化测试传入参数字符串
+ * @return 测试框架入口固定返回 true
+ */
+bool FSaveGameGenerationTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    const FString SlotName = TEXT("UnitTest_SaveGeneration");
+    FSaveGameFileIO::DeleteSaveSlot(SlotName);
+
+    UGameSaveTestArchive* OldArchive = NewObject<UGameSaveTestArchive>();
+    UGameSaveTestArchive* NewArchive = NewObject<UGameSaveTestArchive>();
+    OldArchive->Value = 11;
+    NewArchive->Value = 99;
+
+    TArray<uint8> OldBytes;
+    TArray<uint8> NewBytes;
+    TestTrue(TEXT("旧档内存序列化成功"), FSaveGameFileIO::SerializeObject(OldArchive, OldBytes));
+    TestTrue(TEXT("新档内存序列化成功"), FSaveGameFileIO::SerializeObject(NewArchive, NewBytes));
+
+    const uint64 OldGeneration = FSaveGameFileIO::IssueSlotSaveGeneration(SlotName);
+    FSaveGameFileIO::DeleteSaveSlot(SlotName);
+    const uint64 NewGeneration = FSaveGameFileIO::IssueSlotSaveGeneration(SlotName);
+    TestTrue(TEXT("删除后的新代次严格大于旧代次"), NewGeneration > OldGeneration);
+
+    TestTrue(TEXT("新档写入成功"), FSaveGameFileIO::WriteSlotBytes(SlotName, NewBytes, NewGeneration));
+    TestTrue(TEXT("过期写被安全吸收"), FSaveGameFileIO::WriteSlotBytes(SlotName, OldBytes, OldGeneration));
+
+    TArray<uint8> LoadedBytes;
+    TestTrue(TEXT("最终存档读取成功"), FSaveGameFileIO::ReadSlotBytes(SlotName, LoadedBytes));
+    TestTrue(TEXT("过期写没有覆盖新档"), LoadedBytes == NewBytes);
+
+    FSaveGameFileIO::DeleteSaveSlot(SlotName);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FSaveGameSubsystemAsyncLatestTest,
+    "Game.Data.SaveSubsystemAsyncLatest",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证同槽位重复异步加载仅应用最新请求并取消过期请求
+ * @param Parameters 自动化测试传入参数字符串
+ * @return 测试框架入口固定返回 true
+ */
+bool FSaveGameSubsystemAsyncLatestTest::RunTest(const FString& Parameters) {
+    UGameInstance* GameInstance = nullptr;
+    USaveGameSubsystem* Subsystem = CreateTestSubsystem(GameInstance);
+    TestNotNull(TEXT("临时 GameInstance 上的存档子系统有效"), Subsystem);
+    if (Subsystem == nullptr) {
+        return false;
+    }
+
+    const FString SlotName = TEXT("UnitTest_AsyncLatest");
+    const FString SegmentName = TEXT("AsyncLatest");
+    Subsystem->SetAllowedSlotNames({ SlotName });
+
+    TSharedRef<FAsyncLoadLatestTestState> State = MakeShared<FAsyncLoadLatestTestState>();
+    State->GameInstance = TStrongObjectPtr<UGameInstance>(GameInstance);
+    State->Listener = TStrongObjectPtr<UGameSaveTestEventListener>(NewObject<UGameSaveTestEventListener>(GameInstance));
+    State->Subsystem = Subsystem;
+    State->SlotName = SlotName;
+
+    FGameSaveSegment Segment;
+    Segment.SegmentName = FName(*SegmentName);
+    Segment.SegmentVersion = 1;
+    Segment.Save = [State](FArchive& Ar) {
+        Ar << State->SourceValue;
+    };
+    Segment.Load = [State](FArchive& Ar, int32 StoredVersion) {
+        if (StoredVersion != 1) {
+            return false;
+        }
+        Ar << State->LoadedValue;
+        ++State->ApplyCount;
+        return !Ar.IsError();
+    };
+    Subsystem->RegisterSegment(Segment);
+    Subsystem->OnLoadComplete.AddDynamic(State->Listener.Get(), &UGameSaveTestEventListener::RecordLoadComplete);
+
+    TestTrue(TEXT("准备异步加载存档成功"), Subsystem->SaveGameToSlot(SlotName));
+    State->LoadedValue = 0;
+    State->ApplyCount = 0;
+
+    TestTrue(TEXT("第一个异步加载派发成功"), Subsystem->LoadGameFromSlotAsync(SlotName));
+    TestTrue(TEXT("第二个异步加载派发成功"), Subsystem->LoadGameFromSlotAsync(SlotName));
+    ADD_LATENT_AUTOMATION_COMMAND(FWaitForAsyncLoadLatestCommand(*this, State));
     return true;
 }
 

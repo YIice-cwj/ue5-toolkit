@@ -31,7 +31,7 @@ enum class EStaticDataBinError : uint8 {
 struct FStaticDataContentDigest {
     int32 TableCount = 0;
     int32 RowCount = 0;
-    FString Digest;   // 顺序无关的 SHA1 摘要，空仓库为空串
+    FString Digest;   // 顺序无关的 SHA-1 摘要，空仓库为空输入摘要
 };
 ```
 

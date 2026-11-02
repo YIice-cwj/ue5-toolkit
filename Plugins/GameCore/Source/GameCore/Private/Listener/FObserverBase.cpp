@@ -1,44 +1,28 @@
 /**
  * @file FObserverBase.cpp
- * @brief 统一监听基类实现：注册并响应式监听配置中心启停开关
+ * @brief 统一监听基类实现：以配置中心作为启停开关唯一真源
  */
 
 #include "Listener/FObserverBase.h"
 
 FObserverBase::FObserverBase(const FName& InObserverName)
     : ObserverName(InObserverName),
-      EnableConfigKey(BuildEnableConfigKey(InObserverName)),
-      EnabledFlag(MakeShared<std::atomic<bool>>(true)) {
-    FConfigRegistry& Registry = FConfigRegistry::Get();
-    Registry.RegisterConfig<bool>(EnableConfigKey, true);
-    EnabledFlag->store(Registry.GetConfig<bool>(EnableConfigKey, true), std::memory_order_relaxed);
-    TWeakPtr<std::atomic<bool>> WeakFlag = EnabledFlag;
-    EnableWatchSubscription = Registry.WatchConfig<bool>(EnableConfigKey, [WeakFlag](const bool& bNewValue) {
-        if (TSharedPtr<std::atomic<bool>> Pinned = WeakFlag.Pin()) {
-            Pinned->store(bNewValue, std::memory_order_relaxed);
-        }
-    });
+      EnableConfigKey(BuildEnableConfigKey(InObserverName)) {
+    FConfigRegistry::Get().RegisterConfig<bool>(EnableConfigKey, true);
 }
 
-FObserverBase::~FObserverBase() {
-    if (EnableWatchSubscription.IsValid()) {
-        EnableWatchSubscription->Reset();
-    }
-}
+FObserverBase::~FObserverBase() = default;
 
 void FObserverBase::SetEnabled(bool bInEnabled) {
-    EnabledFlag->store(bInEnabled, std::memory_order_relaxed);
-    FConfigRegistry& Registry = FConfigRegistry::Get();
-    Registry.RegisterConfig<bool>(EnableConfigKey, bInEnabled);
-    Registry.SetConfig<bool>(EnableConfigKey, bInEnabled);
+    FConfigRegistry::Get().SetConfig<bool>(EnableConfigKey, bInEnabled);
 }
 
-void FObserverBase::Broadcast() {
+bool FObserverBase::TryPrepareBroadcast() {
     if (!IsEnabled()) {
-        return;
+        return false;
     }
     Version.fetch_add(1, std::memory_order_relaxed);
-    Notify();
+    return true;
 }
 
 FName FObserverBase::BuildEnableConfigKey(const FName& InObserverName) {

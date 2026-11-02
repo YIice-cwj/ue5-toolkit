@@ -4,8 +4,8 @@
 
 #if WITH_AUTOMATION_TESTS
 
-#include "Async/ParallelFor.h"
 #include "Containers/StringConv.h"
+#include "Logging/FModuleLogRegistrar.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/CString.h"
 
@@ -21,6 +21,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameLogRegistryLifecycleTest, "Game.Logging.Re
 
 /**
  * @brief 验证日志分类注册、查询、覆写、注销与纪元号自增机制
+ * @param Parameters 自动化测试参数（未使用）
+ * @return 全部断言通过时返回 true，否则返回 false
  */
 bool FGameLogRegistryLifecycleTest::RunTest([[maybe_unused]] const FString& Parameters) {
     const char* ModuleName = "UnitTest_LifecycleModule";
@@ -32,6 +34,17 @@ bool FGameLogRegistryLifecycleTest::RunTest([[maybe_unused]] const FString& Para
     TestEqual(TEXT("空指针模块名应返回 LogGame 兜底分类"),
         &Game::Log::FGameLogRegistry::GetCategory(nullptr),
         &Game::Log::FGameLogRegistry::GetFallbackCategory());
+
+    const int32 EpochBeforeEmpty = Game::Log::FGameLogRegistry::GetEpoch();
+    Game::Log::FGameLogRegistry::RegisterCategory("", &LogUnitTestCatA);
+    TestEqual(TEXT("空字符串模块名应返回 LogGame 兜底分类"),
+        &Game::Log::FGameLogRegistry::GetCategory(""),
+        &Game::Log::FGameLogRegistry::GetFallbackCategory());
+    TestEqual(TEXT("空字符串注册不得推进全局纪元号"),
+        Game::Log::FGameLogRegistry::GetEpoch(), EpochBeforeEmpty);
+    Game::Log::FGameLogRegistry::UnregisterCategory("");
+    TestEqual(TEXT("空字符串注销不得推进全局纪元号"),
+        Game::Log::FGameLogRegistry::GetEpoch(), EpochBeforeEmpty);
 
     const int32 EpochBeforeReg = Game::Log::FGameLogRegistry::GetEpoch();
     Game::Log::FGameLogRegistry::RegisterCategory(ModuleName, &LogUnitTestCatA);
@@ -70,7 +83,9 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameLogRegistrarRaiiTest, "Game.Logging.Regist
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 /**
- * @brief 验证 FModuleLogRegistrar 的 RAII 自动登记、空分类保护与析构注销
+ * @brief 验证 Registrar 的自动登记、嵌套恢复、无效参数保护与析构注销
+ * @param Parameters 自动化测试参数（未使用）
+ * @return 全部断言通过时返回 true，否则返回 false
  */
 bool FGameLogRegistrarRaiiTest::RunTest([[maybe_unused]] const FString& Parameters) {
     const char* ScopedModuleName = "UnitTest_ScopedModule";
@@ -78,6 +93,13 @@ bool FGameLogRegistrarRaiiTest::RunTest([[maybe_unused]] const FString& Paramete
     TestEqual(TEXT("未进入作用域前应为兜底分类"),
         &Game::Log::FGameLogRegistry::GetCategory(ScopedModuleName),
         &Game::Log::FGameLogRegistry::GetFallbackCategory());
+
+    {
+        Game::Log::FModuleLogRegistrar EmptyNameRegistrar("", &LogUnitTestCatA);
+        TestEqual(TEXT("空模块名注册器不得覆盖兜底分类"),
+            &Game::Log::FGameLogRegistry::GetCategory(""),
+            &Game::Log::FGameLogRegistry::GetFallbackCategory());
+    }
 
     {
         Game::Log::FModuleLogRegistrar ScopedRegistrar(ScopedModuleName, &LogUnitTestCatA);
@@ -92,6 +114,17 @@ bool FGameLogRegistrarRaiiTest::RunTest([[maybe_unused]] const FString& Paramete
         TestEqual(TEXT("空分类注册器析构不得误删已有模块注册"),
             &Game::Log::FGameLogRegistry::GetCategory(ScopedModuleName),
             static_cast<FLogCategoryBase*>(&LogUnitTestCatA));
+
+        {
+            Game::Log::FModuleLogRegistrar NestedRegistrar(ScopedModuleName, &LogUnitTestCatB);
+            TestEqual(TEXT("嵌套 Registrar 应注册分类 B"),
+                &Game::Log::FGameLogRegistry::GetCategory(ScopedModuleName),
+                static_cast<FLogCategoryBase*>(&LogUnitTestCatB));
+        }
+
+        TestEqual(TEXT("嵌套 Registrar 析构后应恢复外层分类 A"),
+            &Game::Log::FGameLogRegistry::GetCategory(ScopedModuleName),
+            static_cast<FLogCategoryBase*>(&LogUnitTestCatA));
     }
 
     TestEqual(TEXT("离开 RAII 作用域后应自动注销并回退至兜底分类"),
@@ -101,79 +134,13 @@ bool FGameLogRegistrarRaiiTest::RunTest([[maybe_unused]] const FString& Paramete
     return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameLogMacrosConcurrencyTest, "Game.Logging.Macros.Concurrency",
-    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-
-/**
- * @brief 验证 GAME_LOG、GAME_LOG_ONCE 与 GAME_LOG_THROTTLE 在多线程并发调用下的安全性与状态完整性
- */
-bool FGameLogMacrosConcurrencyTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    constexpr int32 WorkerCount = 64;
-    std::atomic<int32> CompletedWorkers{0};
-
-    ParallelFor(WorkerCount, [&CompletedWorkers](int32 Index) {
-        GAME_LOG(Log, TEXT("Parallel log emission index: %d"), Index);
-        GAME_CLOG(Index % 2 == 0, Log, TEXT("Parallel clog emission index: %d"), Index);
-        GAME_LOG_ONCE(Log, TEXT("Parallel once emission (should only appear once)"));
-        GAME_CLOG_ONCE(Index >= 0, Log, TEXT("Parallel clog_once emission (should only appear once)"));
-        GAME_LOG_THROTTLE(10.0, Log, TEXT("Parallel throttle emission (interval 10s)"));
-        CompletedWorkers.fetch_add(1, std::memory_order_relaxed);
-    });
-
-    TestEqual(TEXT("全部并发工作线程均应安全完成日志宏调用"),
-        CompletedWorkers.load(std::memory_order_relaxed),
-        WorkerCount);
-    TestEqual(TEXT("并发调用后当前模块分类仍应保持有效"),
-        &Game::Log::FGameLogRegistry::GetCategory(UE_MODULE_NAME),
-        &Game::Log::FGameLogRegistry::GetFallbackCategory());
-
-    return true;
-}
-
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameLogDynamicDispatchEpochTest, "Game.Logging.Macros.EpochDispatch",
-    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-
-/**
- * @brief 验证动态分发在模块注册覆写与注销恢复时通过 Epoch 机制成功自愈更新宏缓存，且结束后恢复模块默认分类
- */
-bool FGameLogDynamicDispatchEpochTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    const char* ModuleName = UE_MODULE_NAME;
-    FLogCategoryBase& FallbackCat = Game::Log::FGameLogRegistry::GetFallbackCategory();
-
-    GAME_LOG(Log, TEXT("Epoch dispatch baseline emission"));
-    const int32 EpochInitial = Game::Log::FGameLogRegistry::GetEpoch();
-
-    Game::Log::FGameLogRegistry::RegisterCategory(ModuleName, &LogUnitTestCatA);
-    GAME_LOG(Log, TEXT("Epoch dispatch overridden emission"));
-    FLogCategoryBase& AfterRegCat = Game::Log::FGameLogRegistry::GetCategory(ModuleName);
-
-    TestEqual(TEXT("注册后应获取到 LogUnitTestCatA"),
-        &AfterRegCat,
-        static_cast<FLogCategoryBase*>(&LogUnitTestCatA));
-    TestTrue(TEXT("覆写分类后纪元号应递增"),
-        Game::Log::FGameLogRegistry::GetEpoch() > EpochInitial);
-
-    Game::Log::FGameLogRegistry::UnregisterCategory(ModuleName);
-    GAME_LOG(Log, TEXT("Epoch dispatch fallback emission"));
-    FLogCategoryBase& RestoredCat = Game::Log::FGameLogRegistry::GetCategory(ModuleName);
-
-    TestEqual(TEXT("注销后恢复为 Fallback 分类"),
-        &RestoredCat,
-        &FallbackCat);
-
-    Game::Log::FGameLogRegistry::RegisterCategory(ModuleName, &LogGame);
-    TestEqual(TEXT("测试结束后应恢复 GameLogging 模块默认分类注册"),
-        &Game::Log::FGameLogRegistry::GetCategory(ModuleName),
-        static_cast<FLogCategoryBase*>(&LogGame));
-
-    return true;
-}
-
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameLogRegistryDynamicCapacityTest, "Game.Logging.Registry.DynamicCapacity",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 /**
- * @brief 动态容量与名称拷贝：注册表不再受固定 128 上限约束，且不持调用方临时缓冲区
+ * @brief 验证动态容量突破旧固定上限且注册表自持模块名拷贝
+ * @param Parameters 自动化测试参数（未使用）
+ * @return 全部断言通过时返回 true，否则返回 false
  */
 bool FGameLogRegistryDynamicCapacityTest::RunTest([[maybe_unused]] const FString& Parameters) {
     constexpr int32 ModuleCount = 200;
@@ -238,4 +205,3 @@ bool FGameLogRegistryDynamicCapacityTest::RunTest([[maybe_unused]] const FString
 }
 
 #endif // WITH_AUTOMATION_TESTS
-

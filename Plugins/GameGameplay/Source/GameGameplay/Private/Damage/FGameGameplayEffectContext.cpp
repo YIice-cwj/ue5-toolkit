@@ -9,6 +9,14 @@
 
 namespace {
 
+/**
+ * @brief 按网络上限序列化伤害通道数组，并在加载端重建对应容器
+ * @param Ar 读写归档
+ * @param Map 网络包映射
+ * @param bOutSuccess 序列化成功标记
+ * @param Channels 待序列化的通道数组
+ * @param Label 超限日志中的容器名称
+ */
 void SerializeChannelArray(
     FArchive& Ar,
     UPackageMap* Map,
@@ -97,6 +105,14 @@ FGameDamageResult FGameGameplayEffectContext::ToDamageResult() const {
     return DamageResult;
 }
 
+uint16 FGameGameplayEffectContext::GetFeedbackEventId() const noexcept {
+    return FeedbackEventId;
+}
+
+void FGameGameplayEffectContext::SetFeedbackEventId(uint16 InFeedbackEventId) noexcept {
+    FeedbackEventId = InFeedbackEventId;
+}
+
 UScriptStruct* FGameGameplayEffectContext::GetScriptStruct() const {
     return FGameGameplayEffectContext::StaticStruct();
 }
@@ -116,7 +132,9 @@ bool FGameGameplayEffectContext::NetSerialize(FArchive& Ar, class UPackageMap* M
         return false;
     }
 
-    bool bHasActualDamage = !FMath::IsNearlyZero(DamageResult.TotalActualDamage);
+    Ar << FeedbackEventId;
+
+    bool bHasActualDamage = DamageResult.TotalActualDamage != 0.0f;
     Ar.SerializeBits(&bHasActualDamage, 1);
     if (bHasActualDamage) {
         Ar << DamageResult.TotalActualDamage;

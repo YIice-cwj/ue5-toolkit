@@ -126,6 +126,18 @@ public:
     [[nodiscard]] FGameDamageResult ToDamageResult() const;
 
     /**
+     * @brief 获取跨端打击反馈事件 ID
+     * @return 非零预测事件 ID；0 表示无预测身份
+     */
+    [[nodiscard]] uint16 GetFeedbackEventId() const noexcept;
+
+    /**
+     * @brief 写入跨端打击反馈事件 ID
+     * @param InFeedbackEventId 非零预测事件 ID；0 表示无预测身份
+     */
+    void SetFeedbackEventId(uint16 InFeedbackEventId) noexcept;
+
+    /**
      * @brief 获取脚本结构（类型识别与上下文提取的类型依据）
      * @return 本上下文的结构体反射信息
      */
@@ -138,7 +150,7 @@ public:
     FGameplayEffectContext* Duplicate() const override;
 
     /**
-     * @brief 网络序列化：先走基类，再依次传输总伤害、反馈标签、通道明细与动态数值
+     * @brief 网络序列化：先走基类，再传输事件 ID、总伤害、反馈标签、通道明细与动态数值
      * @param Ar 归档
      * @param Map 网络包映射
      * @param bOutSuccess 输出是否成功
@@ -161,6 +173,9 @@ private:
      */
     UPROPERTY()
     FGameDamageResult DamageResult;
+
+    UPROPERTY()
+    uint16 FeedbackEventId = 0;
 };
 
 template<>

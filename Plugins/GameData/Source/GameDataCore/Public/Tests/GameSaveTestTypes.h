@@ -24,3 +24,22 @@ public:
     UPROPERTY()
     FString Label;
 };
+
+/**
+ * @brief 存档子系统异步事件测试监听器
+ */
+UCLASS()
+class GAMEDATACORE_API UGameSaveTestEventListener : public UObject {
+    GENERATED_BODY()
+
+public:
+    /**
+     * @brief 记录一次异步加载完成结果
+     * @param SlotName 完成回调对应的槽位名称
+     * @param bSuccess 加载是否成功
+     */
+    UFUNCTION()
+    void RecordLoadComplete(const FString& SlotName, bool bSuccess);
+
+    TArray<bool> CompletionResults;
+};

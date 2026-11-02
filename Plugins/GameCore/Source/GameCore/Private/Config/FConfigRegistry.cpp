@@ -8,6 +8,7 @@
 #include <type_traits>
 
 #include "Config/GameCompileSwitches.h"
+#include "Listener/FNotificationDispatcher.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogGameConfig, Log, All);
 
@@ -41,10 +42,10 @@ bool IsReadOnlyKeyName(const FName& Name) {
 }  // namespace
 
 /**
- * @brief 单键订阅状态：持类型擦除回调条目，锁内拷贝快照、锁外派发
+ * @brief 单键订阅状态：持类型擦除回调条目，锁内拷贝快照并入队、锁外统一派发
  *
- * 实现思路：写路径（订阅/退订）在写锁内完成数组增删；广播路径仅在读锁内拷贝条目快照，
- * 出锁后逐个回调——持锁严禁调用任何用户回调（FRWLock 不可重入）。
+ * 实现思路：写路径（订阅/退订）在写锁内完成数组增删；通知路径在读锁内拷贝条目快照并追加全局 FIFO，
+ * drainer 释放注册表与监听锁后逐个回调，严禁持锁调用任何用户回调。
  */
 class FConfigRegistry::FWatcherState : public FObserverStateBase {
 public:
@@ -68,10 +69,11 @@ public:
     uint64 AddListener(FCallback InListener);
 
     /**
-     * @brief 广播新值（快照遍历，回调外派）
-     * @param InValue 新值变体
+     * @brief 在监听锁内抓取快照并追加全局 FIFO
+     * @param InValue 本次提交的值变体
+     * @return 当前线程当选为 drainer 返回 true
      */
-    void Broadcast(const FConfigVariant& InValue) const;
+    [[nodiscard]] bool Enqueue(const FConfigVariant& InValue) const;
 
     /**
      * @brief 按订阅 ID 移除监听
@@ -95,15 +97,21 @@ uint64 FConfigRegistry::FWatcherState::AddListener(FCallback InListener) {
     return SubscriptionId;
 }
 
-void FConfigRegistry::FWatcherState::Broadcast(const FConfigVariant& InValue) const {
+bool FConfigRegistry::FWatcherState::Enqueue(const FConfigVariant& InValue) const {
     TArray<FWatcherEntry> Snapshot;
     {
         FReadScopeLock ReadLock(WatcherLock);
         Snapshot = Entries;
     }
-    for (const FWatcherEntry& Entry : Snapshot) {
-        Entry.Callback(InValue);
+    if (Snapshot.IsEmpty()) {
+        return false;
     }
+    return FNotificationDispatcher::Get().Enqueue(
+        [Snapshot = MoveTemp(Snapshot), BroadcastValue = InValue]() {
+            for (const FWatcherEntry& Entry : Snapshot) {
+                Entry.Callback(BroadcastValue);
+            }
+        });
 }
 
 void FConfigRegistry::FWatcherState::RemoveListener(uint64 SubscriptionId) {
@@ -140,9 +148,9 @@ void FConfigRegistry::ApplyRegister(FName Name, FConfigVariant&& DefaultValue) {
 }
 
 ESetConfigResult FConfigRegistry::ApplySet(FName Name, FConfigVariant&& NewValue) {
-    TSharedPtr<FWatcherState> Watcher;
     FConfigVariant BroadcastValue;
     bool bRejected = false;
+    bool bShouldDrain = false;
     {
         FWriteScopeLock WriteLock(RwLock);
         FEntry* Entry = Entries.Find(Name);
@@ -157,7 +165,7 @@ ESetConfigResult FConfigRegistry::ApplySet(FName Name, FConfigVariant&& NewValue
             ++GlobalVersion;
             BroadcastValue = Entry->Value;
             if (TSharedPtr<FWatcherState>* Found = Watchers.Find(Name)) {
-                Watcher = *Found;
+                bShouldDrain = (*Found)->Enqueue(BroadcastValue);
             }
         }
     }
@@ -172,8 +180,8 @@ ESetConfigResult FConfigRegistry::ApplySet(FName Name, FConfigVariant&& NewValue
         UE_LOG(LogGameConfig, Log, TEXT("【配置注册表】更新配置项: 键=[%s], 类型=[%s]"),
             *Name.ToString(), *VariantTypeName(BroadcastValue));
     }
-    if (Watcher.IsValid()) {
-        Watcher->Broadcast(BroadcastValue);
+    if (bShouldDrain) {
+        FNotificationDispatcher::Get().Drain();
     }
     return ESetConfigResult::Applied;
 }

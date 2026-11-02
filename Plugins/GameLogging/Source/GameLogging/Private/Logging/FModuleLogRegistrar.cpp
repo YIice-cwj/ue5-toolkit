@@ -24,15 +24,16 @@ namespace {
 } // namespace
 
 FModuleLogRegistrar::FModuleLogRegistrar(const char* InModuleName, FLogCategoryBase* InCategory) {
-    if (InModuleName != nullptr && InCategory != nullptr) {
+    if (InModuleName != nullptr && InModuleName[0] != '\0' && InCategory != nullptr) {
         ModuleName = MakeRegistrarAnsiName(InModuleName);
-        FGameLogRegistry::RegisterCategory(ModuleName.GetData(), InCategory);
+        Category = InCategory;
+        PreviousCategory = FGameLogRegistry::RegisterScopedCategory(ModuleName.GetData(), InCategory);
     }
 }
 
 FModuleLogRegistrar::~FModuleLogRegistrar() {
-    if (!ModuleName.IsEmpty()) {
-        FGameLogRegistry::UnregisterCategory(ModuleName.GetData());
+    if (Category != nullptr) {
+        FGameLogRegistry::UnregisterScopedCategory(ModuleName.GetData(), Category, PreviousCategory);
     }
 }
 

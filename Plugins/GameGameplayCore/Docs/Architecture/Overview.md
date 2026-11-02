@@ -54,35 +54,30 @@ graph TD
 
 ## 3. 通用数值管理组件 (`UGameStatComponent`)
 
-为了兼顾“简单对象开箱即用”与“复杂实体对接外部属性”的需求，`UGameStatComponent` 采用了全 Tag 驱动的通用数值架构：
+`UGameStatComponent` 采用全 Tag 驱动的通用数值架构，把「数值存储 + 修正器演算 + 订阅通知」收敛为单一自洽模型：
 
 ```mermaid
 graph LR
     subgraph StatComponent["UGameStatComponent 统一属性组件"]
-        StatsMap["动态属性表: TMap&lt;FGameplayTag, FGameStatValue&gt;"]
-        Delegates["双轨委托: OnStatChanged (动态+原生) / OnVitalStateChanged (动态+原生)"]
-        PublicAPI["查询与修改: GetStatCurrent/GetStatEffectiveCurrent / ModifyStat / AddStatModifier / SubscribeStatChanged"]
+        StatsMap["动态属性表: TArray&lt;FGameStatEntry&gt; + 标签索引"]
+        Modifiers["修正器容器: FGameStatModifierContainer"]
+        Subscription["订阅中心: FGameStatSubscriptionHub"]
+        Delegates["双轨委托: OnStatChanged (动态+原生)"]
+        PublicAPI["查询与修改: GetStatCurrent / GetStatEffectiveCurrent / ModifyStat / AddStatModifier / SubscribeStatChanged"]
     end
 
-    subgraph ModeChoice["双模数据流分发"]
-        Mode{"Mode 判断"}
-        Standalone["模式 A: Standalone 自持模式<br>内部管理属性，网络自动复制<br>自动 Min/Max 钳制，输出实际变动差值"]
-        Proxy["模式 B: Proxy 代理模式<br>接入 IGameStatValueSource 或原生 C++ 查询委托<br>自持数值安全旁路，直通外部数据真源"]
-    end
-
-    PublicAPI --> Mode
-    Mode --> Standalone
-    Mode --> Proxy
-    Mode --> StatsMap
+    PublicAPI --> StatsMap
+    PublicAPI --> Modifiers
+    PublicAPI --> Subscription
     StatsMap --> Delegates
+    Subscription --> Delegates
 ```
 
-- **统一数值契约**：调用者无论在何种模式下调用 `GetStatCurrent(Tag)`、`GetStatMax(Tag)` 或 `GetStatPercent(Tag)`，均返回当前真实有效数值；`GetStatEffective*` 返回叠加修正器后的派生值。
-- **代理读写契约**：代理模式默认只读，写入统一经 `FGameStatWriteDelegate` 转发外部真源；非权威端默认拒绝写入。
+- **统一数值契约**：`GetStatCurrent(Tag)`、`GetStatMax(Tag)` 与 `GetStatPercent(Tag)` 返回当前基础数值；`GetStatEffective*` 返回叠加修正器后的派生值。
 - **属性修正器**：Buff / 装备 / 天赋通过 `AddStatModifier` 叠加加算、乘算、覆写，句柄精确回滚，基础值不被改写。
-- **按 Tag 订阅**：`SubscribeStatChanged` 只订阅关心的属性，并在订阅时立即回放当前值，UI 无初始空白。
-- **解绑与切换安全**：代理源解绑瞬间重新评估属性与主生命状态，自动将外部真源当前值写回组件，平滑过渡。
-- **原生与动态双轨委托**：同时暴露蓝图可分配动态委托与 C++ 原生多播委托（`OnStatChangedNative` / `OnVitalStateChangedNative`），完美支持 C++ 现代 Lambda 与零 UObject 额外开销的高性能监听。
+- **按 Tag 订阅**：`SubscribeStatChanged` 只订阅关心的属性，并在订阅时仅向本次新订阅者回放当前值，UI 无初始空白且既有订阅者不会收到重复初始广播。
+- **权威与写入**：非权威端默认拒绝写入；`ModifyStat` / `SetStatCurrent` / `SetStatMax` 在 `Min/Max` 钳制后统一广播派生值变化。
+- **原生与动态双轨委托**：同时暴露蓝图可分配动态委托与 C++ 原生多播委托（`OnStatChangedNative` / `OnVitalStateChangedNative`），支持 C++ Lambda 与零 UObject 开销监听。
 
 ---
 
@@ -93,6 +88,6 @@ graph LR
 - **由开发者描述**：`FGameBuffSpec` 包含身份 Tag、授予状态标签、持续时长、最大层数、叠层策略与属性修正器。
 - **叠层策略**：`RefreshDuration` 刷新时长、`AddDuration` 累加时长、`Independent` 独立实例。
 - **状态聚合**：`GetGrantedTags` 聚合全部激活 Buff 的状态标签，供状态机、动画与技能条件查询。
-- **修正器挂接**：按层数缩放后挂接到 `UGameStatComponent`，到期或移除时按句柄精确回滚。
+- **修正器挂接**：按层数缩放后挂接到 `UGameStatComponent`，到期、移除、解绑或组件结束时按原绑定组件与句柄精确回滚；晚绑定与跨 Stat 重绑会迁移全部活跃 Buff。
 - **冷却即状态**：冷却不设独立类，用「限时 + 授予 `State.Cooldown`」的普通 Buff 表达。
-- **权威与复制**：服务端权威施加 / 移除；`ActiveBuffs` 以 FastArray 增量复制，客户端在复制回调中重建修正器并按层数差分广播。
+- **权威与复制**：服务端权威施加 / 移除；`ActiveBuffs` 以 FastArray 增量复制，客户端在复制回调中重建修正器，按层数差分广播，并对同叠层的 Spec 变化补发一次变更通知。

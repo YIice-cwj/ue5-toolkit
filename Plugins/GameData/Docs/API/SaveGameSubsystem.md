@@ -91,10 +91,10 @@ public:
 | `SaveGameToSlot` | 主线程逐段捕获并原子写盘 |
 | `SaveGameToSlotAsync` | 主线程捕获段字节，后台写盘；完成后广播 `OnSaveComplete` |
 | `LoadGameFromSlot` | 同步读取并逐段应用；损坏档返回 `false` |
-| `LoadGameFromSlotAsync` | 后台读盘，回主线程反序列化并逐段应用 |
+| `LoadGameFromSlotAsync` | 后台读盘，回主线程反序列化并逐段应用；同槽位仅最新请求可应用，过期请求以 `OnLoadComplete(SlotName, false)` 取消 |
 | `SaveObjectToSlot` | 任意 `USaveGame` 对象的存取逃生口，不走段注册 |
 | `DoesSaveSlotExist` | 正式 `.sav` 或可抢救的 `.sav.tmp` 存在即返回 true |
-| `DeleteSaveSlot` | 删除正式档并清理临时档；同时使代次失效（置为 MAX_uint64），彻底阻断在途异步写任务复活已删除槽位 |
+| `DeleteSaveSlot` | 删除正式档与临时档并保留保存代次高水位，阻止在途异步写复活槽位；同时使在途异步加载失效。发现至少一个文件且全部删除成功才返回 `true` |
 
 `OnSaveComplete` / `OnLoadComplete` 仅异步路径广播；同步路径由返回值判定。
 
@@ -120,6 +120,6 @@ public:
 - 最小头长度 64 字节。
 
 **灾备恢复与断电保护机制**：
-1. **自动临时档抢救**：若正式档 `.sav` 损坏、截断或缺失，自动回退读取未完成移动的 `.sav.tmp` 副本。若临时副本格式合法，自动反序列化恢复数据并输出 Warning，最大程度挽回掉电导致的数据损失；
+1. **自动临时档抢救**：若正式档 `.sav` 损坏、截断或缺失，自动回退读取未完成移动的 `.sav.tmp` 副本。临时副本格式合法且成功换入正式档后才返回成功；换入失败则本次读取返回 `false`；
 2. **移动失败保留副本**：`WriteSlotBytes` 中若原子移动失败，不再直接删除临时文件，保留现场以便灾备抢救与排查；
 3. **分段保护**：在分段归档时，若外部注册系统或对象指针失效，主动调用 `Ar.SetError()` 终止写入，杜绝向磁盘写入空白数据导致旧存档被覆盖清空。

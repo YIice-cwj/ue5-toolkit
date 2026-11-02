@@ -14,11 +14,18 @@
 #include "Misc/Paths.h"
 
 #include "Tests/FStaticDataRepositoryTestRows.h"
+#include "Utils/DataTableLoaderUtils.h"
 
 namespace {
 
 const TCHAR* UnitTestBinPath = TEXT("Saved/Automation/FStaticDataRepositoryTest.bin");
 
+/**
+ * @brief 读写测试行 A 的标量字段
+ * @param Ar 输入或输出归档
+ * @param RowPtr 指向 FRepositoryTestRowA 的行数据
+ * @return 归档未出错返回 true
+ */
 bool HandleTestRowA(FArchive& Ar, void* RowPtr) {
     FRepositoryTestRowA& Row = *static_cast<FRepositoryTestRowA*>(RowPtr);
     Ar << Row.Score;
@@ -26,6 +33,12 @@ bool HandleTestRowA(FArchive& Ar, void* RowPtr) {
     return !Ar.IsError();
 }
 
+/**
+ * @brief 读写测试行 B 的字符串、数组与布尔字段
+ * @param Ar 输入或输出归档
+ * @param RowPtr 指向 FRepositoryTestRowB 的行数据
+ * @return 归档未出错返回 true
+ */
 bool HandleTestRowB(FArchive& Ar, void* RowPtr) {
     FRepositoryTestRowB& Row = *static_cast<FRepositoryTestRowB*>(RowPtr);
     Ar << Row.Label;
@@ -34,11 +47,20 @@ bool HandleTestRowB(FArchive& Ar, void* RowPtr) {
     return !Ar.IsError();
 }
 
+/**
+ * @brief 向仓库登记两种测试行的负载读写器
+ * @param Repository 目标静态数据仓库
+ */
 void RegisterTestRowSerializers(FStaticDataRepository& Repository) {
     Repository.RegisterRowSerializer(FName(FRepositoryTestRowA::StaticStruct()->GetName()), &HandleTestRowA);
     Repository.RegisterRowSerializer(FName(FRepositoryTestRowB::StaticStruct()->GetName()), &HandleTestRowB);
 }
 
+/**
+ * @brief 构造包含两种测试表的源仓库
+ * @param OutRepository 接收读写器登记与测试数据的仓库
+ * @return 两张测试表均写入成功返回 true
+ */
 bool BuildSourceRepository(FStaticDataRepository& OutRepository) {
     RegisterTestRowSerializers(OutRepository);
     TMap<FName, FRepositoryTestRowA> RowsA;
@@ -51,16 +73,29 @@ bool BuildSourceRepository(FStaticDataRepository& OutRepository) {
     return OutRepository.AddTable(RowsA) && OutRepository.AddTable(RowsB);
 }
 
+/**
+ * @brief 读取自动化测试使用的二进制文件
+ * @param OutBytes 输出文件字节
+ * @return 文件读取成功返回 true
+ */
 bool LoadTestBinBytes(TArray<uint8>& OutBytes) {
     const FString FilePath = FPaths::ProjectSavedDir() / UnitTestBinPath;
     return FFileHelper::LoadFileToArray(OutBytes, *FilePath);
 }
 
+/**
+ * @brief 写入自动化测试使用的二进制文件
+ * @param InBytes 待写入文件字节
+ * @return 文件写入成功返回 true
+ */
 bool SaveTestBinBytes(const TArray<uint8>& InBytes) {
     const FString FilePath = FPaths::ProjectSavedDir() / UnitTestBinPath;
     return FFileHelper::SaveArrayToFile(InBytes, *FilePath);
 }
 
+/**
+ * @brief 清理自动化测试生成的二进制文件
+ */
 void CleanupTestBinFile() {
     const FString FilePath = FPaths::ProjectSavedDir() / UnitTestBinPath;
     if (FPaths::FileExists(FilePath)) {
@@ -251,6 +286,54 @@ bool FRepositorySemanticsTest::RunTest([[maybe_unused]] const FString& Parameter
     TestEqual(TEXT("Reset 后表数归零"), Repository.TableCount(), 0);
     TestEqual(TEXT("Reset 后错误码 None"), Repository.GetLastError(), EStaticDataBinError::None);
     TestTrue(TEXT("Reset 不影响已登记读写器"), Repository.AddTable(Initial));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FDataTableLoaderUtilsTest,
+    "Game.Data.DataTableLoaderUtils",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证 JSON 前置失败清空输出表且有效数据正常加载
+ * @param Parameters 自动化测试传入参数字符串
+ * @return 测试框架入口固定返回 true
+ */
+bool FDataTableLoaderUtilsTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    const FString TestDirectory = FPaths::ProjectSavedDir() / TEXT("UnitTest_DataTableLoaderUtils");
+    IFileManager& FileManager = IFileManager::Get();
+    FileManager.DeleteDirectory(*TestDirectory, false, true);
+    TestTrue(TEXT("创建 JSON 测试目录成功"), FileManager.MakeDirectory(*TestDirectory, true));
+
+    TMap<FName, FRepositoryTestRowA> OutRows;
+    FRepositoryTestRowA OldRow;
+    OldRow.Score = 7;
+    OldRow.Weight = 1.0f;
+    OutRows.Add(FName(TEXT("Old")), OldRow);
+
+    const FString MissingPath = TestDirectory / TEXT("Missing.json");
+    TestFalse(TEXT("缺失文件加载失败"), FDataTableLoaderUtils::LoadTableFromJson(MissingPath, OutRows));
+    TestEqual(TEXT("缺失文件清空预填充输出"), OutRows.Num(), 0);
+
+    OldRow.Score = 8;
+    OutRows.Add(FName(TEXT("OldAgain")), OldRow);
+    const FString MalformedPath = TestDirectory / TEXT("Malformed.json");
+    TestTrue(TEXT("写入损坏 JSON 成功"), FFileHelper::SaveStringToFile(TEXT("{ not valid json"), *MalformedPath));
+    TestFalse(TEXT("损坏 JSON 加载失败"), FDataTableLoaderUtils::LoadTableFromJson(MalformedPath, OutRows));
+    TestEqual(TEXT("损坏 JSON 清空预填充输出"), OutRows.Num(), 0);
+
+    const FString ValidPath = TestDirectory / TEXT("Valid.json");
+    const FString ValidJson = TEXT("[{\"RowName\":\"Alpha\",\"Score\":42,\"Weight\":1.5}]");
+    TestTrue(TEXT("写入有效 JSON 成功"), FFileHelper::SaveStringToFile(ValidJson, *ValidPath));
+    TestTrue(TEXT("有效 JSON 加载成功"), FDataTableLoaderUtils::LoadTableFromJson(ValidPath, OutRows));
+    TestEqual(TEXT("有效 JSON 行数"), OutRows.Num(), 1);
+    const FRepositoryTestRowA* LoadedRow = OutRows.Find(FName(TEXT("Alpha")));
+    if (TestNotNull(TEXT("有效 JSON 行键正确"), LoadedRow)) {
+        TestEqual(TEXT("有效 JSON 行字段正确"), LoadedRow->Score, 42);
+    }
+
+    FileManager.DeleteDirectory(*TestDirectory, false, true);
     return true;
 }
 

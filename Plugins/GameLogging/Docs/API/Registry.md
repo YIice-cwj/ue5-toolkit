@@ -64,7 +64,7 @@ static void UnregisterCategory(const char* InModuleName);
 ```cpp
 [[nodiscard]] static int32 GetEpoch() noexcept;
 ```
-- **职责**：获取当前注册表变更纪元号（`std::memory_order_relaxed` 原子读取）。
+- **职责**：获取当前注册表变更纪元号（`std::memory_order_acquire` 原子读取，与写侧 `release` 递增配对）。
 - **说明**：调用点缓存可通过此纪元号判断全局映射是否发生了增删，以实现缓存失效校验。
 
 ---
@@ -81,12 +81,15 @@ public:
     ~FModuleLogRegistrar();
 private:
     TArray<ANSICHAR> ModuleName;
+    FLogCategoryBase* Category = nullptr;
+    FLogCategoryBase* PreviousCategory = nullptr;
 };
 }
 ```
 
 ### 构造与析构语义
-- **构造函数**：自动调用 `FGameLogRegistry::RegisterCategory(InModuleName, InCategory)`。
-- **析构函数**：自动调用 `FGameLogRegistry::UnregisterCategory(ModuleName)`。
+- **构造函数**：注册新分类并保存被覆盖的前一项分类；模块名为空或分类为空时不注册。
+- **析构函数**：仅当当前登记仍归本实例所有时，恢复构造前的前一项分类；此前没有登记则执行注销。
+- **生命周期约束**：同一模块的多个实例必须处于严格嵌套作用域并按 LIFO 顺序销毁，不支持堆分配后的非嵌套或乱序销毁。
 - **用途**：供 `GAME_REGISTER_MODULE_LOG` 宏在全局作用域实例化静态常量对象，使得模块加载时自动注册、模块卸载时自动注销，无需任何生命周期手动管理代码。
 

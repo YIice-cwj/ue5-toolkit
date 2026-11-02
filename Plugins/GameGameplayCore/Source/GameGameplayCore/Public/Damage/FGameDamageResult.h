@@ -41,6 +41,20 @@ public:
     }
 
     /**
+     * @brief 获取实际伤害数值最大的通道
+     * @return 主实际伤害通道；无通道时返回无效标签
+     */
+    [[nodiscard]] FGameplayTag GetDominantActualChannel() const noexcept {
+        const FGameDamageChannel* DominantChannel = nullptr;
+        for (const FGameDamageChannel& Channel : ActualChannels) {
+            if (DominantChannel == nullptr || Channel.Magnitude > DominantChannel->Magnitude) {
+                DominantChannel = &Channel;
+            }
+        }
+        return DominantChannel != nullptr ? DominantChannel->ChannelTag : FGameplayTag();
+    }
+
+    /**
      * @brief 设置实际生效的总伤害数值
      * @param InActualDamage 实际生效的总伤害数值
      */

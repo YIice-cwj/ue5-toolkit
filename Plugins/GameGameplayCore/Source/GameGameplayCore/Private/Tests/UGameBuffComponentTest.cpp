@@ -337,4 +337,201 @@ bool FGameBuffInstanceAndQueryCoverageTest::RunTest([[maybe_unused]] const FStri
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameBuffModifierLateBindingTest,
+    "Game.GameplayCore.Buff.ModifierLateBinding",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FGameBuffModifierLateBindingTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UGameStatComponent* StatComponent = NewObject<UGameStatComponent>(GetTransientPackage());
+    UGameBuffComponent* BuffComponent = NewObject<UGameBuffComponent>(GetTransientPackage());
+    const FGameplayTag AttackTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Attribute.Buff.LateBinding")));
+    StatComponent->RegisterStat(AttackTag, 100.0f, 1000.0f, 0.0f);
+
+    FGameBuffSpec Spec;
+    Spec.BuffTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Buff.LateBinding.Test")));
+    FGameStatModifierSpec ModifierSpec;
+    ModifierSpec.StatTag = AttackTag;
+    ModifierSpec.Modifier = FGameStatModifier(10.0f, EGameStatModifierOp::Add);
+    Spec.Modifiers.Add(ModifierSpec);
+
+    TestNotEqual(TEXT("无数值组件时仍可施加 Buff"), BuffComponent->ApplyBuff(Spec), 0);
+    TestEqual(TEXT("未绑定时基础值保持不变"), StatComponent->GetStatEffectiveCurrent(AttackTag), 100.0f);
+
+    BuffComponent->BindStatComponent(StatComponent);
+    TestEqual(TEXT("晚绑定后既有 Buff 修正器生效"), StatComponent->GetStatEffectiveCurrent(AttackTag), 110.0f);
+
+    TestTrue(TEXT("清理测试 Buff"), BuffComponent->RemoveBuff(Spec.BuffTag));
+    TestEqual(TEXT("移除后修正器回滚"), StatComponent->GetStatEffectiveCurrent(AttackTag), 100.0f);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameBuffModifierRebindingTest,
+    "Game.GameplayCore.Buff.ModifierRebinding",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FGameBuffModifierRebindingTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UGameStatComponent* StatA = NewObject<UGameStatComponent>(GetTransientPackage());
+    UGameStatComponent* StatB = NewObject<UGameStatComponent>(GetTransientPackage());
+    UGameBuffComponent* BuffComponent = NewObject<UGameBuffComponent>(GetTransientPackage());
+    const FGameplayTag AttackTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Attribute.Buff.Rebinding")));
+    StatA->RegisterStat(AttackTag, 100.0f, 1000.0f, 0.0f);
+    StatB->RegisterStat(AttackTag, 100.0f, 1000.0f, 0.0f);
+
+    FGameBuffSpec Spec;
+    Spec.BuffTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Buff.Rebinding.Test")));
+    FGameStatModifierSpec ModifierSpec;
+    ModifierSpec.StatTag = AttackTag;
+    ModifierSpec.Modifier = FGameStatModifier(10.0f, EGameStatModifierOp::Add);
+    Spec.Modifiers.Add(ModifierSpec);
+
+    BuffComponent->BindStatComponent(StatA);
+    BuffComponent->ApplyBuff(Spec);
+    const uint32 OtherModifierHandle = StatB->AddStatModifier(AttackTag, FGameStatModifier(5.0f, EGameStatModifierOp::Add));
+    TestEqual(TEXT("重绑前 StatA 生效"), StatA->GetStatEffectiveCurrent(AttackTag), 110.0f);
+    TestEqual(TEXT("重绑前 StatB 仅有其他修正器"), StatB->GetStatEffectiveCurrent(AttackTag), 105.0f);
+
+    BuffComponent->BindStatComponent(StatB);
+    TestEqual(TEXT("重绑后 StatA 完整回滚"), StatA->GetStatEffectiveCurrent(AttackTag), 100.0f);
+    TestEqual(TEXT("重绑后 StatB 叠加 Buff 与其他修正器"), StatB->GetStatEffectiveCurrent(AttackTag), 115.0f);
+
+    TestTrue(TEXT("重绑后移除 Buff 成功"), BuffComponent->RemoveBuff(Spec.BuffTag));
+    TestEqual(TEXT("移除后 StatA 保持基础值"), StatA->GetStatEffectiveCurrent(AttackTag), 100.0f);
+    TestEqual(TEXT("移除后 StatB 保留其他修正器"), StatB->GetStatEffectiveCurrent(AttackTag), 105.0f);
+    TestTrue(TEXT("StatB 其他修正器句柄仍有效"), StatB->RemoveStatModifier(AttackTag, OtherModifierHandle));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameBuffModifierDestroyRollbackTest,
+    "Game.GameplayCore.Buff.ModifierDestroyRollback",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FGameBuffModifierDestroyRollbackTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UWorld* World = GetTestWorld();
+    TestNotNull(TEXT("测试世界有效"), World);
+    if (World == nullptr) {
+        return false;
+    }
+
+    AActor* HostActor = SpawnTestHost(World);
+    UGameStatComponent* StatComponent = NewObject<UGameStatComponent>(HostActor);
+    UGameBuffComponent* BuffComponent = NewObject<UGameBuffComponent>(HostActor);
+    StatComponent->RegisterComponent();
+    BuffComponent->RegisterComponent();
+    BuffComponent->BeginPlay();
+    BuffComponent->BindStatComponent(StatComponent);
+
+    const FGameplayTag AttackTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Attribute.Buff.DestroyRollback")));
+    StatComponent->RegisterStat(AttackTag, 100.0f, 1000.0f, 0.0f);
+    FGameBuffSpec Spec;
+    Spec.BuffTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Buff.DestroyRollback.Test")));
+    FGameStatModifierSpec ModifierSpec;
+    ModifierSpec.StatTag = AttackTag;
+    ModifierSpec.Modifier = FGameStatModifier(10.0f, EGameStatModifierOp::Add);
+    Spec.Modifiers.Add(ModifierSpec);
+
+    BuffComponent->ApplyBuff(Spec);
+    TestEqual(TEXT("销毁前修正器生效"), StatComponent->GetStatEffectiveCurrent(AttackTag), 110.0f);
+    BuffComponent->EndPlay(EEndPlayReason::Destroyed);
+    TestEqual(TEXT("Buff 组件销毁后 Stat 上的修正器回滚"), StatComponent->GetStatEffectiveCurrent(AttackTag), 100.0f);
+    BuffComponent->DestroyComponent();
+
+    HostActor->Destroy();
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameBuffReplicatedSpecChangeTest,
+    "Game.GameplayCore.Buff.ReplicatedSpecChange",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FGameBuffReplicatedSpecChangeTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UGameBuffComponent* BuffComponent = NewObject<UGameBuffComponent>(GetTransientPackage());
+    const FGameplayTag BuffTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Buff.ReplicatedSpecChange.Test")));
+    int32 ChangedCount = 0;
+    BuffComponent->OnBuffChangedNative.AddLambda([BuffTag, &ChangedCount](const FGameplayTag& ChangedTag, int32) {
+        if (ChangedTag.MatchesTagExact(BuffTag)) {
+            ++ChangedCount;
+        }
+    });
+
+    FGameActiveBuffArray ReplicatedArray;
+    ReplicatedArray.OwnerComponent = BuffComponent;
+    FGameBuffInstance& Instance = ReplicatedArray.Items.AddDefaulted_GetRef();
+    Instance.InstanceId = 1;
+    Instance.Spec.BuffTag = BuffTag;
+    Instance.Stacks = 1;
+
+    int32 Index = 0;
+    ReplicatedArray.PostReplicatedAdd(TArrayView<int32>(&Index, 1), 1);
+    TestEqual(TEXT("新增复制条目广播一次"), ChangedCount, 1);
+
+    Instance.Spec.GrantedTags.AddTag(UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("State.ReplicatedSpecChange"))));
+    ReplicatedArray.PostReplicatedChange(TArrayView<int32>(&Index, 1), 1);
+    TestEqual(TEXT("叠层不变但 Spec 变化仍恰好广播一次"), ChangedCount, 2);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameBuffPermanentDurationTransitionTest,
+    "Game.GameplayCore.Buff.PermanentDurationTransition",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FGameBuffPermanentDurationTransitionTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UGameBuffComponent* BuffComponent = NewObject<UGameBuffComponent>(GetTransientPackage());
+    FGameBuffSpec Spec;
+    Spec.BuffTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Buff.PermanentDurationTransition.Test")));
+    Spec.StackPolicy = EGameBuffStackPolicy::AddDuration;
+    Spec.Duration = 5.0f;
+    BuffComponent->ApplyBuff(Spec);
+    TestEqual(TEXT("初始限时 Buff 剩余时间正确"), BuffComponent->GetBuffRemainingTime(Spec.BuffTag), 5.0f);
+
+    Spec.Duration = 0.0f;
+    BuffComponent->ApplyBuff(Spec);
+    TestEqual(TEXT("AddDuration 转永久后剩余时间归零"), BuffComponent->GetBuffRemainingTime(Spec.BuffTag), 0.0f);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameBuffReplicationEmptyTickTest,
+    "Game.GameplayCore.Buff.ReplicationEmptyTick",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FGameBuffReplicationEmptyTickTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UWorld* World = GetTestWorld();
+    TestNotNull(TEXT("测试世界有效"), World);
+    if (World == nullptr) {
+        return false;
+    }
+
+    AActor* HostActor = SpawnTestHost(World);
+    UGameBuffComponent* BuffComponent = NewObject<UGameBuffComponent>(HostActor);
+    BuffComponent->RegisterComponent();
+    FGameActiveBuffArray ReplicatedArray;
+    ReplicatedArray.OwnerComponent = BuffComponent;
+    FGameBuffInstance& Instance = ReplicatedArray.Items.AddDefaulted_GetRef();
+    Instance.InstanceId = 1;
+    Instance.Spec.BuffTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Buff.ReplicationEmptyTick.Test")));
+    Instance.Spec.Duration = 1.0f;
+    Instance.RemainingSeconds = 1.0f;
+
+    int32 Index = 0;
+    ReplicatedArray.PostReplicatedAdd(TArrayView<int32>(&Index, 1), 1);
+    BuffComponent->SetComponentTickEnabled(true);
+    ReplicatedArray.PreReplicatedRemove(TArrayView<int32>(&Index, 1), 0);
+    ReplicatedArray.Items.RemoveAt(Index);
+    BuffComponent->TickComponent(0.1f, LEVELTICK_TimeOnly, nullptr);
+    TestFalse(TEXT("复制删除最后 Buff 后空 Tick 自动关闭"), BuffComponent->IsComponentTickEnabled());
+    HostActor->Destroy();
+    return true;
+}
+
 #endif

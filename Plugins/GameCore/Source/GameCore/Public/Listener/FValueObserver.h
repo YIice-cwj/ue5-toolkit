@@ -6,6 +6,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Listener/FNotificationDispatcher.h"
 #include "Listener/FObserverBase.h"
 #include "Listener/FObserverSubscription.h"
 #include "Listener/FObserverState.h"
@@ -30,7 +31,7 @@ public:
     explicit FValueObserver(const FName& ObserverName);
 
     /**
-     * @brief 线程安全设置新值并在出锁后广播给全部活跃订阅者
+     * @brief 线程安全提交新值，监听器快照随通知入队并在出锁后按全局 FIFO 派发
      * @param InValue 待赋予的新值常量引用
      */
     void Set(ConstReference InValue);
@@ -57,14 +58,14 @@ public:
     TSharedRef<FObserverSubscription> Subscribe(UObject* Owner, FListener InListener);
 
     /**
-     * @brief 注册监听回调并在订阅瞬间立即回放当前值
+     * @brief 注册监听回调并通过全局 FIFO 回放当前值
      * @param InListener 接收到新值时的回调闭包
      * @return RAII 订阅守卫共享引用
      */
     TSharedRef<FObserverSubscription> SubscribeWithReplay(FListener InListener);
 
     /**
-     * @brief 注册监听回调并立即回放当前值（绑定 Owner 生命周期）
+     * @brief 注册监听回调并通过全局 FIFO 回放当前值（绑定 Owner 生命周期）
      * @param Owner 归属的 UObject 对象指针
      * @param InListener 接收到新值时的回调闭包
      * @return RAII 订阅守卫共享引用
@@ -78,11 +79,6 @@ public:
     [[nodiscard]] int32 NumListeners();
 
 private:
-    template<typename> friend class FObserverState;
-
-    void Notify() override;
-
-private:
     TSharedRef<FObserverState<ValueType>> State;
 };
 
@@ -93,8 +89,10 @@ FValueObserver<T>::FValueObserver(const FName& ObserverName)
 
 template<typename T>
 void FValueObserver<T>::Set(ConstReference InValue) {
-    State->SetValueAndPurge(InValue);
-    Broadcast();
+    const bool bBroadcast = TryPrepareBroadcast();
+    if (State->SetValueAndPurge(InValue, bBroadcast)) {
+        FNotificationDispatcher::Get().Drain();
+    }
 }
 
 template<typename T>
@@ -121,15 +119,13 @@ TSharedRef<FObserverSubscription> FValueObserver<T>::SubscribeWithReplay(FListen
 
 template<typename T>
 TSharedRef<FObserverSubscription> FValueObserver<T>::SubscribeWithReplay(UObject* Owner, FListener InListener) {
-    FListener ReplayListener = InListener;
     const TWeakObjectPtr<UObject> WeakOwner(Owner);
     const typename FObserverState<ValueType>::FSubscribeSnapshot Snapshot =
-        State->AddListenerWithValueSnapshot(MoveTemp(InListener), WeakOwner);
+        State->AddListenerWithReplay(MoveTemp(InListener), WeakOwner);
     const TSharedRef<FObserverSubscription> Subscription = MakeShared<FObserverSubscription>();
     Subscription->Initialize(State, Snapshot.SubscriptionId);
-    const bool bOwnerAlive = Owner == nullptr || WeakOwner.IsValid();
-    if (ReplayListener && bOwnerAlive) {
-        ReplayListener(Snapshot.CurrentValue);
+    if (Snapshot.bShouldDrain) {
+        FNotificationDispatcher::Get().Drain();
     }
     return Subscription;
 }
@@ -137,9 +133,4 @@ TSharedRef<FObserverSubscription> FValueObserver<T>::SubscribeWithReplay(UObject
 template<typename T>
 int32 FValueObserver<T>::NumListeners() {
     return State->NumListeners();
-}
-
-template<typename T>
-void FValueObserver<T>::Notify() {
-    State->Broadcast();
 }

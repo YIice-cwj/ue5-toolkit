@@ -158,22 +158,23 @@ public:
 
 ### 3.1 施加与叠层
 - `RefreshDuration` / `AddDuration`：同 Tag 复用同一实例；每层叠加时先移除旧修正器，再按新层数重新挂接。
-- `AddDuration` 且新 Spec 有时长时累加剩余时间；否则刷新为新时长。
+- `AddDuration`：新 Spec 为正时长时累加剩余时间；非正时长时将实例转为永久，剩余时间归零。`RefreshDuration` 始终刷新为新时长。
 - `Independent`：每次施加创建独立实例（受 `MaxStacks` 限制：同 Tag 聚合总层数达到 `MaxStacks` 时拒绝施加并返回 0），按 `InstanceId` 精确移除。
 - 层数达到 `MaxStacks` 后不再增加，但仍刷新 / 累加时长并更新 Spec。
 
 ### 3.2 修正器与层数
 - `Add` 修正值乘以层数；`Multiply` 按 `1 + (Value - 1) * Stacks` 缩放；`Override` 不缩放。
 - 修正器挂接到 `UGameStatComponent::AddStatModifier`，移除 Buff 时按句柄精确回滚，不影响其他来源的修正。
+- 后绑定数值组件时会挂接全部既有 Buff；从 Stat A 重绑到 Stat B 时先完整回滚 A，再在 B 上重建；解绑与组件 `EndPlay` 同样回滚原组件上的全部修正器。
 
 ### 3.3 持续时长
-- 仅当存在限时实例时组件才开启 Tick；全部永久 Buff 时自动关闭 Tick。
+- 仅当存在未到期的限时实例时组件才开启 Tick；全部永久 Buff 或复制删除最后一条实例后自动关闭 Tick。
 - 到期实例先回滚修正器，再移除并广播 `OnBuffRemoved`。
 
 ### 3.4 权威与复制
 - `IsApplyAllowed()`：Owner 为 `nullptr`、Owner 具备权威、或关闭 `bRequireAuthority` 时允许操作。
 - 非权威端 `ApplyBuff` / `RemoveBuff` / `RemoveBuffInstance` 返回失败并记录 Warning。
-- `ActiveBuffs` 为 `FGameActiveBuffArray`（`FFastArraySerializer`），服务端仅标记脏条目，客户端按 `PostReplicatedAdd` / `PostReplicatedChange` / `PreReplicatedRemove` 回调重建修正器映射，并按 `AcknowledgedStacks` 差分广播变化 / 移除事件。
+- `ActiveBuffs` 为 `FGameActiveBuffArray`（`FFastArraySerializer`），服务端仅标记脏条目，客户端按 `PostReplicatedAdd` / `PostReplicatedChange` / `PreReplicatedRemove` 回调重建修正器映射，并按 `AcknowledgedStacks` 差分广播变化 / 移除事件；Spec 变化即使叠层不变也会广播一次变更。
 - `GetBuffStacks` 对同 Tag 多实例求和；`GetBuffRemainingTime` 返回最大剩余时间。
 
 ### 3.5 逐层削减 (`RemoveBuffStacks`)

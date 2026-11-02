@@ -22,6 +22,7 @@
 #include "Serialization/BufferArchive.h"
 #include "Serialization/MemoryReader.h"
 #include "UObject/Package.h"
+#include "UObject/UnrealType.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameGameplayEffectContextTest,
@@ -40,8 +41,12 @@ bool FGameGameplayEffectContextTest::RunTest([[maybe_unused]] const FString& Par
     TestNotNull(TEXT("配置的 Globals 类可解析"), ConfiguredGlobalsClass);
     TestTrue(TEXT("Globals 配置指向框架层子类（落位生效）"), ConfiguredGlobalsClass == UGameAbilitySystemGlobals::StaticClass());
 
-    const UGameAbilitySystemGlobals* Globals = GetDefault<UGameAbilitySystemGlobals>();
-    TUniquePtr<FGameplayEffectContext> Context(Globals->AllocGameplayEffectContext());
+    UAbilitySystemGlobals& Globals = UAbilitySystemGlobals::Get();
+    TestTrue(TEXT("运行时 Globals 单例为框架层子类"), Globals.GetClass() == UGameAbilitySystemGlobals::StaticClass());
+    if (Globals.GetClass() != UGameAbilitySystemGlobals::StaticClass()) {
+        return false;
+    }
+    TUniquePtr<FGameplayEffectContext> Context(Globals.AllocGameplayEffectContext());
     TestNotNull(TEXT("上下文分配成功"), Context.Get());
     if (!Context.IsValid()) {
         return false;
@@ -59,6 +64,7 @@ bool FGameGameplayEffectContextTest::RunTest([[maybe_unused]] const FString& Par
     Source->AddFeedbackTag(CriticalTag);
     Source->SetDynamicValue(HitStopTag, 0.12f);
     Source->SetActualChannelDamage(ChannelPhysTag, 37.5f);
+    Source->SetFeedbackEventId(321);
 
     TestTrue(TEXT("上下文包含反馈标签"), Source->HasFeedbackTag(CriticalTag));
     TestFalse(TEXT("上下文未添加标签不存在"), Source->HasFeedbackTag(FatalTag));
@@ -76,6 +82,7 @@ bool FGameGameplayEffectContextTest::RunTest([[maybe_unused]] const FString& Par
     TestTrue(TEXT("Duplicate 复制反馈标签"), Copy->HasFeedbackTag(CriticalTag));
     TestEqual(TEXT("Duplicate 复制动态数值"), Copy->GetDynamicValue(HitStopTag), 0.12f);
     TestEqual(TEXT("Duplicate 复制通道实际伤害"), Copy->GetActualChannelDamage(ChannelPhysTag), 37.5f);
+    TestEqual(TEXT("Duplicate 复制反馈事件 ID"), Copy->GetFeedbackEventId(), 321);
 
     FBufferArchive Writer;
     bool bWriteSuccess = false;
@@ -91,12 +98,30 @@ bool FGameGameplayEffectContextTest::RunTest([[maybe_unused]] const FString& Par
     TestTrue(TEXT("NetSerialize 往返保持反馈标签"), Loaded.HasFeedbackTag(CriticalTag));
     TestEqual(TEXT("NetSerialize 往返保持动态数值"), Loaded.GetDynamicValue(HitStopTag), 0.12f);
     TestEqual(TEXT("NetSerialize 往返保持通道伤害"), Loaded.GetActualChannelDamage(ChannelPhysTag), 37.5f);
+    TestEqual(TEXT("NetSerialize 往返保持反馈事件 ID"), Loaded.GetFeedbackEventId(), 321);
 
     const FGameDamageResult Result = Source->ToDamageResult();
     TestEqual(TEXT("ToDamageResult 总伤害对齐"), Result.TotalActualDamage, 37.5f);
     TestTrue(TEXT("ToDamageResult 反馈标签对齐"), Result.HasFeedbackTag(CriticalTag));
     TestEqual(TEXT("ToDamageResult 动态数值对齐"), Result.GetDynamicValue(HitStopTag), 0.12f);
     TestEqual(TEXT("ToDamageResult 通道实际伤害对齐"), Result.GetActualChannelDamageExact(ChannelPhysTag), 37.5f);
+
+    const float NearZeroDamage = UE_SMALL_NUMBER * 0.5f;
+    Source->SetActualDamage(NearZeroDamage);
+    Source->SetActualChannelDamage(ChannelPhysTag, NearZeroDamage);
+
+    FBufferArchive NearZeroWriter;
+    bool bNearZeroWriteSuccess = false;
+    TestTrue(TEXT("近零非零伤害写出成功"), Source->NetSerialize(NearZeroWriter, nullptr, bNearZeroWriteSuccess));
+    TestTrue(TEXT("近零非零伤害写出标记置位"), bNearZeroWriteSuccess);
+
+    FMemoryReader NearZeroReader(NearZeroWriter);
+    FGameGameplayEffectContext NearZeroLoaded;
+    bool bNearZeroReadSuccess = false;
+    TestTrue(TEXT("近零非零伤害读入成功"), NearZeroLoaded.NetSerialize(NearZeroReader, nullptr, bNearZeroReadSuccess));
+    TestTrue(TEXT("近零非零伤害读入标记置位"), bNearZeroReadSuccess);
+    TestEqual(TEXT("NetSerialize 保留近零非零总伤害"), NearZeroLoaded.GetActualDamage(), NearZeroDamage, 0.0f);
+    TestEqual(TEXT("NetSerialize 保留近零非零通道伤害"), NearZeroLoaded.GetActualChannelDamage(ChannelPhysTag), NearZeroDamage, 0.0f);
 
     return true;
 }
@@ -140,6 +165,17 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 bool FGameAttributeValueMappingTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    const UFunction* FactoryFunction = UGameplayAttributeValueMapping::StaticClass()->FindFunctionByName(TEXT("CreateAttributeValueMapping"));
+    TestNotNull(TEXT("属性映射工厂反射信息可用"), FactoryFunction);
+    if (FactoryFunction == nullptr) {
+        return false;
+    }
+    TestEqual(
+        TEXT("工厂默认不在对象返回前广播"),
+        FactoryFunction->GetMetaData(TEXT("CPP_Default_bBroadcastImmediately")),
+        FString(TEXT("false"))
+    );
+
     UGameAbilitySystemComponent* ASC = NewObject<UGameAbilitySystemComponent>(GetTransientPackage());
     UAbilitySystemTestAttributeSet* AttrSet = NewObject<UAbilitySystemTestAttributeSet>(ASC);
     ASC->AddAttributeSetSubobject(AttrSet);
@@ -151,7 +187,7 @@ bool FGameAttributeValueMappingTest::RunTest([[maybe_unused]] const FString& Par
     float ObservedOld = 0.0f;
     int32 BroadcastCount = 0;
 
-    UGameplayAttributeValueMapping* Mapping = UGameplayAttributeValueMapping::CreateAttributeValueMapping(ASC, HealthAttr, true);
+    UGameplayAttributeValueMapping* Mapping = UGameplayAttributeValueMapping::CreateAttributeValueMapping(ASC, HealthAttr);
 
     Mapping->OnValueChangedNative.AddLambda([&](float NewVal, float OldVal) {
         ObservedNew = NewVal;
@@ -162,7 +198,7 @@ bool FGameAttributeValueMappingTest::RunTest([[maybe_unused]] const FString& Par
     Mapping->QueryAndBroadcast();
     TestEqual(TEXT("立即广播获得正确初值"), ObservedNew, 150.0f);
     TestEqual(TEXT("获取当前值正确"), Mapping->GetCurrentValue(), 150.0f);
-    TestTrue(TEXT("广播次数增加"), BroadcastCount >= 1);
+    TestEqual(TEXT("订阅后仅主动查询广播一次"), BroadcastCount, 1);
 
     ASC->SetNumericAttributeBase(HealthAttr, 200.0f);
     TestEqual(TEXT("属性变动触发映射广播"), ObservedNew, 200.0f);
@@ -216,6 +252,69 @@ bool FGameAbilitySystemBootstrapTest::RunTest([[maybe_unused]] const FString& Pa
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameAbilitySystemBootstrapDataReadyFirstTest,
+    "Game.Gameplay.Bootstrap.DataReadyFirst",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FGameAbilitySystemBootstrapDataReadyFirstTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UGameAbilitySystemBootstrap* Bootstrap = NewObject<UGameAbilitySystemBootstrap>(GetTransientPackage());
+    AActor* Avatar = NewObject<AActor>(GetTransientPackage());
+    UGameAbilitySystemComponent* ASC = NewObject<UGameAbilitySystemComponent>(Avatar);
+    UGameAbilitySystemComponent* ReplacementASC = NewObject<UGameAbilitySystemComponent>(Avatar);
+    UAbilitySystemComponent* CurrentTargetASC = ASC;
+
+    FArrayProperty* DefaultAbilitiesProperty = FindFProperty<FArrayProperty>(
+        UGameAbilitySystemBootstrap::StaticClass(),
+        TEXT("DefaultAbilities")
+    );
+    FIntProperty* MaxReplicationRetriesProperty = FindFProperty<FIntProperty>(
+        UGameAbilitySystemBootstrap::StaticClass(),
+        TEXT("MaxReplicationRetries")
+    );
+    TestNotNull(TEXT("默认能力属性可通过反射配置"), DefaultAbilitiesProperty);
+    TestNotNull(TEXT("复制重试上限属性可通过反射配置"), MaxReplicationRetriesProperty);
+    if (DefaultAbilitiesProperty == nullptr || MaxReplicationRetriesProperty == nullptr) {
+        return false;
+    }
+
+    auto& DefaultAbilities = *reinterpret_cast<TArray<TSubclassOf<UGameplayAbility>>*>(
+        DefaultAbilitiesProperty->GetPropertyValuePtr_InContainer(Bootstrap)
+    );
+    DefaultAbilities.Add(UGameplayAbility::StaticClass());
+    *static_cast<int32*>(MaxReplicationRetriesProperty->GetPropertyValuePtr_InContainer(Bootstrap)) = 0;
+
+    Bootstrap->SetResolveAbilitySystemComponentDelegate(FResolveAbilitySystemComponent::CreateLambda([&CurrentTargetASC]() {
+        return CurrentTargetASC;
+    }));
+
+    int32 InitialAttributesWriteCount = 0;
+    Bootstrap->SetWriteInitialAttributesDelegate(FWriteInitialAttributes::CreateLambda([&InitialAttributesWriteCount](UAbilitySystemComponent*) {
+        ++InitialAttributesWriteCount;
+    }));
+
+    Bootstrap->NotifyDataReady();
+    TestEqual(TEXT("ActorInfo 初始化前不写初值"), InitialAttributesWriteCount, 0);
+    TestFalse(TEXT("ActorInfo 初始化前不标记能力已授予"), Bootstrap->IsDefaultAbilitiesGranted());
+    TestNull(TEXT("ActorInfo 初始化前不授予能力"), ASC->FindAbilitySpecFromClass(UGameplayAbility::StaticClass()));
+
+    Bootstrap->EnsureInitialized(Avatar);
+    TestEqual(TEXT("正常握手写入一次初值"), InitialAttributesWriteCount, 1);
+    TestNotNull(TEXT("正常握手授予默认能力"), ASC->FindAbilitySpecFromClass(UGameplayAbility::StaticClass()));
+
+    Bootstrap->EnsureInitialized(Avatar);
+    TestEqual(TEXT("重复握手不重复写初值"), InitialAttributesWriteCount, 1);
+    TestEqual(TEXT("重复握手不重复授予能力"), ASC->GetActivatableAbilities().Num(), 1);
+
+    CurrentTargetASC = ReplacementASC;
+    Bootstrap->EnsureInitialized(Avatar);
+    TestNull(TEXT("切换 ASC 清理旧 ASC 上已授予的能力"), ASC->FindAbilitySpecFromClass(UGameplayAbility::StaticClass()));
+    TestNotNull(TEXT("切换 ASC 后重新授予默认能力"), ReplacementASC->FindAbilitySpecFromClass(UGameplayAbility::StaticClass()));
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameDamageChannelRegistryTest,
     "Game.Gameplay.DamageChannelRegistry",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
@@ -242,6 +341,9 @@ bool FGameDamageChannelRegistryTest::RunTest([[maybe_unused]] const FString& Par
     TArray<FDamageChannelBinding> Bindings;
     Registry.GetBindings(ExecutionClass, Bindings);
     TestEqual(TEXT("注册后绑定数量为 1"), Bindings.Num(), 1);
+    if (Bindings.Num() != 1) {
+        return false;
+    }
     TestTrue(TEXT("绑定通道标签正确"), Bindings[0].ChannelTag.MatchesTagExact(ChannelTag));
 
     TestTrue(
@@ -250,6 +352,9 @@ bool FGameDamageChannelRegistryTest::RunTest([[maybe_unused]] const FString& Par
     );
     Registry.GetBindings(ExecutionClass, Bindings);
     TestEqual(TEXT("重复注册后绑定数量仍为 1"), Bindings.Num(), 1);
+    if (Bindings.Num() != 1) {
+        return false;
+    }
     TestTrue(TEXT("重复注册后修饰操作已覆盖"), Bindings[0].ModOp == EGameplayModOp::Multiplicitive);
 
     TestTrue(
@@ -258,15 +363,24 @@ bool FGameDamageChannelRegistryTest::RunTest([[maybe_unused]] const FString& Par
     );
     Registry.GetBindings(ExecutionClass, Bindings);
     TestEqual(TEXT("两条通道合并查询正确"), Bindings.Num(), 2);
+    if (Bindings.Num() != 2) {
+        return false;
+    }
 
     TestTrue(TEXT("运行期注销通道成功"), UGameDamageExecution::UnregisterRuntimeChannelBinding(ExecutionClass, ChannelTag));
     Registry.GetBindings(ExecutionClass, Bindings);
     TestEqual(TEXT("注销后剩余一条通道"), Bindings.Num(), 1);
+    if (Bindings.Num() != 1) {
+        return false;
+    }
     TestFalse(TEXT("重复注销返回失败"), UGameDamageExecution::UnregisterRuntimeChannelBinding(ExecutionClass, ChannelTag));
 
     Registry.UnregisterAll(ExecutionClass);
     Registry.GetBindings(ExecutionClass, Bindings);
     TestEqual(TEXT("清理后无残留绑定"), Bindings.Num(), 0);
+    if (Bindings.Num() != 0) {
+        return false;
+    }
 
     const FDamageModifier CombinedModifier(2.0f, 20.0f);
     TestEqual(TEXT("伤害修饰器算子顺序为先加后乘"), CombinedModifier.Evaluate(100.0f), 240.0f);

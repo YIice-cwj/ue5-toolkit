@@ -39,6 +39,19 @@ bool FGameDamageResultTest::RunTest([[maybe_unused]] const FString& Parameters) 
     Result.RemoveFeedbackTag(CriticalTag);
     TestFalse(TEXT("Feedback tag should be removed"), Result.HasFeedbackTag(CriticalTag));
 
+    const FGameplayTag SlashTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Damage.Channel.Result.Slash")));
+    const FGameplayTag BluntTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Damage.Channel.Result.Blunt")));
+    TestFalse(TEXT("空通道容器返回无效主通道"), Result.GetDominantActualChannel().IsValid());
+
+    FGameDamageChannel::SetExact(Result.ActualChannels, BluntTag, 50.0f);
+    FGameDamageChannel::SetExact(Result.ActualChannels, SlashTag, 100.0f);
+    TestEqual(TEXT("主通道选择最大实际伤害通道"), Result.GetDominantActualChannel(), SlashTag);
+
+    FGameDamageResult NegativeResult;
+    FGameDamageChannel::SetExact(NegativeResult.ActualChannels, SlashTag, -20.0f);
+    FGameDamageChannel::SetExact(NegativeResult.ActualChannels, BluntTag, -5.0f);
+    TestEqual(TEXT("负值通道仍按数值最大者选择"), NegativeResult.GetDominantActualChannel(), BluntTag);
+
     return true;
 }
 
@@ -97,110 +110,6 @@ bool FGameStatBoundaryClampingTest::RunTest([[maybe_unused]] const FString& Para
     Comp->ModifyStat(HealthTag, 200.0f, ActualDelta);
     TestEqual(TEXT("数值增加超出上限时应 Clamp 到 Max"), Comp->GetStatCurrent(HealthTag), 100.0f);
     TestEqual(TEXT("实际增量应为 100"), ActualDelta, 100.0f);
-
-    return true;
-}
-
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-    FGameStatProxyTest,
-    "Game.GameplayCore.Stat.ProxyMode",
-    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
-)
-
-bool FGameStatProxyTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UGameStatComponent* Comp = NewObject<UGameStatComponent>();
-    const FGameplayTag EnergyTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Attribute.Energy")));
-
-    Comp->RegisterStat(EnergyTag, 10.0f, 10.0f, 0.0f);
-
-    float ExternalCurrent = 42.0f;
-    float ExternalMax = 150.0f;
-
-    Comp->BindNativeStatQueries(
-        FGameStatQueryDelegate::CreateLambda([&ExternalCurrent](const FGameplayTag&) { return ExternalCurrent; }),
-        FGameStatQueryDelegate::CreateLambda([&ExternalMax](const FGameplayTag&) { return ExternalMax; })
-    );
-
-    TestEqual(TEXT("Proxy current value"), Comp->GetStatCurrent(EnergyTag), 42.0f);
-    TestEqual(TEXT("Proxy max value"), Comp->GetStatMax(EnergyTag), 150.0f);
-
-    Comp->UnbindStatSource();
-    TestEqual(TEXT("Standalone fallback current should cache proxy value"), Comp->GetStatCurrent(EnergyTag), 42.0f);
-    TestEqual(TEXT("Standalone fallback max should cache proxy value"), Comp->GetStatMax(EnergyTag), 150.0f);
-
-    return true;
-}
-
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-    FGameStatProxyWriteContractTest,
-    "Game.GameplayCore.Stat.ProxyWriteContract",
-    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
-)
-
-bool FGameStatProxyWriteContractTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UGameStatComponent* Comp = NewObject<UGameStatComponent>();
-    const FGameplayTag EnergyTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Attribute.Energy.ProxyWrite")));
-
-    Comp->RegisterStat(EnergyTag, 40.0f, 100.0f, 0.0f);
-
-    float ExternalCurrent = 40.0f;
-    float ExternalMax = 100.0f;
-    Comp->BindNativeStatQueries(
-        FGameStatQueryDelegate::CreateLambda([&ExternalCurrent](const FGameplayTag&) { return ExternalCurrent; }),
-        FGameStatQueryDelegate::CreateLambda([&ExternalMax](const FGameplayTag&) { return ExternalMax; })
-    );
-
-    float ActualDelta = -1.0f;
-    TestFalse(TEXT("未绑定写委托时代理写被拒绝"), Comp->ModifyStat(EnergyTag, -5.0f, ActualDelta));
-    TestEqual(TEXT("拒绝写入时实际变动为零"), ActualDelta, 0.0f);
-    TestFalse(TEXT("未绑定写委托时 CanWriteStat 为 false"), Comp->CanWriteStat());
-
-    Comp->BindNativeStatWriter(FGameStatWriteDelegate::CreateLambda(
-        [&ExternalCurrent, &ExternalMax](const FGameplayTag&, EGameStatWriteOp Op, float Value, float& OutApplied) {
-            if (Op == EGameStatWriteOp::Modify) {
-                const float Previous = ExternalCurrent;
-                ExternalCurrent = FMath::Clamp(ExternalCurrent + Value, 0.0f, ExternalMax);
-                OutApplied = ExternalCurrent - Previous;
-                return true;
-            }
-            if (Op == EGameStatWriteOp::SetCurrent) {
-                ExternalCurrent = FMath::Clamp(Value, 0.0f, ExternalMax);
-                OutApplied = 0.0f;
-                return true;
-            }
-            if (Op == EGameStatWriteOp::SetMax) {
-                ExternalMax = FMath::Max(Value, 0.0f);
-                OutApplied = 0.0f;
-                return true;
-            }
-            return false;
-        }
-    ));
-
-    TestTrue(TEXT("绑定写委托后 CanWriteStat 为 true"), Comp->CanWriteStat());
-    TestTrue(TEXT("代理增量写入成功"), Comp->ModifyStat(EnergyTag, -10.0f, ActualDelta));
-    TestEqual(TEXT("代理增量实际变动正确"), ActualDelta, -10.0f);
-    TestEqual(TEXT("外部源数值已更新"), ExternalCurrent, 30.0f);
-    TestEqual(TEXT("代理读取回落到外部源新值"), Comp->GetStatCurrent(EnergyTag), 30.0f);
-
-    Comp->SetStatCurrent(EnergyTag, 60.0f);
-    TestEqual(TEXT("代理设置当前值透传成功"), Comp->GetStatCurrent(EnergyTag), 60.0f);
-
-    Comp->SetStatMax(EnergyTag, 120.0f);
-    TestEqual(TEXT("代理设置上限透传成功"), Comp->GetStatMax(EnergyTag), 120.0f);
-
-    Comp->AddStatModifier(EnergyTag, FGameStatModifier(10.0f, EGameStatModifierOp::Add));
-    float BroadcastOld = 0.0f;
-    float BroadcastNew = 0.0f;
-    Comp->SubscribeStatChanged(EnergyTag, FOnGameStatChangedNative::FDelegate::CreateLambda(
-        [&BroadcastOld, &BroadcastNew](const FGameplayTag&, float OldVal, float NewVal, float) {
-            BroadcastOld = OldVal;
-            BroadcastNew = NewVal;
-        }));
-
-    Comp->SetStatCurrent(EnergyTag, 80.0f);
-    TestEqual(TEXT("代理写且带修正器时广播派生有效旧值"), BroadcastOld, 70.0f);
-    TestEqual(TEXT("代理写且带修正器时广播派生有效新值"), BroadcastNew, 90.0f);
 
     return true;
 }
@@ -384,56 +293,6 @@ bool FGameStatModifierTest::RunTest([[maybe_unused]] const FString& Parameters) 
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-    FGameStatProxyReviveAndVitalTest,
-    "Game.GameplayCore.Stat.ProxyReviveAndVital",
-    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
-)
-
-bool FGameStatProxyReviveAndVitalTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UGameStatComponent* Comp = NewObject<UGameStatComponent>();
-    const FGameplayTag HealthTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Attribute.Proxy.VitalHealth")));
-
-    float ExternalCurrent = 100.0f;
-    float ExternalMax = 100.0f;
-
-    Comp->BindNativeStatQueries(
-        FGameStatQueryDelegate::CreateLambda([&ExternalCurrent](const FGameplayTag&) { return ExternalCurrent; }),
-        FGameStatQueryDelegate::CreateLambda([&ExternalMax](const FGameplayTag&) { return ExternalMax; })
-    );
-
-    Comp->BindNativeStatWriter(FGameStatWriteDelegate::CreateLambda(
-        [&ExternalCurrent, &ExternalMax](const FGameplayTag&, EGameStatWriteOp Op, float Value, float& OutApplied) {
-            if (Op == EGameStatWriteOp::Modify) {
-                const float Prev = ExternalCurrent;
-                ExternalCurrent = FMath::Clamp(ExternalCurrent + Value, 0.0f, ExternalMax);
-                OutApplied = ExternalCurrent - Prev;
-                return true;
-            }
-            if (Op == EGameStatWriteOp::SetCurrent) {
-                ExternalCurrent = FMath::Clamp(Value, 0.0f, ExternalMax);
-                OutApplied = 0.0f;
-                return true;
-            }
-            return false;
-        }
-    ));
-
-    float ActualDelta = 0.0f;
-    Comp->ModifyStat(HealthTag, -40.0f, ActualDelta);
-    TestEqual(TEXT("外部数值已扣减为 60"), ExternalCurrent, 60.0f);
-    TestEqual(TEXT("实际增量应为 -40"), ActualDelta, -40.0f);
-
-    Comp->SetStatCurrent(HealthTag, 80.0f);
-    TestEqual(TEXT("代理设置当前值成功同步为 80"), ExternalCurrent, 80.0f);
-
-    const FGameStatModifier MultMod = FGameStatModifier::MakeMultiplier(1.5f);
-    TestEqual(TEXT("MakeMultiplier 构造的 Op 为 Multiply"), static_cast<uint8>(MultMod.Op), static_cast<uint8>(EGameStatModifierOp::Multiply));
-    TestEqual(TEXT("MakeMultiplier 构造的值正确"), MultMod.Value, 1.5f);
-
-    return true;
-}
-
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameStatFullApiCoverageTest,
     "Game.GameplayCore.Stat.FullApiCoverage",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
@@ -474,9 +333,48 @@ bool FGameStatFullApiCoverageTest::RunTest([[maybe_unused]] const FString& Param
     TestFalse(TEXT("不再包含标签 A"), AllTags.Contains(TagA));
     TestTrue(TEXT("仍包含标签 B"), AllTags.Contains(TagB));
 
-    Comp->BindStatSource(nullptr);
-    TestFalse(TEXT("未绑定代理写接口时 CanWriteStat 返回 false"), Comp->CanWriteStat());
+    const FGameStatModifier MultMod = FGameStatModifier::MakeMultiplier(1.5f);
+    TestEqual(TEXT("MakeMultiplier 构造的 Op 为 Multiply"), static_cast<uint8>(MultMod.Op), static_cast<uint8>(EGameStatModifierOp::Multiply));
+    TestEqual(TEXT("MakeMultiplier 构造的值正确"), MultMod.Value, 1.5f);
 
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameStatOwnerSubscriptionTargetedReplayTest,
+    "Game.GameplayCore.Stat.OwnerSubscriptionTargetedReplay",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FGameStatOwnerSubscriptionTargetedReplayTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UGameStatComponent* Comp = NewObject<UGameStatComponent>();
+    const FGameplayTag ArmorTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Attribute.Subscribe.TargetedReplay")));
+    Comp->RegisterStat(ArmorTag, 80.0f, 80.0f, 0.0f);
+
+    UGameStatComponent* FirstOwner = NewObject<UGameStatComponent>();
+    UGameStatComponent* SecondOwner = NewObject<UGameStatComponent>();
+    int32 FirstCallbackCount = 0;
+    int32 SecondCallbackCount = 0;
+    float SecondObservedValue = 0.0f;
+
+    Comp->SubscribeStatChanged(FirstOwner, ArmorTag,
+        [&FirstCallbackCount](const FGameplayTag&, float, float, float) {
+            ++FirstCallbackCount;
+        });
+    TestEqual(TEXT("首个 Owner 订阅收到初始回放"), FirstCallbackCount, 1);
+
+    Comp->SubscribeStatChanged(SecondOwner, ArmorTag,
+        [&SecondCallbackCount, &SecondObservedValue](const FGameplayTag&, float, float NewValue, float) {
+            ++SecondCallbackCount;
+            SecondObservedValue = NewValue;
+        });
+    TestEqual(TEXT("第二个 Owner 订阅不向首个订阅者重复回放"), FirstCallbackCount, 1);
+    TestEqual(TEXT("第二个 Owner 仅收到一次初始回放"), SecondCallbackCount, 1);
+    TestEqual(TEXT("第二个 Owner 收到当前值"), SecondObservedValue, 80.0f);
+
+    Comp->ModifyStat(ArmorTag, -10.0f);
+    TestEqual(TEXT("后续有效值变化仍通知首个订阅者"), FirstCallbackCount, 2);
+    TestEqual(TEXT("后续有效值变化仍通知第二个订阅者"), SecondCallbackCount, 2);
     return true;
 }
 

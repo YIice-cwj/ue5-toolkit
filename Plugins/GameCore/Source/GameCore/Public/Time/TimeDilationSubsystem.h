@@ -5,6 +5,8 @@
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "Time/TimeDilationTypes.h"
+#include "Time/FActorHitStopTable.h"
+#include "Time/FGlobalDilationMixer.h"
 
 #include "TimeDilationSubsystem.generated.h"
 
@@ -19,7 +21,7 @@ class GAMECORE_API UTimeDilationSubsystem : public UTickableWorldSubsystem {
 
 public:
     /**
-     * @brief 构造函数：按通道枚举数量预分配通道状态数组
+     * @brief 构造函数：顿帧表与膨胀混音器由成员默认构造
      */
     UTimeDilationSubsystem();
 
@@ -60,7 +62,7 @@ public:
     TStatId GetStatId() const override;
 
     /**
-     * @brief 暂停期间仍参与 Tick（保证悬挂计时与真实时间基准持续推进）
+     * @brief 暂停期间仍参与 Tick，仅刷新真实时间基准，不推进 HitStop 与通道膨胀
      * @return 恒为 true
      */
     bool IsTickableWhenPaused() const override;
@@ -70,8 +72,6 @@ public:
      * @param Target 目标 Actor
      * @param Duration 顿帧持续真实时间（秒）
      * @param TimeDilation 顿帧期间局部时间缩放（钳制到 [0.0001, 20]，默认 0.001 即几乎定格）
-     *
-     * 实现思路：同一 Actor 重复请求不重入，时长取较大值、缩放取较小值后再写回 CustomTimeDilation。
      */
     UFUNCTION(BlueprintCallable, Category = "GameCore|Time")
     void RequestHitStop(AActor* Target, float Duration, float TimeDilation = 0.001f);
@@ -159,25 +159,15 @@ public:
 
 private:
     /**
-     * @brief 依据通道优先级重算生效的全局时间缩放
-     *
-     * 实现思路：通道按 ETimeDilationChannel 枚举顺序即优先级（数值越小优先级越高），
-     * 取首个激活通道的当前缩放作为生效值并立即退出，高优先级完全覆盖低优先级（不做乘积/最小值合成）
+     * @brief 将混音器生效时间缩放写回世界设置（生效值未变化时直接返回）
      */
-    void UpdateEffectiveGlobalTimeDilation();
-
-    /**
-     * @brief 将生效时间缩放写回世界设置
-     * @param NewTimeDilation 生效时间缩放
-     */
-    void ApplyGlobalTimeDilationToWorld(float NewTimeDilation);
+    void SyncWorldDilation();
 
 private:
-    UPROPERTY(Transient)
-    TArray<FGlobalChannelState> ChannelStates;
+    FActorHitStopTable HitStopTable;
+    FGlobalDilationMixer DilationMixer;
 
     double LastRealTime = 0.0;
-    float EffectiveGlobalTimeDilation = 1.0f;
-    TMap<TWeakObjectPtr<AActor>, FActorHitStopState> ActiveActorHitStops;
+    float LastAppliedWorldDilation = 1.0f;
 };
 

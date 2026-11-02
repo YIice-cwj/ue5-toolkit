@@ -142,7 +142,7 @@ Plugins/GameCore/
 │       │   ├── System/        # ULoadingSubsystem、UObservableRegistrySubsystem
 │       │   ├── Tasks/         # FGameThreadTaskRunner 异步任务调度
 │       │   ├── Tests/         # 自动化单元测试
-│       │   └── Time/          # UTimeDilationSubsystem 时间与顿帧
+│       │   └── Time/          # UTimeDilationSubsystem、FActorHitStopTable、FGlobalDilationMixer
 │       ├── Private/
 │       │   └── ... (对应实现文件)
 │       └── GameCore.Build.cs

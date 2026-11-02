@@ -15,6 +15,7 @@ UGameAbilitySystemBootstrap::UGameAbilitySystemBootstrap() {
 
 void UGameAbilitySystemBootstrap::BeginPlay() {
     Super::BeginPlay();
+    ConfigureRetryGates();
     TryInitializeFromOwner();
 }
 
@@ -49,6 +50,8 @@ void UGameAbilitySystemBootstrap::EnsureInitialized(AActor* InAvatar) {
         return;
     }
 
+    ConfigureRetryGates();
+
     UAbilitySystemComponent* AbilitySystemComponent = ResolveAbilitySystemComponent.Execute();
     if (AbilitySystemComponent == nullptr) {
         return;
@@ -69,7 +72,7 @@ void UGameAbilitySystemBootstrap::EnsureInitialized(AActor* InAvatar) {
         CurrentASC = AbilitySystemComponent;
         bInitialAttributesWritten = false;
         bDefaultAbilitiesGranted = false;
-        ReplicationRetryCount = 0;
+        ReplicationRetryGate.Reset();
         if (UWorld* World = GetWorld()) {
             World->GetTimerManager().ClearTimer(ReplicationRetryTimerHandle);
         }
@@ -84,12 +87,12 @@ void UGameAbilitySystemBootstrap::EnsureInitialized(AActor* InAvatar) {
     }
     AbilitySystemComponent->InitAbilityActorInfo(EffectiveOwner, InAvatar);
     CurrentAvatar = InAvatar;
-    InitRetryCount = 0;
+    InitRetryGate.Reset();
     if (UWorld* World = GetWorld()) {
         World->GetTimerManager().ClearTimer(InitRetryTimerHandle);
     }
 
-    AdvanceAuthoritativeInitialization(AbilitySystemComponent);
+    AdvanceAuthoritativeInitialization();
 }
 
 void UGameAbilitySystemBootstrap::NotifyDataReady() {
@@ -110,10 +113,10 @@ void UGameAbilitySystemBootstrap::TryInitializeFromOwner() {
     if (Avatar == nullptr) {
         UWorld* World = GetWorld();
         if (World != nullptr) {
-            if (++InitRetryCount <= MaxInitRetries) {
-                World->GetTimerManager().SetTimer(InitRetryTimerHandle, this, &UGameAbilitySystemBootstrap::TryInitializeFromOwner, RetryIntervalSeconds, false);
+            if (InitRetryGate.Advance()) {
+                World->GetTimerManager().SetTimer(InitRetryTimerHandle, this, &UGameAbilitySystemBootstrap::TryInitializeFromOwner, InitRetryGate.GetIntervalSeconds(), false);
             } else {
-                GAME_LOG(Warning, TEXT("【GAS 引导】自愈重试超时（超过 %d 次），宿主尚未生成或附身有效 Avatar，自愈中止。"), MaxInitRetries);
+                GAME_LOG(Warning, TEXT("【GAS 引导】自愈重试超时（超过 %d 次），宿主尚未生成或附身有效 Avatar，自愈中止。"), InitRetryGate.GetMaxRetries());
             }
         }
         return;
@@ -127,6 +130,11 @@ void UGameAbilitySystemBootstrap::TryInitializeFromOwner() {
     EnsureInitialized(Avatar);
 }
 
+void UGameAbilitySystemBootstrap::ConfigureRetryGates() {
+    ReplicationRetryGate.Configure(RetryIntervalSeconds, MaxReplicationRetries);
+    InitRetryGate.Configure(RetryIntervalSeconds, MaxInitRetries);
+}
+
 APawn* UGameAbilitySystemBootstrap::ResolveOwnerAvatar() const {
     AActor* OwnerActor = GetOwner();
     if (APawn* OwnerAsPawn = Cast<APawn>(OwnerActor)) {
@@ -138,24 +146,17 @@ APawn* UGameAbilitySystemBootstrap::ResolveOwnerAvatar() const {
     return nullptr;
 }
 
-UAbilitySystemComponent* UGameAbilitySystemBootstrap::ResolveASC(UAbilitySystemComponent* InAbilitySystemComponent) const {
-    if (InAbilitySystemComponent != nullptr) {
-        return InAbilitySystemComponent;
-    }
-    return ResolveAbilitySystemComponent.IsBound() ? ResolveAbilitySystemComponent.Execute() : nullptr;
-}
-
-void UGameAbilitySystemBootstrap::AdvanceAuthoritativeInitialization(UAbilitySystemComponent* InAbilitySystemComponent) {
-    const AActor* AuthorityActor = GetOwner();
-    if (AuthorityActor == nullptr && InAbilitySystemComponent != nullptr) {
-        AuthorityActor = InAbilitySystemComponent->GetOwner();
-    }
-    if (AuthorityActor != nullptr && !AuthorityActor->HasAuthority()) {
+void UGameAbilitySystemBootstrap::AdvanceAuthoritativeInitialization() {
+    UAbilitySystemComponent* AbilitySystemComponent = CurrentASC.Get();
+    if (AbilitySystemComponent == nullptr || CurrentAvatar.Get() == nullptr) {
         return;
     }
 
-    UAbilitySystemComponent* AbilitySystemComponent = ResolveASC(InAbilitySystemComponent);
-    if (AbilitySystemComponent == nullptr) {
+    const AActor* AuthorityActor = GetOwner();
+    if (AuthorityActor == nullptr) {
+        AuthorityActor = AbilitySystemComponent->GetOwner();
+    }
+    if (AuthorityActor != nullptr && !AuthorityActor->HasAuthority()) {
         return;
     }
 
@@ -180,7 +181,7 @@ void UGameAbilitySystemBootstrap::GrantDefaultAbilities() {
         return;
     }
 
-    UAbilitySystemComponent* AbilitySystemComponent = ResolveASC(CurrentASC.Get());
+    UAbilitySystemComponent* AbilitySystemComponent = CurrentASC.Get();
     if (AbilitySystemComponent == nullptr) {
         return;
     }
@@ -194,9 +195,9 @@ void UGameAbilitySystemBootstrap::GrantDefaultAbilities() {
     }
 
     UWorld* World = GetWorld();
-    if (!AbilitySystemComponent->IsReadyForReplication() && ++ReplicationRetryCount <= MaxReplicationRetries) {
+    if (!AbilitySystemComponent->IsReadyForReplication() && ReplicationRetryGate.Advance()) {
         if (World != nullptr) {
-            World->GetTimerManager().SetTimer(ReplicationRetryTimerHandle, this, &UGameAbilitySystemBootstrap::GrantDefaultAbilities, RetryIntervalSeconds, false);
+            World->GetTimerManager().SetTimer(ReplicationRetryTimerHandle, this, &UGameAbilitySystemBootstrap::GrantDefaultAbilities, ReplicationRetryGate.GetIntervalSeconds(), false);
         }
         return;
     }

@@ -35,6 +35,8 @@ public:
 
 template <typename TRowType>
 bool FDataTableLoaderUtils::LoadTableFromJson(const FString& FilePath, TMap<FName, TRowType>& OutMap) {
+    OutMap.Empty();
+
     if (!FPaths::FileExists(FilePath)) {
         GAME_LOG(Warning, TEXT("【数据表加载】JSON 文件不存在: %s"), *FilePath);
         return false;
@@ -53,7 +55,6 @@ bool FDataTableLoaderUtils::LoadTableFromJson(const FString& FilePath, TMap<FNam
         return false;
     }
 
-    OutMap.Empty();
     OutMap.Reserve(JsonParsed.Num());
     int32 LoadedCount = 0;
     int32 FailedCount = 0;

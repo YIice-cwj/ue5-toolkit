@@ -44,7 +44,7 @@ struct GAMEGAMEPLAYCORE_API FGameActiveBuffArray : public FFastArraySerializer {
     TArray<FGameBuffInstance> Items;
 
     UPROPERTY(NotReplicated)
-    TObjectPtr<UGameBuffComponent> OwnerComponent = nullptr;
+    TWeakObjectPtr<UGameBuffComponent> OwnerComponent = nullptr;
 
     /**
      * @brief 增量复制入口：委托引擎 FastArrayDeltaSerialize 同步变更条目与删除索引
@@ -63,7 +63,7 @@ struct GAMEGAMEPLAYCORE_API FGameActiveBuffArray : public FFastArraySerializer {
     void PostReplicatedAdd(const TArrayView<int32>& AddedIndices, int32 FinalSize);
 
     /**
-     * @brief 客户端收到条目变更后：按新叠层重挂修正器、刷新 Tick 状态并广播差异
+     * @brief 客户端收到条目变更后：按新 Spec 与叠层重建修正器、刷新 Tick 状态并广播差异
      * @param ChangedIndices 变更条目下标
      * @param FinalSize 复制后的条目总数
      */

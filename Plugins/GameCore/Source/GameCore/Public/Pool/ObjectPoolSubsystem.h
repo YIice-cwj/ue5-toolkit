@@ -57,17 +57,17 @@ public:
      * @brief 从池中借出或生成 Actor 实例
      * @param ActorClass 目标类
      * @param SpawnTransform 初始空间变换
-     * @return 激活的 Actor 实例指针；类无效或生成失败返回 nullptr
+     * @return 激活的 Actor 实例指针；类无效、生成失败或生命周期回调已归还/销毁实例时返回 nullptr
      */
     UFUNCTION(BlueprintCallable, Category = "GameCore|Pool", meta = (DeterminesOutputType = "ActorClass"))
     AActor* AcquireActor(TSubclassOf<AActor> ActorClass, const FTransform& SpawnTransform);
 
     /**
-     * @brief 将已借出的 Actor 归还回池休眠
+     * @brief 将已借出的 Actor 归还回池休眠（非活跃池属实例与重复归还直接忽略）
      * @param Actor 待归还的实例
      *
-     * 实现思路：先解绑 OnDestroyed 委托（避免正常归还触发外部销毁扣减），
-     * 再依次执行生命周期回调、解除附加、清理定时器、重置物理与移动、停止声音与粒子，最后休眠入池。
+     * 实现思路：先从活跃集合摘除并解绑 OnDestroyed 委托，再依次执行生命周期回调、解除附加、
+     * 清理定时器、重置物理与移动、停止声音与粒子，最后按最新容量策略休眠入池或销毁。
      */
     UFUNCTION(BlueprintCallable, Category = "GameCore|Pool")
     void ReleaseActor(AActor* Actor);
@@ -100,7 +100,7 @@ public:
      * @tparam T 返回的 Actor 具体派生类型
      * @param ActorClass 目标类
      * @param SpawnTransform 初始空间变换
-     * @return 激活的 Actor 实例指针；类无效、生成失败或泛型强转失败返回 nullptr
+     * @return 激活的 Actor 实例指针；类无效、生成失败、生命周期回调已归还/销毁实例或泛型强转失败返回 nullptr
      */
     template <typename T = AActor>
     [[nodiscard]] T* AcquireActor(TSubclassOf<AActor> ActorClass, const FTransform& SpawnTransform = FTransform::Identity);

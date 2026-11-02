@@ -31,6 +31,10 @@
         {
             "Name": "GameLogging",
             "Enabled": true
+        },
+        {
+            "Name": "GameFeedback",
+            "Enabled": true
         }
     ]
 }

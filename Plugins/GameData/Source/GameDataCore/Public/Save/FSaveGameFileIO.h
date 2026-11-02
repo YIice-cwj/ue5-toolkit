@@ -45,9 +45,9 @@ public:
     static bool DoesSaveSlotExist(const FString& SlotName);
 
     /**
-     * @brief 彻底删除指定槽位的物理文件（同时清理正式文件与临时文件）
+     * @brief 删除指定槽位的正式文件与临时文件，并写入保存代次删除墓碑
      * @param SlotName 存档槽位名称
-     * @return 删除成功返回 true，文件不存在或删除失败返回 false
+     * @return 发现至少一个文件且全部删除成功返回 true，否则返回 false
      */
     static bool DeleteSaveSlot(const FString& SlotName);
 
@@ -62,12 +62,12 @@ public:
     /**
      * @brief 生成并签发槽位递增的写入代次序号（防止异步并发保存乱序覆写）
      * @param SlotName 存档槽位名称
-     * @return 本次签发的唯一代次序号
+     * @return 本次签发的唯一代次序号；删除后仍严格递增，不复用历史代次
      */
     static uint64 IssueSlotSaveGeneration(const FString& SlotName);
 
     /**
-     * @brief 作废指定槽位的写入代次序号
+     * @brief 写入槽位删除墓碑，使此前签发的保存代次全部过期
      * @param SlotName 存档槽位名称
      */
     static void InvalidateSlotSaveGeneration(const FString& SlotName);
@@ -77,7 +77,7 @@ public:
      * @param SlotName 存档槽位名称
      * @param Bytes 待落盘的二进制字节数组
      * @param SaveGeneration 签发的代次序号（非 0 时校验过期性）
-     * @return 写入与原子重命名成功返回 true，否则返回 false
+     * @return 写入与原子重命名成功返回 true；过期写被安全吸收也返回 true，其余失败返回 false
      */
     static bool WriteSlotBytes(const FString& SlotName, const TArray<uint8>& Bytes, uint64 SaveGeneration = 0);
 
@@ -85,7 +85,7 @@ public:
      * @brief 读取指定槽位的二进制字节（正式文件损坏或缺失时自动自 .tmp 临时文件抢救恢复）
      * @param SlotName 存档槽位名称
      * @param OutBytes 输出的二进制字节数组
-     * @return 读取成功返回 true，文件缺失或损坏且无法修复返回 false
+     * @return 读取到有效正式档，或有效临时档成功换入正式档时返回 true，否则返回 false
      */
     static bool ReadSlotBytes(const FString& SlotName, TArray<uint8>& OutBytes);
 

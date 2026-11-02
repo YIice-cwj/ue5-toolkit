@@ -37,8 +37,7 @@ sequenceDiagram
   - 同步打击反馈 `FGameDamageResult`（即时返回各通道实际伤害、反馈标签与动态参数，调用端零异步反查）。
 - **开放的可受击契约 `IDamageable`**：蓝图可调、C++ 可继承的泛型接口，攻击端对受击方具体类型保持完全无知。
 - **通用数值管理组件 `UGameStatComponent`**：
-  - **Standalone 自持模式**：内部维护属性字典，网络自动同步复制，开箱即用。
-  - **Proxy 代理模式**：无缝接入 `IGameStatValueSource`（蓝图接口）或 `FGameStatQueryDelegate`（高性能 C++ 原生委托），桥接 GAS AttributeSet 或外部数值系统；写入必须显式绑定 `FGameStatWriteDelegate`，杜绝本地缓存与外部源读写撕裂。
+  - **自持数值模型**：内部维护属性字典，网络自动同步复制，开箱即用；非权威端默认拒绝写入。
   - **属性修正器与派生数值**：`AddStatModifier` / `RemoveStatModifier` / `ClearStatModifiers`，支持加算、乘算、覆写；`GetStatEffectiveCurrent/Max/Percent` 读取叠加后的派生值。
   - **按 Tag 订阅**：`SubscribeStatChanged` 订阅时立即回放当前值，UI 无初始空白。
   - **动静双轨多播委托**：同时支持蓝图动态委托与 C++ 原生弱引用 Lambda 委托。
@@ -135,21 +134,44 @@ Plugins/GameGameplayCore/
 │   └── GameGameplayCore/
 │       ├── Public/
 │       │   ├── GameGameplayCore.h
-│       │   └── Combat/
-│       │       ├── FGameDamageContext.h      # 伤害分发输入上下文
-│       │       ├── FGameDamageResult.h       # 打击反馈同步契约（Tag驱动）
-│       │       ├── IDamageable.h             # 可受击泛型接口
-│       │       ├── IGameStatValueSource.h    # 泛型数值源代理契约
-│       │       ├── UGameBuffComponent.h      # 通用 Buff / 状态核心组件
-│       │       └── UGameStatComponent.h      # 通用数值管理组件
+│       │   ├── Damage/
+│       │   │   ├── FGameDamageContext.h      # 伤害分发输入上下文
+│       │   │   ├── FGameDamageResult.h       # 打击反馈同步契约（Tag驱动）
+│       │   │   ├── FGameDamageChannel.h      # 伤害通道定义
+│       │   │   └── IDamageable.h             # 可受击泛型接口
+│       │   ├── Stat/
+│       │   │   ├── FGameStatTypes.h                  # 数值数据契约与枚举
+│       │   │   ├── FGameStatModifierContainer.h      # 修正器容器与演算
+│       │   │   ├── FGameStatSubscriptionHub.h        # 按 Tag 订阅中心
+│       │   │   ├── FGameStatEffectiveEvaluator.h     # 有效值演算统一入口
+│       │   │   ├── FGameStatAcknowledgedDiff.h       # 复制差分去重
+│       │   │   ├── UGameStatComponent.h              # 通用数值管理组件
+│       │   │   └── UGameVitalComponent.h             # 生命与生死状态组件
+│       │   └── Buff/
+│       │       ├── FGameBuffTypes.h                  # Buff 数据契约
+│       │       ├── FGameActiveBuffArray.h            # FastArray 增量复制容器
+│       │       ├── FGameBuffModifierBridge.h         # 修正器挂接与回滚桥接
+│       │       └── UGameBuffComponent.h              # 通用 Buff / 状态核心组件
 │       ├── Private/
 │       │   ├── GameGameplayCore.cpp
-│       │   ├── Combat/
-│       │   │   ├── UGameBuffComponent.cpp
-│       │   │   └── UGameStatComponent.cpp
+│       │   ├── Stat/
+│       │   │   ├── FGameStatEffectiveEvaluator.cpp
+│       │   │   ├── FGameStatAcknowledgedDiff.cpp
+│       │   │   ├── FGameStatModifierContainer.cpp
+│       │   │   ├── FGameStatSubscriptionHub.cpp
+│       │   │   ├── UGameStatComponent.cpp
+│       │   │   └── UGameVitalComponent.cpp
+│       │   ├── Buff/
+│       │   │   ├── FGameActiveBuffArray.cpp
+│       │   │   ├── FGameBuffModifierBridge.cpp
+│       │   │   └── UGameBuffComponent.cpp
 │       │   └── Tests/
+│       │       ├── FGameStatEvaluatorTest.cpp
+│       │       ├── FGameBuffModifierBridgeTest.cpp
 │       │       ├── UGameBuffComponentTest.cpp
-│       │       └── UGameStatComponentTest.cpp
+│       │       ├── UGameStatComponentTest.cpp
+│       │       ├── UGameStatPerformanceTest.cpp
+│       │       └── UGameVitalComponentTest.cpp
 │       └── GameGameplayCore.Build.cs
 ├── Docs/                                     # 详细技术文档库
 │   ├── Architecture/                         # 核心架构设计
@@ -163,7 +185,6 @@ Plugins/GameGameplayCore/
 │   └── Guides/                               # 实践指南
 │       ├── QuickStart.md
 │       ├── StandaloneStatGuide.md
-│       ├── ProxyStatGuide.md
 │       └── BuffGuide.md
 ├── GameGameplayCore.uplugin
 └── README.md
@@ -207,10 +228,9 @@ UnrealEditor-Cmd <Project.uproject> -ExecCmds="Automation RunTests Game.Gameplay
 - **接口参考 (API Reference)**
   - [伤害数据类型参考](Docs/API/DamageTypes.md)：`FGameDamageContext`、`FGameDamageResult`、`FGameDamageChannel` 详解。
   - [可受击接口参考](Docs/API/IDamageable.md)：`IDamageable` / `UDamageable` 蓝图与 C++ 调用契约。
-  - [通用数值组件 API](Docs/API/GameStatComponent.md)：`UGameStatComponent` 属性注册、网络复制、数值代理、修正器与按 Tag 订阅。
+  - [通用数值组件 API](Docs/API/GameStatComponent.md)：`UGameStatComponent` 属性注册、网络复制、修正器与按 Tag 订阅。
   - [通用 Buff 组件 API](Docs/API/BuffComponent.md)：`UGameBuffComponent`、`FGameBuffSpec`、叠层策略与修正器挂接。
 - **使用指南 (Guides)**
   - [快速上手指南](Docs/Guides/QuickStart.md)：为场景角色添加属性与受击支持。
-  - [自持模式实战指南 (Standalone)](Docs/Guides/StandaloneStatGuide.md)：用于普通怪物、机关、木桩的纯组件方案。
-  - [代理模式接入指南 (Proxy)](Docs/Guides/ProxyStatGuide.md)：用于桥接 GAS 或外部属性数据源。
+  - [数值组件实战指南 (Standalone)](Docs/Guides/StandaloneStatGuide.md)：用于普通怪物、机关、木桩的纯组件方案。
   - [Buff 与冷却指南](Docs/Guides/BuffGuide.md)：任意 Buff 注册、叠层、持续时长与冷却即状态。

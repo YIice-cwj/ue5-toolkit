@@ -16,6 +16,7 @@
 #include "GameplayAbilitySpecHandle.h"
 
 #include "GameGameplay.h"
+#include "Ability/FBootstrapRetryGate.h"
 #include "UGameAbilitySystemBootstrap.generated.h"
 
 class UAbilitySystemComponent;
@@ -86,7 +87,7 @@ public:
     void EnsureInitialized(AActor* InAvatar);
 
     /**
-     * @brief 数据就绪通知（游戏层订阅静态数据版本后回调，唤醒数据未就绪时挂起的引导）
+     * @brief 数据就绪通知（仅推进已完成 ActorInfo 握手的引导，未握手时等待 EnsureInitialized）
      */
     void NotifyDataReady();
 
@@ -123,9 +124,25 @@ protected:
     float RetryIntervalSeconds = 0.05f;
 
 private:
+    /**
+     * @brief 按组件配置设置初始化与 ASC 复制重试门的间隔和次数上限
+     */
+    void ConfigureRetryGates();
+
+    /**
+     * @brief 从组件拥有者解析兜底引导使用的 Pawn Avatar
+     * @return 拥有者自身或其 PlayerState 关联的 Pawn；无法解析时返回 nullptr
+     */
     [[nodiscard]] APawn* ResolveOwnerAvatar() const;
-    [[nodiscard]] UAbilitySystemComponent* ResolveASC(UAbilitySystemComponent* InAbilitySystemComponent) const;
-    void AdvanceAuthoritativeInitialization(UAbilitySystemComponent* InAbilitySystemComponent = nullptr);
+
+    /**
+     * @brief 在 ActorInfo 已初始化且数据就绪后写入初值并推进默认能力授予
+     */
+    void AdvanceAuthoritativeInitialization();
+
+    /**
+     * @brief 向当前已完成握手的 ASC 授予默认能力并跟踪句柄
+     */
     void GrantDefaultAbilities();
 
     TWeakObjectPtr<AActor> CurrentAvatar;
@@ -140,6 +157,7 @@ private:
     FTimerHandle ReplicationRetryTimerHandle;
     bool bInitialAttributesWritten = false;
     bool bDefaultAbilitiesGranted = false;
-    int32 ReplicationRetryCount = 0;
-    int32 InitRetryCount = 0;
+
+    FBootstrapRetryGate InitRetryGate;
+    FBootstrapRetryGate ReplicationRetryGate;
 };

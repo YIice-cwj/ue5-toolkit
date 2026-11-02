@@ -8,6 +8,7 @@
 #include "CoreMinimal.h"
 #include "Misc/ScopeRWLock.h"
 #include "UObject/WeakObjectPtrTemplates.h"
+#include "Listener/FNotificationDispatcher.h"
 #include "Listener/FObserverSubscription.h"
 
 class UObject;
@@ -42,11 +43,11 @@ public:
     };
 
     /**
-     * @brief 原子注册并抓取当前值快照的结果结构
+     * @brief 原子注册并将当前值回放追加到全局 FIFO 的结果结构
      */
     struct FSubscribeSnapshot {
         uint64 SubscriptionId = 0;
-        ValueType CurrentValue{};
+        bool bShouldDrain = false;
     };
 
 public:
@@ -56,10 +57,9 @@ private:
     template<typename> friend class FValueObserver;
 
     uint64 AddListener(FListener InListener, const TWeakObjectPtr<UObject>& InOwner);
-    [[nodiscard]] FSubscribeSnapshot AddListenerWithValueSnapshot(FListener InListener, const TWeakObjectPtr<UObject>& InOwner);
-    void SetValueAndPurge(ConstReference InValue);
+    [[nodiscard]] FSubscribeSnapshot AddListenerWithReplay(FListener InListener, const TWeakObjectPtr<UObject>& InOwner);
+    [[nodiscard]] bool SetValueAndPurge(ConstReference InValue, bool bBroadcast);
     [[nodiscard]] ValueType GetValue() const;
-    void Broadcast() const;
     void RemoveListener(uint64 SubscriptionId) override;
     void PurgeInvalidListeners();
     [[nodiscard]] int32 NumListeners();
@@ -88,14 +88,14 @@ uint64 FObserverState<T>::AddListener(FListener InListener, const TWeakObjectPtr
 }
 
 template<typename T>
-typename FObserverState<T>::FSubscribeSnapshot FObserverState<T>::AddListenerWithValueSnapshot(
+typename FObserverState<T>::FSubscribeSnapshot FObserverState<T>::AddListenerWithReplay(
     FListener InListener, const TWeakObjectPtr<UObject>& InOwner) {
     FWriteScopeLock WriteLock(ListenersLock);
     FSubscribeSnapshot Result;
-    Result.CurrentValue = Value;
     if (!InListener) {
         return Result;
     }
+    FListener ReplayListener = InListener;
     TArray<FListenerEntry> Updated;
     if (Listeners.IsValid()) {
         Updated = *Listeners;
@@ -103,11 +103,17 @@ typename FObserverState<T>::FSubscribeSnapshot FObserverState<T>::AddListenerWit
     Result.SubscriptionId = ++NextId;
     Updated.Add(FListenerEntry{Result.SubscriptionId, MoveTemp(InListener), InOwner});
     Listeners = MakeShared<const TArray<FListenerEntry>>(MoveTemp(Updated));
+    Result.bShouldDrain = FNotificationDispatcher::Get().Enqueue(
+        [ReplayListener = MoveTemp(ReplayListener), WeakOwner = InOwner, CurrentValue = Value]() {
+            if (WeakOwner.IsExplicitlyNull() || WeakOwner.IsValid()) {
+                ReplayListener(CurrentValue);
+            }
+        });
     return Result;
 }
 
 template<typename T>
-void FObserverState<T>::SetValueAndPurge(ConstReference InValue) {
+bool FObserverState<T>::SetValueAndPurge(ConstReference InValue, bool bBroadcast) {
     FWriteScopeLock WriteLock(ListenersLock);
     if (Listeners.IsValid()) {
         TArray<FListenerEntry> Updated = *Listeners;
@@ -116,31 +122,23 @@ void FObserverState<T>::SetValueAndPurge(ConstReference InValue) {
         }
     }
     Value = InValue;
+    if (!bBroadcast || !Listeners.IsValid() || Listeners->IsEmpty()) {
+        return false;
+    }
+    return FNotificationDispatcher::Get().Enqueue(
+        [Snapshot = Listeners, ValueSnapshot = Value]() {
+            for (const FListenerEntry& Entry : *Snapshot) {
+                if (!Entry.IsOwnerExpired()) {
+                    Entry.Callback(ValueSnapshot);
+                }
+            }
+        });
 }
 
 template<typename T>
 typename FObserverState<T>::ValueType FObserverState<T>::GetValue() const {
     FReadScopeLock ReadLock(ListenersLock);
     return Value;
-}
-
-template<typename T>
-void FObserverState<T>::Broadcast() const {
-    TSharedPtr<const TArray<FListenerEntry>> Snapshot;
-    ValueType ValueSnapshot{};
-    {
-        FReadScopeLock ReadLock(ListenersLock);
-        Snapshot = Listeners;
-        ValueSnapshot = Value;
-    }
-    if (!Snapshot.IsValid()) {
-        return;
-    }
-    for (const FListenerEntry& Entry : *Snapshot) {
-        if (!Entry.IsOwnerExpired()) {
-            Entry.Callback(ValueSnapshot);
-        }
-    }
 }
 
 template<typename T>

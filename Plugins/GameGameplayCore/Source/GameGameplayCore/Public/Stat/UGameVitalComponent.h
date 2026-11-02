@@ -111,18 +111,6 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Game|Vital")
     void EvaluateVitalState();
 
-public:
-    /**
-     * @brief 存活状态变动动态多播委托
-     */
-    UPROPERTY(BlueprintAssignable, Category = "Game|Vital")
-    FOnGameVitalStateChanged OnVitalStateChanged;
-
-    /**
-     * @brief 存活状态变动原生 C++ 多播委托
-     */
-    FOnGameVitalStateChangedNative OnVitalStateChangedNative;
-
 protected:
     /**
      * @brief 存活标志位网络复制到达客户端时的回调函数
@@ -131,8 +119,25 @@ protected:
     void OnRep_VitalAlive();
 
 private:
+    /**
+     * @brief 主生命属性变更后重新评估存活状态
+     * @param StatTag 触发回调的属性标签
+     * @param OldValue 变化前的有效当前值
+     * @param NewValue 变化后的有效当前值
+     * @param MaxValue 当前有效上限
+     */
     void HandleBoundStatChanged(const FGameplayTag& StatTag, float OldValue, float NewValue, float MaxValue);
+
+    /**
+     * @brief 向蓝图和原生订阅者广播最新存活状态与主生命标签
+     * @param bNewAlive 最新存活状态
+     */
     void BroadcastVitalStateChanged(bool bNewAlive);
+
+    /**
+     * @brief 返回显式绑定的数值组件，未绑定时从宿主查找
+     * @return 可用的数值组件；无宿主或未发现时返回 nullptr
+     */
     UGameStatComponent* ResolveStatComponent();
 
 private:
@@ -144,4 +149,16 @@ private:
 
     TWeakObjectPtr<UGameStatComponent> BoundStatComponent;
     FDelegateHandle StatChangedSubscriptionHandle;
+
+public:
+    /**
+     * @brief 存活状态变动动态多播委托
+     */
+    UPROPERTY(BlueprintAssignable, Category = "Game|Vital")
+    FOnGameVitalStateChanged OnVitalStateChanged;
+
+    /**
+     * @brief 存活状态变动原生 C++ 多播委托
+     */
+    FOnGameVitalStateChangedNative OnVitalStateChangedNative;
 };

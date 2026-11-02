@@ -166,9 +166,10 @@ Plugins/GameData/
 ├── Source/
 │   ├── GameDataCore/                 # 通用模块（GAMEDATACORE_API）
 │   │   ├── Public/
-│   │   │   ├── Data/StaticData/FStaticDataRepository.h
-│   │   │   ├── Persistence/GameSaveArchive.h
-│   │   │   ├── Persistence/USaveGameSubsystem.h
+│   │   │   ├── StaticData/FStaticDataRepository.h      # 行负载容器与序列化器注册
+│   │   │   ├── StaticData/FStaticDataBinCodec.h        # .bin 编解码 / CRC32 / 摘要
+│   │   │   ├── Save/GameSaveArchive.h
+│   │   │   ├── Save/USaveGameSubsystem.h
 │   │   │   └── Utils/DataTableLoaderUtils.h
 │   │   └── Private/
 │   └── GameData/                     # 生成宿主（GAMEDATA_API）

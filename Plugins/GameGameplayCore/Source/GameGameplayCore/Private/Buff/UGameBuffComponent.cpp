@@ -26,10 +26,21 @@ void UGameBuffComponent::PostInitProperties() {
     ActiveBuffs.OwnerComponent = this;
 }
 
+void UGameBuffComponent::EndPlay(const EEndPlayReason::Type EndPlayReason) {
+    if (UGameStatComponent* StatComponent = BoundStatComponent.Get()) {
+        ModifierBridge.ClearAll(*StatComponent);
+    } else {
+        ModifierBridge.Reset();
+    }
+
+    Super::EndPlay(EndPlayReason);
+}
+
 void UGameBuffComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) {
     Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
     if (ActiveBuffs.Items.IsEmpty()) {
+        SetComponentTickEnabled(false);
         return;
     }
 
@@ -76,7 +87,24 @@ void UGameBuffComponent::TickComponent(float DeltaTime, ELevelTick TickType, FAc
 }
 
 void UGameBuffComponent::BindStatComponent(UGameStatComponent* InStatComponent) {
+    if (BoundStatComponent.Get() == InStatComponent) {
+        return;
+    }
+
+    if (UGameStatComponent* OldStatComponent = BoundStatComponent.Get()) {
+        ModifierBridge.ClearAll(*OldStatComponent);
+    } else {
+        ModifierBridge.Reset();
+    }
+
     BoundStatComponent = InStatComponent;
+    if (InStatComponent == nullptr) {
+        return;
+    }
+
+    for (const FGameBuffInstance& Instance : ActiveBuffs.Items) {
+        ModifierBridge.Register(Instance.InstanceId, Instance, *InStatComponent);
+    }
 }
 
 int32 UGameBuffComponent::ApplyBuff(const FGameBuffSpec& InSpec, [[maybe_unused]] UObject* InSource) {
@@ -113,6 +141,8 @@ int32 UGameBuffComponent::ApplyBuff(const FGameBuffSpec& InSpec, [[maybe_unused]
         if (InSpec.StackPolicy == EGameBuffStackPolicy::AddDuration) {
             if (InSpec.Duration > 0.0f) {
                 Existing.RemainingSeconds += InSpec.Duration;
+            } else {
+                Existing.RemainingSeconds = 0.0f;
             }
         } else {
             Existing.RemainingSeconds = InSpec.Duration > 0.0f ? InSpec.Duration : 0.0f;
@@ -301,44 +331,14 @@ UGameStatComponent* UGameBuffComponent::ResolveStatComponent() {
     return nullptr;
 }
 
-void UGameBuffComponent::RegisterInstanceModifiers(FGameBuffInstance& InInstance) {
-    UGameStatComponent* StatComponent = ResolveStatComponent();
-    if (StatComponent == nullptr || InInstance.Spec.Modifiers.IsEmpty()) {
-        return;
-    }
-
-    TArray<FGameBuffAppliedModifier>& Handles = ModifierHandlesByInstance.FindOrAdd(InInstance.InstanceId);
-    for (const FGameStatModifierSpec& ModifierSpec : InInstance.Spec.Modifiers) {
-        FGameStatModifier ScaledModifier = ModifierSpec.Modifier;
-        if (InInstance.Stacks > 1) {
-            if (ScaledModifier.Op == EGameStatModifierOp::Add) {
-                ScaledModifier.Value *= static_cast<float>(InInstance.Stacks);
-            } else if (ScaledModifier.Op == EGameStatModifierOp::Multiply) {
-                ScaledModifier.Value = 1.0f + (ScaledModifier.Value - 1.0f) * static_cast<float>(InInstance.Stacks);
-            }
-        }
-
-        FGameBuffAppliedModifier Applied;
-        Applied.StatTag = ModifierSpec.StatTag;
-        Applied.Handle = StatComponent->AddStatModifier(ModifierSpec.StatTag, ScaledModifier);
-        Handles.Add(Applied);
+void UGameBuffComponent::RegisterInstanceModifiers(const FGameBuffInstance& InInstance) {
+    if (UGameStatComponent* StatComponent = ResolveStatComponent()) {
+        ModifierBridge.Register(InInstance.InstanceId, InInstance, *StatComponent);
     }
 }
 
 void UGameBuffComponent::UnregisterInstanceModifiers(const FGameBuffInstance& InInstance) {
-    TArray<FGameBuffAppliedModifier> Handles;
-    if (!ModifierHandlesByInstance.RemoveAndCopyValue(InInstance.InstanceId, Handles)) {
-        return;
-    }
-
-    UGameStatComponent* StatComponent = ResolveStatComponent();
-    if (StatComponent == nullptr) {
-        return;
-    }
-
-    for (const FGameBuffAppliedModifier& Applied : Handles) {
-        StatComponent->RemoveStatModifier(Applied.StatTag, Applied.Handle);
-    }
+    ModifierBridge.Unregister(InInstance.InstanceId, ResolveStatComponent());
 }
 
 int32 UGameBuffComponent::FindInstanceIndex(const FGameplayTag& InBuffTag) const {
@@ -361,7 +361,11 @@ void UGameBuffComponent::RefreshTickState() {
     SetComponentTickEnabled(bHasTimedInstance);
 }
 
-void UGameBuffComponent::PublishReplicatedDiff(const TArray<FGameBuffInstance>& InItems, TArrayView<const int32> ExcludedIndices) {
+void UGameBuffComponent::PublishReplicatedDiff(
+    const TArray<FGameBuffInstance>& InItems,
+    TArrayView<const int32> ExcludedIndices,
+    TArrayView<const FGameplayTag> ForcedChangedTags
+) {
     TMap<FGameplayTag, int32> CurrentStacks;
     for (int32 Index = 0; Index < InItems.Num(); ++Index) {
         if (ExcludedIndices.Contains(Index)) {
@@ -384,7 +388,7 @@ void UGameBuffComponent::PublishReplicatedDiff(const TArray<FGameBuffInstance>& 
 
     for (const TPair<FGameplayTag, int32>& Pair : CurrentStacks) {
         const int32* PreviousStacks = AcknowledgedStacks.Find(Pair.Key);
-        if (PreviousStacks == nullptr || *PreviousStacks != Pair.Value) {
+        if (PreviousStacks == nullptr || *PreviousStacks != Pair.Value || ForcedChangedTags.Contains(Pair.Key)) {
             BroadcastBuffChanged(Pair.Key, Pair.Value);
         }
     }

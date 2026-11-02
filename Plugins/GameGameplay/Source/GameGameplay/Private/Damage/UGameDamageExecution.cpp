@@ -24,6 +24,9 @@ void UGameDamageExecution::Execute_Implementation(const FGameplayEffectCustomExe
     }
 
     FGameGameplayEffectContext* EffectContext = FGameGameplayEffectContext::ExtractEffectContext(ExecutionParams.GetOwningSpec().GetContext());
+    if (EffectContext != nullptr) {
+        EffectContext->SetFeedbackEventId(static_cast<uint16>(ExecutionParams.GetPredictionKey().Current));
+    }
     float TotalCalculatedDamage = 0.0f;
 
     for (const FDamageChannelBinding& Binding : ChannelBindings) {

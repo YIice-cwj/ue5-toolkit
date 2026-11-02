@@ -92,6 +92,10 @@ public:
     [[nodiscard]] bool HasDynamicValue(const FGameplayTag& InTag) const noexcept;
     [[nodiscard]] const TArray<FGameDamageChannel>& GetDynamicValues() const noexcept;
 
+    // 预测反馈事件 ID（0 表示未预测）
+    [[nodiscard]] uint16 GetFeedbackEventId() const noexcept;
+    void SetFeedbackEventId(uint16 InFeedbackEventId) noexcept;
+
     // 统一转换为打击反馈结果
     [[nodiscard]] FGameDamageResult ToDamageResult() const;
 
@@ -102,5 +106,5 @@ public:
     [[nodiscard]] static FGameGameplayEffectContext* ExtractEffectContext(const FGameplayEffectContextHandle& InHandle);
 };
 ```
-- 支持紧凑网络序列化（`NetSerialize`），权威端与客户端同步保留全套打击反馈数据。
+- 支持紧凑网络序列化（`NetSerialize`）：先序列化引擎基类上下文与 `FeedbackEventId`，再按位可选序列化非零实际总伤害、非空反馈标签，以及通道明细和动态参数；ID 0 表示未预测，通道与动态参数数组沿用条目上限 255。
 

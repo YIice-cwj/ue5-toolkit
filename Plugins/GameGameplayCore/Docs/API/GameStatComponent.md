@@ -1,10 +1,9 @@
 # GameGameplayCore 通用数值组件 API 参考
 
-`UGameStatComponent` 是一个纯事件驱动、全 Tag 驱动注册、支持双模（自持/代理）自适应且支持网络同步的通用数值管理组件。
+`UGameStatComponent` 是一个纯事件驱动、全 Tag 驱动注册、支持网络同步的通用数值管理组件。
 
 头文件：
 - `#include "Stat/UGameStatComponent.h"`
-- `#include "Stat/IGameStatValueSource.h"`
 
 ---
 
@@ -30,17 +29,7 @@ struct GAMEGAMEPLAYCORE_API FGameStatValue {
 };
 ```
 
-### 1.2 `EGameStatSourceMode`
-数值源驱动模式：
-```cpp
-UENUM(BlueprintType)
-enum class EGameStatSourceMode : uint8 {
-    Standalone, // 自持模式（组件内部管理与网络复制）
-    Proxy       // 代理模式（外部数据源直通）
-};
-```
-
-### 1.3 属性修正器与写操作
+### 1.2 属性修正器
 ```cpp
 UENUM(BlueprintType)
 enum class EGameStatModifierOp : uint8 {
@@ -69,24 +58,9 @@ struct GAMEGAMEPLAYCORE_API FGameStatModifier {
     explicit FGameStatModifier(float InValue, EGameStatModifierOp InOp = EGameStatModifierOp::Add, bool bInApplyToCurrent = true, bool bInApplyToMax = true);
     static FGameStatModifier MakeMultiplier(float InMultiplier, bool bInApplyToCurrent = true, bool bInApplyToMax = true);
 };
-
-UENUM(BlueprintType)
-enum class EGameStatWriteOp : uint8 {
-    Modify,      // 增量修改
-    SetCurrent,  // 设置当前值
-    SetMax       // 设置上限
-};
 ```
 
-### 1.4 代理读写委托
-```cpp
-DECLARE_DELEGATE_RetVal_OneParam(float, FGameStatQueryDelegate, const FGameplayTag&);
-DECLARE_DELEGATE_RetVal_FourParams(
-    bool, FGameStatWriteDelegate,
-    const FGameplayTag&, EGameStatWriteOp, float, float&);
-```
-
-### 1.5 双轨多播委托定义
+### 1.3 双轨多播委托定义
 ```cpp
 // 属性变更委托（动态委托与 C++ 原生多播委托）
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams(
@@ -195,23 +169,6 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Game|Stat")
     void ReviveVital(float FillPercent = 1.0f);
 
-    // --- 外部代理接入 ---
-    UFUNCTION(BlueprintCallable, Category = "Game|Stat")
-    void BindStatSource(TScriptInterface<IGameStatValueSource> InSource);
-
-    void BindNativeStatQueries(FGameStatQueryDelegate InCurrentQuery, FGameStatQueryDelegate InMaxQuery);
-
-    void BindNativeStatWriter(FGameStatWriteDelegate InWriter);
-
-    UFUNCTION(BlueprintCallable, Category = "Game|Stat")
-    void UnbindStatSource();
-
-    UFUNCTION(BlueprintPure, Category = "Game|Stat")
-    [[nodiscard]] bool CanWriteStat() const;
-
-    UFUNCTION(BlueprintCallable, Category = "Game|Stat")
-    [[nodiscard]] FORCEINLINE EGameStatSourceMode GetSourceMode() const noexcept;
-
     // --- 按 Tag 订阅 ---
     FDelegateHandle SubscribeStatChanged(const FGameplayTag& InStatTag, FOnGameStatChangedNative::FDelegate InDelegate);
     FDelegateHandle SubscribeStatChanged(UObject* Owner, const FGameplayTag& InStatTag,
@@ -225,12 +182,10 @@ public:
 
 ### 写入语义
 
-- **Standalone**：`ModifyStat` / `SetStatCurrent` / `SetStatMax` 直接修改内部值并按 `Min/Max` 钳制。
-- **Proxy**：所有写操作经 `FGameStatWriteDelegate` 转发给外部数据源；未绑定写委托时 `ModifyStat` 返回 `false`，`SetStatCurrent` / `SetStatMax` 直接放弃写入（本地缓存不变）。
-- **Proxy 代理写完整闭环**：外部写入生效后，无论该属性是否在组件内部表注册，组件均会重新计算修正器派生值；当派生当前值或派生上限发生变化时触发 `BroadcastStatChanged` 通知订阅者；若写入属性匹配 `PrimaryVitalTag`，自动评估生死状态并广播 `OnVitalStateChanged`。
-- **双模复活支持**：`ReviveVital(FillPercent)`（默认 `1.0`）以 `Min + (Max - Min) × FillPercent` 计算目标值，并通过 `SetStatCurrent` 透传写入，无缝兼容自持模式与代理模式。
+- `ModifyStat` / `SetStatCurrent` / `SetStatMax` 直接修改内部值并按 `Min/Max` 钳制，`ModifyStat` 输出实际生效增量。
+- 写入生效后重新计算修正器派生值；派生当前值或派生上限发生变化时触发 `BroadcastStatChanged` 通知订阅者。
+- **复活**：`ReviveVital(FillPercent)`（默认 `1.0`）以 `Min + (Max - Min) × FillPercent` 计算目标值，并通过 `SetStatCurrent` 写入。
 - **权威校验**：非权威端默认拒绝写入并记录 Warning；确需客户端预测时可在类默认值中开启 `bAllowNonAuthoritativeWrites`。
-- 写入后组件回读外部源，`CanWriteStat` 可提前判断当前是否允许写入。
 
 ### 修正器与派生值
 
@@ -244,31 +199,7 @@ public:
 
 - `SubscribeStatChanged(InStatTag, Delegate)` 订阅时立即回放当前值（未注册属性也会保存订阅，注册时立即以初始值回放，之后随每次变化触发）。
 - 成员函数订阅优先使用 `FOnGameStatChangedNative::FDelegate::CreateUObject(this, &UMyClass::OnStatChanged)`，引擎原生弱绑定即可随对象失效。
-- `SubscribeStatChanged(Owner, InStatTag, Lambda)` 为 Owner 感知版本：条目持有 `TWeakObjectPtr`，Owner 销毁后广播自动跳过，失效条目在下次广播时清理；Owner 已失效时返回空句柄。
+- `SubscribeStatChanged(Owner, InStatTag, Lambda)` 为 Owner 感知版本：条目持有 `TWeakObjectPtr`，Owner 销毁后广播自动跳过，失效条目在下次广播时清理；Owner 已失效时返回空句柄。已注册属性的初始值仅回放给本次新订阅者，不会重复广播给既有订阅者。
 - 回调签名：`(StatTag, OldValue, NewValue, MaxValue)`。
 - 退订使用 `UnsubscribeStatChanged` + 返回的 `FDelegateHandle`；旧订阅 API 行为不变。
-
----
-
-## 3. 泛型属性源接口 `IGameStatValueSource`
-
-当外部系统（如 GAS AttributeSet）维护具体数值时，外部持有者实现本接口即可无缝对接：
-
-```cpp
-UINTERFACE(MinimalAPI, BlueprintType, Blueprintable)
-class UGameStatValueSource : public UInterface {
-    GENERATED_BODY()
-};
-
-class GAMEGAMEPLAYCORE_API IGameStatValueSource {
-    GENERATED_BODY()
-
-public:
-    UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "Game|Stat")
-    float GetStatCurrent(const FGameplayTag& InStatTag) const;
-
-    UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "Game|Stat")
-    float GetStatMax(const FGameplayTag& InStatTag) const;
-};
-```
 

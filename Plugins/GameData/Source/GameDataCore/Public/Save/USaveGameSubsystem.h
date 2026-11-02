@@ -23,7 +23,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnAsyncSaveComplete, const FString
 /**
  * @brief 异步加载完成动态多播委托
  * @param SlotName 存档槽位名称
- * @param bSuccess 是否加载成功
+ * @param bSuccess 是否加载成功；过期请求被取消时为 false
  */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnAsyncLoadComplete, const FString&, SlotName, bool, bSuccess);
 
@@ -67,7 +67,7 @@ public:
     FOnAsyncLoadComplete OnLoadComplete;
 
     /**
-     * @brief 子系统销毁生命周期回调：清空分段注册表与白名单集合
+     * @brief 子系统销毁生命周期回调：清空分段注册表、白名单集合与异步加载代次
      */
     void Deinitialize() override;
 
@@ -109,7 +109,7 @@ public:
     bool SaveGameToSlot(const FString& SlotName);
 
     /**
-     * @brief 异步保存全部已注册段至指定槽位（后台线程序列化与文件写入，完成后回主线程广播）
+     * @brief 异步保存全部已注册段至指定槽位（主线程捕获与序列化，后台仅写文件，完成后回主线程广播）
      * @param SlotName 目标存档槽位名称
      * @return 成功派发异步任务返回 true，被白名单拦截返回 false
      */
@@ -125,9 +125,11 @@ public:
     bool LoadGameFromSlot(const FString& SlotName);
 
     /**
-     * @brief 异步从指定槽位读取分段归档（后台线程读取文件，完成后回主线程反序列化与广播）
+     * @brief 异步从指定槽位读取分段归档（后台读文件，主线程仅应用最新请求）
      * @param SlotName 目标存档槽位名称
      * @return 成功派发异步任务返回 true，被白名单拦截返回 false
+     *
+     * 同槽位重复调用时仅最后派发的请求可应用；过期请求不调用业务 Load，完成事件以 false 表示取消。
      */
     UFUNCTION(BlueprintCallable, Category = "GameData|Save")
     bool LoadGameFromSlotAsync(const FString& SlotName);
@@ -160,7 +162,7 @@ public:
     bool DoesSaveSlotExist(const FString& SlotName) const;
 
     /**
-     * @brief 彻底删除指定槽位的存档物理文件
+     * @brief 彻底删除指定槽位的存档物理文件，并使该槽位在途异步加载失效
      * @param SlotName 目标存档槽位名称
      * @return 删除成功返回 true，未找到或删除失败返回 false
      */
@@ -193,4 +195,5 @@ private:
 
     TSet<FString> AllowedSlotNames;
     FSaveGameSegmentRegistry SegmentRegistry;
+    TMap<FString, uint64> AsyncLoadGenerations;
 };

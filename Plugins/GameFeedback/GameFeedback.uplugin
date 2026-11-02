@@ -1,0 +1,37 @@
+{
+    "FileVersion": 3,
+    "Version": 1,
+    "VersionName": "1.0.0",
+    "FriendlyName": "Game Feedback",
+    "Description": "Generic combat hit feedback and presentation decoupling engine (camera shake, hitstop, hit flash, audio and particles). Zero GAS hard dependency.",
+    "Category": "Game",
+    "CreatedBy": "Taoist Decree Team",
+    "CanContainContent": false,
+    "Installed": false,
+    "Modules": [
+        {
+            "Name": "GameFeedback",
+            "Type": "Runtime",
+            "LoadingPhase": "Default"
+        }
+    ],
+    "Plugins": [
+        {
+            "Name": "GameCore",
+            "Enabled": true
+        },
+        {
+            "Name": "GameGameplayCore",
+            "Enabled": true
+        },
+        {
+            "Name": "GameLogging",
+            "Enabled": true
+        },
+        {
+            "Name": "Niagara",
+            "Enabled": true
+        }
+    ]
+}
+

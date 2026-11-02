@@ -4,7 +4,7 @@
  *
  * 设计思路：承载与值类型无关的通用监听设施；子类（如 FValueObserver<T>）只实现
  * 类型化状态存储与通知分发。构造时按 Listener.{Name}.Enabled 经 FConfigRegistry
- * 注册默认开关并读取当前值，实现"Config 控制所有项目开关"。
+ * 注册默认开关，所有启用状态读取均以 Config 为唯一真源。
  */
 
 #pragma once
@@ -21,13 +21,13 @@
 class GAMECORE_API FObserverBase {
 public:
     /**
-     * @brief 构造监听基类（自动注册并监听启停开关配置键）
+     * @brief 构造监听基类并注册启停开关配置键，Config 为启用状态唯一真源
      * @param InObserverName 监听器唯一名称
      */
     explicit FObserverBase(const FName& InObserverName);
 
     /**
-     * @brief 虚析构：自动解除启停开关配置键的变更监听，避免销毁后回调悬垂
+     * @brief 虚析构
      */
     virtual ~FObserverBase();
     FObserverBase(const FObserverBase&) = delete;
@@ -50,16 +50,16 @@ public:
     void SetEnabled(bool bInEnabled);
 
     /**
-     * @brief 查询当前是否处于启用状态（零锁原子读取，由 WatchConfig 与 SetEnabled 双向保持同步）
+     * @brief 查询 Config 中的当前启用状态
      * @return 启用返回 true，禁用返回 false
      */
     [[nodiscard]] bool IsEnabled() const noexcept {
-        return EnabledFlag->load(std::memory_order_relaxed);
+        return FConfigRegistry::Get().GetConfig<bool>(EnableConfigKey, true);
     }
 
     /**
      * @brief 获取观察者当前版本号
-     * @return 自 0 开始、每次成功广播递增的版本号
+     * @return 自 0 开始、每次启用状态下的值提交递增的版本号
      */
     [[nodiscard]] uint32 GetVersion() const noexcept {
         return Version.load(std::memory_order_relaxed);
@@ -67,15 +67,10 @@ public:
 
 protected:
     /**
-     * @brief 统一广播入口：若处于禁用状态则静默跳过；否则版本自增并触发子类分发
+     * @brief 广播前读取唯一启用真源，启用时递增版本号
+     * @return 本次值提交需要通知订阅者返回 true
      */
-    void Broadcast();
-
-private:
-    /**
-     * @brief 类型化通知分发虚函数（由派生类实现具体的载荷数据广播）
-     */
-    virtual void Notify() = 0;
+    bool TryPrepareBroadcast();
 
 private:
     /**
@@ -97,17 +92,7 @@ private:
     FName EnableConfigKey;
 
     /**
-     * @brief 配置中心开关监听守卫
-     */
-    TSharedPtr<FObserverSubscription> EnableWatchSubscription;
-
-    /**
-     * @brief 当前是否启用标志（共享引用生命周期，防止 Watch 回调快照悬垂）
-     */
-    TSharedRef<std::atomic<bool>> EnabledFlag;
-
-    /**
-     * @brief 版本号（每次 Broadcast 自增）
+     * @brief 版本号（每次启用状态下的值提交自增）
      */
     std::atomic<uint32> Version{0};
 };

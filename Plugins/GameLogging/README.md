@@ -16,7 +16,7 @@ flowchart TD
     DynamicTrack --> CacheValid{"原子指针命中<br>且全局 Epoch 匹配?"}
     CacheValid -- "命中 (常见路径)" --> FastPath["直接派发日志 (O(1))"]
     CacheValid -- "未命中 / 纪元过期" --> SlowPath["查询 Meyers' 单例注册表<br>(FGameLogRegistry 读写锁)"]
-    SlowPath --> UpdateEpoch["更新线程局部原子指针<br>同步最新 Epoch 纪元号"]
+    SlowPath --> UpdateEpoch["更新调用点共享静态原子缓存<br>同步最新 Epoch 纪元号"]
     UpdateEpoch --> FastPath
     
     FastPath --> Output["终端控制台 / 磁盘日志文件"]
@@ -103,7 +103,9 @@ Plugins/GameLogging/
 │       │   ├── Logging/
 │       │   │   └── GameLogCategories.cpp # 注册表与 Meyers' 单例实现
 │       │   └── Tests/
-│       │       └── GameLoggingTest.cpp   # 自动化测试用例（并发/生命周期/纪元）
+│       │       ├── GameLogTestCaptureDevice.h # 线程安全日志捕获器
+│       │       ├── GameLogRegistryTest.cpp    # 注册表与 RAII 测试
+│       │       └── GameLogMacrosTest.cpp      # 并发与动态分发测试
 │       └── GameLogging.Build.cs
 ├── Docs/                                 # 详细文档库
 │   ├── Architecture/                     # 架构设计

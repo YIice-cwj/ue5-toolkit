@@ -56,7 +56,7 @@ BASELINE_DIR="${ROOT_DIR}/.memory/baseline/$(date +%Y%m%d_%H%M%S)"
 SMOKE_DIR="${ROOT_DIR}/Saved/NetSmoke"
 SERVER_MAP="/Engine/Maps/Entry?listen?game=/Script/UEToolkit.NetSmokeGameMode"
 CLIENT_ADDRESS="127.0.0.1"
-TEST_PREFIXES=(Game.Core Game.Data Game.Gameplay Game.GameplayCore Game.Logging)
+TEST_PREFIXES=(Game.Core Game.Data Game.Gameplay Game.GameplayCore Game.Logging Game.Feedback)
 
 SKIP_BUILD=0
 for arg in "$@"; do

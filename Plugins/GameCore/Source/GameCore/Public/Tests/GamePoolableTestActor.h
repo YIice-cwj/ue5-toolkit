@@ -30,12 +30,30 @@ public:
 
     void OnAcquireFromPool_Implementation() override {
         ++AcquireCount;
+        if (AcquireCallback) {
+            AcquireCallback(this);
+        }
     }
 
     void OnReleaseToPool_Implementation() override {
         ++ReleaseCount;
+        if (ReleaseCallback) {
+            ReleaseCallback(this);
+        }
     }
 
     int32 AcquireCount = 0;
     int32 ReleaseCount = 0;
+    TFunction<void(AGamePoolableTestActor*)> AcquireCallback;
+    TFunction<void(AGamePoolableTestActor*)> ReleaseCallback;
+};
+
+UCLASS()
+class GAMECORE_API AGamePoolableReleaseOnAcquireTestActor : public AGamePoolableTestActor {
+    GENERATED_BODY()
+};
+
+UCLASS()
+class GAMECORE_API AGamePoolableDestroyOnAcquireTestActor : public AGamePoolableTestActor {
+    GENERATED_BODY()
 };

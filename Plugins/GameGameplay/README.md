@@ -47,7 +47,7 @@ graph TD
 | :--- | :--- | :--- |
 | **能力系统组件基类** | 构造期强制开启复制（`SetIsReplicatedByDefault(true)`），提供网络安全基座 | `AbilitySystem/UGameAbilitySystemComponent.h` |
 | **GAS 全局单例** | 继承 `UAbilitySystemGlobals`，挂载全局打击反馈上下文工厂 | `AbilitySystem/UGameAbilitySystemGlobals.h` |
-| **打击反馈上下文** | 全 Tag 驱动扩展 `FGameplayEffectContext`，承载总伤害、各通道明细、反馈标签与动态参数，与 `FGameDamageResult` 1:1 无损桥接；NetSerialize 条目上限 255 | `AbilitySystem/FGameGameplayEffectContext.h` |
+| **打击反馈上下文** | 全 Tag 驱动扩展 `FGameplayEffectContext`，承载总伤害、各通道明细、反馈标签、动态参数与预测 `FeedbackEventId`；NetSerialize 保留非零事件 ID，并按位跳过零伤害与空标签，条目上限 255 | `Damage/FGameGameplayEffectContext.h` |
 | **属性集基础框架** | 纯通用基类（零业务属性），提供上下限钳制、阈值状态幂等闩（`BroadcastThresholdOnce`）、元属性消费归位与增量搬运 | `AbilitySystem/UGameBaseAttributeSet.h` |
 | **泛型伤害结算 ExecCalc** | 基于 GameplayTag 的动态通道绑定、运行时注册 / 注销（`FGameDamageChannelRegistry`）、修饰器管线 | `AbilitySystem/UGameDamageExecution.h`<br>`AbilitySystem/FGameDamageChannelRegistry.h` |
 | **GAS Buff 桥接** | 以 `GameplayEffect` 承载 Buff，收敛上下文构建、施加、移除与状态/叠层/倒计时查询样板代码，不引入具体 Buff 类型 | `AbilitySystem/UGameGasBuffBridge.h` |
@@ -124,23 +124,31 @@ Plugins/GameGameplay/
 │   └── GameGameplay/
 │       ├── Public/
 │       │   ├── GameGameplay.h
-│       │   └── AbilitySystem/
+│       │   ├── Ability/
+│       │   │   ├── FBootstrapRetryGate.h            # 限次重试闸门
+│       │   │   ├── UGameAbilitySystemBootstrap.h    # GAS 握手全时序引导组件
+│       │   │   ├── UGameAbilitySystemComponent.h    # 通用 ASC 基类
+│       │   │   ├── UGameAbilitySystemGlobals.h      # 全局上下文工厂单例
+│       │   │   └── UGameGameplayAbility.h           # 通用能力基类
+│       │   ├── Attribute/
+│       │   │   ├── UGameBaseAttributeSet.h          # 属性集与元属性基类
+│       │   │   └── UGameplayAttributeValueMapping.h # UI 属性映射工具
+│       │   ├── Bridge/
+│       │   │   ├── UGameGasBuffBridge.h             # GAS Buff 桥接
+│       │   │   └── UGameplayCueNotify_GameFeedback.h # GAS Cue 打击感桥接
+│       │   └── Damage/
 │       │       ├── FGameGameplayEffectContext.h     # 打击反馈 GE 上下文
 │       │       ├── FGameDamageChannelRegistry.h     # 运行时通道绑定注册表
-│       │       ├── UGameAbilitySystemBootstrap.h    # GAS 握手全时序引导组件
-│       │       ├── UGameAbilitySystemComponent.h    # 通用 ASC 基类
-│       │       ├── UGameAbilitySystemGlobals.h      # 全局上下文工厂单例
-│       │       ├── UGameBaseAttributeSet.h          # 属性集与元属性基类
-│       │       ├── UGameDamageExecution.h           # 动态通道 ExecCalc 基类
-│       │       ├── UGameGameplayAbility.h           # 通用能力基类
-│       │       ├── UGameGasBuffBridge.h             # GAS Buff 桥接
-│       │       └── UGameplayAttributeValueMapping.h # UI 属性映射工具
+│       │       └── UGameDamageExecution.h           # 动态通道 ExecCalc 基类
 │       ├── Private/
 │       │   ├── GameGameplay.cpp
-│       │   ├── AbilitySystem/
-│       │   │   └── ... (各组件与计算类实现)
+│       │   ├── Ability/
+│       │   ├── Attribute/
+│       │   ├── Bridge/
+│       │   ├── Damage/
 │       │   └── Tests/
-│       │       └── UGameAbilitySystemGlobalsTest.cpp # 单元测试
+│       │       ├── FBootstrapRetryGateTest.cpp      # 重试闸门单测
+│       │       └── UGameAbilitySystemGlobalsTest.cpp # GAS 全局单测
 │       └── GameGameplay.Build.cs
 ├── Docs/                                            # 详细架构与参考文档
 │   ├── Architecture/                                # 核心架构设计

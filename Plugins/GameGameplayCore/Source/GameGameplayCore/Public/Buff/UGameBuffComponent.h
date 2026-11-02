@@ -12,6 +12,7 @@
 #include "Stat/UGameStatComponent.h"
 #include "Buff/FGameBuffTypes.h"
 #include "Buff/FGameActiveBuffArray.h"
+#include "Buff/FGameBuffModifierBridge.h"
 
 #include "UGameBuffComponent.generated.h"
 
@@ -48,8 +49,14 @@ public:
     void PostInitProperties() override;
 
     /**
-     * @brief 显式绑定数值组件（未调用时将在初次需要时自动从 Owner Actor 查找）
-     * @param InStatComponent 目标数值组件指针
+     * @brief 组件结束运行生命周期回调：从原数值组件回滚全部 Buff 修正器
+     * @param EndPlayReason 结束运行的原因
+     */
+    void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+
+    /**
+     * @brief 显式绑定数值组件，回滚旧组件修正器并将全部活跃 Buff 迁移至新组件
+     * @param InStatComponent 目标数值组件指针；为空时仅解绑并回滚
      */
     UFUNCTION(BlueprintCallable, Category = "Game|Buff")
     void BindStatComponent(UGameStatComponent* InStatComponent);
@@ -134,6 +141,83 @@ public:
     UFUNCTION(BlueprintPure, Category = "Game|Buff")
     [[nodiscard]] bool IsApplyAllowed() const;
 
+private:
+    friend struct FGameActiveBuffArray;
+
+    /**
+     * @brief 返回显式绑定的数值组件，未绑定时从宿主发现并缓存
+     * @return 可用的数值组件；无宿主或未发现时返回 nullptr
+     */
+    UGameStatComponent* ResolveStatComponent();
+
+    /**
+     * @brief 将单个 Buff 实例按当前层数挂接到已解析的数值组件
+     * @param InInstance 目标 Buff 运行实例
+     */
+    void RegisterInstanceModifiers(const FGameBuffInstance& InInstance);
+
+    /**
+     * @brief 按实例 ID 回滚桥接器记录的属性修正器
+     * @param InInstance 待回滚的 Buff 运行实例
+     */
+    void UnregisterInstanceModifiers(const FGameBuffInstance& InInstance);
+
+    /**
+     * @brief 查找指定标签的首个活跃 Buff 实例
+     * @param InBuffTag 目标 Buff 身份标签
+     * @return 首个匹配实例下标；不存在时返回 INDEX_NONE
+     */
+    int32 FindInstanceIndex(const FGameplayTag& InBuffTag) const;
+
+    /**
+     * @brief 根据是否仍存在未到期的限时实例启停组件 Tick
+     */
+    void RefreshTickState();
+
+    /**
+     * @brief 对比已确认层数与复制后的条目状态，广播移除及新增、叠层或指定强制变化
+     * @param InItems 复制回调当前持有的 Buff 条目
+     * @param ExcludedIndices 复制删除前需要从当前状态排除的条目下标
+     * @param ForcedChangedTags 即使层数不变也必须广播变更的 Buff 标签
+     */
+    void PublishReplicatedDiff(
+        const TArray<FGameBuffInstance>& InItems,
+        TArrayView<const int32> ExcludedIndices = TArrayView<const int32>(),
+        TArrayView<const FGameplayTag> ForcedChangedTags = TArrayView<const FGameplayTag>()
+    );
+
+    /**
+     * @brief 删除后按标签剩余实例广播层数变化或完全移除
+     * @param InBuffTag 发生删除的 Buff 身份标签
+     */
+    void BroadcastTagStateAfterRemoval(const FGameplayTag& InBuffTag);
+
+    /**
+     * @brief 记录已确认层数并向蓝图和原生订阅者广播 Buff 变更
+     * @param InBuffTag 发生变化的 Buff 身份标签
+     * @param InStacks 变更后的聚合层数
+     */
+    void BroadcastBuffChanged(const FGameplayTag& InBuffTag, int32 InStacks);
+
+    /**
+     * @brief 清除已确认层数并向蓝图和原生订阅者广播 Buff 完全移除
+     * @param InBuffTag 已完全移除的 Buff 身份标签
+     */
+    void BroadcastBuffRemoved(const FGameplayTag& InBuffTag);
+
+private:
+    UPROPERTY(EditDefaultsOnly, Category = "Game|Buff")
+    bool bRequireAuthority = true;
+
+    UPROPERTY(Replicated)
+    FGameActiveBuffArray ActiveBuffs;
+
+    TMap<FGameplayTag, int32> AcknowledgedStacks;
+    TWeakObjectPtr<UGameStatComponent> BoundStatComponent;
+    int32 NextInstanceId = 1;
+
+    FGameBuffModifierBridge ModifierBridge;
+
 public:
     /**
      * @brief Buff 变更动态多播委托（层数或状态变化时广播）
@@ -156,29 +240,4 @@ public:
      * @brief Buff 移除原生 C++ 多播委托
      */
     FOnGameBuffRemovedNative OnBuffRemovedNative;
-
-private:
-    friend struct FGameActiveBuffArray;
-
-    UGameStatComponent* ResolveStatComponent();
-    void RegisterInstanceModifiers(FGameBuffInstance& InInstance);
-    void UnregisterInstanceModifiers(const FGameBuffInstance& InInstance);
-    int32 FindInstanceIndex(const FGameplayTag& InBuffTag) const;
-    void RefreshTickState();
-    void PublishReplicatedDiff(const TArray<FGameBuffInstance>& InItems, TArrayView<const int32> ExcludedIndices = TArrayView<const int32>());
-    void BroadcastTagStateAfterRemoval(const FGameplayTag& InBuffTag);
-    void BroadcastBuffChanged(const FGameplayTag& InBuffTag, int32 InStacks);
-    void BroadcastBuffRemoved(const FGameplayTag& InBuffTag);
-
-private:
-    UPROPERTY(EditDefaultsOnly, Category = "Game|Buff")
-    bool bRequireAuthority = true;
-
-    UPROPERTY(Replicated)
-    FGameActiveBuffArray ActiveBuffs;
-
-    TMap<int32, TArray<FGameBuffAppliedModifier>> ModifierHandlesByInstance;
-    TMap<FGameplayTag, int32> AcknowledgedStacks;
-    TWeakObjectPtr<UGameStatComponent> BoundStatComponent;
-    int32 NextInstanceId = 1;
 };

@@ -180,6 +180,143 @@ bool FGameObjectPoolExternalDestroyAutoHealingTest::RunTest([[maybe_unused]] con
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameObjectPoolExternalReleaseTest, "Game.Core.Pool.ExternalRelease",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+/**
+ * @brief 验证未从池中借出的 Actor 不会被外部归还污染空闲池与统计
+ * @param Parameters 自动化框架参数（未使用）
+ * @return 全部断言通过返回 true
+ */
+bool FGameObjectPoolExternalReleaseTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UWorld* World = GetTestWorld();
+    TestNotNull(TEXT("测试世界有效"), World);
+    if (!World) {
+        return false;
+    }
+
+    UObjectPoolSubsystem* Pool = World->GetSubsystem<UObjectPoolSubsystem>();
+    TestNotNull(TEXT("对象池子系统有效"), Pool);
+    if (!Pool) {
+        return false;
+    }
+
+    Pool->ClearPool(AGamePoolableTestActor::StaticClass());
+    AGamePoolableTestActor* ExternalActor = World->SpawnActor<AGamePoolableTestActor>();
+    TestNotNull(TEXT("外部 Actor 生成成功"), ExternalActor);
+    if (!ExternalActor) {
+        return false;
+    }
+
+    Pool->ReleaseActor(ExternalActor);
+    TestFalse(TEXT("外部归还不休眠非池属 Actor"), ExternalActor->IsHidden());
+    TestEqual(TEXT("外部归还不触发生命周期回调"), ExternalActor->ReleaseCount, 0);
+
+    int32 Total = 0, Active = 0, Idle = 0;
+    Pool->GetPoolStats(AGamePoolableTestActor::StaticClass(), Total, Active, Idle);
+    TestEqual(TEXT("外部归还后活跃数为零"), Active, 0);
+    TestEqual(TEXT("外部归还后空闲数为零"), Idle, 0);
+    TestEqual(TEXT("外部归还后实例总数为零"), Total, 0);
+
+    ExternalActor->Destroy();
+    Pool->ClearPool(AGamePoolableTestActor::StaticClass());
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameObjectPoolReleaseOnAcquireTest, "Game.Core.Pool.ReleaseOnAcquire",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+/**
+ * @brief 验证 OnAcquire 内归还自身不会形成活跃与空闲双重归属或伪成功借出
+ * @param Parameters 自动化框架参数（未使用）
+ * @return 全部断言通过返回 true
+ */
+bool FGameObjectPoolReleaseOnAcquireTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UWorld* World = GetTestWorld();
+    TestNotNull(TEXT("测试世界有效"), World);
+    if (!World) {
+        return false;
+    }
+
+    UObjectPoolSubsystem* Pool = World->GetSubsystem<UObjectPoolSubsystem>();
+    TestNotNull(TEXT("对象池子系统有效"), Pool);
+    if (!Pool) {
+        return false;
+    }
+
+    const TSubclassOf<AActor> ActorClass = AGamePoolableReleaseOnAcquireTestActor::StaticClass();
+    Pool->ClearPool(ActorClass);
+    AGamePoolableReleaseOnAcquireTestActor* Actor = Pool->AcquireActor<AGamePoolableReleaseOnAcquireTestActor>(ActorClass);
+    TestNotNull(TEXT("首次借出用于安装重入回调"), Actor);
+    if (!Actor) {
+        return false;
+    }
+    Actor->AcquireCallback = [Pool](AGamePoolableTestActor* InActor) {
+        Pool->ReleaseActor(InActor);
+    };
+    Pool->ReleaseActor(Actor);
+
+    AGamePoolableReleaseOnAcquireTestActor* ReenteredActor =
+        Pool->AcquireActor<AGamePoolableReleaseOnAcquireTestActor>(ActorClass);
+    TestNull(TEXT("回调内已归还的 Actor 不作为本次借出结果返回"), ReenteredActor);
+
+    int32 Total = 0, Active = 0, Idle = 0;
+    Pool->GetPoolStats(ActorClass, Total, Active, Idle);
+    TestEqual(TEXT("自归还后活跃数为零"), Active, 0);
+    TestEqual(TEXT("自归还后仅保留一个空闲实例"), Idle, 1);
+    TestEqual(TEXT("自归还后实例无双重计数"), Total, 1);
+
+    Pool->ClearPool(ActorClass);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameObjectPoolDestroyOnAcquireTest, "Game.Core.Pool.DestroyOnAcquire",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+/**
+ * @brief 验证 OnAcquire 内销毁自身会撤销活跃归属且借出返回空
+ * @param Parameters 自动化框架参数（未使用）
+ * @return 全部断言通过返回 true
+ */
+bool FGameObjectPoolDestroyOnAcquireTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UWorld* World = GetTestWorld();
+    TestNotNull(TEXT("测试世界有效"), World);
+    if (!World) {
+        return false;
+    }
+
+    UObjectPoolSubsystem* Pool = World->GetSubsystem<UObjectPoolSubsystem>();
+    TestNotNull(TEXT("对象池子系统有效"), Pool);
+    if (!Pool) {
+        return false;
+    }
+
+    const TSubclassOf<AActor> ActorClass = AGamePoolableDestroyOnAcquireTestActor::StaticClass();
+    Pool->ClearPool(ActorClass);
+    AGamePoolableDestroyOnAcquireTestActor* Actor = Pool->AcquireActor<AGamePoolableDestroyOnAcquireTestActor>(ActorClass);
+    TestNotNull(TEXT("首次借出用于安装销毁回调"), Actor);
+    if (!Actor) {
+        return false;
+    }
+    Actor->AcquireCallback = [](AGamePoolableTestActor* InActor) {
+        InActor->Destroy();
+    };
+    Pool->ReleaseActor(Actor);
+
+    AGamePoolableDestroyOnAcquireTestActor* ReenteredActor =
+        Pool->AcquireActor<AGamePoolableDestroyOnAcquireTestActor>(ActorClass);
+    TestNull(TEXT("回调内已销毁的 Actor 不作为本次借出结果返回"), ReenteredActor);
+
+    int32 Total = 0, Active = 0, Idle = 0;
+    Pool->GetPoolStats(ActorClass, Total, Active, Idle);
+    TestEqual(TEXT("自销毁后活跃数为零"), Active, 0);
+    TestEqual(TEXT("自销毁后空闲数为零"), Idle, 0);
+    TestEqual(TEXT("自销毁后实例总数为零"), Total, 0);
+
+    Pool->ClearPool(ActorClass);
+    return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS
 
 

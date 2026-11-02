@@ -49,7 +49,7 @@ public:
      * @param Outer 宿主对象（蓝图默认 Self，如 Widget 自身；为空则以 InAbilitySystemComponent 为宿主）
      * @param InAbilitySystemComponent 目标 ASC
      * @param InAttribute 目标属性
-     * @param bBroadcastImmediately 是否在绑定成功后立即以当前值广播一次
+     * @param bBroadcastImmediately 是否在绑定成功后立即以当前值广播一次；默认 false，调用方应在返回并订阅后调用 QueryAndBroadcast
      * @return 映射对象；InAbilitySystemComponent 为空时返回 nullptr
      */
     UFUNCTION(BlueprintCallable, Category = "Game|GAS", meta = (DefaultToSelf = "Outer"))
@@ -57,20 +57,20 @@ public:
         UObject* Outer,
         UAbilitySystemComponent* InAbilitySystemComponent,
         const FGameplayAttribute& InAttribute,
-        bool bBroadcastImmediately = true
+        bool bBroadcastImmediately = false
     );
 
     /**
      * @brief C++ 重载便利方法（以 InAbilitySystemComponent 为默认 Outer）
      * @param InAbilitySystemComponent 目标 ASC
      * @param InAttribute 目标属性
-     * @param bBroadcastImmediately 是否在绑定成功后立即以当前值广播一次
+     * @param bBroadcastImmediately 是否在绑定成功后立即以当前值广播一次；默认 false，调用方应在返回并订阅后调用 QueryAndBroadcast
      * @return 映射对象
      */
     static UGameplayAttributeValueMapping* CreateAttributeValueMapping(
         UAbilitySystemComponent* InAbilitySystemComponent,
         const FGameplayAttribute& InAttribute,
-        bool bBroadcastImmediately = true
+        bool bBroadcastImmediately = false
     ) {
         return CreateAttributeValueMapping(nullptr, InAbilitySystemComponent, InAttribute, bBroadcastImmediately);
     }
@@ -127,6 +127,10 @@ public:
     void QueryAndBroadcast();
 
 private:
+    /**
+     * @brief 将 ASC 属性变更数据转发给蓝图与原生订阅方
+     * @param InChangeData ASC 提供的属性新旧值变更数据
+     */
     void HandleAttributeChanged(const FOnAttributeChangeData& InChangeData);
 
     TWeakObjectPtr<UAbilitySystemComponent> BoundAbilitySystemComponent;

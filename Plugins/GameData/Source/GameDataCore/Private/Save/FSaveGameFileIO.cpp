@@ -58,16 +58,20 @@ bool FSaveGameFileIO::DeleteSaveSlot(const FString& SlotName) {
     InvalidateSlotSaveGeneration(SlotName);
     FScopeLock Lock(&GetSlotIoMutex());
 
-    bool bDeleted = false;
+    bool bFoundAnyFile = false;
+    bool bDeleteFailed = false;
     const FString FinalPath = GetSaveSlotFilePath(SlotName);
     const FString TempPath = GetSaveSlotTempFilePath(SlotName);
 
     if (FPaths::FileExists(FinalPath)) {
-        bDeleted |= IFileManager::Get().Delete(*FinalPath);
+        bFoundAnyFile = true;
+        bDeleteFailed |= !IFileManager::Get().Delete(*FinalPath, false, true);
     }
     if (FPaths::FileExists(TempPath)) {
-        bDeleted |= IFileManager::Get().Delete(*TempPath);
+        bFoundAnyFile = true;
+        bDeleteFailed |= !IFileManager::Get().Delete(*TempPath, false, true);
     }
+    const bool bDeleted = bFoundAnyFile && !bDeleteFailed;
     if (bDeleted) {
         GAME_LOG(Log, TEXT("【存档文件 I/O】删除存档槽位文件成功: %s。"), *SlotName);
     }
@@ -90,7 +94,6 @@ uint64 FSaveGameFileIO::IssueSlotSaveGeneration(const FString& SlotName) {
 
 void FSaveGameFileIO::InvalidateSlotSaveGeneration(const FString& SlotName) {
     FScopeLock Lock(&GetSlotIoMutex());
-    GetIssuedSlotGenerations().Remove(SlotName);
     GetCommittedSlotGenerations().Add(SlotName, MAX_uint64);
 }
 
@@ -149,7 +152,10 @@ bool FSaveGameFileIO::ReadSlotBytes(const FString& SlotName, TArray<uint8>& OutB
         return false;
     }
 
-    IFileManager::Get().Move(*FinalPath, *TempPath, true, false, false, false);
+    if (!IFileManager::Get().Move(*FinalPath, *TempPath, true, true, true, false)) {
+        GAME_LOG(Error, TEXT("【存档文件 I/O】临时档恢复换入失败: %s"), *FinalPath);
+        return false;
+    }
     return true;
 }
 

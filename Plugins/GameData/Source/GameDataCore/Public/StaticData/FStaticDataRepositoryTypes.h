@@ -53,6 +53,14 @@ enum class EStaticDataBinError : uint8 {
 };
 
 /**
+ * @brief 单表二进制镜像（结构名 + 行键到行负载的映射）
+ */
+struct FStaticDataBinaryTable {
+    FString StructName;
+    TMap<FName, TArray<uint8>> Rows;
+};
+
+/**
  * @brief 静态数据内容摘要（双通道对拍用：表数 / 总行数 / 顺序无关摘要）
  */
 struct FStaticDataContentDigest {

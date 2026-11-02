@@ -28,6 +28,7 @@ graph TD
         GameData["GameData<br>生成代码宿主（空模块）"]
         GameDataSamples["GameDataSamples<br>Item / Shop / Profile 示例（不随通用安装）"]
         GameGameplay["GameGameplay<br>GAS 绑定 / 全时序握手 / ExecCalc / Buff 桥接"]
+        GameFeedback["GameFeedback<br>打击感表现中枢 / 网络派发 / 预测去重"]
     end
 
     subgraph Layer1["战斗契约与基础设施"]
@@ -41,10 +42,15 @@ graph TD
 
     MyGame --> GameData
     MyGame --> GameGameplay
+    MyGame --> GameFeedback
     GameDataSamples --> GameData
     GameData --> GameDataCore
     GameGameplay --> GameGameplayCore
+    GameGameplay --> GameFeedback
     GameGameplay --> GameLogging
+    GameFeedback --> GameGameplayCore
+    GameFeedback --> GameLogging
+    GameFeedback --> GameCore
     GameGameplayCore --> GameCore
     GameGameplayCore --> GameLogging
     GameDataCore --> GameCore
@@ -58,6 +64,7 @@ graph TD
 | [**GameLogging**](Plugins/GameLogging/README.md) | 全局日志中枢 | 模块分类一键 RAII 注册、动态容量注册表、双轨分发架构、Epoch 纪元安全缓存、`GAME_LOG_THROTTLE` 限频、Shipping 零开销 | `GameCore` | [文档中心](Plugins/GameLogging/Docs/Architecture/Overview.md) |
 | [**GameGameplayCore**](Plugins/GameGameplayCore/README.md) | 战斗核心契约 | 零 GAS 强依赖、`IDamageable` 泛型可受击契约、闭环同步打击反馈、通用数值 `UGameStatComponent`（Proxy 读写契约 / 修正器 / 按 Tag 订阅）、通用 Buff `UGameBuffComponent` | `GameCore`, `GameLogging` | [文档中心](Plugins/GameGameplayCore/Docs/Architecture/Overview.md) |
 | [**GameGameplay**](Plugins/GameGameplay/README.md) | GAS 业务绑定 | 通用 ASC 基类、全时序自动握手 Bootstrap 组件、双轨元属性集、运行时通道 Registry 的 ExecCalc、GAS Buff 桥接、UI 属性解耦映射 | `GameGameplayCore`, `GameplayAbilities`, `GameCore`, `GameLogging` | [文档中心](Plugins/GameGameplay/Docs/Architecture/Overview.md) |
+| [**GameFeedback**](Plugins/GameFeedback/README.md) | 打击感表现中枢 | 消息总线 + 能力组件（无集中上帝类）、顿帧累积预算、闪白绝对时间续期、分屏独立镜头震动、Listen/Dedicated Server 紧凑网络派发（≤40B、视距裁剪、每帧限流）、本地预测指纹去重 | `GameCore`, `GameGameplayCore`, `GameLogging`, `Niagara` | [README](Plugins/GameFeedback/README.md) |
 | [**GameDataCore**](Plugins/GameData/Source/GameDataCore/README.md) | 通用数据与持久化 | 二进制 `.bin` 脱机仓库（CRC32 强校验）、不可变快照与版本原子发布、通用分段存档（段注册 / 版本迁移 / 槽位白名单） | `GameCore`, `GameLogging`, `Json` | [GameData 文档](Plugins/GameData/Docs/Architecture/Overview.md) |
 | [**GameData**](Plugins/GameData/README.md) | 生成代码宿主 | 由 Excel 管线写入 `Public/Generated`、`Private/Generated`，默认以 `copy` 模式安装 | `GameDataCore` | [GameData 文档](Plugins/GameData/Docs/Architecture/Overview.md) |
 | [**GameDataSamples**](Plugins/GameDataSamples/README.md) | 示例插件 | Item / Shop 生成域、PlayerProfile 存档段适配器与示例测试；`install.py --all` 默认跳过 | `GameData`, `GameCore`, `GameLogging` | [README](Plugins/GameDataSamples/README.md) |
@@ -144,6 +151,7 @@ UEToolkit/
 │   ├── GameLogging/                 # [Layer 1] 全局日志分发
 │   ├── GameGameplayCore/            # [Layer 1] 战斗契约 / 通用数值与 Buff
 │   ├── GameGameplay/                # [Layer 2] GAS 业务绑定与引导组件
+│   ├── GameFeedback/                # [Layer 2] 打击感表现中枢 / 网络派发
 │   ├── GameData/                    # [Layer 2] GameDataCore + 生成宿主双模块
 │   └── GameDataSamples/             # 示例域与 Profile 适配器（不随通用安装）
 ├── Tools/                           # 跨平台自动化工具链
@@ -155,6 +163,7 @@ UEToolkit/
 │   ├── install.sh / .bat / .py      # 智能双模一键安装引导器（支持 curl/wget 远程安装）
 │   ├── verify_install.py            # 空工程一键验收脚本
 │   ├── verify_package.py            # 打包冒烟一键验收脚本
+│   ├── run_automation_tests.py      # 自动化测试运行脚本（默认 7 个解耦用例）
 │   └── ci_local.sh                  # 本地 CI 全链路验收脚本
 ├── DataTables/                      # 策划 Excel 源表（示例）
 ├── DataTables_Json/                 # 导出的 JSON 数据（示例）
@@ -193,6 +202,18 @@ UEToolkit/
 - 自动化覆盖 `Game.Core` / `Game.Data` / `Game.Gameplay` / `Game.GameplayCore` / `Game.Logging` 五个前缀；
 - 网络冒烟以 `-nullrhi` 起监听服务端与客户端，服务端施加带状态标签的 Buff，客户端确认标签复制到达后写 `Saved/NetSmoke/ClientResult.txt`；
 - 全部日志与结果归档到 `.memory/baseline/<时间戳>/`。
+
+### 5. 自动化测试单独运行
+```bash
+python3 .scripts/run_automation_tests.py                     # SRP 解耦新增的 7 个用例
+python3 .scripts/run_automation_tests.py --all               # 六插件前缀回归
+python3 .scripts/run_automation_tests.py --prefix Game.Core  # 追加前缀目标
+python3 .scripts/run_automation_tests.py --dry-run           # 仅打印命令行
+```
+- 多个目标以 `+` 拼接为单条 `Automation RunTests`；用 `;` 串联多条时，后续命令会因 `Automation` 前缀被丢弃而报 `Unknown Automation command`，只有第一条生效；
+- 目标未在日志中出现即判定"未执行"并计入失败，防止漏跑被误判为通过；
+- 内置 `-DDC-ForceMemoryCache` / `-NoZenAutoLaunch` / `-notraceserver` 三个隔离开关，避免向共享 DDC、Zen 安装目录与 UnrealTrace 日志写入，可直接运行于 CI 容器与受限沙箱；
+- 日志固定写入 `Saved/Logs/AutomationTests.log`。
 
 ---
 

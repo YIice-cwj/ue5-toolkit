@@ -27,6 +27,11 @@ class GAMEGAMEPLAY_API UGameDamageExecution : public UGameplayEffectExecutionCal
     GENERATED_BODY()
 
 public:
+    /**
+     * @brief 按已注册通道执行属性捕获、伤害修饰与输出结算
+     * @param ExecutionParams 当前 GameplayEffect 执行参数
+     * @param OutExecutionOutput 接收各通道修饰结果的执行输出
+     */
     void Execute_Implementation(const FGameplayEffectCustomExecutionParameters& ExecutionParams, FGameplayEffectCustomExecutionOutput& OutExecutionOutput) const override;
 
     /**

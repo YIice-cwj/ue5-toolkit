@@ -5,6 +5,8 @@
 
 #include "Stat/UGameStatComponent.h"
 
+#include "Stat/FGameStatEffectiveEvaluator.h"
+
 #include "GameFramework/Actor.h"
 #include "Logging/GameLogCategories.h"
 #include "Net/UnrealNetwork.h"
@@ -60,7 +62,7 @@ bool UGameStatComponent::UnregisterStat(const FGameplayTag& InStatTag) {
     const int32 Index = ResolveStatIndex(InStatTag);
     if (Index != INDEX_NONE) {
         ReplicatedStats.RemoveAt(Index);
-        AcknowledgedStats.Remove(InStatTag);
+        AcknowledgedDiff.Remove(InStatTag);
         RebuildStatIndex();
         GAME_LOG(Log, TEXT("【数值组件】宿主 [%s] 成功注销属性 [%s]。"),
             *GetNameSafe(GetOwner()), *InStatTag.ToString());
@@ -83,29 +85,11 @@ void UGameStatComponent::GetAllStatTags(TArray<FGameplayTag>& OutTags) const {
 }
 
 float UGameStatComponent::GetStatCurrent(const FGameplayTag& InStatTag) const {
-    if (SourceMode == EGameStatSourceMode::Proxy) {
-        if (NativeCurrentQuery.IsBound()) {
-            return NativeCurrentQuery.Execute(InStatTag);
-        }
-        if (ProxySource.GetInterface() != nullptr) {
-            return IGameStatValueSource::Execute_GetStatCurrent(ProxySource.GetObject(), InStatTag);
-        }
-    }
-
     const FGameStatValue* FoundStat = FindStat(InStatTag);
     return FoundStat != nullptr ? FoundStat->Current : 0.0f;
 }
 
 float UGameStatComponent::GetStatMax(const FGameplayTag& InStatTag) const {
-    if (SourceMode == EGameStatSourceMode::Proxy) {
-        if (NativeMaxQuery.IsBound()) {
-            return NativeMaxQuery.Execute(InStatTag);
-        }
-        if (ProxySource.GetInterface() != nullptr) {
-            return IGameStatValueSource::Execute_GetStatMax(ProxySource.GetObject(), InStatTag);
-        }
-    }
-
     const FGameStatValue* FoundStat = FindStat(InStatTag);
     return FoundStat != nullptr ? FoundStat->Max : 0.0f;
 }
@@ -116,12 +100,7 @@ float UGameStatComponent::GetStatMin(const FGameplayTag& InStatTag) const {
 }
 
 float UGameStatComponent::GetStatPercent(const FGameplayTag& InStatTag) const {
-    const float CurrentVal = GetStatCurrent(InStatTag);
-    const float MaxVal = GetStatMax(InStatTag);
-    const float MinVal = GetStatMin(InStatTag);
-
-    const float Range = MaxVal - MinVal;
-    return (Range > 0.0f) ? FMath::Clamp((CurrentVal - MinVal) / Range, 0.0f, 1.0f) : 0.0f;
+    return FGameStatEffectiveEvaluator::EvaluatePercent(GetStatCurrent(InStatTag), GetStatMax(InStatTag), GetStatMin(InStatTag));
 }
 
 bool UGameStatComponent::GetStatValue(const FGameplayTag& InStatTag, FGameStatValue& OutValue) const {
@@ -131,10 +110,6 @@ bool UGameStatComponent::GetStatValue(const FGameplayTag& InStatTag, FGameStatVa
     }
 
     OutValue = *FoundStat;
-    if (SourceMode == EGameStatSourceMode::Proxy) {
-        OutValue.Current = GetStatCurrent(InStatTag);
-        OutValue.Max = GetStatMax(InStatTag);
-    }
     return true;
 }
 
@@ -177,40 +152,21 @@ int32 UGameStatComponent::ClearStatModifiers(const FGameplayTag& InStatTag) {
 }
 
 float UGameStatComponent::GetStatEffectiveCurrent(const FGameplayTag& InStatTag) const {
-    const float BaseCurrent = GetStatCurrent(InStatTag);
-    if (!ModifierContainer.HasApplicableModifiers(InStatTag, false)) {
-        return BaseCurrent;
-    }
-    const float Evaluated = ModifierContainer.EvaluateModifiers(InStatTag, BaseCurrent, false);
-    return FMath::Max(Evaluated, GetStatMin(InStatTag));
+    return FGameStatEffectiveEvaluator::EvaluateCurrent(GetStatCurrent(InStatTag), GetStatMin(InStatTag), InStatTag, ModifierContainer);
 }
 
 float UGameStatComponent::GetStatEffectiveMax(const FGameplayTag& InStatTag) const {
-    const float BaseMax = GetStatMax(InStatTag);
-    if (!ModifierContainer.HasApplicableModifiers(InStatTag, true)) {
-        return BaseMax;
-    }
-    const float Evaluated = ModifierContainer.EvaluateModifiers(InStatTag, BaseMax, true);
-    return FMath::Max(Evaluated, GetStatMin(InStatTag));
+    return FGameStatEffectiveEvaluator::EvaluateMax(GetStatMax(InStatTag), GetStatMin(InStatTag), InStatTag, ModifierContainer);
 }
 
 float UGameStatComponent::GetStatEffectivePercent(const FGameplayTag& InStatTag) const {
-    const float CurrentVal = GetStatEffectiveCurrent(InStatTag);
-    const float MaxVal = GetStatEffectiveMax(InStatTag);
-    const float MinVal = GetStatMin(InStatTag);
-
-    const float Range = MaxVal - MinVal;
-    return (Range > 0.0f) ? FMath::Clamp((CurrentVal - MinVal) / Range, 0.0f, 1.0f) : 0.0f;
+    return FGameStatEffectiveEvaluator::EvaluatePercent(GetStatEffectiveCurrent(InStatTag), GetStatEffectiveMax(InStatTag), GetStatMin(InStatTag));
 }
 
 bool UGameStatComponent::ModifyStat(const FGameplayTag& InStatTag, float Delta, float& OutActualDelta) {
     OutActualDelta = 0.0f;
     if (FMath::IsNearlyZero(Delta) || !InStatTag.IsValid()) {
         return false;
-    }
-
-    if (SourceMode == EGameStatSourceMode::Proxy) {
-        return ExecuteExternalWrite(InStatTag, EGameStatWriteOp::Modify, Delta, OutActualDelta);
     }
 
     if (!IsAuthoritativeWriteAllowed()) {
@@ -233,8 +189,8 @@ bool UGameStatComponent::ModifyStat(const FGameplayTag& InStatTag, float Delta, 
 
     FoundStat->Current = TargetValue;
 
-    const float OldEffectiveValue = ModifierContainer.EvaluateModifiers(InStatTag, OldValue, false);
-    const float NewEffectiveValue = ModifierContainer.EvaluateModifiers(InStatTag, TargetValue, false);
+    const float OldEffectiveValue = FGameStatEffectiveEvaluator::EvaluateCurrent(OldValue, FoundStat->Min, InStatTag, ModifierContainer);
+    const float NewEffectiveValue = FGameStatEffectiveEvaluator::EvaluateCurrent(TargetValue, FoundStat->Min, InStatTag, ModifierContainer);
     if (!FMath::IsNearlyEqual(OldEffectiveValue, NewEffectiveValue)) {
         BroadcastStatChanged(InStatTag, OldEffectiveValue, NewEffectiveValue, GetStatEffectiveMax(InStatTag));
     }
@@ -246,12 +202,6 @@ bool UGameStatComponent::ModifyStat(const FGameplayTag& InStatTag, float Delta, 
 }
 
 void UGameStatComponent::SetStatCurrent(const FGameplayTag& InStatTag, float NewCurrent) {
-    if (SourceMode == EGameStatSourceMode::Proxy) {
-        float AppliedDelta = 0.0f;
-        ExecuteExternalWrite(InStatTag, EGameStatWriteOp::SetCurrent, NewCurrent, AppliedDelta);
-        return;
-    }
-
     if (!IsAuthoritativeWriteAllowed()) {
         GAME_LOG(Warning, TEXT("【数值组件】非权威端拒绝设置当前值: %s"), *InStatTag.ToString());
         return;
@@ -271,8 +221,8 @@ void UGameStatComponent::SetStatCurrent(const FGameplayTag& InStatTag, float New
 
     FoundStat->Current = TargetValue;
 
-    const float OldEffectiveValue = ModifierContainer.EvaluateModifiers(InStatTag, OldValue, false);
-    const float NewEffectiveValue = ModifierContainer.EvaluateModifiers(InStatTag, TargetValue, false);
+    const float OldEffectiveValue = FGameStatEffectiveEvaluator::EvaluateCurrent(OldValue, FoundStat->Min, InStatTag, ModifierContainer);
+    const float NewEffectiveValue = FGameStatEffectiveEvaluator::EvaluateCurrent(TargetValue, FoundStat->Min, InStatTag, ModifierContainer);
     const float EffectiveMax = GetStatEffectiveMax(InStatTag);
     BroadcastStatChanged(InStatTag, OldEffectiveValue, NewEffectiveValue, EffectiveMax);
     GAME_LOG(Log, TEXT("【数值组件】宿主 [%s] 设置属性 [%s] 当前值: %.2f -> %.2f (上限: %.2f)。"),
@@ -280,12 +230,6 @@ void UGameStatComponent::SetStatCurrent(const FGameplayTag& InStatTag, float New
 }
 
 void UGameStatComponent::SetStatMax(const FGameplayTag& InStatTag, float NewMax, bool bKeepRelativePercent) {
-    if (SourceMode == EGameStatSourceMode::Proxy) {
-        float AppliedDelta = 0.0f;
-        ExecuteExternalWrite(InStatTag, EGameStatWriteOp::SetMax, NewMax, AppliedDelta);
-        return;
-    }
-
     if (!IsAuthoritativeWriteAllowed()) {
         GAME_LOG(Warning, TEXT("【数值组件】非权威端拒绝设置上限: %s"), *InStatTag.ToString());
         return;
@@ -319,52 +263,12 @@ void UGameStatComponent::SetStatMax(const FGameplayTag& InStatTag, float NewMax,
     FoundStat->Max = ClampedMax;
     FoundStat->Current = TargetCurrent;
 
-    const float OldEffectiveValue = ModifierContainer.EvaluateModifiers(InStatTag, OldValue, false);
-    const float NewEffectiveValue = ModifierContainer.EvaluateModifiers(InStatTag, TargetCurrent, false);
-    const float EffectiveMax = ModifierContainer.EvaluateModifiers(InStatTag, ClampedMax, true);
+    const float OldEffectiveValue = FGameStatEffectiveEvaluator::EvaluateCurrent(OldValue, FoundStat->Min, InStatTag, ModifierContainer);
+    const float NewEffectiveValue = FGameStatEffectiveEvaluator::EvaluateCurrent(TargetCurrent, FoundStat->Min, InStatTag, ModifierContainer);
+    const float EffectiveMax = FGameStatEffectiveEvaluator::EvaluateMax(ClampedMax, FoundStat->Min, InStatTag, ModifierContainer);
     BroadcastStatChanged(InStatTag, OldEffectiveValue, NewEffectiveValue, EffectiveMax);
     GAME_LOG(Log, TEXT("【数值组件】宿主 [%s] 设置属性 [%s] 上限: %.2f -> %.2f (当前值同步为: %.2f)。"),
         *GetNameSafe(GetOwner()), *InStatTag.ToString(), OldMax, ClampedMax, TargetCurrent);
-}
-
-void UGameStatComponent::BindStatSource(TScriptInterface<IGameStatValueSource> InSource) {
-    ProxySource = InSource;
-    SourceMode = EGameStatSourceMode::Proxy;
-}
-
-void UGameStatComponent::BindNativeStatQueries(FGameStatQueryDelegate InCurrentQuery, FGameStatQueryDelegate InMaxQuery) {
-    NativeCurrentQuery = InCurrentQuery;
-    NativeMaxQuery = InMaxQuery;
-    SourceMode = EGameStatSourceMode::Proxy;
-}
-
-void UGameStatComponent::BindNativeStatWriter(FGameStatWriteDelegate InWriter) {
-    NativeStatWriter = InWriter;
-    SourceMode = EGameStatSourceMode::Proxy;
-}
-
-void UGameStatComponent::UnbindStatSource() {
-    if (SourceMode != EGameStatSourceMode::Proxy) {
-        return;
-    }
-
-    for (FGameStatEntry& Entry : ReplicatedStats) {
-        Entry.Value.Current = GetStatCurrent(Entry.Tag);
-        Entry.Value.Max = GetStatMax(Entry.Tag);
-    }
-
-    SourceMode = EGameStatSourceMode::Standalone;
-    ProxySource = nullptr;
-    NativeCurrentQuery.Unbind();
-    NativeMaxQuery.Unbind();
-    NativeStatWriter.Unbind();
-}
-
-bool UGameStatComponent::CanWriteStat() const {
-    if (SourceMode == EGameStatSourceMode::Proxy) {
-        return NativeStatWriter.IsBound();
-    }
-    return IsAuthoritativeWriteAllowed();
 }
 
 FDelegateHandle UGameStatComponent::SubscribeStatChanged(const FGameplayTag& InStatTag, FOnGameStatChangedNative::FDelegate InDelegate) {
@@ -383,12 +287,12 @@ FDelegateHandle UGameStatComponent::SubscribeStatChanged(
     const FGameplayTag& InStatTag,
     TFunction<void(const FGameplayTag&, float, float, float)> InCallback
 ) {
-    const FDelegateHandle Handle = SubscriptionHub.Subscribe(Owner, InStatTag, MoveTemp(InCallback));
+    const FDelegateHandle Handle = SubscriptionHub.Subscribe(Owner, InStatTag, InCallback);
 
-    if (HasStat(InStatTag)) {
+    if (Handle.IsValid() && HasStat(InStatTag)) {
         const float EffectiveCurrent = GetStatEffectiveCurrent(InStatTag);
         const float EffectiveMax = GetStatEffectiveMax(InStatTag);
-        SubscriptionHub.Broadcast(InStatTag, EffectiveCurrent, EffectiveCurrent, EffectiveMax);
+        InCallback(InStatTag, EffectiveCurrent, EffectiveCurrent, EffectiveMax);
     }
     return Handle;
 }
@@ -403,20 +307,14 @@ void UGameStatComponent::OnRep_ReplicatedStats() {
     for (const FGameStatEntry& Entry : ReplicatedStats) {
         const float EffectiveCurrent = GetStatEffectiveCurrent(Entry.Tag);
         const float EffectiveMax = GetStatEffectiveMax(Entry.Tag);
-        const FGameStatValue* Previous = AcknowledgedStats.Find(Entry.Tag);
-        if (Previous == nullptr) {
-            BroadcastStatChanged(Entry.Tag, EffectiveCurrent, EffectiveCurrent, EffectiveMax);
-        } else if (!FMath::IsNearlyEqual(Previous->Current, EffectiveCurrent)
-            || !FMath::IsNearlyEqual(Previous->Max, EffectiveMax)) {
-            BroadcastStatChanged(Entry.Tag, Previous->Current, EffectiveCurrent, EffectiveMax);
+        float OldEffectiveCurrent = 0.0f;
+        float OldEffectiveMax = 0.0f;
+        if (AcknowledgedDiff.NeedsBroadcast(Entry.Tag, EffectiveCurrent, EffectiveMax, OldEffectiveCurrent, OldEffectiveMax)) {
+            BroadcastStatChanged(Entry.Tag, OldEffectiveCurrent, EffectiveCurrent, EffectiveMax);
         }
     }
 
-    for (auto It = AcknowledgedStats.CreateIterator(); It; ++It) {
-        if (!StatIndex.Contains(It.Key())) {
-            It.RemoveCurrent();
-        }
-    }
+    AcknowledgedDiff.PruneMissing(StatIndex);
 }
 
 int32 UGameStatComponent::ResolveStatIndex(const FGameplayTag& InStatTag) const {
@@ -454,9 +352,7 @@ void UGameStatComponent::RebuildStatIndex() {
 }
 
 void UGameStatComponent::BroadcastStatChanged(const FGameplayTag& InStatTag, float OldValue, float NewValue, float MaxValue) {
-    FGameStatValue& Acknowledged = AcknowledgedStats.FindOrAdd(InStatTag);
-    Acknowledged.Current = NewValue;
-    Acknowledged.Max = MaxValue;
+    AcknowledgedDiff.Record(InStatTag, NewValue, MaxValue);
 
     OnStatChanged.Broadcast(InStatTag, OldValue, NewValue, MaxValue);
     OnStatChangedNative.Broadcast(InStatTag, OldValue, NewValue, MaxValue);
@@ -473,40 +369,6 @@ void UGameStatComponent::NotifyIfEffectiveStatChanged(const FGameplayTag& InStat
         || !FMath::IsNearlyEqual(OldEffectiveMax, NewEffectiveMax)) {
         BroadcastStatChanged(InStatTag, OldEffectiveCurrent, NewEffectiveCurrent, NewEffectiveMax);
     }
-}
-
-bool UGameStatComponent::ExecuteExternalWrite(const FGameplayTag& InStatTag, EGameStatWriteOp Op, float InValue, float& OutAppliedDelta) {
-    OutAppliedDelta = 0.0f;
-
-    if (!NativeStatWriter.IsBound()) {
-        GAME_LOG(Warning, TEXT("【数值组件】代理模式未绑定写委托，拒绝写入属性: %s"), *InStatTag.ToString());
-        return false;
-    }
-
-    const float PreviousCurrent = GetStatCurrent(InStatTag);
-    const float PreviousMax = GetStatMax(InStatTag);
-    if (!NativeStatWriter.Execute(InStatTag, Op, InValue, OutAppliedDelta)) {
-        OutAppliedDelta = 0.0f;
-        return false;
-    }
-
-    FGameStatValue* FoundStat = FindMutableStat(InStatTag);
-    const float NewCurrent = GetStatCurrent(InStatTag);
-    const float NewMax = GetStatMax(InStatTag);
-    if (FoundStat != nullptr) {
-        FoundStat->Current = NewCurrent;
-        FoundStat->Max = NewMax;
-    }
-
-    const float OldEffectiveValue = ModifierContainer.EvaluateModifiers(InStatTag, PreviousCurrent, false);
-    const float NewEffectiveValue = ModifierContainer.EvaluateModifiers(InStatTag, NewCurrent, false);
-    const float OldEffectiveMax = ModifierContainer.EvaluateModifiers(InStatTag, PreviousMax, true);
-    const float NewEffectiveMax = ModifierContainer.EvaluateModifiers(InStatTag, NewMax, true);
-
-    if (!FMath::IsNearlyEqual(OldEffectiveValue, NewEffectiveValue) || !FMath::IsNearlyEqual(OldEffectiveMax, NewEffectiveMax)) {
-        BroadcastStatChanged(InStatTag, OldEffectiveValue, NewEffectiveValue, NewEffectiveMax);
-    }
-    return true;
 }
 
 bool UGameStatComponent::IsAuthoritativeWriteAllowed() const {

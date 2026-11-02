@@ -7,7 +7,6 @@
 
 #include "CoreMinimal.h"
 #include "GameplayTagContainer.h"
-#include "Stat/IGameStatValueSource.h"
 
 #include "FGameStatTypes.generated.h"
 
@@ -59,15 +58,6 @@ struct GAMEGAMEPLAYCORE_API FGameStatEntry {
      */
     FGameStatEntry(const FGameplayTag& InTag, const FGameStatValue& InValue)
         : Tag(InTag), Value(InValue) {}
-};
-
-/**
- * @brief 数值源模式
- */
-UENUM(BlueprintType)
-enum class EGameStatSourceMode : uint8 {
-    Standalone UMETA(DisplayName = "自持模式（内部驱动）"),
-    Proxy UMETA(DisplayName = "代理模式（外部源驱动）")
 };
 
 /**
@@ -135,19 +125,6 @@ struct FGameStatModifierEntry {
     uint32 Handle = 0;
     FGameStatModifier Modifier;
 };
-
-/**
- * @brief 代理模式外部写操作类型
- */
-UENUM(BlueprintType)
-enum class EGameStatWriteOp : uint8 {
-    Modify UMETA(DisplayName = "增量修改"),
-    SetCurrent UMETA(DisplayName = "设置当前值"),
-    SetMax UMETA(DisplayName = "设置上限")
-};
-
-DECLARE_DELEGATE_RetVal_OneParam(float, FGameStatQueryDelegate, const FGameplayTag&);
-DECLARE_DELEGATE_RetVal_FourParams(bool, FGameStatWriteDelegate, const FGameplayTag&, EGameStatWriteOp, float, float&);
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams(
     FOnGameStatChanged,

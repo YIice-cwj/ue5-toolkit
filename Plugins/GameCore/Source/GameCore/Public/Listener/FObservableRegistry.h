@@ -5,7 +5,7 @@
  * 设计思路：
  * - 每个 Key 对应一个 FValueObserver<T>，T 由注册方决定（暴击/闪避/冷却等任意数据类型）；
  * - 以 Game::Core::GetTypeFingerprint<T>() 做跨动态库类型守卫，类型不匹配时注册/查找返回 nullptr；
- * - 订阅统一走 SubscribeWithReplay：订阅成功即收到当前值，之后每次 Set 收到更新；
+ * - 订阅统一走 SubscribeWithReplay：当前值回放与后续 Set 更新均经全局 FIFO 派发；
  * - 订阅可绑定 Owner：Owner 销毁后回调自动跳过，失效条目在下一次 Set 时惰性清理；
  * - 注册表只持观察者共享所有权，订阅守卫持弱引用——观察者先销毁时守卫析构安全跳过；
  * - 并发契约：注册/注销在游戏线程完成，订阅与读取可在任意线程（观察者内部读写锁保证）。
@@ -57,7 +57,7 @@ public:
     bool Set(const FName& Key, const T& Value);
 
     /**
-     * @brief 订阅指定 Key（不存在则自动注册）并立即回放当前值
+     * @brief 订阅指定 Key（不存在则自动注册）并通过全局 FIFO 回放当前值
      * @tparam T 值类型
      * @param Key 数据键
      * @param InListener 回调
@@ -166,9 +166,26 @@ TSharedRef<FObserverSubscription> FObservableRegistry::Subscribe(const FName& Ke
 template<typename T>
 TSharedRef<FObserverSubscription> FObservableRegistry::Subscribe(UObject* Owner, const FName& Key,
     TFunction<void(const T&)> InListener) {
-    FValueObserver<T>* Observer = Register<T>(Key);
-    if (Observer == nullptr) {
+    if (Key.IsNone()) {
         return MakeShared<FObserverSubscription>();
+    }
+
+    const uint64 Fingerprint = Game::Core::GetTypeFingerprint<T>();
+    TSharedPtr<FValueObserver<T>> Observer;
+    {
+        FWriteScopeLock WriteLock(RegistryLock);
+        if (FEntry* Existing = Entries.Find(Key)) {
+            if (Existing->TypeFingerprint != Fingerprint) {
+                UE_LOG(LogGameObservableRegistry, Error,
+                    TEXT("【可观察注册表】键 [%s] 已注册为其他值类型，本次订阅已忽略。"),
+                    *Key.ToString());
+                return MakeShared<FObserverSubscription>();
+            }
+            Observer = StaticCastSharedPtr<FValueObserver<T>>(Existing->Observer);
+        } else {
+            Observer = MakeShared<FValueObserver<T>>(Key);
+            Entries.Add(Key, FEntry{Fingerprint, Observer});
+        }
     }
     return Observer->SubscribeWithReplay(Owner, MoveTemp(InListener));
 }

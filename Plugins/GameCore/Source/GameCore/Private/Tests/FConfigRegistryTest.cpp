@@ -231,6 +231,52 @@ bool FGameConfigMathTypeTest::RunTest([[maybe_unused]] const FString& Parameters
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameConfigNotificationOrderTest, "Game.Core.Config.NotificationCommitOrder",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+/**
+ * @brief 验证通知一阻塞时并发提交通知二仍按提交顺序完成回调
+ * @param Parameters 自动化框架参数（未使用）
+ * @return 全部断言通过返回 true
+ */
+bool FGameConfigNotificationOrderTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    FConfigRegistry& Registry = FConfigRegistry::Get();
+    const FName Key(TEXT("UnitTest.Config.NotificationCommitOrder"));
+    Registry.RegisterConfig<int32>(Key, 0);
+
+    FEvent* FirstEntered = FPlatformProcess::GetSynchEventFromPool(false);
+    FEvent* ReleaseFirst = FPlatformProcess::GetSynchEventFromPool(false);
+    FCriticalSection ReceivedMutex;
+    TArray<int32> Received;
+    const TSharedRef<FObserverSubscription> Subscription = Registry.WatchConfig<int32>(Key,
+        [FirstEntered, ReleaseFirst, &ReceivedMutex, &Received](const int32& Value) {
+            if (Value == 1) {
+                FirstEntered->Trigger();
+                ReleaseFirst->Wait();
+            }
+            FScopeLock Lock(&ReceivedMutex);
+            Received.Add(Value);
+        });
+
+    TFuture<void> Writer = Async(EAsyncExecution::Thread, [&Registry, Key]() {
+        Registry.SetConfig<int32>(Key, 1);
+    });
+    TestTrue(TEXT("首个通知已进入回调"), FirstEntered->Wait(5000));
+    Registry.SetConfig<int32>(Key, 2);
+    ReleaseFirst->Trigger();
+    Writer.Wait();
+
+    TestEqual(TEXT("两次提交各回调一次"), Received.Num(), 2);
+    if (Received.Num() == 2) {
+        TestEqual(TEXT("通知一先于通知二完成"), Received[0], 1);
+        TestEqual(TEXT("通知二保持提交值"), Received[1], 2);
+    }
+
+    FPlatformProcess::ReturnSynchEventToPool(FirstEntered);
+    FPlatformProcess::ReturnSynchEventToPool(ReleaseFirst);
+    return true;
+}
+
 #endif  // WITH_AUTOMATION_TESTS
 
 
