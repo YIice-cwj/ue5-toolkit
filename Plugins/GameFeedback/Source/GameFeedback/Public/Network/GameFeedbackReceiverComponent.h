@@ -21,14 +21,10 @@ class GAMEFEEDBACK_API UGameFeedbackReceiverComponent : public UActorComponent {
     GENERATED_BODY()
 
 public:
-    UGameFeedbackReceiverComponent();
-
     /**
-     * @brief 惰性确保目标 PlayerController 上存在接收组件（服务端创建后随组件复制同步到客户端）
-     * @param PC 目标玩家控制器
-     * @return 已存在或新建的接收组件指针；PC 为空时返回 nullptr
+     * @brief 构造：关闭 Tick 并启用组件默认复制
      */
-    static UGameFeedbackReceiverComponent* EnsureOnPlayerController(APlayerController* PC);
+    UGameFeedbackReceiverComponent();
 
     /**
      * @brief 服务端调用：向指定客户端发送紧凑表现报文
@@ -36,6 +32,13 @@ public:
      */
     UFUNCTION(Client, Unreliable)
     void ClientReceiveFeedback(const FGameFeedbackEventNet& Event);
+
+    /**
+     * @brief 惰性确保目标 PlayerController 上存在接收组件（服务端创建后随组件复制同步到客户端）
+     * @param PC 目标玩家控制器
+     * @return 已存在或新建的接收组件指针；PC 为空时返回 nullptr
+     */
+    static UGameFeedbackReceiverComponent* EnsureOnPlayerController(APlayerController* PC);
 
 private:
     /**

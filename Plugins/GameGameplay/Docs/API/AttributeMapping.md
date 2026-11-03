@@ -13,12 +13,12 @@
 /**
  * @brief 属性值发生变更时的蓝图动态多播（新值 / 旧值）
  */
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnAttributeValueChanged, float, NewValue, float, OldValue);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnMappedAttributeChanged, float, NewValue, float, OldValue);
 
 /**
  * @brief 属性值发生变更时的原生 C++ 多播（零反射开销，支持绑定 Lambda）
  */
-DECLARE_MULTICAST_DELEGATE_TwoParams(FOnAttributeValueChangedNative, float /* NewValue */, float /* OldValue */);
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnMappedAttributeChangedNative, float /* NewValue */, float /* OldValue */);
 ```
 
 ---
@@ -35,31 +35,38 @@ public:
 
     /** 蓝图/动态多播委托，UI 蓝图可直接绑定 */
     UPROPERTY(BlueprintAssignable, Category = "Game|GAS")
-    FOnAttributeValueChanged OnValueChanged;
+    FOnMappedAttributeChanged OnValueChanged;
 
     /** 原生 C++ 多播委托（零反射开销，支持 Lambda） */
-    FOnAttributeValueChangedNative OnValueChangedNative;
+    FOnMappedAttributeChangedNative OnValueChangedNative;
 
     /**
      * @brief 静态工厂：创建并绑定指定属性变更监听对象
+     * @param Outer 所属 Outer 对象（蓝图默认指向调用者 Self，如宿主 Widget 自身）
      * @param InAbilitySystemComponent 目标 ASC
      * @param InAttribute 目标属性（如 UMyHeroAttributeSet::GetHealthAttribute()）
-     * @param bBroadcastImmediately 是否在绑定瞬间立即拉取当前值广播一次（默认 true，彻底消除 UI 初始空白）
-     * @param Outer 所属 Outer 对象（默认指向调用者 self，推荐传入宿主 Widget 保证生命周期受控）
-     * @return 映射对象指针
+     * @param bBroadcastImmediately 是否在绑定成功后立即以当前值广播一次（默认 false，调用方配置完委托后调用 QueryAndBroadcast）
+     * @return 映射对象指针；InAbilitySystemComponent 为空时返回 nullptr
      */
     UFUNCTION(BlueprintCallable, Category = "Game|GAS", meta = (DefaultToSelf = "Outer"))
     static UGameplayAttributeValueMapping* CreateAttributeValueMapping(
+        UObject* Outer,
         UAbilitySystemComponent* InAbilitySystemComponent,
-        FGameplayAttribute InAttribute,
-        bool bBroadcastImmediately = true,
-        UObject* Outer = nullptr
+        const FGameplayAttribute& InAttribute,
+        bool bBroadcastImmediately = false
     );
 
+    /**
+     * @brief C++ 重载便利方法（以 InAbilitySystemComponent 为默认 Outer）
+     * @param InAbilitySystemComponent 目标 ASC
+     * @param InAttribute 目标属性
+     * @param bBroadcastImmediately 是否在绑定成功后立即以当前值广播一次（默认 false）
+     * @return 映射对象指针
+     */
     static UGameplayAttributeValueMapping* CreateAttributeValueMapping(
         UAbilitySystemComponent* InAbilitySystemComponent,
-        FGameplayAttribute InAttribute,
-        bool bBroadcastImmediately
+        const FGameplayAttribute& InAttribute,
+        bool bBroadcastImmediately = false
     );
 
     /**

@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Containers/Array.h"
 #include "Logging/LogCategory.h"
 
 namespace Game::Log {
@@ -13,7 +14,12 @@ namespace Game::Log {
 class GAMELOGGING_API FGameLogRegistry {
 public:
     /**
-     * @brief 注册（或按模块名覆写）模块日志分类，成功后全局纪元号 +1
+     * @brief 纯静态单例工具类，禁止构造实例
+     */
+    FGameLogRegistry() = delete;
+
+    /**
+     * @brief 注册（或按模块名覆写）模块日志分类，分类发生变更时全局纪元号 +1
      * @param InModuleName 模块名（内部拷贝，调用方临时串亦安全；为空忽略）
      * @param InCategory 日志分类指针（为空忽略）
      */
@@ -46,6 +52,13 @@ public:
 
 private:
     friend class FModuleLogRegistrar;
+
+    /**
+     * @brief 拷贝 ANSI 模块名（含结尾符），保证注册表与 RAII 实例自持名称内存
+     * @param InName 源名称
+     * @return 含结尾符的模块名字符数组
+     */
+    [[nodiscard]] static TArray<ANSICHAR> MakeAnsiName(const char* InName);
 
     /**
      * @brief 为 RAII 注册器登记分类并原子取得被覆盖的前一项分类

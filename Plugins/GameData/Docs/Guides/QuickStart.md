@@ -106,7 +106,7 @@ void UMyProgressSubsystem::SaveProgress()
 - 槽位名默认拒绝空名、超长名与路径分隔符；可用 `SetAllowedSlotNames` 限定白名单。
 - 需要完全自定义的存档类时，可用 `SaveObjectToSlot` / `LoadObjectFromSlot` 逃生口。
 
-源码参考：[USaveGameSubsystem.h](../../Source/GameDataCore/Public/Persistence/USaveGameSubsystem.h)、[GameSaveArchive.h](../../Source/GameDataCore/Public/Persistence/GameSaveArchive.h)。
+源码参考：[USaveGameSubsystem.h](../../Source/GameDataCore/Public/Save/USaveGameSubsystem.h)、[GameSaveArchive.h](../../Source/GameDataCore/Public/Save/GameSaveArchive.h)。
 
 ---
 

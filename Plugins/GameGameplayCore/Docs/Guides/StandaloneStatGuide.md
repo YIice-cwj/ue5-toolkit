@@ -9,7 +9,7 @@
 在 Standalone 模式下：
 - `UGameStatComponent` 内部维护属性表（`ReplicatedStats` 复制数组 + `FGameplayTag` 索引）；
 - 所有已注册属性通过 `ReplicatedStats` 自动同步至客户端；
-- 若配置了 `PrimaryVitalTag`，主生命属性（如血量）耗尽时自动迁移生死状态；
+- 挂载并关联 `UGameVitalComponent`（配置 `PrimaryVitalTag`）后，主生命属性（如血量）耗尽时自动迁移生死状态；
 - 内存开销极低，零 GAS 运行时消耗。
 
 ---
@@ -22,6 +22,7 @@
 #include "GameFramework/Actor.h"
 #include "Damage/IDamageable.h"
 #include "Stat/UGameStatComponent.h"
+#include "Stat/UGameVitalComponent.h"
 #include "Components/StaticMeshComponent.h"
 
 UCLASS()
@@ -36,17 +37,19 @@ public:
         RootComponent = MeshComp;
 
         StatComp = CreateDefaultSubobject<UGameStatComponent>(TEXT("StatComp"));
+        VitalComp = CreateDefaultSubobject<UGameVitalComponent>(TEXT("VitalComp"));
+        VitalComp->BindStatComponent(StatComp);
 
         // 注册木桶血量，并设为主生命属性
         const FGameplayTag HealthTag = FGameplayTag::RequestGameplayTag(TEXT("Attribute.Health"));
         StatComp->RegisterStat(HealthTag, 50.0f, 50.0f, 0.0f);
-        StatComp->SetPrimaryVitalTag(HealthTag);
+        VitalComp->SetPrimaryVitalTag(HealthTag);
     }
 
     virtual void BeginPlay() override {
         Super::BeginPlay();
         // 绑定主生命状态变更，破碎表现
-        StatComp->OnVitalStateChangedNative.AddWeakLambda(this, [this](bool bIsAlive, const FGameplayTag&) {
+        VitalComp->OnVitalStateChangedNative.AddWeakLambda(this, [this](bool bIsAlive, const FGameplayTag&) {
             if (!bIsAlive) {
                 ExplodeAndDestroy();
             }
@@ -61,7 +64,7 @@ public:
         FGameDamageResult Result;
         Result.SetActualDamage(FMath::Abs(ActualDelta));
         Result.AddFeedbackTag(FGameplayTag::RequestGameplayTag(TEXT("Damage.Feedback.Hit")));
-        if (!StatComp->IsVitalAlive()) {
+        if (!VitalComp->IsVitalAlive()) {
             Result.AddFeedbackTag(FGameplayTag::RequestGameplayTag(TEXT("Damage.Feedback.Fatal")));
         }
         return Result;
@@ -78,6 +81,9 @@ private:
 
     UPROPERTY(VisibleAnywhere)
     TObjectPtr<UGameStatComponent> StatComp;
+
+    UPROPERTY(VisibleAnywhere)
+    TObjectPtr<UGameVitalComponent> VitalComp;
 };
 ```
 
@@ -115,13 +121,13 @@ HealthSubscription = StatComp->SubscribeStatChanged(
 
 ## 4. 复活与重置契约
 
-对于可重用的怪物或需要重生的实体，直接调用 `ReviveVital()` 即可重置状态：
+对于可重用的怪物或需要重生的实体，通过关联的 `UGameVitalComponent` 调用 `ReviveVital()` 即可重置状态：
 
 ```cpp
 void ARespawnableActor::Respawn()
 {
-    // 将主生命属性从 0 重置为满值，并恢复存活状态
-    StatComp->ReviveVital(1.0f);
+    // 通过生命组件将主生命属性从 0 重置为满值，并恢复存活状态
+    VitalComp->ReviveVital(1.0f);
     SetActorHiddenInGame(false);
     SetActorEnableCollision(true);
 }

@@ -37,13 +37,17 @@ bool FGameLogRegistryLifecycleTest::RunTest([[maybe_unused]] const FString& Para
 
     const int32 EpochBeforeEmpty = Game::Log::FGameLogRegistry::GetEpoch();
     Game::Log::FGameLogRegistry::RegisterCategory("", &LogUnitTestCatA);
+    Game::Log::FGameLogRegistry::RegisterCategory(nullptr, &LogUnitTestCatA);
+    Game::Log::FGameLogRegistry::RegisterCategory(ModuleName, nullptr);
     TestEqual(TEXT("空字符串模块名应返回 LogGame 兜底分类"),
         &Game::Log::FGameLogRegistry::GetCategory(""),
         &Game::Log::FGameLogRegistry::GetFallbackCategory());
-    TestEqual(TEXT("空字符串注册不得推进全局纪元号"),
+    TestEqual(TEXT("无效参数注册不得推进全局纪元号"),
         Game::Log::FGameLogRegistry::GetEpoch(), EpochBeforeEmpty);
     Game::Log::FGameLogRegistry::UnregisterCategory("");
-    TestEqual(TEXT("空字符串注销不得推进全局纪元号"),
+    Game::Log::FGameLogRegistry::UnregisterCategory(nullptr);
+    Game::Log::FGameLogRegistry::UnregisterCategory("UnitTest_NonExistentModule");
+    TestEqual(TEXT("无效参数或不存在模块注销不得推进全局纪元号"),
         Game::Log::FGameLogRegistry::GetEpoch(), EpochBeforeEmpty);
 
     const int32 EpochBeforeReg = Game::Log::FGameLogRegistry::GetEpoch();
@@ -55,6 +59,11 @@ bool FGameLogRegistryLifecycleTest::RunTest([[maybe_unused]] const FString& Para
 
     TestTrue(TEXT("注册后纪元号应自增"),
         Game::Log::FGameLogRegistry::GetEpoch() > EpochBeforeReg);
+
+    const int32 EpochBeforeIdentical = Game::Log::FGameLogRegistry::GetEpoch();
+    Game::Log::FGameLogRegistry::RegisterCategory(ModuleName, &LogUnitTestCatA);
+    TestEqual(TEXT("重复注册相同分类不得推进全局纪元号"),
+        Game::Log::FGameLogRegistry::GetEpoch(), EpochBeforeIdentical);
 
     const int32 EpochBeforeOverride = Game::Log::FGameLogRegistry::GetEpoch();
     Game::Log::FGameLogRegistry::RegisterCategory(ModuleName, &LogUnitTestCatB);
@@ -96,6 +105,7 @@ bool FGameLogRegistrarRaiiTest::RunTest([[maybe_unused]] const FString& Paramete
 
     {
         Game::Log::FModuleLogRegistrar EmptyNameRegistrar("", &LogUnitTestCatA);
+        Game::Log::FModuleLogRegistrar NullNameRegistrar(nullptr, &LogUnitTestCatA);
         TestEqual(TEXT("空模块名注册器不得覆盖兜底分类"),
             &Game::Log::FGameLogRegistry::GetCategory(""),
             &Game::Log::FGameLogRegistry::GetFallbackCategory());
@@ -116,6 +126,17 @@ bool FGameLogRegistrarRaiiTest::RunTest([[maybe_unused]] const FString& Paramete
             static_cast<FLogCategoryBase*>(&LogUnitTestCatA));
 
         {
+            Game::Log::FModuleLogRegistrar SameCategoryRegistrar(ScopedModuleName, &LogUnitTestCatA);
+            TestEqual(TEXT("嵌套相同分类注册器应保持分类 A"),
+                &Game::Log::FGameLogRegistry::GetCategory(ScopedModuleName),
+                static_cast<FLogCategoryBase*>(&LogUnitTestCatA));
+        }
+
+        TestEqual(TEXT("嵌套相同分类析构后应依然为分类 A"),
+            &Game::Log::FGameLogRegistry::GetCategory(ScopedModuleName),
+            static_cast<FLogCategoryBase*>(&LogUnitTestCatA));
+
+        {
             Game::Log::FModuleLogRegistrar NestedRegistrar(ScopedModuleName, &LogUnitTestCatB);
             TestEqual(TEXT("嵌套 Registrar 应注册分类 B"),
                 &Game::Log::FGameLogRegistry::GetCategory(ScopedModuleName),
@@ -130,6 +151,18 @@ bool FGameLogRegistrarRaiiTest::RunTest([[maybe_unused]] const FString& Paramete
     TestEqual(TEXT("离开 RAII 作用域后应自动注销并回退至兜底分类"),
         &Game::Log::FGameLogRegistry::GetCategory(ScopedModuleName),
         &Game::Log::FGameLogRegistry::GetFallbackCategory());
+
+    {
+        const char* OverriddenModule = "UnitTest_OverriddenScope";
+        {
+            Game::Log::FModuleLogRegistrar OuterRegistrar(OverriddenModule, &LogUnitTestCatA);
+            Game::Log::FGameLogRegistry::RegisterCategory(OverriddenModule, &LogUnitTestCatB);
+        }
+        TestEqual(TEXT("失效的 Registrar 析构不得覆盖外部更新的分类 B"),
+            &Game::Log::FGameLogRegistry::GetCategory(OverriddenModule),
+            static_cast<FLogCategoryBase*>(&LogUnitTestCatB));
+        Game::Log::FGameLogRegistry::UnregisterCategory(OverriddenModule);
+    }
 
     return true;
 }

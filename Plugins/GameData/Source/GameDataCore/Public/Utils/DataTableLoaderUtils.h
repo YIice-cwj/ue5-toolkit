@@ -62,19 +62,13 @@ bool FDataTableLoaderUtils::LoadTableFromJson(const FString& FilePath, TMap<FNam
 
     for (const auto& JsonValue : JsonParsed) {
         ++RowIndex;
-        if (!JsonValue.IsValid()) {
-            ++FailedCount;
-            GAME_LOG(Error, TEXT("【数据表加载错误】%s 第 %d 条记录为无效 JSON 数据！"),
-                *FPaths::GetCleanFilename(FilePath), RowIndex);
-            continue;
-        }
-        const TSharedPtr<FJsonObject> JsonObject = JsonValue->AsObject();
-        if (!JsonObject.IsValid()) {
+        if (!JsonValue.IsValid() || JsonValue->Type != EJson::Object) {
             ++FailedCount;
             GAME_LOG(Error, TEXT("【数据表加载错误】%s 第 %d 条记录非有效 JSON 对象！"),
                 *FPaths::GetCleanFilename(FilePath), RowIndex);
             continue;
         }
+        const TSharedPtr<FJsonObject> JsonObject = JsonValue->AsObject();
 
         FString RowNameStr;
         if (!JsonObject->TryGetStringField(TEXT("RowName"), RowNameStr) || RowNameStr.IsEmpty()) {
@@ -95,7 +89,7 @@ bool FDataTableLoaderUtils::LoadTableFromJson(const FString& FilePath, TMap<FNam
 
         TRowType RowData;
         if (FJsonObjectConverter::JsonObjectToUStruct(JsonObject.ToSharedRef(), TRowType::StaticStruct(), &RowData)) {
-            OutMap.Add(RowKey, RowData);
+            OutMap.Add(RowKey, MoveTemp(RowData));
             ++LoadedCount;
         } else {
             ++FailedCount;

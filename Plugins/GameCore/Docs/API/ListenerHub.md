@@ -109,11 +109,11 @@ namespace Game::Core {
 class GAMECORE_API FObservableRegistry {
 public:
     template<typename T> FValueObserver<T>* Register(const FName& Key);
-    template<typename T> [[nodiscard]] FValueObserver<T>* Find(const FName& Key) const;
+    template<typename T> [[nodiscard]] TSharedPtr<FValueObserver<T>> Find(const FName& Key) const;
     template<typename T> bool Set(const FName& Key, const T& Value);
-    template<typename T> TSharedPtr<FObserverSubscription> Subscribe(
+    template<typename T> TSharedRef<FObserverSubscription> Subscribe(
         const FName& Key, TFunction<void(const T&)> InListener);
-    template<typename T> TSharedPtr<FObserverSubscription> Subscribe(
+    template<typename T> TSharedRef<FObserverSubscription> Subscribe(
         UObject* Owner, const FName& Key, TFunction<void(const T&)> InListener);
     bool Unregister(const FName& Key);
     [[nodiscard]] bool Contains(const FName& Key) const;

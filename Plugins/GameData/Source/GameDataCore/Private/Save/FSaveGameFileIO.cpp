@@ -84,17 +84,14 @@ bool FSaveGameFileIO::SerializeObject(USaveGame* SaveGameObject, TArray<uint8>& 
 
 uint64 FSaveGameFileIO::IssueSlotSaveGeneration(const FString& SlotName) {
     FScopeLock Lock(&GetSlotIoMutex());
-    const uint64* Committed = GetCommittedSlotGenerations().Find(SlotName);
-    if (Committed != nullptr && *Committed == MAX_uint64) {
-        GetCommittedSlotGenerations().Remove(SlotName);
-    }
     uint64& Generation = GetIssuedSlotGenerations().FindOrAdd(SlotName);
     return ++Generation;
 }
 
 void FSaveGameFileIO::InvalidateSlotSaveGeneration(const FString& SlotName) {
     FScopeLock Lock(&GetSlotIoMutex());
-    GetCommittedSlotGenerations().Add(SlotName, MAX_uint64);
+    const uint64 CurrentIssued = GetIssuedSlotGenerations().FindOrAdd(SlotName);
+    GetCommittedSlotGenerations().Add(SlotName, CurrentIssued);
 }
 
 bool FSaveGameFileIO::WriteSlotBytes(const FString& SlotName, const TArray<uint8>& Bytes, uint64 SaveGeneration) {
@@ -102,7 +99,7 @@ bool FSaveGameFileIO::WriteSlotBytes(const FString& SlotName, const TArray<uint8
 
     if (SaveGeneration > 0) {
         const uint64* Committed = GetCommittedSlotGenerations().Find(SlotName);
-        if (Committed != nullptr && *Committed > SaveGeneration) {
+        if (Committed != nullptr && *Committed >= SaveGeneration) {
             return true;
         }
     }
@@ -145,15 +142,18 @@ bool FSaveGameFileIO::ReadSlotBytes(const FString& SlotName, TArray<uint8>& OutB
     }
 
     if (!FPaths::FileExists(TempPath)) {
+        OutBytes.Reset();
         return false;
     }
 
     if (!FFileHelper::LoadFileToArray(OutBytes, *TempPath) || !HasValidSaveGameHeader(OutBytes, SlotName)) {
+        OutBytes.Reset();
         return false;
     }
 
     if (!IFileManager::Get().Move(*FinalPath, *TempPath, true, true, true, false)) {
         GAME_LOG(Error, TEXT("【存档文件 I/O】临时档恢复换入失败: %s"), *FinalPath);
+        OutBytes.Reset();
         return false;
     }
     return true;

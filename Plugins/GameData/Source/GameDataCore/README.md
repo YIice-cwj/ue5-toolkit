@@ -8,10 +8,14 @@
 
 | 能力 | 核心文件 |
 | :--- | :--- |
-| 类型擦除的二进制仓库（生成式行读写器、CRC32 校验） | `Public/Data/StaticData/FStaticDataRepository.h` |
-| DataTable JSON 装载辅助 | `Public/Utils/DataTableLoaderUtils.h` |
-| 通用分段存档对象（段名 / 段版本 / 字节载荷） | `Public/Persistence/GameSaveArchive.h` |
-| 通用存档子系统（段注册、版本迁移、槽位白名单、异步落盘） | `Public/Persistence/USaveGameSubsystem.h` |
+| 类型擦除的二进制仓库（生成式行读写器、免反射容器） | `Public/StaticData/FStaticDataRepository.h` |
+| 二进制格式编解码器（Magic / 版本 / CRC32 / 跨平台 UTF-8 摘要） | `Public/StaticData/FStaticDataBinCodec.h` |
+| DataTable JSON 装载辅助（零拷贝 MoveTemp 装配） | `Public/Utils/DataTableLoaderUtils.h` |
+| 通用分段存档类型与元数据（段版本 / 字节载荷 / 槽位元信息） | `Public/Save/GameSaveTypes.h` |
+| 通用分段归档对象（槽位元数据 + 具名分段数据映射） | `Public/Save/GameSaveArchive.h` |
+| 存档分段注册表（委托托管、版本平滑迁移、未知段跨版本保留） | `Public/Save/FSaveGameSegmentRegistry.h` |
+| 存档文件底层 I/O（防断电原子写、高水位代次防并发覆写、容灾恢复） | `Public/Save/FSaveGameFileIO.h` |
+| 通用存档子系统门面（段注册、槽位白名单、异步最新优先调度） | `Public/Save/USaveGameSubsystem.h` |
 
 `GameDataCore` 不包含任何 Item / Shop / PlayerProfile 等业务字段，也不依赖 `GameData` 生成模块。
 

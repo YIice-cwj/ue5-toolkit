@@ -30,6 +30,7 @@ PublicDependencyModuleNames.AddRange(new string[] {
 #include "GameFramework/Actor.h"
 #include "Damage/IDamageable.h"
 #include "Stat/UGameStatComponent.h"
+#include "Stat/UGameVitalComponent.h"
 #include "DummyTarget.generated.h"
 
 UCLASS()
@@ -50,6 +51,9 @@ private:
 
     UPROPERTY(VisibleAnywhere)
     TObjectPtr<UGameStatComponent> StatComponent;
+
+    UPROPERTY(VisibleAnywhere)
+    TObjectPtr<UGameVitalComponent> VitalComponent;
 };
 ```
 
@@ -60,17 +64,19 @@ private:
 ADummyTarget::ADummyTarget()
 {
     StatComponent = CreateDefaultSubobject<UGameStatComponent>(TEXT("StatComponent"));
+    VitalComponent = CreateDefaultSubobject<UGameVitalComponent>(TEXT("VitalComponent"));
+    VitalComponent->BindStatComponent(StatComponent);
 
     // 开发者自由注册所需属性
     const FGameplayTag HealthTag = FGameplayTag::RequestGameplayTag(TEXT("Attribute.Health"));
     StatComponent->RegisterStat(HealthTag, 100.0f, 100.0f, 0.0f);
-    StatComponent->SetPrimaryVitalTag(HealthTag);
+    VitalComponent->SetPrimaryVitalTag(HealthTag);
 }
 
 void ADummyTarget::BeginPlay()
 {
     Super::BeginPlay();
-    StatComponent->OnVitalStateChanged.AddDynamic(this, &ADummyTarget::HandleVitalStateChanged);
+    VitalComponent->OnVitalStateChanged.AddDynamic(this, &ADummyTarget::HandleVitalStateChanged);
 }
 
 FGameDamageResult ADummyTarget::ApplyDamageContext_Implementation(const FGameDamageContext& Context)
@@ -82,7 +88,7 @@ FGameDamageResult ADummyTarget::ApplyDamageContext_Implementation(const FGameDam
     // 扣减生命属性并获取闭环结算差值
     StatComponent->ModifyStat(HealthTag, -IncomingDamage, ActualDelta);
 
-    const bool bWasFatal = !StatComponent->IsVitalAlive();
+    const bool bWasFatal = !VitalComponent->IsVitalAlive();
 
     // 组装反馈包
     FGameDamageResult Result;

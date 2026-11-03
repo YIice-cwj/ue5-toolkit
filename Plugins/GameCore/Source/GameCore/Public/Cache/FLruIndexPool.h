@@ -8,30 +8,30 @@
 #include "CoreMinimal.h"
 
 /**
- * @brief LRU 索引池节点
- */
-struct FLruNode {
-    /**
-     * @brief 缓存键名称
-     */
-    FName Key;
-
-    /**
-     * @brief 前驱节点在 Pool 数组中的索引（INDEX_NONE 表示链表头）
-     */
-    int32 Prev = INDEX_NONE;
-
-    /**
-     * @brief 后继节点在 Pool 数组中的索引（INDEX_NONE 表示链表尾）
-     */
-    int32 Next = INDEX_NONE;
-};
-
-/**
  * @brief 基于连续数组的高性能 LRU 索引链管理器
  */
 struct FLruIndexPool {
 public:
+    /**
+     * @brief LRU 索引池节点
+     */
+    struct FLruNode {
+        /**
+         * @brief 缓存键名称
+         */
+        FName Key;
+
+        /**
+         * @brief 前驱节点在 Pool 数组中的索引（INDEX_NONE 表示链表头）
+         */
+        int32 Prev = INDEX_NONE;
+
+        /**
+         * @brief 后继节点在 Pool 数组中的索引（INDEX_NONE 表示链表尾）
+         */
+        int32 Next = INDEX_NONE;
+    };
+
     /**
      * @brief 预分配的节点连续存储池
      */

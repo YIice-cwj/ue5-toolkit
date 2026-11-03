@@ -30,7 +30,9 @@ void UGameAbilitySystemBootstrap::EndPlay(const EEndPlayReason::Type EndPlayReas
         }
     }
     GrantedAbilityHandles.Empty();
-    Super::EndPlay(EndPlayReason);
+    if (HasBegunPlay()) {
+        Super::EndPlay(EndPlayReason);
+    }
 }
 
 void UGameAbilitySystemBootstrap::SetResolveAbilitySystemComponentDelegate(const FResolveAbilitySystemComponent& InDelegate) {

@@ -54,6 +54,13 @@ public:
      */
     void Deinitialize() override;
 
+    /**
+     * @brief 安全获取当前世界的顿帧服务
+     * @param WorldContextObject 世界上下文对象
+     * @return 服务指针；未就绪时返回 nullptr
+     */
+    static UGameFeedbackHitStopService* GetPtr(const UObject* WorldContextObject);
+
 private:
     /**
      * @brief 本地表现广播回调
@@ -83,14 +90,5 @@ private:
      */
     void ApplyHitStop(const FGameFeedbackSignal& Signal, const UGameFeedbackDefinition* OverrideDefinition);
 
-public:
-    /**
-     * @brief 安全获取当前世界的顿帧服务
-     * @param WorldContextObject 世界上下文对象
-     * @return 服务指针；未就绪时返回 nullptr
-     */
-    static UGameFeedbackHitStopService* GetPtr(const UObject* WorldContextObject);
-
-private:
     TPimplPtr<FGameFeedbackHitStopServiceState> State;
 };

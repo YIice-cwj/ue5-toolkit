@@ -37,7 +37,7 @@ bool IsMoreSpecificTag(const FGameplayTag& Candidate, const FGameplayTag& Curren
     if (CandidateDepth != CurrentDepth) {
         return CandidateDepth > CurrentDepth;
     }
-    return Candidate.GetTagName().ToString() < Current.GetTagName().ToString();
+    return Candidate.GetTagName().LexicalLess(Current.GetTagName());
 }
 
 }
@@ -70,16 +70,18 @@ TSoftObjectPtr<UGameFeedbackDefinition> UGameFeedbackRegistry::ResolveDefinition
     }
 
     const FGameplayTag* MatchedTag = nullptr;
+    const TSoftObjectPtr<UGameFeedbackDefinition>* MatchedDefinition = nullptr;
     for (const auto& Pair : ExactFeedbackTagMap) {
         if (!Pair.Key.IsValid() || !FeedbackTags.HasTag(Pair.Key) || Pair.Value.IsNull()) {
             continue;
         }
         if (!MatchedTag || IsMoreSpecificTag(Pair.Key, *MatchedTag)) {
             MatchedTag = &Pair.Key;
+            MatchedDefinition = &Pair.Value;
         }
     }
-    if (MatchedTag) {
-        return ExactFeedbackTagMap.FindChecked(*MatchedTag);
+    if (MatchedDefinition) {
+        return *MatchedDefinition;
     }
 
     for (const FGameFeedbackCompositeEntry& Entry : CompositeRules) {
@@ -91,22 +93,6 @@ TSoftObjectPtr<UGameFeedbackDefinition> UGameFeedbackRegistry::ResolveDefinition
     }
 
     return DefaultFallbackDefinition;
-}
-
-/**
- * @brief 根据完整资产路径生成确定性 Definition ID
- * @param DefinitionPath 完整软对象路径
- * @return 非零稳定 ID；空路径返回 0
- */
-uint32 UGameFeedbackRegistry::MakeDefinitionId(const FSoftObjectPath& DefinitionPath)
-{
-    const FString PathString = DefinitionPath.ToString();
-    if (PathString.IsEmpty()) {
-        return 0;
-    }
-
-    const uint32 Hash = FCrc::StrCrc32(*PathString);
-    return Hash == 0 ? 1u : Hash;
 }
 
 /**
@@ -217,5 +203,21 @@ TSoftObjectPtr<UGameFeedbackDefinition> UGameFeedbackRegistry::FindDefinitionByI
 uint32 UGameFeedbackRegistry::GetDefinitionMappingVersion() const
 {
     return DefinitionMappingVersion;
+}
+
+/**
+ * @brief 根据完整资产路径生成确定性 Definition ID
+ * @param DefinitionPath 完整软对象路径
+ * @return 非零稳定 ID；空路径返回 0
+ */
+uint32 UGameFeedbackRegistry::MakeDefinitionId(const FSoftObjectPath& DefinitionPath)
+{
+    const FString PathString = DefinitionPath.ToString();
+    if (PathString.IsEmpty()) {
+        return 0;
+    }
+
+    const uint32 Hash = FCrc::StrCrc32(*PathString);
+    return Hash == 0 ? 1u : Hash;
 }
 

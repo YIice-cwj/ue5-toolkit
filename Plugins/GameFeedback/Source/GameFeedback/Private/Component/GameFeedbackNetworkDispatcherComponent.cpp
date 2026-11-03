@@ -135,6 +135,11 @@ void UGameFeedbackNetworkDispatcherComponent::Dispatch(const FGameFeedbackMessag
             FVector ViewLocation = FVector::ZeroVector;
             FRotator ViewRotation = FRotator::ZeroRotator;
             PC->GetPlayerViewPoint(ViewLocation, ViewRotation);
+            if (ViewLocation.IsNearlyZero()) {
+                if (const APawn* Pawn = PC->GetPawn()) {
+                    ViewLocation = Pawn->GetActorLocation();
+                }
+            }
             if (!ViewLocation.IsNearlyZero() && FVector::DistSquared(ViewLocation, BroadcastOrigin) > CullDistSq) {
                 continue;
             }

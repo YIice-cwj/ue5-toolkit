@@ -43,6 +43,15 @@ public:
         TFunction<TResult()> BackgroundWork,
         TFunction<void(TResult)> GameThreadContinuation
     );
+
+    /**
+     * @brief 派发后台无返回值任务，并在完成后安全投递回 GameThread 续体执行
+     */
+    static void RunWithContinuation(
+        TWeakObjectPtr<UObject> Owner,
+        TFunction<void()> BackgroundWork,
+        TFunction<void()> GameThreadContinuation
+    );
 };
 ```
 

@@ -63,7 +63,7 @@ void FGameFeedbackFlashTracker::Execute(UWorld* World, AActor* Target, const FHi
     TArray<UMeshComponent*> CandidateMeshes;
     CollectCandidateMeshes(Target, HitResult, Action, CandidateMeshes);
 
-    const double CurrentRealTime = FPlatformTime::Seconds();
+    const double CurrentRealTime = GetCurrentTime();
     const double NewExpirationTime = CurrentRealTime + Action.Duration;
 
     for (UMeshComponent* Mesh : CandidateMeshes) {
@@ -135,6 +135,24 @@ void FGameFeedbackFlashTracker::Shutdown(UWorld* World)
 }
 
 /**
+ * @brief 设置时间提供者（用于测试或可控时钟注入）
+ * @param InTimeProvider 返回当前时间（秒）的函数对象
+ */
+void FGameFeedbackFlashTracker::SetTimeProvider(TFunction<double()> InTimeProvider)
+{
+    TimeProvider = MoveTemp(InTimeProvider);
+}
+
+/**
+ * @brief 获取当前时间（秒），优先使用注入的时间提供者
+ * @return 当前时间（秒）
+ */
+double FGameFeedbackFlashTracker::GetCurrentTime() const
+{
+    return TimeProvider ? TimeProvider() : FPlatformTime::Seconds();
+}
+
+/**
  * @brief 到期回调按真实时间还原 Overlay；提前触发时按剩余时间重新 arm
  * @param WeakMesh 目标网格弱引用
  */
@@ -151,7 +169,7 @@ void FGameFeedbackFlashTracker::OnExpiration(TWeakObjectPtr<UMeshComponent> Weak
         return;
     }
 
-    const double RemainingTime = Record->ExpirationRealTime - FPlatformTime::Seconds();
+    const double RemainingTime = Record->ExpirationRealTime - GetCurrentTime();
     if (RemainingTime <= 0.0) {
         TargetMesh->SetOverlayMaterial(Record->OriginalOverlayMaterial.Get());
         Records.Remove(TargetMesh);

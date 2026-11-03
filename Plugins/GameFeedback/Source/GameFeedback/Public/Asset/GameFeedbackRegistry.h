@@ -52,22 +52,6 @@ public:
         const FGameplayTag& PrimaryChannel,
         const FGameplayTagContainer& FeedbackTags) const;
 
-    UPROPERTY(EditDefaultsOnly, Category = "Defaults")
-    TObjectPtr<UGameFeedbackDefinition> DefaultFallbackDefinition;
-
-    UPROPERTY(EditDefaultsOnly, Category = "Tier1_FastPath")
-    TMap<FGameplayTag, TSoftObjectPtr<UGameFeedbackDefinition>> ExactChannelMap;
-
-    UPROPERTY(EditDefaultsOnly, Category = "Tier1_FastPath")
-    TMap<FGameplayTag, TSoftObjectPtr<UGameFeedbackDefinition>> ExactFeedbackTagMap;
-
-    /**
-     * @brief 根据完整资产路径生成确定性 Definition ID
-     * @param DefinitionPath 完整软对象路径
-     * @return 非零稳定 ID；空路径返回 0
-     */
-    static uint32 MakeDefinitionId(const FSoftObjectPath& DefinitionPath);
-
     /**
      * @brief 重建全部映射来源的 Definition 索引、冲突集合与映射版本
      */
@@ -93,13 +77,30 @@ public:
      */
     uint32 GetDefinitionMappingVersion() const;
 
-    UPROPERTY(EditDefaultsOnly, Category = "Tier2_CompositeRules")
-    TArray<FGameFeedbackCompositeEntry> CompositeRules;
+    /**
+     * @brief 根据完整资产路径生成确定性 Definition ID
+     * @param DefinitionPath 完整软对象路径
+     * @return 非零稳定 ID；空路径返回 0
+     */
+    static uint32 MakeDefinitionId(const FSoftObjectPath& DefinitionPath);
 
 private:
     TSet<FSoftObjectPath> RegisteredDefinitionPaths;
     TMap<uint32, TSoftObjectPtr<UGameFeedbackDefinition>> DefinitionsById;
     TSet<uint32> ConflictedDefinitionIds;
     uint32 DefinitionMappingVersion = 0;
+
+public:
+    UPROPERTY(EditDefaultsOnly, Category = "Defaults")
+    TObjectPtr<UGameFeedbackDefinition> DefaultFallbackDefinition;
+
+    UPROPERTY(EditDefaultsOnly, Category = "Tier1_FastPath")
+    TMap<FGameplayTag, TSoftObjectPtr<UGameFeedbackDefinition>> ExactChannelMap;
+
+    UPROPERTY(EditDefaultsOnly, Category = "Tier1_FastPath")
+    TMap<FGameplayTag, TSoftObjectPtr<UGameFeedbackDefinition>> ExactFeedbackTagMap;
+
+    UPROPERTY(EditDefaultsOnly, Category = "Tier2_CompositeRules")
+    TArray<FGameFeedbackCompositeEntry> CompositeRules;
 };
 

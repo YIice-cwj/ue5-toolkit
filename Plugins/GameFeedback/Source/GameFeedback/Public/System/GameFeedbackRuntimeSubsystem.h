@@ -37,12 +37,12 @@ public:
      */
     void Deinitialize() override;
 
-private:
     /**
-     * @brief 确保 GameState 与本地 PlayerController 上的表现组件存在
+     * @brief 确保 GameState、PlayerController 及网络组件按 NetMode 正确装配
      * @param World 当前世界
      */
     void EnsureComponents(UWorld& World);
 
+private:
     FTimerHandle EnsureTimer;
 };

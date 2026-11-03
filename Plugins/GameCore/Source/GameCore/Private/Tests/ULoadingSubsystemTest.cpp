@@ -1,18 +1,25 @@
 /**
  * @file ULoadingSubsystemTest.cpp
- * @brief ULoadingSubsystem 自动化测试
+ * @brief ULoadingSubsystem 自动化测试（加载状态流转、委托广播、跨实例隔离与上下文解析），Shipping 构建自动剔除
  */
 
 #include "CoreMinimal.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
+#include "Engine/World.h"
 #include "Misc/AutomationTest.h"
 #include "System/ULoadingSubsystem.h"
+#include "Tests/GameMessageTestReceiver.h"
 
 #if WITH_AUTOMATION_TESTS
 
 namespace {
 
+/**
+ * @brief 构造独立测试用的 GameInstance 与关卡流转子系统
+ * @param OutGameInstance 输出创建的 GameInstance 实例引用
+ * @return 初始化的 ULoadingSubsystem 指针
+ */
 ULoadingSubsystem* CreateTestSubsystem(UGameInstance*& OutGameInstance) {
     if (GEngine == nullptr) {
         return nullptr;
@@ -25,12 +32,17 @@ ULoadingSubsystem* CreateTestSubsystem(UGameInstance*& OutGameInstance) {
 } // namespace
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-    FGameLoadingSubsystemTest,
-    "Game.Core.System.LoadingSubsystem",
+    FGameLoadingSubsystemStateFlowTest,
+    "Game.Core.System.LoadingSubsystemStateFlow",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
-bool FGameLoadingSubsystemTest::RunTest([[maybe_unused]] const FString& Parameters) {
+/**
+ * @brief 验证地图加载生命周期委托挂钩、状态流转、动态组播广播与跨 GameInstance 隔离
+ * @param Parameters 自动化框架参数（未使用）
+ * @return 全部断言通过返回 true
+ */
+bool FGameLoadingSubsystemStateFlowTest::RunTest([[maybe_unused]] const FString& Parameters) {
     UGameInstance* GameInstance = nullptr;
     ULoadingSubsystem* LoadingSubsystem = CreateTestSubsystem(GameInstance);
     TestNotNull(TEXT("加载子系统创建成功"), LoadingSubsystem);
@@ -38,15 +50,57 @@ bool FGameLoadingSubsystemTest::RunTest([[maybe_unused]] const FString& Paramete
         return false;
     }
 
+    UWorld* World = GameInstance->GetWorld();
+    TestNotNull(TEXT("测试世界有效"), World);
+    if (World == nullptr) {
+        GameInstance->Shutdown();
+        return false;
+    }
+
+    TestEqual(TEXT("从 GameInstance 获取子系统一致"), ULoadingSubsystem::Get(GameInstance), LoadingSubsystem);
+    TestEqual(TEXT("从 World 获取子系统一致"), ULoadingSubsystem::Get(World), LoadingSubsystem);
+    TestNull(TEXT("空上下文获取子系统返回 nullptr"), ULoadingSubsystem::Get(nullptr));
+
+    UGameMessageTestReceiver* Receiver = NewObject<UGameMessageTestReceiver>(GameInstance);
+    LoadingSubsystem->OnLoadingStateChanged.AddDynamic(Receiver, &UGameMessageTestReceiver::OnLoadingStateChanged);
+
     TestFalse(TEXT("初始状态未处于加载态"), LoadingSubsystem->IsLoading());
     TestEqual(TEXT("初始目标关卡应为 None"), LoadingSubsystem->GetTargetLevelName(), NAME_None);
 
+    const FString TestLevelName = TEXT("/Game/Maps/UnitTestLevel_Alpha");
+    FCoreUObjectDelegates::PreLoadMap.Broadcast(TestLevelName);
+
+    TestTrue(TEXT("PreLoadMap 触发后进入加载态"), LoadingSubsystem->IsLoading());
+    TestEqual(TEXT("目标关卡名称更新为当前加载地图"), LoadingSubsystem->GetTargetLevelName(), FName(*TestLevelName));
+    TestEqual(TEXT("收到加载开始委托广播"), Receiver->LoadingChangeCount, 1);
+    TestTrue(TEXT("广播中加载状态为 true"), Receiver->bLastIsLoading);
+    TestEqual(TEXT("广播中目标关卡一致"), Receiver->LastTargetLevel, FName(*TestLevelName));
+
+    LoadingSubsystem->OpenLevelWithLoading(FName(TEXT("/Game/Maps/UnitTestLevel_Beta")));
+    TestEqual(TEXT("加载中重复请求不改写当前目标关卡"), LoadingSubsystem->GetTargetLevelName(), FName(*TestLevelName));
+    TestEqual(TEXT("重复请求不产生额外广播"), Receiver->LoadingChangeCount, 1);
+
+    UGameInstance* OtherGameInstance = nullptr;
+    ULoadingSubsystem* OtherSubsystem = CreateTestSubsystem(OtherGameInstance);
+    if (OtherGameInstance != nullptr && OtherGameInstance->GetWorld() != nullptr) {
+        FCoreUObjectDelegates::PostLoadMapWithWorld.Broadcast(OtherGameInstance->GetWorld());
+        TestTrue(TEXT("异源世界加载完成不误清本子系统的加载态"), LoadingSubsystem->IsLoading());
+        OtherGameInstance->Shutdown();
+    }
+
+    FCoreUObjectDelegates::PostLoadMapWithWorld.Broadcast(World);
+    TestFalse(TEXT("本实例世界加载完成后退出加载态"), LoadingSubsystem->IsLoading());
+    TestEqual(TEXT("加载完成后目标关卡复位为 None"), LoadingSubsystem->GetTargetLevelName(), NAME_None);
+    TestEqual(TEXT("收到加载结束委托广播"), Receiver->LoadingChangeCount, 2);
+    TestFalse(TEXT("广播中加载状态为 false"), Receiver->bLastIsLoading);
+    TestEqual(TEXT("结束广播中附带完成的关卡名称"), Receiver->LastTargetLevel, FName(*TestLevelName));
+
     LoadingSubsystem->OpenLevelWithLoading(NAME_None);
-    TestFalse(TEXT("空关卡名不应进入加载态"), LoadingSubsystem->IsLoading());
-    TestEqual(TEXT("目标关卡仍为 None"), LoadingSubsystem->GetTargetLevelName(), NAME_None);
+    TestFalse(TEXT("空关卡名不进入加载态"), LoadingSubsystem->IsLoading());
+    TestEqual(TEXT("空关卡名不产生广播"), Receiver->LoadingChangeCount, 2);
 
     GameInstance->Shutdown();
     return true;
 }
 
-#endif
+#endif  // WITH_AUTOMATION_TESTS

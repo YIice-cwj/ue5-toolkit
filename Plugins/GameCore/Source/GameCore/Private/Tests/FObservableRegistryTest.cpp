@@ -160,4 +160,36 @@ bool FGameObservableWorldSubsystemTest::RunTest([[maybe_unused]] const FString& 
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameObservableErrorBranchesTest, "Game.Core.Observable.ErrorBranches",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+/**
+ * @brief 验证空键、类型冲突、未注册键查找与重复注销的异常分支防御行为
+ * @param Parameters 框架参数（未使用）
+ * @return 全部断言通过返回 true
+ */
+bool FGameObservableErrorBranchesTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    Game::Core::FObservableRegistry Registry;
+
+    TestNull(TEXT("空键注册返回 nullptr"), Registry.Register<int32>(NAME_None));
+    TestFalse(TEXT("空键注销返回 false"), Registry.Unregister(NAME_None));
+    TestNull(TEXT("未注册键查找返回空共享指针"), Registry.Find<int32>(FName(TEXT("NonExistentKey"))).Get());
+
+    const TSharedRef<FObserverSubscription> EmptyKeySub = Registry.Subscribe<int32>(NAME_None, [](const int32&) {});
+    TestFalse(TEXT("空键订阅返回空守卫"), EmptyKeySub->IsActive());
+
+    const FName TypedKey(TEXT("UnitTest.Observable.TypeConflictKey"));
+    TestNotNull(TEXT("首次注册 float 观察者成功"), Registry.Register<float>(TypedKey));
+
+    AddExpectedErrorPlain(TEXT("已注册为其他值类型"), EAutomationExpectedErrorFlags::Contains, 2);
+    TestNull(TEXT("同名键以 int32 重复注册被拒绝并返回 nullptr"), Registry.Register<int32>(TypedKey));
+    TestNull(TEXT("以错误类型查找返回空共享指针"), Registry.Find<int32>(TypedKey).Get());
+
+    const TSharedRef<FObserverSubscription> MismatchedSub = Registry.Subscribe<int32>(TypedKey, [](const int32&) {});
+    TestFalse(TEXT("同名键以错误类型订阅返回空守卫"), MismatchedSub->IsActive());
+
+    TestFalse(TEXT("注销不存在的键返回 false"), Registry.Unregister(FName(TEXT("NonExistentKey"))));
+    return true;
+}
+
 #endif  // WITH_AUTOMATION_TESTS

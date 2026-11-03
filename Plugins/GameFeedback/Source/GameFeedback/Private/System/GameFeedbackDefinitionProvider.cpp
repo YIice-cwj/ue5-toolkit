@@ -137,6 +137,20 @@ void UGameFeedbackDefinitionProvider::Deinitialize()
 }
 
 /**
+ * @brief 安全获取当前世界的定义提供者
+ * @param WorldContextObject 世界上下文对象
+ * @return 服务指针；未就绪时返回 nullptr
+ */
+UGameFeedbackDefinitionProvider* UGameFeedbackDefinitionProvider::GetPtr(const UObject* WorldContextObject)
+{
+    if (!WorldContextObject) {
+        return nullptr;
+    }
+    const UWorld* World = WorldContextObject->GetWorld();
+    return World ? World->GetSubsystem<UGameFeedbackDefinitionProvider>() : nullptr;
+}
+
+/**
  * @brief 解析软定义，命中强缓存或已加载对象时写入缓存并返回，否则按路径去重发起异步请求
  * @param Definition 待解析软定义
  * @return 已加载定义；加载中或加载失败时返回 nullptr
@@ -155,18 +169,4 @@ const UGameFeedbackDefinition* UGameFeedbackDefinitionProvider::ResolveDefinitio
         DefinitionLoads.Add(Path, UAssetManager::GetStreamableManager().RequestAsyncLoad(Path));
     }
     return nullptr;
-}
-
-/**
- * @brief 安全获取当前世界的定义提供者
- * @param WorldContextObject 世界上下文对象
- * @return 服务指针；未就绪时返回 nullptr
- */
-UGameFeedbackDefinitionProvider* UGameFeedbackDefinitionProvider::GetPtr(const UObject* WorldContextObject)
-{
-    if (!WorldContextObject) {
-        return nullptr;
-    }
-    const UWorld* World = WorldContextObject->GetWorld();
-    return World ? World->GetSubsystem<UGameFeedbackDefinitionProvider>() : nullptr;
 }

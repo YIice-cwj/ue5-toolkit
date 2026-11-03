@@ -87,7 +87,7 @@ sequenceDiagram
 
 - 默认拒绝：空名、长度 > 64、包含 `/`、`\`、`.`。
 - `SetAllowedSlotNames` 可进一步限定可用槽位（例如只允许 `Slot_1` ~ `Slot_3`）。
-- `DeleteSaveSlot` 同时清理残留 `.sav.tmp`，并保留槽位已签发保存代次高水位，使后续代次严格递增；在途旧代次写被安全吸收，删除后到达的新写不会被误判为过期。
+- `DeleteSaveSlot` 同时清理残留 `.sav.tmp`，并保留槽位已签发保存代次高水位（`Committed = CurrentIssued`），使后续代次严格递增；写入门禁采用 `>=`（`*Committed >= SaveGeneration`）拦截全部旧写，即使旧写在新写落盘前到达也被绝对安全吸收，彻底根治 ABA 并发穿透；读取失败分支显式重置输出缓冲。
 
 ---
 

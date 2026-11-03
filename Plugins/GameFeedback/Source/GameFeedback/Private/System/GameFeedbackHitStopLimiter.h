@@ -12,7 +12,16 @@
  * @brief 按 Actor 维护顿帧累积窗口与（攻击者,目标）冷却的纯逻辑限流器
  */
 class FGameFeedbackHitStopLimiter {
+private:
+    struct FTrackState {
+        float CumulativeDuration = 0.0f;
+        double LastTriggerRealTime = 0.0;
+    };
+
 public:
+    /**
+     * @brief 默认构造顿帧限流器
+     */
     FGameFeedbackHitStopLimiter() = default;
 
     /**
@@ -48,11 +57,6 @@ public:
     void Prune(double RealTime);
 
 private:
-    struct FTrackState {
-        float CumulativeDuration = 0.0f;
-        double LastTriggerRealTime = 0.0;
-    };
-
     TMap<TWeakObjectPtr<AActor>, FTrackState> Tracks;
     TMap<TPair<TWeakObjectPtr<AActor>, TWeakObjectPtr<AActor>>, double> CooldownMap;
 };

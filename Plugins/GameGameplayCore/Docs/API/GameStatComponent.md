@@ -2,6 +2,8 @@
 
 `UGameStatComponent` 是一个纯事件驱动、全 Tag 驱动注册、支持网络同步的通用数值管理组件。
 
+> **架构说明**：角色主生命标签、存活判定（`IsVitalAlive`）与复活（`ReviveVital`）已按照 SRP 原则解耦至专职组件 [UGameVitalComponent](./GameVitalComponent.md)。
+
 头文件：
 - `#include "Stat/UGameStatComponent.h"`
 
@@ -77,18 +79,6 @@ DECLARE_MULTICAST_DELEGATE_FourParams(
     float,
     float
 );
-
-// 主生命属性生死状态委托
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(
-    FOnGameVitalStateChanged,
-    bool, bIsAlive,
-    const FGameplayTag&, VitalTag
-);
-DECLARE_MULTICAST_DELEGATE_TwoParams(
-    FOnGameVitalStateChangedNative,
-    bool,
-    const FGameplayTag&
-);
 ```
 
 ---
@@ -156,19 +146,6 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Game|Stat")
     void SetStatMax(const FGameplayTag& InStatTag, float NewMax, bool bKeepRelativePercent = true);
 
-    // --- 主生命状态（可选配置） ---
-    UFUNCTION(BlueprintCallable, Category = "Game|Stat")
-    void SetPrimaryVitalTag(const FGameplayTag& InTag);
-
-    UFUNCTION(BlueprintCallable, Category = "Game|Stat")
-    [[nodiscard]] bool IsVitalAlive() const noexcept;
-
-    UFUNCTION(BlueprintCallable, Category = "Game|Stat")
-    [[nodiscard]] FGameplayTag GetPrimaryVitalTag() const noexcept;
-
-    UFUNCTION(BlueprintCallable, Category = "Game|Stat")
-    void ReviveVital(float FillPercent = 1.0f);
-
     // --- 按 Tag 订阅 ---
     FDelegateHandle SubscribeStatChanged(const FGameplayTag& InStatTag, FOnGameStatChangedNative::FDelegate InDelegate);
     FDelegateHandle SubscribeStatChanged(UObject* Owner, const FGameplayTag& InStatTag,
@@ -184,7 +161,7 @@ public:
 
 - `ModifyStat` / `SetStatCurrent` / `SetStatMax` 直接修改内部值并按 `Min/Max` 钳制，`ModifyStat` 输出实际生效增量。
 - 写入生效后重新计算修正器派生值；派生当前值或派生上限发生变化时触发 `BroadcastStatChanged` 通知订阅者。
-- **复活**：`ReviveVital(FillPercent)`（默认 `1.0`）以 `Min + (Max - Min) × FillPercent` 计算目标值，并通过 `SetStatCurrent` 写入。
+- **复活**：生命恢复与存活状态迁移由 [UGameVitalComponent](./GameVitalComponent.md) 的 `ReviveVital(FillPercent)` 承载，它以 `Min + (Max - Min) × FillPercent` 计算目标值，并通过 `SetStatCurrent` 写入绑定的数值组件。
 - **权威校验**：非权威端默认拒绝写入并记录 Warning；确需客户端预测时可在类默认值中开启 `bAllowNonAuthoritativeWrites`。
 
 ### 修正器与派生值

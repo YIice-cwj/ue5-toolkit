@@ -12,7 +12,7 @@
 
 ```cpp
 UCLASS()
-class GAMEGAMEPLAY_API UGameGasBuffBridge : public UObject {
+class GAMEGAMEPLAY_API UGameGasBuffBridge : public UBlueprintFunctionLibrary {
     GENERATED_BODY()
 
 public:
@@ -27,7 +27,9 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Game|Buff")
     static bool RemoveBuffEffect(
         UAbilitySystemComponent* InAbilitySystemComponent,
-        FActiveGameplayEffectHandle InHandle);
+        FActiveGameplayEffectHandle InHandle,
+        int32 StacksToRemove = -1
+    );
 
     UFUNCTION(BlueprintPure, Category = "Game|Buff")
     static bool IsBuffEffectActive(
@@ -56,7 +58,7 @@ public:
 ## 2. 语义
 
 - `ApplyBuffEffect`：构建效果上下文并施加；失败返回无效句柄。
-- `RemoveBuffEffect`：按激活句柄移除；ASC 或句柄无效返回 `false`。
+- `RemoveBuffEffect`：按激活句柄移除指定层数（默认 -1 移除全部层数）；ASC 或句柄无效返回 `false`。
 - `IsBuffEffectActive`：查询效果是否仍激活，供 UI 与技能条件使用。
 - `GetBuffStackCount`：查询该 Buff 实例当前生效的堆叠层数，未命中返回 0。
 - `GetBuffRemainingTime`：根据当前 World 时钟精确查询剩余秒数，用于 UI 倒计时展示。

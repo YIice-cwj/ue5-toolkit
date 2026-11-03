@@ -23,9 +23,13 @@ FRotator ResolveVFXRotation(const FGameFeedbackSignal& Signal, EGameFeedbackVFXO
     case EGameFeedbackVFXOrientation::AlignToImpactDirection:
         return Signal.ImpactDirection.IsNearlyZero() ? Signal.HitResult.ImpactNormal.Rotation() : Signal.ImpactDirection.Rotation();
     case EGameFeedbackVFXOrientation::OppositeToTraceDirection:
-        return (-Signal.TraceDirection).GetSafeNormal().Rotation();
+        return Signal.TraceDirection.IsNearlyZero()
+            ? Signal.HitResult.ImpactNormal.Rotation()
+            : (-Signal.TraceDirection).GetSafeNormal().Rotation();
     case EGameFeedbackVFXOrientation::AlignToReflectedNormal:
-        return FMath::GetReflectionVector(Signal.TraceDirection, Signal.HitResult.ImpactNormal).Rotation();
+        return Signal.TraceDirection.IsNearlyZero()
+            ? Signal.HitResult.ImpactNormal.Rotation()
+            : FMath::GetReflectionVector(Signal.TraceDirection, Signal.HitResult.ImpactNormal).Rotation();
     case EGameFeedbackVFXOrientation::AlignToNormal:
     default:
         return Signal.HitResult.ImpactNormal.Rotation();

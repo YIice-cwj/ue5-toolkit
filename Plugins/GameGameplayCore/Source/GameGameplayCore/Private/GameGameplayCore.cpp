@@ -11,7 +11,7 @@ GAME_REGISTER_MODULE_LOG(LogGameGameplayCore);
  * @brief 战斗框架核心主模块（零 GAS，游戏无关）
  *
  * 承载伤害分发契约（FGameDamageContext / FGameDamageResult / IDamageable）
- * 与通用数值状态机（UGameStatComponent 双模自适应）；表现层与 GAS 绑定层见 GameGameplay 插件。
+ * 与通用数值状态机（UGameStatComponent 与 UGameVitalComponent）；表现层与 GAS 绑定层见 GameGameplay 插件。
  */
 class FGameGameplayCoreModule : public FDefaultModuleImpl {
 public:

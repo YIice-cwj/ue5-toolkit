@@ -13,7 +13,18 @@ class AActor;
  * @brief 记录本地已播放表现的（攻击者,目标）指纹，用于消费服务器回执
  */
 class FGameFeedbackPredictionHistory {
+private:
+    struct FEntry {
+        uint16 PredictionEventId = 0;
+        TWeakObjectPtr<AActor> Attacker;
+        TWeakObjectPtr<AActor> Target;
+        double Timestamp = 0.0;
+    };
+
 public:
+    /**
+     * @brief 默认构造预测历史记录器
+     */
     FGameFeedbackPredictionHistory() = default;
 
     /**
@@ -42,12 +53,5 @@ public:
     void Prune(double RealTime);
 
 private:
-    struct FEntry {
-        uint16 PredictionEventId = 0;
-        TWeakObjectPtr<AActor> Attacker;
-        TWeakObjectPtr<AActor> Target;
-        double Timestamp = 0.0;
-    };
-
     TArray<FEntry> Entries;
 };

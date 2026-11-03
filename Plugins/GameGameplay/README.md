@@ -45,21 +45,22 @@ graph TD
 
 | 模块 / 机制 | 关键技术亮点 | 核心文件 / 类 |
 | :--- | :--- | :--- |
-| **能力系统组件基类** | 构造期强制开启复制（`SetIsReplicatedByDefault(true)`），提供网络安全基座 | `AbilitySystem/UGameAbilitySystemComponent.h` |
-| **GAS 全局单例** | 继承 `UAbilitySystemGlobals`，挂载全局打击反馈上下文工厂 | `AbilitySystem/UGameAbilitySystemGlobals.h` |
+| **能力系统组件基类** | 构造期强制开启复制（`SetIsReplicatedByDefault(true)`），提供网络安全基座 | `Ability/UGameAbilitySystemComponent.h` |
+| **GAS 全局单例** | 继承 `UAbilitySystemGlobals`，挂载全局打击反馈上下文工厂 | `Ability/UGameAbilitySystemGlobals.h` |
 | **打击反馈上下文** | 全 Tag 驱动扩展 `FGameplayEffectContext`，承载总伤害、各通道明细、反馈标签、动态参数与预测 `FeedbackEventId`；NetSerialize 保留非零事件 ID，并按位跳过零伤害与空标签，条目上限 255 | `Damage/FGameGameplayEffectContext.h` |
-| **属性集基础框架** | 纯通用基类（零业务属性），提供上下限钳制、阈值状态幂等闩（`BroadcastThresholdOnce`）、元属性消费归位与增量搬运 | `AbilitySystem/UGameBaseAttributeSet.h` |
-| **泛型伤害结算 ExecCalc** | 基于 GameplayTag 的动态通道绑定、运行时注册 / 注销（`FGameDamageChannelRegistry`）、修饰器管线 | `AbilitySystem/UGameDamageExecution.h`<br>`AbilitySystem/FGameDamageChannelRegistry.h` |
-| **GAS Buff 桥接** | 以 `GameplayEffect` 承载 Buff，收敛上下文构建、施加、移除与状态/叠层/倒计时查询样板代码，不引入具体 Buff 类型 | `AbilitySystem/UGameGasBuffBridge.h` |
-| **通用能力基类** | 统一激活入口、输入/效果/AI 触发源自动追踪、死亡/硬直状态标签短路否决 | `AbilitySystem/UGameGameplayAbility.h` |
-| **全时序引导组件** | 把 ASC 绑定、属性集初始化、数据就绪门、复制就绪重试矩阵彻底收敛至框架层；Pawn 阵亡与重生时自动清理旧技能句柄去重 | `AbilitySystem/UGameAbilitySystemBootstrap.h` |
-| **属性表现映射工具** | 将 ASC 原生复制委托收敛为蓝图友好的 `OnValueChanged(New, Old)`，支持 Outer 自适应防 GC 悬垂，消除 UI 轮询 | `AbilitySystem/UGameplayAttributeValueMapping.h` |
+| **属性集基础框架** | 纯通用基类（零业务属性），提供上下限钳制、阈值状态幂等闩（`BroadcastThresholdOnce`）、元属性消费归位与增量搬运 | `Attribute/UGameBaseAttributeSet.h` |
+| **泛型伤害结算 ExecCalc** | 基于 GameplayTag 的动态通道绑定、运行时注册 / 注销（`FGameDamageChannelRegistry`，内置继承只读缓存）、修饰器管线 | `Damage/UGameDamageExecution.h`<br>`Damage/FGameDamageChannelRegistry.h` |
+| **GAS Buff 桥接** | 以 `GameplayEffect` 承载 Buff，收敛上下文构建、施加、层数增减与状态/叠层/倒计时查询样板代码，不引入具体 Buff 类型 | `Bridge/UGameGasBuffBridge.h` |
+| **通用能力基类** | 统一激活入口、输入/效果/AI 触发源自动追踪、死亡/硬直状态标签短路否决 | `Ability/UGameGameplayAbility.h` |
+| **全时序引导组件** | 把 ASC 绑定、属性集初始化、数据就绪门、复制就绪重试矩阵彻底收敛至框架层；Pawn 阵亡与重生时自动清理旧技能句柄去重 | `Ability/UGameAbilitySystemBootstrap.h` |
+| **属性表现映射工具** | 将 ASC 原生复制委托收敛为蓝图友好的 `OnValueChanged(New, Old)`，支持 Outer 自适应防 GC 悬垂，消除 UI 轮询 | `Attribute/UGameplayAttributeValueMapping.h` |
 
 ---
 
 ## 插件依赖
 
-- **底层依赖**：`Core`, `CoreUObject`, `Engine`, `GameplayAbilities`, `GameplayTags`, `GameplayTasks`, `GameCore`, `GameGameplayCore`, `GameLogging`
+- **公开依赖 (Public)**：`Core`, `CoreUObject`, `Engine`, `GameplayAbilities`, `GameplayTags`, `GameCore`, `GameGameplayCore`
+- **私有依赖 (Private)**：`GameplayTasks`, `GameLogging`, `GameFeedback`
 - **禁止依赖**：`GameData`（杜绝配置数据与技能框架循环引用）
 - **C++ 标准**：C++20
 
@@ -148,7 +149,10 @@ Plugins/GameGameplay/
 │       │   ├── Damage/
 │       │   └── Tests/
 │       │       ├── FBootstrapRetryGateTest.cpp      # 重试闸门单测
-│       │       └── UGameAbilitySystemGlobalsTest.cpp # GAS 全局单测
+│       │       ├── GameFeedbackCueBridgeTest.cpp    # GameFeedback Cue 桥接单测
+│       │       ├── UGameAbilitySystemGlobalsTest.cpp # GAS 全局与通用能力单测
+│       │       ├── UGameDamageExecutionTest.cpp     # 动态通道伤害结算单测
+│       │       └── UGameGasBuffBridgeTest.cpp       # GAS Buff 桥接单测
 │       └── GameGameplay.Build.cs
 ├── Docs/                                            # 详细架构与参考文档
 │   ├── Architecture/                                # 核心架构设计

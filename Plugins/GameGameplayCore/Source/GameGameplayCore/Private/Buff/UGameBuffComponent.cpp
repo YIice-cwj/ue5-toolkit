@@ -15,27 +15,6 @@ UGameBuffComponent::UGameBuffComponent() {
     SetIsReplicatedByDefault(true);
 }
 
-void UGameBuffComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const {
-    Super::GetLifetimeReplicatedProps(OutLifetimeProps);
-
-    DOREPLIFETIME(UGameBuffComponent, ActiveBuffs);
-}
-
-void UGameBuffComponent::PostInitProperties() {
-    Super::PostInitProperties();
-    ActiveBuffs.OwnerComponent = this;
-}
-
-void UGameBuffComponent::EndPlay(const EEndPlayReason::Type EndPlayReason) {
-    if (UGameStatComponent* StatComponent = BoundStatComponent.Get()) {
-        ModifierBridge.ClearAll(*StatComponent);
-    } else {
-        ModifierBridge.Reset();
-    }
-
-    Super::EndPlay(EndPlayReason);
-}
-
 void UGameBuffComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) {
     Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
@@ -84,6 +63,27 @@ void UGameBuffComponent::TickComponent(float DeltaTime, ELevelTick TickType, FAc
             BroadcastTagStateAfterRemoval(ExpiredTag);
         }
     }
+}
+
+void UGameBuffComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const {
+    Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+
+    DOREPLIFETIME(UGameBuffComponent, ActiveBuffs);
+}
+
+void UGameBuffComponent::PostInitProperties() {
+    Super::PostInitProperties();
+    ActiveBuffs.OwnerComponent = this;
+}
+
+void UGameBuffComponent::EndPlay(const EEndPlayReason::Type EndPlayReason) {
+    if (UGameStatComponent* StatComponent = BoundStatComponent.Get()) {
+        ModifierBridge.ClearAll(*StatComponent);
+    } else {
+        ModifierBridge.Reset();
+    }
+
+    Super::EndPlay(EndPlayReason);
 }
 
 void UGameBuffComponent::BindStatComponent(UGameStatComponent* InStatComponent) {

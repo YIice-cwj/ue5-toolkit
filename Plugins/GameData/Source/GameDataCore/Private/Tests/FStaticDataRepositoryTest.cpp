@@ -14,7 +14,6 @@
 #include "Misc/Paths.h"
 
 #include "Tests/FStaticDataRepositoryTestRows.h"
-#include "Utils/DataTableLoaderUtils.h"
 
 namespace {
 
@@ -45,6 +44,27 @@ bool HandleTestRowB(FArchive& Ar, void* RowPtr) {
     Ar << Row.Values;
     Ar << Row.bFlag;
     return !Ar.IsError();
+}
+
+/**
+ * @brief 始终返回序列化失败的测试读写器
+ * @return 固定返回 false
+ */
+bool HandleFailingSerialize(FArchive&, void*) {
+    return false;
+}
+
+/**
+ * @brief 写入成功但在反序列化时失败的测试读写器
+ * @param Ar 归档对象
+ * @param RowPtr 行数据指针
+ * @return 保存返回 true，反序列化返回 false
+ */
+bool HandleFailingDeserialize(FArchive& Ar, void* RowPtr) {
+    if (Ar.IsSaving()) {
+        return HandleTestRowA(Ar, RowPtr);
+    }
+    return false;
 }
 
 /**
@@ -207,6 +227,14 @@ bool FRepositoryCorruptionTest::RunTest([[maybe_unused]] const FString& Paramete
     TestTrue(TEXT("截断错误码为 IoFailure 或 ChecksumMismatch"),
         Loaded.GetLastError() == EStaticDataBinError::IoFailure
         || Loaded.GetLastError() == EStaticDataBinError::ChecksumMismatch);
+
+    TestFalse(TEXT("缺失文件导入被拒"), Loaded.ImportFromFile(FPaths::ProjectSavedDir() / TEXT("NonExistent_StaticData.bin")));
+    TestEqual(TEXT("缺失文件错误码 IoFailure"), Loaded.GetLastError(), EStaticDataBinError::IoFailure);
+
+    AddExpectedErrorPlain(TEXT("写盘 I/O 错误"), EAutomationExpectedErrorFlags::Contains, 1);
+    TestFalse(TEXT("非法路径导出被拒"), Source.ExportToFile(TEXT("/NonExistentDirectory/Forbidden/Test.bin")));
+    TestEqual(TEXT("非法路径导出错误码 IoFailure"), Source.GetLastError(), EStaticDataBinError::IoFailure);
+
     CleanupTestBinFile();
     return true;
 }
@@ -250,6 +278,18 @@ bool FRepositorySemanticsTest::RunTest([[maybe_unused]] const FString& Parameter
     TMap<FName, FRepositoryTestRowA> UnregisteredOut;
     TestFalse(TEXT("未登记读写器的结构提取被拒"), Unregistered.ExtractTable(UnregisteredOut));
 
+    FStaticDataRepository FailSerializerRepo;
+    FailSerializerRepo.RegisterRowSerializer(FName(FRepositoryTestRowA::StaticStruct()->GetName()), &HandleFailingSerialize);
+    TestFalse(TEXT("序列化器失败导致写入被拒"), FailSerializerRepo.AddTable(Initial));
+    TestEqual(TEXT("序列化器失败错误码 IoFailure"), FailSerializerRepo.GetLastError(), EStaticDataBinError::IoFailure);
+
+    FStaticDataRepository FailDeserializeRepo;
+    FailDeserializeRepo.RegisterRowSerializer(FName(FRepositoryTestRowA::StaticStruct()->GetName()), &HandleFailingDeserialize);
+    TestTrue(TEXT("反序列化测试源表写入成功"), FailDeserializeRepo.AddTable(Initial));
+    TMap<FName, FRepositoryTestRowA> FailDeserializeOut;
+    TestFalse(TEXT("反序列化器失败导致提取被拒"), FailDeserializeRepo.ExtractTable(FailDeserializeOut));
+    TestEqual(TEXT("反序列化器失败错误码 RowDeserializeFailed"), FailDeserializeRepo.GetLastError(), EStaticDataBinError::RowDeserializeFailed);
+
     FStaticDataRepository Forward;
     RegisterTestRowSerializers(Forward);
     TMap<FName, FRepositoryTestRowA> ForwardRows;
@@ -286,54 +326,6 @@ bool FRepositorySemanticsTest::RunTest([[maybe_unused]] const FString& Parameter
     TestEqual(TEXT("Reset 后表数归零"), Repository.TableCount(), 0);
     TestEqual(TEXT("Reset 后错误码 None"), Repository.GetLastError(), EStaticDataBinError::None);
     TestTrue(TEXT("Reset 不影响已登记读写器"), Repository.AddTable(Initial));
-    return true;
-}
-
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-    FDataTableLoaderUtilsTest,
-    "Game.Data.DataTableLoaderUtils",
-    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
-)
-
-/**
- * @brief 验证 JSON 前置失败清空输出表且有效数据正常加载
- * @param Parameters 自动化测试传入参数字符串
- * @return 测试框架入口固定返回 true
- */
-bool FDataTableLoaderUtilsTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    const FString TestDirectory = FPaths::ProjectSavedDir() / TEXT("UnitTest_DataTableLoaderUtils");
-    IFileManager& FileManager = IFileManager::Get();
-    FileManager.DeleteDirectory(*TestDirectory, false, true);
-    TestTrue(TEXT("创建 JSON 测试目录成功"), FileManager.MakeDirectory(*TestDirectory, true));
-
-    TMap<FName, FRepositoryTestRowA> OutRows;
-    FRepositoryTestRowA OldRow;
-    OldRow.Score = 7;
-    OldRow.Weight = 1.0f;
-    OutRows.Add(FName(TEXT("Old")), OldRow);
-
-    const FString MissingPath = TestDirectory / TEXT("Missing.json");
-    TestFalse(TEXT("缺失文件加载失败"), FDataTableLoaderUtils::LoadTableFromJson(MissingPath, OutRows));
-    TestEqual(TEXT("缺失文件清空预填充输出"), OutRows.Num(), 0);
-
-    OldRow.Score = 8;
-    OutRows.Add(FName(TEXT("OldAgain")), OldRow);
-    const FString MalformedPath = TestDirectory / TEXT("Malformed.json");
-    TestTrue(TEXT("写入损坏 JSON 成功"), FFileHelper::SaveStringToFile(TEXT("{ not valid json"), *MalformedPath));
-    TestFalse(TEXT("损坏 JSON 加载失败"), FDataTableLoaderUtils::LoadTableFromJson(MalformedPath, OutRows));
-    TestEqual(TEXT("损坏 JSON 清空预填充输出"), OutRows.Num(), 0);
-
-    const FString ValidPath = TestDirectory / TEXT("Valid.json");
-    const FString ValidJson = TEXT("[{\"RowName\":\"Alpha\",\"Score\":42,\"Weight\":1.5}]");
-    TestTrue(TEXT("写入有效 JSON 成功"), FFileHelper::SaveStringToFile(ValidJson, *ValidPath));
-    TestTrue(TEXT("有效 JSON 加载成功"), FDataTableLoaderUtils::LoadTableFromJson(ValidPath, OutRows));
-    TestEqual(TEXT("有效 JSON 行数"), OutRows.Num(), 1);
-    const FRepositoryTestRowA* LoadedRow = OutRows.Find(FName(TEXT("Alpha")));
-    if (TestNotNull(TEXT("有效 JSON 行键正确"), LoadedRow)) {
-        TestEqual(TEXT("有效 JSON 行字段正确"), LoadedRow->Score, 42);
-    }
-
-    FileManager.DeleteDirectory(*TestDirectory, false, true);
     return true;
 }
 

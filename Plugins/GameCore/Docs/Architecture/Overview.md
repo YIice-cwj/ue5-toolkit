@@ -73,7 +73,7 @@ graph TD
 
 ### 3.2 节点池化与无每 Key 堆分配 (LRU Cache)
 传统 LRU 实现通常依赖 `std::list` 与 `std::unordered_map`，在缓存插入和更新时频繁进行小内存堆分配与指针解引用，极易导致内存碎片并引发 Cache Miss。
-`FVersionedCache` 的 LRU 实现采用 **连续节点池数组（`TArray<FLruNode>`）+ `int32` 索引双向链表**：
+`FVersionedCache` 的 LRU 实现采用 **连续节点池数组（`TArray<FLruIndexPool::FLruNode>`）+ `int32` 索引双向链表**：
 - 节点分配在预分配的连续内存块中，具备极佳的 CPU 缓存局部性；
 - 索引链操作代替裸指针，消灭指针悬垂和释放后使用（UAF）漏洞。
 

@@ -6,9 +6,30 @@
 #include "CoreMinimal.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/Crc.h"
+#include "Serialization/MemoryWriter.h"
 #include "StaticData/FStaticDataBinCodec.h"
 
 #if WITH_AUTOMATION_TESTS
+
+namespace {
+
+/**
+ * @brief 为测试负载追加标准 Magic 与末尾 CRC32 封装为完整文件字节流
+ * @param PayloadBytes 包含格式版本与表序列化数据的负载字节
+ * @return 组装完成的文件字节流
+ */
+TArray<uint8> BuildFileBytesFromPayload(const TArray<uint8>& PayloadBytes) {
+    constexpr uint32 StaticDataBinMagic = (uint32('T') << 24) | (uint32('S') << 16) | (uint32('D') << 8) | uint32('B');
+    TArray<uint8> FileBytes;
+    FileBytes.Reserve(sizeof(StaticDataBinMagic) + PayloadBytes.Num() + sizeof(uint32));
+    FileBytes.Append(reinterpret_cast<const uint8*>(&StaticDataBinMagic), sizeof(StaticDataBinMagic));
+    FileBytes.Append(PayloadBytes);
+    const uint32 PayloadCrc = FCrc::MemCrc32(PayloadBytes.GetData(), PayloadBytes.Num());
+    FileBytes.Append(reinterpret_cast<const uint8*>(&PayloadCrc), sizeof(PayloadCrc));
+    return FileBytes;
+}
+
+}  // namespace
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FStaticDataBinCodecTest,
@@ -93,8 +114,54 @@ bool FStaticDataBinCodecTest::RunTest([[maybe_unused]] const FString& Parameters
     FStaticDataBinCodec::Decode(TruncatedBytes, PreservedTables);
     TestEqual(TEXT("解码失败时输出集合保持不变"), PreservedTables.Num(), 1);
 
-    TestFalse(TEXT("错误码描述非空"),
-        FStaticDataBinCodec::DescribeError(EStaticDataBinError::ChecksumMismatch).IsEmpty());
+    TestEqual(TEXT("DescribeError: None"), FStaticDataBinCodec::DescribeError(EStaticDataBinError::None), FString(TEXT("无错误")));
+    TestEqual(TEXT("DescribeError: IoFailure"), FStaticDataBinCodec::DescribeError(EStaticDataBinError::IoFailure), FString(TEXT("文件读取失败或数据结构截断")));
+    TestEqual(TEXT("DescribeError: MagicMismatch"), FStaticDataBinCodec::DescribeError(EStaticDataBinError::MagicMismatch), FString(TEXT("Magic 魔数不匹配")));
+    TestEqual(TEXT("DescribeError: UnsupportedVersion"), FStaticDataBinCodec::DescribeError(EStaticDataBinError::UnsupportedVersion), FString(TEXT("格式版本高于当前支持版本")));
+    TestEqual(TEXT("DescribeError: ChecksumMismatch"), FStaticDataBinCodec::DescribeError(EStaticDataBinError::ChecksumMismatch), FString(TEXT("CRC32 校验和不匹配")));
+    TestEqual(TEXT("DescribeError: TableNotFound"), FStaticDataBinCodec::DescribeError(EStaticDataBinError::TableNotFound), FString(TEXT("未找到指定结构的数据表")));
+    TestEqual(TEXT("DescribeError: RowDeserializeFailed"), FStaticDataBinCodec::DescribeError(EStaticDataBinError::RowDeserializeFailed), FString(TEXT("行负载反序列化失败")));
+    TestEqual(TEXT("DescribeError: SerializerNotFound"), FStaticDataBinCodec::DescribeError(EStaticDataBinError::SerializerNotFound), FString(TEXT("未注册生成式负载读写器")));
+    TestEqual(TEXT("DescribeError: Unknown"), FStaticDataBinCodec::DescribeError(static_cast<EStaticDataBinError>(999)), FString(TEXT("未知错误")));
+
+    TArray<uint8> BadTableCountPayload;
+    FMemoryWriter BadTableWriter(BadTableCountPayload);
+    uint32 BadVersion = 2;
+    int32 NegativeTableCount = -1;
+    BadTableWriter << BadVersion;
+    BadTableWriter << NegativeTableCount;
+    TArray<uint8> BadTableBytes = BuildFileBytesFromPayload(BadTableCountPayload);
+    TestTrue(TEXT("负数表数返回 IO 错误码"),
+        FStaticDataBinCodec::Decode(BadTableBytes, DecodedTables) == EStaticDataBinError::IoFailure);
+
+    TArray<uint8> DupTablePayload;
+    FMemoryWriter DupTableWriter(DupTablePayload);
+    int32 TwoTablesCount = 2;
+    DupTableWriter << BadVersion;
+    DupTableWriter << TwoTablesCount;
+    FString SameTableName = TEXT("SameTable");
+    int32 ZeroRows = 0;
+    DupTableWriter << SameTableName << ZeroRows;
+    DupTableWriter << SameTableName << ZeroRows;
+    TArray<uint8> DupTableBytes = BuildFileBytesFromPayload(DupTablePayload);
+    TestTrue(TEXT("重复表名返回 IO 错误码"),
+        FStaticDataBinCodec::Decode(DupTableBytes, DecodedTables) == EStaticDataBinError::IoFailure);
+
+    TArray<uint8> DupRowPayload;
+    FMemoryWriter DupRowWriter(DupRowPayload);
+    int32 SingleTableCount = 1;
+    DupRowWriter << BadVersion;
+    DupRowWriter << SingleTableCount;
+    FString SingleTableName = TEXT("TableWithDupRows");
+    int32 TwoRowsCount = 2;
+    DupRowWriter << SingleTableName << TwoRowsCount;
+    FString SameRowKey = TEXT("SameRowKey");
+    int32 EmptyPayloadLen = 0;
+    DupRowWriter << SameRowKey << EmptyPayloadLen;
+    DupRowWriter << SameRowKey << EmptyPayloadLen;
+    TArray<uint8> DupRowBytes = BuildFileBytesFromPayload(DupRowPayload);
+    TestTrue(TEXT("同表重复行主键返回 IO 错误码"),
+        FStaticDataBinCodec::Decode(DupRowBytes, DecodedTables) == EStaticDataBinError::IoFailure);
 
     const FStaticDataContentDigest DigestA = FStaticDataBinCodec::ComputeDigest(SourceTables);
     TMap<FName, FStaticDataBinaryTable> ReorderedTables;

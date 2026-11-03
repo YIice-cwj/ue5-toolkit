@@ -48,7 +48,7 @@ class UWeaponManager : public UObject {
 public:
     void Init() {
         // 订阅武器全局暴击率倍率
-        CritRateSub = Game::Config::FConfigRegistry::Get().WatchConfig<float>(
+        CritRateSub = FConfigRegistry::Get().WatchConfig<float>(
             TEXT("Combat.GlobalCritRateMultiplier"),
             [this](float NewMultiplier) {
                 this->CachedCritMultiplier = NewMultiplier;

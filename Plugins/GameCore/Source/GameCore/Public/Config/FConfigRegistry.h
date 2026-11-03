@@ -35,12 +35,22 @@ public:
      */
     using FConfigVariant = Game::Config::FConfigVariant;
 
+private:
     /**
-     * @brief 获取全局单例
-     * @return 单例引用
+     * @brief 注册项数据结构（包含值变体、版本号及只读标记）
      */
-    static FConfigRegistry& Get();
+    struct FEntry {
+        FConfigVariant Value;
+        uint32 Version = 0;
+        bool bReadOnly = false;
+    };
 
+    /**
+     * @brief 单键订阅状态（懒创建，随注册表生命周期常驻）
+     */
+    class FWatcherState;
+
+public:
     /**
      * @brief 注册默认值（仅未注册时写入，已有值不覆盖）
      * @tparam T 支持类型
@@ -102,6 +112,12 @@ public:
      */
     [[nodiscard]] uint32 GetVersion() const noexcept;
 
+    /**
+     * @brief 获取全局单例
+     * @return 单例引用
+     */
+    static FConfigRegistry& Get();
+
 private:
     /**
      * @brief 注册默认值（仅未注册时写入）
@@ -136,7 +152,6 @@ private:
     template<typename T>
     FString DescribeMismatch(FName Name, const FConfigVariant& InValue) const;
 
-private:
     /**
      * @brief 取变体当前承载的类型名（诊断用）
      * @param InVariant 源变体
@@ -145,20 +160,6 @@ private:
     static FString VariantTypeName(const FConfigVariant& InVariant);
 
 private:
-    /**
-     * @brief 注册项数据结构（包含值变体、版本号及只读标记）
-     */
-    struct FEntry {
-        FConfigVariant Value;
-        uint32 Version = 0;
-        bool bReadOnly = false;
-    };
-
-    /**
-     * @brief 单键订阅状态（懒创建，随注册表生命周期常驻）
-     */
-    class FWatcherState;
-
     mutable FRWLock RwLock;
     TMap<FName, FEntry> Entries;
     TMap<FName, TSharedPtr<FWatcherState>> Watchers;

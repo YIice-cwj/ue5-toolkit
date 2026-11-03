@@ -64,11 +64,11 @@ graph TD
 #include "Config/FConfigRegistry.h"
 
 // 注册并获取配置
-Game::Config::FConfigRegistry::Get().SetConfig(TEXT("Player.WalkSpeed"), 600.0f);
-float WalkSpeed = Game::Config::FConfigRegistry::Get().GetConfig<float>(TEXT("Player.WalkSpeed"), 450.0f);
+FConfigRegistry::Get().SetConfig(TEXT("Player.WalkSpeed"), 600.0f);
+float WalkSpeed = FConfigRegistry::Get().GetConfig<float>(TEXT("Player.WalkSpeed"), 450.0f);
 
 // 响应式监听（RAII 订阅，离开作用域自动退订）
-const TSharedRef<FObserverSubscription> Sub = Game::Config::FConfigRegistry::Get().WatchConfig<float>(
+const TSharedRef<FObserverSubscription> Sub = FConfigRegistry::Get().WatchConfig<float>(
     TEXT("Player.WalkSpeed"),
     [](float NewSpeed) {
         UE_LOG(LogTemp, Log, TEXT("Player walk speed changed to: %.1f"), NewSpeed);

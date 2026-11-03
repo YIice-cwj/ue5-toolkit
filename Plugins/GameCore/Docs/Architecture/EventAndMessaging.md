@@ -25,7 +25,7 @@ graph TD
 | **当前值回放** | 否（事件无状态） | 否 | `SubscribeWithReplay` | `Subscribe` 内部即回放 |
 | **蓝图支持** | 否 (专为高性能 C++ 设计) | 是 (`UAsyncAction_ListenForGameplayMessage` 异步动作监听与 `HasListener` 判定) | 否 | 否 |
 | **并发保证** | Copy-on-Write 瞬态读锁快照，出锁派发 | 主线程派发 | 内部锁保护，出锁通知 | 键表读写锁保护，观察者出锁通知 |
-| **退订管理** | `FObserverSubscription` (RAII 守卫) | `FGameplayMessageListenerHandle` | `FObserverSubscription` (RAII 守卫) | `TSharedPtr<FObserverSubscription>` (RAII 守卫) |
+| **退订管理** | `FObserverSubscription` (RAII 守卫) | `FGameplayMessageListenerHandle` | `FObserverSubscription` (RAII 守卫) | `TSharedRef<FObserverSubscription>` (RAII 守卫) |
 
 ---
 

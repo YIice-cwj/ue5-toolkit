@@ -24,12 +24,12 @@ public:
     void BindToHeroASC(UAbilitySystemComponent* HeroASC) {
         if (!HeroASC) return;
 
-        // 1. 创建生命属性映射（传入 this 作为 Outer，使映射对象随 UI 存活而非随 Pawn 析构）
+        // 1. 创建生命属性映射（首参数传入 this 作为 Outer，使映射对象随 UI 存活而非随 Pawn 析构）
         HealthMapping = UGameplayAttributeValueMapping::CreateAttributeValueMapping(
+            this,
             HeroASC,
             UMyHeroAttributeSet::GetHealthAttribute(),
-            true,
-            this
+            true
         );
         // 原生 C++ 推荐直接通过 OnValueChangedNative 绑定 Lambda，消除 UFunction 反射开销
         HealthMapping->OnValueChangedNative.AddLambda([this](float NewValue, float OldValue) {
@@ -38,10 +38,10 @@ public:
 
         // 2. 创建最大生命属性映射
         MaxHealthMapping = UGameplayAttributeValueMapping::CreateAttributeValueMapping(
+            this,
             HeroASC,
             UMyHeroAttributeSet::GetMaxHealthAttribute(),
-            true,
-            this
+            true
         );
         MaxHealthMapping->OnValueChangedNative.AddLambda([this](float NewValue, float OldValue) {
             HandleMaxHealthChanged(NewValue, OldValue);

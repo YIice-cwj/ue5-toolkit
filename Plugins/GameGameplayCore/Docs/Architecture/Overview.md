@@ -77,11 +77,39 @@ graph LR
 - **属性修正器**：Buff / 装备 / 天赋通过 `AddStatModifier` 叠加加算、乘算、覆写，句柄精确回滚，基础值不被改写。
 - **按 Tag 订阅**：`SubscribeStatChanged` 只订阅关心的属性，并在订阅时仅向本次新订阅者回放当前值，UI 无初始空白且既有订阅者不会收到重复初始广播。
 - **权威与写入**：非权威端默认拒绝写入；`ModifyStat` / `SetStatCurrent` / `SetStatMax` 在 `Min/Max` 钳制后统一广播派生值变化。
-- **原生与动态双轨委托**：同时暴露蓝图可分配动态委托与 C++ 原生多播委托（`OnStatChangedNative` / `OnVitalStateChangedNative`），支持 C++ Lambda 与零 UObject 开销监听。
+- **原生与动态双轨委托**：同时暴露蓝图可分配动态委托与 C++ 原生多播委托（`OnStatChangedNative`；生命存活见 `UGameVitalComponent::OnVitalStateChangedNative`），支持 C++ Lambda 与零 UObject 开销监听。
 
 ---
 
-## 4. 通用 Buff 运行时 (`UGameBuffComponent`)
+## 4. 实体生命与存活状态管理组件 (`UGameVitalComponent`)
+
+依据单一职责原则（SRP），实体的主生命属性绑定、存活状态判定、网络致死同步与复活逻辑从通用数值组件中彻底解耦，由 `UGameVitalComponent` 独立承载：
+
+```mermaid
+graph LR
+    subgraph VitalComp["UGameVitalComponent 生命与状态机"]
+        Bind["关联绑定: BindStatComponent / BeginPlay 自动发现"]
+        Evaluate["生死评估: EvaluateVitalState (EffectiveCurrent > Min)"]
+        State["存活状态: bVitalAlive (Replicated)"]
+        Dedupe["客户端去重: bLastBroadcastedAlive 防双重广播"]
+        Delegates["双轨广播: OnVitalStateChanged / Native"]
+        Revive["复活逻辑: ReviveVital (百分比恢复生命)"]
+    end
+
+    StatComp["UGameStatComponent 通用属性组件"] -->|属性变动监听| Evaluate
+    Evaluate --> State
+    State --> Dedupe
+    Dedupe --> Delegates
+    Revive -->|SetStatCurrent| StatComp
+```
+
+- **单一职责解耦**：`UGameStatComponent` 专心负责多属性存储、修正器与网络复制；`UGameVitalComponent` 专心负责生死状态机与复活。
+- **自动挂接与解绑**：`BeginPlay` 自动搜寻宿主上的 `UGameStatComponent`，并在注销或销毁时清理委托句柄，杜绝悬挂回调。
+- **网络去重机制**：解决属性复制到达与布尔存活标志复制到达同帧发生的双重广播问题，保证客户端表现层幂等。
+
+---
+
+## 5. 通用 Buff 运行时 (`UGameBuffComponent`)
 
 框架层不定义任何具体 Buff，只提供与 GAS 无关的通用运行时：
 

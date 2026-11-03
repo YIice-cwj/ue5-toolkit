@@ -8,23 +8,39 @@
 
 ## 1. 数据结构
 
-### 1.1 `ESaveGameResult`
+### 1.1 `FGameSaveSlotMetadata` 与 `FGameSaveSegmentPayload`
 
 ```cpp
-UENUM(BlueprintType)
-enum class ESaveGameResult : uint8 {
-    Success,
-    IoError,
-    CorruptedData,
-    VersionMismatch,
-    SlotNotFound
+USTRUCT(BlueprintType)
+struct GAMEDATACORE_API FGameSaveSlotMetadata {
+    GENERATED_BODY()
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GameData|Save")
+    FString SlotName;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GameData|Save")
+    FDateTime SaveTimestamp;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GameData|Save")
+    int32 ArchiveVersion = 1;
+};
+
+USTRUCT(BlueprintType)
+struct GAMEDATACORE_API FGameSaveSegmentPayload {
+    GENERATED_BODY()
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GameData|Save")
+    int32 SegmentVersion = 0;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GameData|Save")
+    TArray<uint8> Bytes;
 };
 ```
 
 ### 1.2 `FGameSaveSegment`
 
 ```cpp
-struct FGameSaveSegment {
+struct GAMEDATACORE_API FGameSaveSegment {
     FName SegmentName;
     int32 SegmentVersion = 1;
     TFunction<void(FArchive&)> Save;
@@ -37,16 +53,24 @@ struct FGameSaveSegment {
 ```cpp
 UCLASS(BlueprintType)
 class GAMEDATACORE_API UGameSaveArchive : public USaveGame {
-    static constexpr int32 CURRENT_ARCHIVE_VERSION = 1;
+    GENERATED_BODY()
 
+public:
+    static constexpr int32 CurrentArchiveVersion = 1;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = "GameData|Save")
     FGameSaveSlotMetadata Metadata;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GameData|Save")
     TMap<FName, FGameSaveSegmentPayload> Segments;
 };
 ```
 
 ---
 
-## 2. 子系统接口
+## 2. 存档核心类接口
+
+### 2.1 门面调度器 `USaveGameSubsystem`
 
 ```cpp
 UCLASS(BlueprintType)
@@ -78,6 +102,45 @@ public:
 
     FOnAsyncSaveComplete OnSaveComplete;
     FOnAsyncLoadComplete OnLoadComplete;
+};
+```
+
+### 2.2 底层文件 I/O 与防断电保护 `FSaveGameFileIO`
+
+```cpp
+class GAMEDATACORE_API FSaveGameFileIO {
+public:
+    static FString GetSaveSlotFilePath(const FString& SlotName);
+    static FString GetSaveSlotTempFilePath(const FString& SlotName);
+
+    static bool IsSlotNameAllowed(const FString& SlotName, const TSet<FString>& AllowedSlotNames);
+    static bool DoesSaveSlotExist(const FString& SlotName);
+    static bool DeleteSaveSlot(const FString& SlotName);
+
+    static bool SerializeObject(USaveGame* SaveGameObject, TArray<uint8>& OutBytes);
+
+    static uint64 IssueSlotSaveGeneration(const FString& SlotName);
+    static void InvalidateSlotSaveGeneration(const FString& SlotName);
+
+    static bool WriteSlotBytes(const FString& SlotName, const TArray<uint8>& Bytes, uint64 SaveGeneration = 0);
+    static bool ReadSlotBytes(const FString& SlotName, TArray<uint8>& OutBytes);
+    static bool HasValidSaveGameHeader(const TArray<uint8>& Bytes, const FString& SlotName);
+};
+```
+
+### 2.3 分段注册与版本平滑迁移 `FSaveGameSegmentRegistry`
+
+```cpp
+class GAMEDATACORE_API FSaveGameSegmentRegistry {
+public:
+    void RegisterSegment(const FGameSaveSegment& Segment);
+    bool UnregisterSegment(FName SegmentName);
+    [[nodiscard]] bool HasSegment(FName SegmentName) const;
+
+    bool BuildArchive(const FString& SlotName, UGameSaveArchive& OutArchive) const;
+    bool ApplyArchive(const FString& SlotName, const UGameSaveArchive& Archive);
+    void ClearPreservedSegmentsForSlot(const FString& SlotName);
+    void Reset();
 };
 ```
 
@@ -122,4 +185,6 @@ public:
 **灾备恢复与断电保护机制**：
 1. **自动临时档抢救**：若正式档 `.sav` 损坏、截断或缺失，自动回退读取未完成移动的 `.sav.tmp` 副本。临时副本格式合法且成功换入正式档后才返回成功；换入失败则本次读取返回 `false`；
 2. **移动失败保留副本**：`WriteSlotBytes` 中若原子移动失败，不再直接删除临时文件，保留现场以便灾备抢救与排查；
-3. **分段保护**：在分段归档时，若外部注册系统或对象指针失效，主动调用 `Ar.SetError()` 终止写入，杜绝向磁盘写入空白数据导致旧存档被覆盖清空。
+3. **分段保护**：在分段归档时，若外部注册系统或对象指针失效，主动调用 `Ar.SetError()` 终止写入，杜绝向磁盘写入空白数据导致旧存档被覆盖清空；
+4. **高水位代次防穿透与 ABA 免疫**：`InvalidateSlotSaveGeneration` 将槽位已提交代次推至当前签发水位（`CurrentIssued`），`WriteSlotBytes` 采用 `*Committed >= SaveGeneration` 进行绝对拦截。即使旧写抢在新写提交前到达，也因代次不满足条件而被安全吸收，杜绝槽位被意外复活；
+5. **故障分支缓冲区安全重置**：`ReadSlotBytes` 在正式档损坏、临时档缺失、临时档损坏或原子重命名换入失败的所有异常分支，均显式调用 `OutBytes.Reset()`，杜绝截断或损坏数据在缓冲区残留。

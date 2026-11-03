@@ -259,6 +259,7 @@ void UGameStatComponent::SetStatMax(const FGameplayTag& InStatTag, float NewMax,
     } else {
         TargetCurrent = FMath::Min(OldValue, ClampedMax);
     }
+    TargetCurrent = FMath::Clamp(TargetCurrent, FoundStat->Min, ClampedMax);
 
     FoundStat->Max = ClampedMax;
     FoundStat->Current = TargetCurrent;

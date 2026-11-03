@@ -54,8 +54,8 @@ void UMyGameInstance::Init()
     Super::Init();
 
     // 注册全局默认配置
-    Game::Config::FConfigRegistry::Get().RegisterDefault(TEXT("Game.MaxPlayers"), 8);
-    Game::Config::FConfigRegistry::Get().RegisterDefault(TEXT("Game.Difficulty"), 1.5f);
+    FConfigRegistry::Get().RegisterConfig(TEXT("Game.MaxPlayers"), 8);
+    FConfigRegistry::Get().RegisterConfig(TEXT("Game.Difficulty"), 1.5f);
 }
 ```
 

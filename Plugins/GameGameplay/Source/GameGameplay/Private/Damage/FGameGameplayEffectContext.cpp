@@ -153,7 +153,7 @@ bool FGameGameplayEffectContext::NetSerialize(FArchive& Ar, class UPackageMap* M
     SerializeChannelArray(Ar, Map, bOutSuccess, DamageResult.ActualChannels, TEXT("通道明细"));
     SerializeChannelArray(Ar, Map, bOutSuccess, DamageResult.DynamicValues, TEXT("动态数值"));
 
-    bOutSuccess = !Ar.IsError();
+    bOutSuccess = bOutSuccess && !Ar.IsError();
     return bOutSuccess;
 }
 

@@ -16,12 +16,12 @@ public class GameGameplay : ModuleRules {
             "GameplayTags",
             "GameCore",
             "GameGameplayCore",
-            "GameFeedback",
         });
 
         PrivateDependencyModuleNames.AddRange(new string[] {
             "GameplayTasks",
             "GameLogging",
+            "GameFeedback",
         });
 
         PublicIncludePaths.AddRange(new string[] {

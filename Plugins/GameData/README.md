@@ -40,12 +40,14 @@ flowchart LR
 
 | 模块 / 机制 | 关键技术亮点 | 核心文件 / 类 |
 | :--- | :--- | :--- |
-| 生成式行序列化仓库 | 纯 C++ 可独立实例化，`Serialize{Struct}` 逐行写入，CRC32 整包校验 | `GameDataCore/.../FStaticDataRepository.h` |
+| 生成式行序列化仓库 | 纯 C++ 可独立实例化，免反射，`Serialize{Struct}` 逐行调度，数据表解耦 | `GameDataCore/.../FStaticDataRepository.h` |
+| 二进制编解码与摘要 | `.bin` 格式编解码、全包 CRC32 防破坏校验、跨平台 UTF-8 SHA-1 顺序无关摘要 | `GameDataCore/.../FStaticDataBinCodec.h` |
 | 静态数据子系统 | 冷启动同步确定性加载、热重载后台预热、快照原子发布、数据版本观察者 | 生成于 `Generated/Data/StaticData/UStaticDataSubsystem.h` |
 | 不可变快照 | 每次提交生成全新 `FStaticDataSnapshot`，读者持有期间内容绝对稳定 | `Generated/Data/StaticData/FStaticDataSnapshot.h` |
 | 域查询与聚合缓存 | 每表生成 `F{Stem}Query::FindByKey`（返回持快照所有权的行共享指针）、`F{Domain}StaticDataInterface` 聚合缓存 | `Generated/Data/StaticData/{Domain}/` |
 | 目录监听热更 | 复用 `GameCore` 的 `FDirectoryChangeWatcher`，多会话引用计数保护 | `Generated/Data/StaticData/FStaticDataHotReloadWatcher.h` |
-| 通用分段存档 | `FGameSaveSegment` 段注册、段版本迁移、SlotName 白名单、`.sav.tmp` 原子替换、损坏档前置校验 | `GameDataCore/.../USaveGameSubsystem.h`<br>`GameDataCore/.../GameSaveArchive.h` |
+| 通用分段存档 | `FGameSaveSegment` 段注册、段版本迁移、未知段保留回写、SlotName 白名单 | `GameDataCore/.../USaveGameSubsystem.h`<br>`GameDataCore/.../FSaveGameSegmentRegistry.h` |
+| 原子 I/O 与并发写保护 | `.sav.tmp` 原子替换、断电抢救恢复、高水位单调代次（严格防旧写穿透与 ABA 复活） | `GameDataCore/.../FSaveGameFileIO.h`<br>`GameDataCore/.../GameSaveArchive.h` |
 | 任意存档逃生口 | `SaveObjectToSlot` / `LoadObjectFromSlot` 可存取任意 `USaveGame` | `GameDataCore/.../USaveGameSubsystem.h` |
 
 ---
@@ -167,10 +169,14 @@ Plugins/GameData/
 │   ├── GameDataCore/                 # 通用模块（GAMEDATACORE_API）
 │   │   ├── Public/
 │   │   │   ├── StaticData/FStaticDataRepository.h      # 行负载容器与序列化器注册
-│   │   │   ├── StaticData/FStaticDataBinCodec.h        # .bin 编解码 / CRC32 / 摘要
-│   │   │   ├── Save/GameSaveArchive.h
-│   │   │   ├── Save/USaveGameSubsystem.h
-│   │   │   └── Utils/DataTableLoaderUtils.h
+│   │   │   ├── StaticData/FStaticDataBinCodec.h        # .bin 编解码 / CRC32 / UTF-8 摘要
+│   │   │   ├── StaticData/FStaticDataRepositoryTypes.h # 错误码与二进制数据结构
+│   │   │   ├── Save/GameSaveTypes.h                    # 存档槽位元数据与分段契约
+│   │   │   ├── Save/GameSaveArchive.h                  # 通用分段归档对象
+│   │   │   ├── Save/FSaveGameSegmentRegistry.h         # 分段注册与版本平滑迁移
+│   │   │   ├── Save/FSaveGameFileIO.h                  # 原子文件 I/O 与高水位代次保护
+│   │   │   ├── Save/USaveGameSubsystem.h               # 通用存档门面与异步调度
+│   │   │   └── Utils/DataTableLoaderUtils.h           # JSON 反序列化辅助工具
 │   │   └── Private/
 │   └── GameData/                     # 生成宿主（GAMEDATA_API）
 │       ├── Public/Generated/         # 生成声明

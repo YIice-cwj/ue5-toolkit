@@ -28,6 +28,8 @@ flowchart TD
 ## 核心特性
 
 - **模块级日志自动注册**：通过 RAII 与宏体系（`GAME_REGISTER_MODULE_LOG`），模块可在其主源文件中一行代码完成专属日志分类声明与全局登记。
+- **注册幂等与全局缓存保护**：同名模块重复绑定相同分类指针时自动短路，避免无谓推进全局 Epoch 造成全应用局部原子缓存击穿与重新解析。
+- **单文件单类与接口解耦 (R-ARCH-CLASS)**：注册中心 `FGameLogRegistry`、RAII 守卫 `FModuleLogRegistrar` 与宏通道 `GameLogCategories` 物理完全解耦，声明与实现一对一严格对齐。
 - **SIOF 免疫单例架构（Meyers' Singleton）**：内部存储结构采用局部静态单例按需延迟初始化，彻底根除跨编译单元静态初始化顺序惨案（SIOF），外部全局静态对象早期日志与注册零死锁风险。
 - **双轨分发架构（Dual-Track Dispatch）**：
   - **编译期优先（Compile-Time Track）**：显式指定 `GAME_CURRENT_MODULE_LOG` 时，直接内联为原生 `UE_LOG`，零查找开销。
@@ -97,15 +99,19 @@ Plugins/GameLogging/
 │       ├── Public/
 │       │   ├── GameLogging.h
 │       │   └── Logging/
-│       │       └── GameLogCategories.h   # 核心宏与注册中心声明
+│       │       ├── FGameLogRegistry.h        # 全局日志注册中心声明
+│       │       ├── FModuleLogRegistrar.h     # RAII 模块日志自动注册守卫声明
+│       │       └── GameLogCategories.h       # 核心日志宏通道与 LogGame 声明
 │       ├── Private/
 │       │   ├── GameLogging.cpp
 │       │   ├── Logging/
-│       │   │   └── GameLogCategories.cpp # 注册表与 Meyers' 单例实现
+│       │   │   ├── FGameLogRegistry.cpp      # 注册表与 Meyers' 单例实现
+│       │   │   ├── FModuleLogRegistrar.cpp   # RAII 自动注册守卫实现
+│       │   │   └── GameLogCategories.cpp     # LogGame 分类定义
 │       │   └── Tests/
 │       │       ├── GameLogTestCaptureDevice.h # 线程安全日志捕获器
-│       │       ├── GameLogRegistryTest.cpp    # 注册表与 RAII 测试
-│       │       └── GameLogMacrosTest.cpp      # 并发与动态分发测试
+│       │       ├── GameLogRegistryTest.cpp    # 注册表、RAII 与动态容量测试
+│       │       └── GameLogMacrosTest.cpp      # 并发、动态分发自愈与限频测试
 │       └── GameLogging.Build.cs
 ├── Docs/                                 # 详细文档库
 │   ├── Architecture/                     # 架构设计

@@ -45,19 +45,6 @@ public:
     std::atomic<int32> Epoch{0};
 };
 
-/**
- * @brief 拷贝 ANSI 模块名（含结尾符），调用方临时缓冲区亦可安全注册
- * @param InName 源名称
- * @return 含结尾符的模块名字符数组
- */
-[[nodiscard]] static TArray<ANSICHAR> MakeAnsiName(const char* InName) {
-    const int32 Length = FCStringAnsi::Strlen(InName);
-    TArray<ANSICHAR> Result;
-    Result.SetNumUninitialized(Length + 1);
-    FCStringAnsi::Strncpy(Result.GetData(), InName, Length + 1);
-    return Result;
-}
-
 } // namespace
 
 void FGameLogRegistry::RegisterCategory(const char* InModuleName, FLogCategoryBase* InCategory) {
@@ -68,6 +55,9 @@ void FGameLogRegistry::RegisterCategory(const char* InModuleName, FLogCategoryBa
     FRWScopeLock WriteLock(Storage.Lock, SLT_Write);
     for (FModuleLogEntry& Entry : Storage.Entries) {
         if (Entry.Matches(InModuleName)) {
+            if (Entry.Category == InCategory) {
+                return;
+            }
             Entry.Category = InCategory;
             Storage.Epoch.fetch_add(1, std::memory_order_release);
             return;
@@ -116,12 +106,23 @@ int32 FGameLogRegistry::GetEpoch() noexcept {
     return FRegistryStorage::Get().Epoch.load(std::memory_order_acquire);
 }
 
+TArray<ANSICHAR> FGameLogRegistry::MakeAnsiName(const char* InName) {
+    const int32 Length = FCStringAnsi::Strlen(InName);
+    TArray<ANSICHAR> Result;
+    Result.SetNumUninitialized(Length + 1);
+    FCStringAnsi::Strncpy(Result.GetData(), InName, Length + 1);
+    return Result;
+}
+
 FLogCategoryBase* FGameLogRegistry::RegisterScopedCategory(const char* InModuleName, FLogCategoryBase* InCategory) {
     FRegistryStorage& Storage = FRegistryStorage::Get();
     FRWScopeLock WriteLock(Storage.Lock, SLT_Write);
     for (FModuleLogEntry& Entry : Storage.Entries) {
         if (Entry.Matches(InModuleName)) {
             FLogCategoryBase* PreviousCategory = Entry.Category;
+            if (Entry.Category == InCategory) {
+                return PreviousCategory;
+            }
             Entry.Category = InCategory;
             Storage.Epoch.fetch_add(1, std::memory_order_release);
             return PreviousCategory;
@@ -145,6 +146,9 @@ void FGameLogRegistry::UnregisterScopedCategory(const char* InModuleName, FLogCa
                 return;
             }
             if (InPreviousCategory != nullptr) {
+                if (Entry.Category == InPreviousCategory) {
+                    return;
+                }
                 Entry.Category = InPreviousCategory;
             } else {
                 Storage.Entries.RemoveAtSwap(Index);

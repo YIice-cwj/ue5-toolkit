@@ -5,6 +5,7 @@
 #include "Component/GameFeedbackNetworkDispatcherComponent.h"
 #include "Component/GameFeedbackPlayerComponent.h"
 #include "Component/GameFeedbackWorldComponent.h"
+#include "Network/GameFeedbackReceiverComponent.h"
 #include "Engine/World.h"
 #include "GameFramework/GameStateBase.h"
 #include "GameFramework/PlayerController.h"
@@ -84,30 +85,35 @@ void UGameFeedbackRuntimeSubsystem::Deinitialize()
 }
 
 /**
- * @brief 确保 GameState 与本地 PlayerController 上的表现组件存在
+ * @brief 确保 GameState、PlayerController 及网络组件按 NetMode 正确装配
  * @param World 当前世界
  */
 void UGameFeedbackRuntimeSubsystem::EnsureComponents(UWorld& World)
 {
     const ENetMode NetMode = World.GetNetMode();
     const bool bIsDedicatedServer = NetMode == NM_DedicatedServer;
+    const bool bIsServer = NetMode == NM_ListenServer || NetMode == NM_DedicatedServer;
 
     if (AGameStateBase* GameState = World.GetGameState()) {
         if (!bIsDedicatedServer) {
             EnsureComponent<UGameFeedbackWorldComponent>(GameState);
         }
-        if (NetMode == NM_ListenServer || NetMode == NM_DedicatedServer) {
+        if (bIsServer) {
             EnsureComponent<UGameFeedbackNetworkDispatcherComponent>(GameState);
         }
     }
 
-    if (bIsDedicatedServer) {
-        return;
-    }
-
     for (FConstPlayerControllerIterator Iterator = World.GetPlayerControllerIterator(); Iterator; ++Iterator) {
         APlayerController* PC = Iterator->Get();
-        if (PC && PC->IsLocalController()) {
+        if (!PC) {
+            continue;
+        }
+
+        if (bIsServer) {
+            EnsureComponent<UGameFeedbackReceiverComponent>(PC);
+        }
+
+        if (!bIsDedicatedServer && PC->IsLocalController()) {
             EnsureComponent<UGameFeedbackPlayerComponent>(PC);
         }
     }

@@ -27,12 +27,6 @@ public:
     FGameDamageChannelRegistry& operator=(FGameDamageChannelRegistry&&) = delete;
 
     /**
-     * @brief 获取全局注册表
-     * @return 注册表实例
-     */
-    static FGameDamageChannelRegistry& Get();
-
-    /**
      * @brief 注册（或覆盖）一条通道绑定
      * @param InExecutionClass 归属的 ExecCalc 类
      * @param InBinding 通道绑定
@@ -73,9 +67,16 @@ public:
      */
     void Reset();
 
+    /**
+     * @brief 获取全局注册表单例
+     * @return 注册表实例
+     */
+    static FGameDamageChannelRegistry& Get();
+
 private:
     FGameDamageChannelRegistry() = default;
 
     mutable FRWLock RWLock;
     TMap<TObjectKey<const UClass>, TArray<FDamageChannelBinding>> BindingsByClass;
+    mutable TMap<TObjectKey<const UClass>, TArray<FDamageChannelBinding>> CachedFlattenedBindings;
 };

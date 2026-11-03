@@ -23,7 +23,7 @@ enum class EGameAbilityTriggerSource : uint8 {
 ## 2. `UGameGameplayAbility` 类接口
 
 ```cpp
-UCLASS(Abstract)
+UCLASS()
 class GAMEGAMEPLAY_API UGameGameplayAbility : public UGameplayAbility {
     GENERATED_BODY()
 

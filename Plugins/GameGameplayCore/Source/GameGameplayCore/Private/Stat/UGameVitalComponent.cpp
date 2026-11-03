@@ -30,18 +30,22 @@ void UGameVitalComponent::BeginPlay() {
 }
 
 void UGameVitalComponent::EndPlay(const EEndPlayReason::Type EndPlayReason) {
-    if (BoundStatComponent.IsValid() && StatChangedSubscriptionHandle.IsValid()) {
-        BoundStatComponent->UnsubscribeStatChanged(PrimaryVitalTag, StatChangedSubscriptionHandle);
-        StatChangedSubscriptionHandle.Reset();
+    if (UGameStatComponent* StatComp = ResolveStatComponent()) {
+        if (StatChangedSubscriptionHandle.IsValid()) {
+            StatComp->UnsubscribeStatChanged(PrimaryVitalTag, StatChangedSubscriptionHandle);
+            StatChangedSubscriptionHandle.Reset();
+        }
     }
 
     Super::EndPlay(EndPlayReason);
 }
 
 void UGameVitalComponent::BindStatComponent(UGameStatComponent* InStatComponent) {
-    if (BoundStatComponent.IsValid() && StatChangedSubscriptionHandle.IsValid()) {
-        BoundStatComponent->UnsubscribeStatChanged(PrimaryVitalTag, StatChangedSubscriptionHandle);
-        StatChangedSubscriptionHandle.Reset();
+    if (UGameStatComponent* OldStatComp = ResolveStatComponent()) {
+        if (StatChangedSubscriptionHandle.IsValid()) {
+            OldStatComp->UnsubscribeStatChanged(PrimaryVitalTag, StatChangedSubscriptionHandle);
+            StatChangedSubscriptionHandle.Reset();
+        }
     }
 
     BoundStatComponent = InStatComponent;
@@ -65,14 +69,17 @@ void UGameVitalComponent::SetPrimaryVitalTag(const FGameplayTag& InTag) {
         return;
     }
 
-    if (BoundStatComponent.IsValid() && StatChangedSubscriptionHandle.IsValid()) {
-        BoundStatComponent->UnsubscribeStatChanged(PrimaryVitalTag, StatChangedSubscriptionHandle);
-        StatChangedSubscriptionHandle.Reset();
+    if (UGameStatComponent* OldStatComp = ResolveStatComponent()) {
+        if (StatChangedSubscriptionHandle.IsValid()) {
+            OldStatComp->UnsubscribeStatChanged(PrimaryVitalTag, StatChangedSubscriptionHandle);
+            StatChangedSubscriptionHandle.Reset();
+        }
     }
 
     PrimaryVitalTag = InTag;
 
     if (UGameStatComponent* StatComp = ResolveStatComponent()) {
+        BoundStatComponent = StatComp;
         if (InTag.IsValid()) {
             StatChangedSubscriptionHandle = StatComp->SubscribeStatChanged(
                 this,
@@ -140,7 +147,9 @@ void UGameVitalComponent::EvaluateVitalState() {
 }
 
 void UGameVitalComponent::OnRep_VitalAlive() {
-    BroadcastVitalStateChanged(bVitalAlive);
+    if (bLastBroadcastedAlive != bVitalAlive) {
+        BroadcastVitalStateChanged(bVitalAlive);
+    }
 }
 
 void UGameVitalComponent::HandleBoundStatChanged(const FGameplayTag& StatTag, float OldValue, float NewValue, float MaxValue) {
@@ -148,6 +157,7 @@ void UGameVitalComponent::HandleBoundStatChanged(const FGameplayTag& StatTag, fl
 }
 
 void UGameVitalComponent::BroadcastVitalStateChanged(bool bNewAlive) {
+    bLastBroadcastedAlive = bNewAlive;
     OnVitalStateChanged.Broadcast(bNewAlive, PrimaryVitalTag);
     OnVitalStateChangedNative.Broadcast(bNewAlive, PrimaryVitalTag);
 }

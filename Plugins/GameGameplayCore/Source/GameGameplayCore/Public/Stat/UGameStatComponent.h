@@ -30,6 +30,9 @@ UCLASS(ClassGroup = (Game), meta = (BlueprintSpawnableComponent))
 class GAMEGAMEPLAYCORE_API UGameStatComponent : public UActorComponent {
     GENERATED_BODY()
 
+    friend class FGameStatReplicationTest;
+    friend class FGameStatDefensiveBranchesTest;
+
 public:
     /**
      * @brief 构造函数：关闭组件 Tick、开启组件网络复制
@@ -295,16 +298,36 @@ private:
     bool IsAuthoritativeWriteAllowed() const;
 
 private:
+    /**
+     * @brief 是否允许非网络权威端写入属性（默认 false，开启后允许客户端预测写入）
+     */
     UPROPERTY(EditDefaultsOnly, Category = "Game|Stat")
     bool bAllowNonAuthoritativeWrites = false;
 
+    /**
+     * @brief 网络复制的属性条目数组
+     */
     UPROPERTY(ReplicatedUsing = OnRep_ReplicatedStats)
     TArray<FGameStatEntry> ReplicatedStats;
 
+    /**
+     * @brief 属性标签到复制数组下标的快速映射表
+     */
     TMap<FGameplayTag, int32> StatIndex;
 
+    /**
+     * @brief 属性修正器聚合容器
+     */
     FGameStatModifierContainer ModifierContainer;
+
+    /**
+     * @brief 按属性标签分发的多播订阅中心
+     */
     FGameStatSubscriptionHub SubscriptionHub;
+
+    /**
+     * @brief 客户端网络复制到达时的有效数值差分计算器
+     */
     FGameStatAcknowledgedDiff AcknowledgedDiff;
 
 public:

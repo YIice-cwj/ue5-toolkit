@@ -21,6 +21,9 @@ class GAMEFEEDBACK_API UGameFeedbackSettings : public UDeveloperSettings {
     GENERATED_BODY()
 
 public:
+    /**
+     * @brief 默认构造全局配置
+     */
     UGameFeedbackSettings() = default;
 
     /**

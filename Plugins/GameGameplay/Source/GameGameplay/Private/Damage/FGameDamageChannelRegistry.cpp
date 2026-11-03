@@ -8,11 +8,6 @@
 #include "Misc/ScopeRWLock.h"
 #include "Logging/GameLogCategories.h"
 
-FGameDamageChannelRegistry& FGameDamageChannelRegistry::Get() {
-    static FGameDamageChannelRegistry Registry;
-    return Registry;
-}
-
 void FGameDamageChannelRegistry::Register(const UClass* InExecutionClass, const FDamageChannelBinding& InBinding) {
     if (InExecutionClass == nullptr || !InBinding.ChannelTag.IsValid() || !InBinding.TargetAttribute.IsValid()) {
         GAME_LOG(Warning, TEXT("【伤害通道注册表】注册失败：类、通道标签或目标属性无效。"));
@@ -20,6 +15,7 @@ void FGameDamageChannelRegistry::Register(const UClass* InExecutionClass, const 
     }
 
     FRWScopeLock Lock(RWLock, SLT_Write);
+    CachedFlattenedBindings.Reset();
     TArray<FDamageChannelBinding>& Bindings = BindingsByClass.FindOrAdd(TObjectKey<const UClass>(InExecutionClass));
     for (FDamageChannelBinding& Existing : Bindings) {
         if (Existing.ChannelTag.MatchesTagExact(InBinding.ChannelTag)) {
@@ -40,6 +36,7 @@ bool FGameDamageChannelRegistry::Unregister(const UClass* InExecutionClass, cons
     }
 
     FRWScopeLock Lock(RWLock, SLT_Write);
+    CachedFlattenedBindings.Reset();
     const TObjectKey<const UClass> Key(InExecutionClass);
     TArray<FDamageChannelBinding>* Bindings = BindingsByClass.Find(Key);
     if (Bindings == nullptr) {
@@ -65,6 +62,7 @@ int32 FGameDamageChannelRegistry::UnregisterAll(const UClass* InExecutionClass) 
     }
 
     FRWScopeLock Lock(RWLock, SLT_Write);
+    CachedFlattenedBindings.Reset();
     TArray<FDamageChannelBinding> Removed;
     if (!BindingsByClass.RemoveAndCopyValue(TObjectKey<const UClass>(InExecutionClass), Removed)) {
         return 0;
@@ -82,7 +80,22 @@ void FGameDamageChannelRegistry::GetBindings(const UClass* InExecutionClass, TAr
         return;
     }
 
-    FRWScopeLock Lock(RWLock, SLT_ReadOnly);
+    const TObjectKey<const UClass> Key(InExecutionClass);
+    {
+        FRWScopeLock ReadLock(RWLock, SLT_ReadOnly);
+        if (const TArray<FDamageChannelBinding>* Cached = CachedFlattenedBindings.Find(Key)) {
+            OutBindings = *Cached;
+            return;
+        }
+    }
+
+    FRWScopeLock WriteLock(RWLock, SLT_Write);
+    if (const TArray<FDamageChannelBinding>* Cached = CachedFlattenedBindings.Find(Key)) {
+        OutBindings = *Cached;
+        return;
+    }
+
+    TArray<FDamageChannelBinding>& NewCached = CachedFlattenedBindings.Add(Key);
     TSet<FGameplayTag> AddedTags;
     for (const UClass* CurrentClass = InExecutionClass; CurrentClass != nullptr; CurrentClass = CurrentClass->GetSuperClass()) {
         const TArray<FDamageChannelBinding>* Bindings = BindingsByClass.Find(TObjectKey<const UClass>(CurrentClass));
@@ -92,11 +105,12 @@ void FGameDamageChannelRegistry::GetBindings(const UClass* InExecutionClass, TAr
 
         for (const FDamageChannelBinding& Binding : *Bindings) {
             if (!AddedTags.Contains(Binding.ChannelTag)) {
-                OutBindings.Add(Binding);
+                NewCached.Add(Binding);
                 AddedTags.Add(Binding.ChannelTag);
             }
         }
     }
+    OutBindings = NewCached;
 }
 
 int32 FGameDamageChannelRegistry::Num(const UClass* InExecutionClass) const {
@@ -111,5 +125,11 @@ int32 FGameDamageChannelRegistry::Num(const UClass* InExecutionClass) const {
 
 void FGameDamageChannelRegistry::Reset() {
     FRWScopeLock Lock(RWLock, SLT_Write);
+    CachedFlattenedBindings.Reset();
     BindingsByClass.Reset();
+}
+
+FGameDamageChannelRegistry& FGameDamageChannelRegistry::Get() {
+    static FGameDamageChannelRegistry Registry;
+    return Registry;
 }

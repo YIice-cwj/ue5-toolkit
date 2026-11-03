@@ -11,7 +11,9 @@
 
 namespace {
 
-/** 测试用事件载荷 */
+/**
+ * @brief 测试用事件载荷结构体
+ */
 struct FUnitTestEventPayload {
     int32 Value = 0;
 };
@@ -105,6 +107,32 @@ bool FGameListenerHubTypeFingerprintTest::RunTest(const FString& Parameters) {
 
     StructSubscription->Reset();
     ScalarSubscription->Reset();
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameListenerHubErrorBranchesTest, "Game.Core.Listener.ErrorBranches",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+/**
+ * @brief 验证空回调过滤、已存在事件以不同类型订阅被拒绝及未注册事件广播忽略
+ * @param Parameters 自动化框架参数（未使用）
+ * @return 断言全部通过返回 true
+ */
+bool FGameListenerHubErrorBranchesTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    FListenerHub& Hub = FListenerHub::Get();
+    static const FName EventName(TEXT("UnitTest.Listener.ErrorBranches"));
+
+    const TSharedRef<FObserverSubscription> NullSub = Hub.Subscribe<int32>(EventName, nullptr);
+    TestFalse(TEXT("空回调订阅返回无效句柄"), NullSub->IsActive());
+
+    const TSharedRef<FObserverSubscription> ValidSub = Hub.Subscribe<int32>(EventName, [](const int32&) {});
+    TestTrue(TEXT("有效回调订阅返回有效句柄"), ValidSub->IsActive());
+
+    AddExpectedErrorPlain(TEXT("已注册为其他载荷类型"), EAutomationExpectedErrorFlags::Contains, 1);
+    const TSharedRef<FObserverSubscription> MismatchedSub = Hub.Subscribe<FUnitTestEventPayload>(EventName, [](const FUnitTestEventPayload&) {});
+    TestFalse(TEXT("同名事件以不同载荷类型再次订阅被拒绝并返回无效句柄"), MismatchedSub->IsActive());
+
+    ValidSub->Reset();
     return true;
 }
 

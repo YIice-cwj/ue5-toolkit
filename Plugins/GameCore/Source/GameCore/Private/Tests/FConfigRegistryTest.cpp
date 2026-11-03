@@ -5,6 +5,7 @@
 
 #include "Config/FConfigRegistry.h"
 #include "Config/GameCompileSwitches.h"
+#include "Registration/FGameCoreRegistration.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -274,6 +275,52 @@ bool FGameConfigNotificationOrderTest::RunTest([[maybe_unused]] const FString& P
 
     FPlatformProcess::ReturnSynchEventToPool(FirstEntered);
     FPlatformProcess::ReturnSynchEventToPool(ReleaseFirst);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameConfigIdempotencyAndVersionTest, "Game.Core.Config.IdempotencyAndVersion",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+/**
+ * @brief 验证注册默认值幂等性、全局版本号递增及未注册只读键写入拦截
+ * @param Parameters 自动化框架参数（未使用）
+ * @return 断言全部通过返回 true
+ */
+bool FGameConfigIdempotencyAndVersionTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    FConfigRegistry& Registry = FConfigRegistry::Get();
+    const FName Key(TEXT("UnitTest.Config.IdempotentKey"));
+
+    const uint32 InitialVersion = Registry.GetVersion();
+
+    Registry.RegisterConfig<int32>(Key, 100);
+    TestEqual(TEXT("首次注册写入默认值"), Registry.GetConfig<int32>(Key, 0), 100);
+    TestTrue(TEXT("首次注册导致版本号递增"), Registry.GetVersion() > InitialVersion);
+
+    const uint32 VersionAfterFirstRegister = Registry.GetVersion();
+    Registry.RegisterConfig<int32>(Key, 999);
+    TestEqual(TEXT("重复注册默认值不覆盖已有值"), Registry.GetConfig<int32>(Key, 0), 100);
+    TestEqual(TEXT("重复注册未变更数据时不递增版本号"), Registry.GetVersion(), VersionAfterFirstRegister);
+
+    const uint32 VersionBeforeSet = Registry.GetVersion();
+    Registry.SetConfig<int32>(Key, 200);
+    TestEqual(TEXT("写入新值成功"), Registry.GetConfig<int32>(Key, 0), 200);
+    TestEqual(TEXT("覆盖写入后版本号自增"), Registry.GetVersion(), VersionBeforeSet + 1);
+
+    const FName UnregisteredReadOnlyKey(TEXT("Env.UnitTest.NeverRegisteredBefore"));
+    ESetConfigResult RejectResult = ESetConfigResult::Applied;
+    {
+        FEnsureScope Scope;
+        RejectResult = Registry.SetConfig<bool>(UnregisteredReadOnlyKey, true);
+    }
+    TestTrue(TEXT("未预先注册的 Env.* 只读键写入直接被拒绝"), RejectResult == ESetConfigResult::RejectedReadOnly);
+
+    FGameCoreRegistration::RegisterAll(nullptr);
+    FGameCoreRegistration::UnregisterAll(nullptr);
+
+    const FName DomainKey(TEXT("UnitTestRegDomain"));
+    FGameCoreRegistration::RegisterCacheDomain(DomainKey);
+    TestTrue(TEXT("注册域缓存策略默认键已生效"), Registry.IsRegistered(FName(TEXT("Cache.UnitTestRegDomain.Strategy"))));
+
     return true;
 }
 

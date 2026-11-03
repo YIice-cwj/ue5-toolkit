@@ -81,12 +81,12 @@ if constexpr (::Game::Config::bEnableLog)
 ### 3.3 局部原子指针与纪元轮转缓存 (Epoch-safe Cache)
 为了避免每次 `GAME_LOG` 调用都去查哈希表或加全局读写锁，宏在每个调用点（即每一行宏展开处）声明了两个 `static std::atomic`：
 ```cpp
-static std::atomic<::FLogCategoryBase*> UE_PRIVATE_CachedLogCat{nullptr};
-static std::atomic<int32> UE_PRIVATE_CachedEpoch{-1};
+static std::atomic<::FLogCategoryBase*> UEPrivateCachedLogCat{nullptr};
+static std::atomic<int32> UEPrivateCachedEpoch{-1};
 ```
 - **热路径（Fast Path）**：局部指针非空且纪元未变时无需加锁；全局 Epoch 与缓存 Epoch 各执行一次 `memory_order_acquire` 读，再执行一次分类指针 `memory_order_relaxed` 读。
 - **纪元失效（Epoch Invalidation）**：若在某个模块静态初始化期间调用了日志，此时该模块的专属分类尚未完成注册，该调用点会暂时获得 `GetFallbackCategory()`（即 `LogGame`）。
-  当任意模块后续执行 `RegisterCategory`（含覆写）或 `UnregisterCategory` 时，全局 `Epoch` 原子自增。
+  当任意模块后续执行 `RegisterCategory`（产生实际分类变更）或 `UnregisterCategory` 时，全局 `Epoch` 原子自增；若重复注册完全相同的分类则幂等短路返回，不推进 `Epoch`，杜绝无谓的全局缓存击穿。
   调用点检测到 `LogCatPtr == nullptr || CachedEpoch != CurrentEpoch` 时，会重新向注册表解析当前模块分类并刷新缓存，彻底根除早期调用导致的“永久降级”与模块卸载后悬挂指针两类缺陷。
 
 ### 3.4 Meyers' Singleton 根除静态初始化死锁 (SIOF Elimination)
@@ -97,7 +97,7 @@ static std::atomic<int32> UE_PRIVATE_CachedEpoch{-1};
 ### 3.5 负哨兵时间戳实现限频日志首触即打
 - `GAME_LOG_THROTTLE` 调用点局部静态时间戳赋初值为负哨兵 `-1.0e9`：
   ```cpp
-  static std::atomic<double> UE_PRIVATE_LastLogTime_{-1.0e9};
+  static std::atomic<double> UEPrivateLastLogTime{-1.0e9};
   ```
 - 确保无论启动初期系统时钟多小，首次触达时必定满足 `CurrentSeconds - LastSeconds >= SecondsInterval`，实现 100% 首触即打；同时通过 CAS 原子竞争保证多线程无锁并发更新。
 
@@ -109,7 +109,7 @@ static std::atomic<int32> UE_PRIVATE_CachedEpoch{-1};
 | :--- | :--- | :--- |
 | **`GAME_LOG` 缓存命中** | 无锁（Epoch 使用 `acquire`，分类指针使用 `relaxed`） | 各线程读取调用点共享原子缓存，无注册表锁竞争 |
 | **`FGameLogRegistry::GetCategory`** | 读锁 (`SLT_ReadOnly`) | 仅在缓存未命中或纪元失效时触发，保护存储容器 |
-| **`FGameLogRegistry::RegisterCategory`** | 写锁 (`SLT_Write`) | 独占写锁，更新条目并自增 `Epoch`，触发全局缓存失效 |
+| **`FGameLogRegistry::RegisterCategory`** | 写锁 (`SLT_Write`) | 独占写锁，更新条目并在分类产生实质变更时自增 `Epoch`（幂等重复不推进），触发全局缓存失效 |
 | **`GAME_LOG_ONCE`** | 无锁 (`exchange`) | `std::atomic<bool>` 确保多线程并发下严格只打印一次 |
 | **`GAME_LOG_THROTTLE`** | 无锁 (`compare_exchange_strong`) | `std::atomic<double>` 负哨兵初值，CAS 保证并发安全、零锁且首触即打 |
 

@@ -106,5 +106,5 @@ public:
     [[nodiscard]] static FGameGameplayEffectContext* ExtractEffectContext(const FGameplayEffectContextHandle& InHandle);
 };
 ```
-- 支持紧凑网络序列化（`NetSerialize`）：先序列化引擎基类上下文与 `FeedbackEventId`，再按位可选序列化非零实际总伤害、非空反馈标签，以及通道明细和动态参数；ID 0 表示未预测，通道与动态参数数组沿用条目上限 255。
+- 支持紧凑网络序列化（`NetSerialize`）：先序列化引擎基类上下文与 `FeedbackEventId`，再按位可选序列化非零实际总伤害、非空反馈标签，以及通道明细和动态参数；ID 0 表示未预测，通道与动态参数数组沿用条目上限 255。序列化成功标志执行累积运算（`bOutSuccess = bOutSuccess && !Ar.IsError()`），杜绝位流底层异常被意外覆盖。
 

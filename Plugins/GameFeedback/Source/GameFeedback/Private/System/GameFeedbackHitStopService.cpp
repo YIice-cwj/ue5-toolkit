@@ -75,6 +75,20 @@ void UGameFeedbackHitStopService::Deinitialize()
 }
 
 /**
+ * @brief 安全获取当前世界的顿帧服务
+ * @param WorldContextObject 世界上下文对象
+ * @return 服务指针；未就绪时返回 nullptr
+ */
+UGameFeedbackHitStopService* UGameFeedbackHitStopService::GetPtr(const UObject* WorldContextObject)
+{
+    if (!WorldContextObject) {
+        return nullptr;
+    }
+    const UWorld* World = WorldContextObject->GetWorld();
+    return World ? World->GetSubsystem<UGameFeedbackHitStopService>() : nullptr;
+}
+
+/**
  * @brief 本地表现广播回调
  * @param Channel 广播通道
  * @param Message 表现载荷
@@ -190,18 +204,4 @@ void UGameFeedbackHitStopService::ApplyHitStop(const FGameFeedbackSignal& Signal
         }
         break;
     }
-}
-
-/**
- * @brief 安全获取当前世界的顿帧服务
- * @param WorldContextObject 世界上下文对象
- * @return 服务指针；未就绪时返回 nullptr
- */
-UGameFeedbackHitStopService* UGameFeedbackHitStopService::GetPtr(const UObject* WorldContextObject)
-{
-    if (!WorldContextObject) {
-        return nullptr;
-    }
-    const UWorld* World = WorldContextObject->GetWorld();
-    return World ? World->GetSubsystem<UGameFeedbackHitStopService>() : nullptr;
 }

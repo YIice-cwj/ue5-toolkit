@@ -6,7 +6,6 @@
 
 #include <atomic>
 
-#include "Containers/Array.h"
 #include "HAL/PlatformTime.h"
 #include "HAL/PreprocessorHelpers.h"
 #include "Logging/LogCategory.h"
@@ -62,6 +61,8 @@ GAMELOGGING_API DECLARE_LOG_CATEGORY_EXTERN(LogGame, Log, All);
  * 2. 纪元安全动态分发（Epoch-safe Dynamic Dispatch）：未显式指定时，通过 UBT UE_MODULE_NAME 与局部原子指针缓存实现 O(1) 访问；
  *    全局纪元号（Epoch）在任何模块注册/覆写/注销时递增，缓存指针与纪元不匹配即重新解析，
  *    彻底解决静态初始化早期 Fallback 污染与注销后缓存残留两类失效问题。
+ * @param Verbosity 日志详细级别（如 Log, Warning, Error）
+ * @param Format 格式化文本字符串
  */
 #ifdef GAME_CURRENT_MODULE_LOG
     #define GAME_LOG(Verbosity, Format, ...) \
@@ -91,6 +92,9 @@ GAMELOGGING_API DECLARE_LOG_CATEGORY_EXTERN(LogGame, Log, All);
 
 /**
  * @brief 条件日志宏：仅在 Condition 为真时执行日志输出
+ * @param Condition 执行判断条件表达式
+ * @param Verbosity 日志详细级别
+ * @param Format 格式化文本字符串
  */
 #define GAME_CLOG(Condition, Verbosity, Format, ...) \
     do { \
@@ -103,6 +107,8 @@ GAMELOGGING_API DECLARE_LOG_CATEGORY_EXTERN(LogGame, Log, All);
 
 /**
  * @brief 单次日志宏：在应用程序整个生命周期内该调用点仅输出一次（防循环刷屏）
+ * @param Verbosity 日志详细级别
+ * @param Format 格式化文本字符串
  */
 #define GAME_LOG_ONCE(Verbosity, Format, ...) \
     do { \
@@ -116,6 +122,9 @@ GAMELOGGING_API DECLARE_LOG_CATEGORY_EXTERN(LogGame, Log, All);
 
 /**
  * @brief 条件单次日志宏：仅在 Condition 首次为真时输出一次
+ * @param Condition 执行判断条件表达式
+ * @param Verbosity 日志详细级别
+ * @param Format 格式化文本字符串
  */
 #define GAME_CLOG_ONCE(Condition, Verbosity, Format, ...) \
     do { \
@@ -129,6 +138,8 @@ GAMELOGGING_API DECLARE_LOG_CATEGORY_EXTERN(LogGame, Log, All);
 /**
  * @brief 限频日志宏：限制该调用点最多每隔指定秒数输出一次
  * @param SecondsInterval 最小输出时间间隔（秒，如 1.0）
+ * @param Verbosity 日志详细级别
+ * @param Format 格式化文本字符串
  */
 #define GAME_LOG_THROTTLE(SecondsInterval, Verbosity, Format, ...) \
     do { \

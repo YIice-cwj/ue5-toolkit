@@ -6,7 +6,7 @@
 
 | 模块 / 插件 | 职责 | 是否随通用安装 |
 | :--- | :--- | :--- |
-| `GameDataCore` | 手写通用基础设施：`FStaticDataRepository`、`DataTableLoaderUtils`、`UGameSaveArchive`、`USaveGameSubsystem` | 是（随 GameData 插件） |
+| `GameDataCore` | 手写通用基础设施：`FStaticDataRepository`、`FStaticDataBinCodec`、`DataTableLoaderUtils`、`FSaveGameSegmentRegistry`、`FSaveGameFileIO`、`UGameSaveArchive`、`USaveGameSubsystem` | 是（随 GameData 插件） |
 | `GameData` | 生成代码宿主：Excel 管线写入 `Public/Generated`、`Private/Generated` | 是 |
 | `GameDataSamples` | Item / Shop 示例域、`UGamePlayerDataRegistry`、`UGamePlayerProfileSaveAdapter` | 否（`--all` 跳过） |
 
@@ -25,10 +25,12 @@ graph TD
     end
 
     subgraph Persistence["通用持久化"]
-        Business["业务系统（任意插件）"] -->|RegisterSegment| SaveSys["USaveGameSubsystem（GameDataCore）"]
-        SaveSys --> Archive["UGameSaveArchive（段名 → 版本 + 字节）"]
-        Archive --> Temp[".sav.tmp"]
-        Temp -->|原子替换| Disk["Saved/SaveGames/{Slot}.sav"]
+        Business["业务系统（任意插件）"] -->|RegisterSegment| SaveSys["USaveGameSubsystem（门面与调度）"]
+        SaveSys --> Registry["FSaveGameSegmentRegistry（版本迁移与未知段保留）"]
+        Registry --> Archive["UGameSaveArchive（段名 → 版本 + 负载）"]
+        SaveSys --> FileIO["FSaveGameFileIO（底层 I/O 与防断电保护）"]
+        FileIO --> Temp[".sav.tmp（临时文件）"]
+        Temp -->|原子替换与高水位代次保护| Disk["Saved/SaveGames/{Slot}.sav"]
     end
 ```
 

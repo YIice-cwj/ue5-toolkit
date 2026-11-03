@@ -3,7 +3,7 @@
 `GameLogging` 底层提供了 C++ 原生注册中心类 `FGameLogRegistry` 与 RAII 辅助类 `FModuleLogRegistrar`。当需要绕过宏直接进行底层集成或诊断时，可使用本模块提供的 C++ API。
 
 命名空间：`Game::Log`  
-头文件：`#include "Logging/GameLogCategories.h"`
+头文件：`#include "Logging/FGameLogRegistry.h"`（或全局引入 `#include "Logging/GameLogCategories.h"`）
 
 ---
 
@@ -15,11 +15,19 @@
 namespace Game::Log {
 class GAMELOGGING_API FGameLogRegistry {
 public:
+    FGameLogRegistry() = delete;
     static void RegisterCategory(const char* InModuleName, FLogCategoryBase* InCategory);
     static void UnregisterCategory(const char* InModuleName);
     [[nodiscard]] static FLogCategoryBase& GetCategory(const char* InModuleName);
     [[nodiscard]] static FLogCategoryBase& GetFallbackCategory();
     [[nodiscard]] static int32 GetEpoch() noexcept;
+
+private:
+    friend class FModuleLogRegistrar;
+    [[nodiscard]] static TArray<ANSICHAR> MakeAnsiName(const char* InName);
+    [[nodiscard]] static FLogCategoryBase* RegisterScopedCategory(const char* InModuleName, FLogCategoryBase* InCategory);
+    static void UnregisterScopedCategory(const char* InModuleName, FLogCategoryBase* InCategory,
+        FLogCategoryBase* InPreviousCategory);
 };
 }
 ```
@@ -33,10 +41,11 @@ static void RegisterCategory(const char* InModuleName, FLogCategoryBase* InCateg
 - **职责**：将日志分类指针与模块名称（ANSI 字符串）进行绑定。
 - **线程安全与 SIOF 防御**：底层基于内部 `FRegistryStorage::Get()`（Meyers' Singleton 局部静态单例），杜绝跨编译单元全局静态初始化顺序死锁（SIOF）；获取独占写锁（`Storage.Lock`，`SLT_Write`），更新静态映射条目并原子递增全局纪元号（`Storage.Epoch`）。
 - **说明**：
-  - 模块名按 ANSI 字符串深拷贝入内部数组，调用方临时缓冲区销毁后仍安全；
-  - 若模块已存在，覆写其分类指针；
+  - 模块名经内部静态方法 `MakeAnsiName` 按 ANSI 字符串深拷贝入自持数组，调用方临时缓冲区销毁后仍安全；
+  - 若模块已存在且分类指针改变，覆写其分类指针并原子递增全局 `Epoch`；
+  - **幂等保护**：若模块已绑定相同分类指针，直接短路返回，不推进 `Epoch`，避免无谓触发全局调用点局部缓存失效；
   - 新模块直接追加（`TArray` 动态容量，无固定条目上限）；
-  - 每次成功更新原子递增全局 `Epoch`，触发调用点缓存失效。
+  - 任何实际产生映射变更的注册与覆写均原子递增全局 `Epoch`，驱动调用点缓存自愈刷新。
 
 #### `UnregisterCategory`
 ```cpp
@@ -79,6 +88,12 @@ class GAMELOGGING_API FModuleLogRegistrar {
 public:
     FModuleLogRegistrar(const char* InModuleName, FLogCategoryBase* InCategory);
     ~FModuleLogRegistrar();
+
+    FModuleLogRegistrar(const FModuleLogRegistrar&) = delete;
+    FModuleLogRegistrar& operator=(const FModuleLogRegistrar&) = delete;
+    FModuleLogRegistrar(FModuleLogRegistrar&&) = delete;
+    FModuleLogRegistrar& operator=(FModuleLogRegistrar&&) = delete;
+
 private:
     TArray<ANSICHAR> ModuleName;
     FLogCategoryBase* Category = nullptr;

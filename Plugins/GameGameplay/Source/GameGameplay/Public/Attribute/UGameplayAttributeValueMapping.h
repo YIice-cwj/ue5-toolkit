@@ -34,15 +34,64 @@ class GAMEGAMEPLAY_API UGameplayAttributeValueMapping : public UObject {
 
 public:
     /**
-     * @brief 属性值变更广播动态多播委托（UI 订阅，游戏层无需感知复制细节）
+     * @brief 对象销毁生命周期回调：解绑当前属性监听，杜绝悬垂委托
      */
-    UPROPERTY(BlueprintAssignable, Category = "Game|GAS")
-    FOnMappedAttributeChanged OnValueChanged;
+    void BeginDestroy() override;
 
     /**
-     * @brief 原生 C++ 属性值变更广播委托（支持 Lambda 闭包 / 零反射开销）
+     * @brief 绑定 ASC 的指定属性变更（重复绑定先解绑旧源，任一时刻只跟踪一个属性）
+     * @param InAbilitySystemComponent 目标 ASC
+     * @param InAttribute 目标属性
+     * @param bBroadcastImmediately 是否在绑定成功后立即以当前值广播一次
      */
-    FOnMappedAttributeChangedNative OnValueChangedNative;
+    UFUNCTION(BlueprintCallable, Category = "Game|GAS")
+    void Bind(UAbilitySystemComponent* InAbilitySystemComponent, const FGameplayAttribute& InAttribute, bool bBroadcastImmediately = true);
+
+    /**
+     * @brief 解绑当前属性变更（幂等，可重复调用；对象销毁时自动调用）
+     */
+    UFUNCTION(BlueprintCallable, Category = "Game|GAS")
+    void Unbind();
+
+    /**
+     * @brief 获取当前绑定的属性
+     * @return 绑定的 GameplayAttribute
+     */
+    UFUNCTION(BlueprintPure, Category = "Game|GAS")
+    [[nodiscard]] const FGameplayAttribute& GetBoundAttribute() const noexcept {
+        return BoundAttribute;
+    }
+
+    /**
+     * @brief 获取当前绑定的 AbilitySystemComponent
+     * @return 绑定的 ASC 指针；若未绑定或已失效返回 nullptr
+     */
+    UFUNCTION(BlueprintPure, Category = "Game|GAS")
+    [[nodiscard]] UAbilitySystemComponent* GetBoundAbilitySystemComponent() const noexcept {
+        return BoundAbilitySystemComponent.Get();
+    }
+
+    /**
+     * @brief 检查当前是否已绑定有效属性监听
+     * @return 已绑定返回 true
+     */
+    UFUNCTION(BlueprintPure, Category = "Game|GAS")
+    [[nodiscard]] bool IsBound() const noexcept {
+        return AttributeChangedHandle.IsValid();
+    }
+
+    /**
+     * @brief 获取当前绑定的属性数值
+     * @return 当前属性数值，若未绑定或 ASC 无效返回 0.0f
+     */
+    UFUNCTION(BlueprintPure, Category = "Game|GAS")
+    [[nodiscard]] float GetCurrentValue() const;
+
+    /**
+     * @brief 主动拉取当前数值并触发一次 OnValueChanged 广播
+     */
+    UFUNCTION(BlueprintCallable, Category = "Game|GAS")
+    void QueryAndBroadcast();
 
     /**
      * @brief 静态工厂：创建并绑定指定属性变更监听对象
@@ -75,57 +124,6 @@ public:
         return CreateAttributeValueMapping(nullptr, InAbilitySystemComponent, InAttribute, bBroadcastImmediately);
     }
 
-    /**
-     * @brief 对象销毁生命周期回调：解绑当前属性监听，杜绝悬垂委托
-     */
-    void BeginDestroy() override;
-
-    /**
-     * @brief 绑定 ASC 的指定属性变更（重复绑定先解绑旧源，任一时刻只跟踪一个属性）
-     * @param InAbilitySystemComponent 目标 ASC
-     * @param InAttribute 目标属性
-     * @param bBroadcastImmediately 是否在绑定成功后立即以当前值广播一次
-     */
-    UFUNCTION(BlueprintCallable, Category = "Game|GAS")
-    void Bind(UAbilitySystemComponent* InAbilitySystemComponent, const FGameplayAttribute& InAttribute, bool bBroadcastImmediately = true);
-
-    /**
-     * @brief 解绑当前属性变更（幂等，可重复调用；对象销毁时自动调用）
-     */
-    UFUNCTION(BlueprintCallable, Category = "Game|GAS")
-    void Unbind();
-
-    /**
-     * @brief 获取当前绑定的属性
-     * @return 绑定的 GameplayAttribute
-     */
-    UFUNCTION(BlueprintPure, Category = "Game|GAS")
-    [[nodiscard]] const FGameplayAttribute& GetBoundAttribute() const noexcept {
-        return BoundAttribute;
-    }
-
-    /**
-     * @brief 检查当前是否已绑定有效属性监听
-     * @return 已绑定返回 true
-     */
-    UFUNCTION(BlueprintPure, Category = "Game|GAS")
-    [[nodiscard]] bool IsBound() const noexcept {
-        return AttributeChangedHandle.IsValid();
-    }
-
-    /**
-     * @brief 获取当前绑定的属性数值
-     * @return 当前属性数值，若未绑定或 ASC 无效返回 0.0f
-     */
-    UFUNCTION(BlueprintPure, Category = "Game|GAS")
-    [[nodiscard]] float GetCurrentValue() const;
-
-    /**
-     * @brief 主动拉取当前数值并触发一次 OnValueChanged 广播
-     */
-    UFUNCTION(BlueprintCallable, Category = "Game|GAS")
-    void QueryAndBroadcast();
-
 private:
     /**
      * @brief 将 ASC 属性变更数据转发给蓝图与原生订阅方
@@ -136,4 +134,16 @@ private:
     TWeakObjectPtr<UAbilitySystemComponent> BoundAbilitySystemComponent;
     FGameplayAttribute BoundAttribute;
     FDelegateHandle AttributeChangedHandle;
+
+public:
+    /**
+     * @brief 属性值变更广播动态多播委托（UI 订阅，游戏层无需感知复制细节）
+     */
+    UPROPERTY(BlueprintAssignable, Category = "Game|GAS")
+    FOnMappedAttributeChanged OnValueChanged;
+
+    /**
+     * @brief 原生 C++ 属性值变更广播委托（支持 Lambda 闭包 / 零反射开销）
+     */
+    FOnMappedAttributeChangedNative OnValueChangedNative;
 };

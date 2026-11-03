@@ -43,6 +43,8 @@ UCLASS(ClassGroup = (Game), meta = (BlueprintSpawnableComponent))
 class GAMEGAMEPLAYCORE_API UGameVitalComponent : public UActorComponent {
     GENERATED_BODY()
 
+    friend class FGameVitalRepAliveForwardBroadcastTest;
+
 public:
     /**
      * @brief 构造函数：开启组件网络复制
@@ -146,6 +148,11 @@ private:
 
     UPROPERTY(ReplicatedUsing = OnRep_VitalAlive)
     bool bVitalAlive = true;
+
+    /**
+     * @brief 上次广播的存活状态（用于客户端网络复制去重，避免重复触发 OnVitalStateChanged）
+     */
+    bool bLastBroadcastedAlive = true;
 
     TWeakObjectPtr<UGameStatComponent> BoundStatComponent;
     FDelegateHandle StatChangedSubscriptionHandle;

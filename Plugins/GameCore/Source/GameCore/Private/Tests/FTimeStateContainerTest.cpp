@@ -27,6 +27,11 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
+/**
+ * @brief Actor 局部顿帧表核心功能测试（时长与缩放合并、到期还原与清除）
+ * @param Parameters 自动化框架参数（未使用）
+ * @return 全部断言通过返回 true
+ */
 bool FGameTimeHitStopTableTest::RunTest([[maybe_unused]] const FString& Parameters) {
     UWorld* World = GetTimeStateTestWorld();
     TestNotNull(TEXT("测试世界有效"), World);
@@ -75,6 +80,19 @@ bool FGameTimeHitStopTableTest::RunTest([[maybe_unused]] const FString& Paramete
     TestNearlyEqual(TEXT("全部清除还原 B"), ActorB->CustomTimeDilation, 1.0f, 0.0001f);
     TestFalse(TEXT("全部清除后无激活记录"), Table.IsActive(ActorA));
 
+    AGamePoolableTestActor* ActorC = World->SpawnActor<AGamePoolableTestActor>(
+        AGamePoolableTestActor::StaticClass(), FTransform::Identity, SpawnParams);
+    if (ActorC != nullptr) {
+        Table.Request(*ActorC, 0.5f, 0.05f);
+        TestTrue(TEXT("ActorC 建立顿帧记录"), Table.IsActive(ActorC));
+        ActorC->Destroy();
+        Table.Advance(0.1f);
+        TestFalse(TEXT("销毁后推进步进自愈清理失效弱引用"), Table.IsActive(ActorC));
+        Table.PruneInvalid();
+    }
+
+    ActorA->Destroy();
+    ActorB->Destroy();
     return true;
 }
 
@@ -84,6 +102,11 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
+/**
+ * @brief 全局分层时间膨胀混音器测试（通道优先级覆盖与生效计算）
+ * @param Parameters 自动化框架参数（未使用）
+ * @return 全部断言通过返回 true
+ */
 bool FGameTimeDilationMixerTest::RunTest([[maybe_unused]] const FString& Parameters) {
     FGlobalDilationMixer Mixer;
 

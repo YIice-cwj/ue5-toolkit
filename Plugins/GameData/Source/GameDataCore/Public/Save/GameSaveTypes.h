@@ -1,6 +1,6 @@
 /**
  * @file GameSaveTypes.h
- * @brief 通用存档分段类型契约定义（单一职责 · 结果码、元数据与分段负载）
+ * @brief 通用存档分段类型契约定义（单一职责 · 元数据与分段负载）
  */
 
 #pragma once
@@ -11,37 +11,6 @@
 #include "GameSaveTypes.generated.h"
 
 class FArchive;
-
-/**
- * @brief 存档操作执行结果码
- */
-UENUM(BlueprintType)
-enum class ESaveGameResult : uint8 {
-    /**
-     * @brief 操作成功
-     */
-    Success,
-
-    /**
-     * @brief 底层文件读写或 I/O 操作失败
-     */
-    IoError,
-
-    /**
-     * @brief 数据损坏或反序列化异常
-     */
-    CorruptedData,
-
-    /**
-     * @brief 归档或分段版本号不兼容
-     */
-    VersionMismatch,
-
-    /**
-     * @brief 找不到指定的存档槽位文件
-     */
-    SlotNotFound,
-};
 
 /**
  * @brief 存档槽位元信息（与具体业务域无关）

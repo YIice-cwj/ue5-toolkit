@@ -9,9 +9,10 @@
 
 ## 0. 运行时通道注册表
 
-通道绑定由 `FGameDamageChannelRegistry`（`AbilitySystem/FGameDamageChannelRegistry.h`）统一托管：
+通道绑定由 `FGameDamageChannelRegistry`（`Damage/FGameDamageChannelRegistry.h`）统一托管：
 
 - 按 ExecCalc 类隔离，线程安全（`FRWLock` + `FRWScopeLock` 读写锁，注册 / 注销走写锁、查询走读锁）。
+- **读穿透缓存（Read-Through Cache）**：内部维护 `CachedFlattenedBindings` 只读缓存字典。高频受击查询时，双重检查读写锁并在首次合并后冻结缓存，后续查询以 $O(1)$ 无额外堆分配极速命中，消除战斗热点性能开销；在 `Register` / `Unregister` / `Reset` 写操作时自动重置失效。
 - 可在子类构造函数中声明，也可在运行期任意系统动态注册 / 注销。
 - 查询时从被查询类沿继承链向上合并，同名通道以最派生类的绑定为准，避免基类与派生类重复绑定导致数值双算。
 - 类上不再有「CDO 构造后永久冻结」的写死契约，`Execute_Implementation` 也不再是 `final`，子类可按需扩展。

@@ -34,6 +34,12 @@ void FGameThreadTaskRunner::RunOnGameThread(TWeakObjectPtr<UObject> Owner, TFunc
     });
 }
 
+/**
+ * @brief 派发后台无返回值任务，并在完成后安全投递回 GameThread 续体执行
+ * @param Owner 宿主弱引用（任意阶段失效即自动短路丢弃）
+ * @param BackgroundWork 后台工作体（工作线程执行）
+ * @param GameThreadContinuation 主线程续体（主线程执行）
+ */
 void FGameThreadTaskRunner::RunWithContinuation(
     TWeakObjectPtr<UObject> Owner,
     TFunction<void()> BackgroundWork,

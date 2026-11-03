@@ -1,59 +1,31 @@
+/**
+ * @file UGameStatComponentTest.cpp
+ * @brief UGameStatComponent 属性组件核心生命周期、数值钳制与网络复制自动化测试
+ */
+
 #include "CoreMinimal.h"
 #include "Misc/AutomationTest.h"
 #include "GameplayTagContainer.h"
 #include "GameplayTagsManager.h"
-#include "Damage/FGameDamageContext.h"
-#include "Damage/FGameDamageResult.h"
+#include "Engine/Engine.h"
+#include "Engine/World.h"
+#include "GameFramework/Actor.h"
 #include "Stat/UGameStatComponent.h"
 
 #if WITH_AUTOMATION_TESTS
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-    FGameDamageResultTest,
-    "Game.GameplayCore.Damage.ResultFeedback",
-    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
-)
+namespace {
 
-bool FGameDamageResultTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    FGameDamageResult Result;
-    Result.SetActualDamage(75.0f);
-
-    const FGameplayTag HitTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Damage.Feedback.Hit")));
-    const FGameplayTag FatalTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Damage.Feedback.Fatal")));
-    const FGameplayTag CriticalTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Damage.Feedback.Critical")));
-    const FGameplayTag StaggerTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Damage.Feedback.Stagger")));
-    const FGameplayTag HitStopTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Damage.Feedback.HitStop")));
-
-    Result.AddFeedbackTag(HitTag);
-    TestTrue(TEXT("Hit tag should exist"), Result.HasFeedbackTag(HitTag));
-    TestFalse(TEXT("Fatal tag should not exist"), Result.HasFeedbackTag(FatalTag));
-
-    Result.AddFeedbackTag(CriticalTag);
-    TestTrue(TEXT("Feedback tag should exist"), Result.HasFeedbackTag(CriticalTag));
-    TestFalse(TEXT("Unadded tag should not exist"), Result.HasFeedbackTag(StaggerTag));
-
-    Result.SetDynamicValue(HitStopTag, 0.12f);
-    TestEqual(TEXT("Dynamic value should match"), Result.GetDynamicValue(HitStopTag), 0.12f);
-    TestEqual(TEXT("Missing dynamic value should return default"), Result.GetDynamicValue(StaggerTag, 5.0f), 5.0f);
-
-    Result.RemoveFeedbackTag(CriticalTag);
-    TestFalse(TEXT("Feedback tag should be removed"), Result.HasFeedbackTag(CriticalTag));
-
-    const FGameplayTag SlashTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Damage.Channel.Result.Slash")));
-    const FGameplayTag BluntTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Damage.Channel.Result.Blunt")));
-    TestFalse(TEXT("空通道容器返回无效主通道"), Result.GetDominantActualChannel().IsValid());
-
-    FGameDamageChannel::SetExact(Result.ActualChannels, BluntTag, 50.0f);
-    FGameDamageChannel::SetExact(Result.ActualChannels, SlashTag, 100.0f);
-    TestEqual(TEXT("主通道选择最大实际伤害通道"), Result.GetDominantActualChannel(), SlashTag);
-
-    FGameDamageResult NegativeResult;
-    FGameDamageChannel::SetExact(NegativeResult.ActualChannels, SlashTag, -20.0f);
-    FGameDamageChannel::SetExact(NegativeResult.ActualChannels, BluntTag, -5.0f);
-    TestEqual(TEXT("负值通道仍按数值最大者选择"), NegativeResult.GetDominantActualChannel(), BluntTag);
-
-    return true;
+UWorld* GetStatTestWorld() {
+    for (const FWorldContext& Context : GEngine->GetWorldContexts()) {
+        if (Context.World() != nullptr) {
+            return Context.World();
+        }
+    }
+    return nullptr;
 }
+
+}  // namespace
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameStatMultiRegistrationTest,
@@ -61,6 +33,11 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
+/**
+ * @brief 验证多属性动态注册、数值加减在 Min/Max 范围内的自动钳制与实际变动差值记录
+ * @param Parameters 自动化测试参数
+ * @return 测试是否通过
+ */
 bool FGameStatMultiRegistrationTest::RunTest([[maybe_unused]] const FString& Parameters) {
     UGameStatComponent* Comp = NewObject<UGameStatComponent>();
 
@@ -95,6 +72,11 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
+/**
+ * @brief 验证极端增量越界输入下的 Clamp 防御与极值边界一致性
+ * @param Parameters 自动化测试参数
+ * @return 测试是否通过
+ */
 bool FGameStatBoundaryClampingTest::RunTest([[maybe_unused]] const FString& Parameters) {
     UGameStatComponent* Comp = NewObject<UGameStatComponent>();
     const FGameplayTag HealthTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Attribute.Health.ClampTest")));
@@ -115,179 +97,169 @@ bool FGameStatBoundaryClampingTest::RunTest([[maybe_unused]] const FString& Para
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-    FGameStatTaggedSubscriptionTest,
-    "Game.GameplayCore.Stat.TaggedSubscription",
+    FGameStatSetMaxClampingTest,
+    "Game.GameplayCore.Stat.SetMaxClamping",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
-bool FGameStatTaggedSubscriptionTest::RunTest([[maybe_unused]] const FString& Parameters) {
+/**
+ * @brief 验证动态调整属性上限（等比缩放 / 绝对截断）时当前值钳制不变式
+ * @param Parameters 自动化测试参数
+ * @return 测试是否通过
+ */
+bool FGameStatSetMaxClampingTest::RunTest([[maybe_unused]] const FString& Parameters) {
     UGameStatComponent* Comp = NewObject<UGameStatComponent>();
-    const FGameplayTag HealthTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Attribute.Subscribe.Health")));
-    const FGameplayTag ShieldTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Attribute.Subscribe.Shield")));
-
+    const FGameplayTag HealthTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Attribute.Stat.SetMaxClamp")));
     Comp->RegisterStat(HealthTag, 100.0f, 100.0f, 0.0f);
-    Comp->RegisterStat(ShieldTag, 50.0f, 50.0f, 0.0f);
 
-    int32 BroadcastCount = 0;
-    float ObservedOld = 0.0f;
-    float ObservedNew = 0.0f;
-    const FDelegateHandle Handle = Comp->SubscribeStatChanged(
-        HealthTag,
-        FOnGameStatChangedNative::FDelegate::CreateLambda(
-            [&BroadcastCount, &ObservedOld, &ObservedNew](const FGameplayTag&, float OldValue, float NewValue, float) {
-                ++BroadcastCount;
-                ObservedOld = OldValue;
-                ObservedNew = NewValue;
-            }
-        )
-    );
+    Comp->SetStatMax(HealthTag, 0.0f, true);
+    TestEqual(TEXT("上限下调至下限时上限等于下限"), Comp->GetStatMax(HealthTag), 0.0f);
+    TestEqual(TEXT("上限下调至下限时当前值钳制到下限"), Comp->GetStatCurrent(HealthTag), 0.0f);
 
-    TestEqual(TEXT("订阅即回放当前值"), BroadcastCount, 1);
-    TestEqual(TEXT("回放旧值为当前值"), ObservedOld, 100.0f);
-    TestEqual(TEXT("回放新值为当前值"), ObservedNew, 100.0f);
-
-    Comp->ModifyStat(ShieldTag, -5.0f);
-    TestEqual(TEXT("非订阅属性变化不触发回调"), BroadcastCount, 1);
-
-    Comp->ModifyStat(HealthTag, -25.0f);
-    TestEqual(TEXT("订阅属性变化触发回调"), BroadcastCount, 2);
-    TestEqual(TEXT("回调旧值正确"), ObservedOld, 100.0f);
-    TestEqual(TEXT("回调新值正确"), ObservedNew, 75.0f);
-
-    Comp->UnsubscribeStatChanged(HealthTag, Handle);
-    Comp->ModifyStat(HealthTag, -5.0f);
-    TestEqual(TEXT("取消订阅后不再触发回调"), BroadcastCount, 2);
+    Comp->SetStatMax(HealthTag, 100.0f, false);
+    Comp->SetStatCurrent(HealthTag, 80.0f);
+    Comp->SetStatMax(HealthTag, 50.0f, false);
+    TestEqual(TEXT("非等比缩放时当前值钳制至新上限"), Comp->GetStatCurrent(HealthTag), 50.0f);
+    TestEqual(TEXT("新上限为 50"), Comp->GetStatMax(HealthTag), 50.0f);
 
     return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-    FGameStatRegisterReplayTest,
-    "Game.GameplayCore.Stat.RegisterReplay",
+    FGameStatReplicationTest,
+    "Game.GameplayCore.Stat.Replication",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
-bool FGameStatRegisterReplayTest::RunTest([[maybe_unused]] const FString& Parameters) {
+/**
+ * @brief 验证 OnRep_ReplicatedStats 客户端网络复制数组解析、索引映射重构、差分广播与清理
+ * @param Parameters 自动化测试参数
+ * @return 测试是否通过
+ */
+bool FGameStatReplicationTest::RunTest([[maybe_unused]] const FString& Parameters) {
     UGameStatComponent* Comp = NewObject<UGameStatComponent>();
-    const FGameplayTag ManaTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Attribute.Subscribe.LateRegister")));
+    const FGameplayTag TagA = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Attribute.Rep.TagA")));
+    const FGameplayTag TagB = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Attribute.Rep.TagB")));
 
-    int32 CallbackCount = 0;
-    float ObservedNew = 0.0f;
-    Comp->SubscribeStatChanged(
-        ManaTag,
-        FOnGameStatChangedNative::FDelegate::CreateLambda(
-            [&CallbackCount, &ObservedNew](const FGameplayTag&, float, float NewValue, float) {
-                ++CallbackCount;
-                ObservedNew = NewValue;
-            }
-        )
-    );
-    TestEqual(TEXT("未注册属性订阅时不回放"), CallbackCount, 0);
+    int32 BroadcastCountA = 0;
+    int32 BroadcastCountB = 0;
+    float LastValueA = 0.0f;
 
-    Comp->RegisterStat(ManaTag, 60.0f, 120.0f, 0.0f);
-    TestEqual(TEXT("注册时向既有订阅者回放初始值"), CallbackCount, 1);
-    TestEqual(TEXT("注册回放值为初始当前值"), ObservedNew, 60.0f);
+    Comp->SubscribeStatChanged(TagA, FOnGameStatChangedNative::FDelegate::CreateLambda(
+        [&BroadcastCountA, &LastValueA](const FGameplayTag&, float, float NewVal, float) {
+            ++BroadcastCountA;
+            LastValueA = NewVal;
+        }
+    ));
+    Comp->SubscribeStatChanged(TagB, FOnGameStatChangedNative::FDelegate::CreateLambda(
+        [&BroadcastCountB](const FGameplayTag&, float, float, float) {
+            ++BroadcastCountB;
+        }
+    ));
 
-    Comp->AddStatModifier(ManaTag, FGameStatModifier(20.0f, EGameStatModifierOp::Add));
-    TestEqual(TEXT("注册后修正器变化继续触发"), CallbackCount, 2);
-    TestEqual(TEXT("修正后回放值为派生值"), ObservedNew, 80.0f);
+    Comp->ReplicatedStats.Emplace(TagA, FGameStatValue{80.0f, 100.0f, 0.0f});
+    Comp->ReplicatedStats.Emplace(TagB, FGameStatValue{40.0f, 50.0f, 0.0f});
+
+    Comp->OnRep_ReplicatedStats();
+
+    TestTrue(TEXT("复制到达后索引重建成功，包含 TagA"), Comp->HasStat(TagA));
+    TestTrue(TEXT("复制到达后索引重建成功，包含 TagB"), Comp->HasStat(TagB));
+    TestEqual(TEXT("首次复制到达 TagA 广播 1 次"), BroadcastCountA, 1);
+    TestEqual(TEXT("首次复制到达 TagB 广播 1 次"), BroadcastCountB, 1);
+    TestEqual(TEXT("TagA 初始广播值正确"), LastValueA, 80.0f);
+
+    Comp->OnRep_ReplicatedStats();
+    TestEqual(TEXT("数值未变化时 OnRep 不重复广播 TagA"), BroadcastCountA, 1);
+    TestEqual(TEXT("数值未变化时 OnRep 不重复广播 TagB"), BroadcastCountB, 1);
+
+    Comp->ReplicatedStats[0].Value.Current = 60.0f;
+    Comp->OnRep_ReplicatedStats();
+    TestEqual(TEXT("数值变化后 OnRep 广播 TagA"), BroadcastCountA, 2);
+    TestEqual(TEXT("TagA 变化后广播新值"), LastValueA, 60.0f);
+    TestEqual(TEXT("TagB 未变动不广播"), BroadcastCountB, 1);
+
+    Comp->ReplicatedStats.RemoveAt(1);
+    Comp->OnRep_ReplicatedStats();
+    TestFalse(TEXT("移除条目后 OnRep 成功剔除 TagB"), Comp->HasStat(TagB));
 
     return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-    FGameStatOwnerBoundSubscriptionTest,
-    "Game.GameplayCore.Stat.OwnerBoundSubscription",
+    FGameStatDefensiveBranchesTest,
+    "Game.GameplayCore.Stat.DefensiveBranches",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
-bool FGameStatOwnerBoundSubscriptionTest::RunTest([[maybe_unused]] const FString& Parameters) {
+/**
+ * @brief 验证无效标签拦截、零增量忽略、未注册属性保护及非权威端写入全量安全拦截
+ * @param Parameters 自动化测试参数
+ * @return 测试是否通过
+ */
+bool FGameStatDefensiveBranchesTest::RunTest([[maybe_unused]] const FString& Parameters) {
     UGameStatComponent* Comp = NewObject<UGameStatComponent>();
-    const FGameplayTag ArmorTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Attribute.Subscribe.OwnerArmor")));
-    Comp->RegisterStat(ArmorTag, 80.0f, 80.0f, 0.0f);
+    const FGameplayTag InvalidTag;
+    const FGameplayTag ValidTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Attribute.Defensive.Valid")));
+    const FGameplayTag MissingTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Attribute.Defensive.Missing")));
 
-    UGameStatComponent* Owner = NewObject<UGameStatComponent>();
-    int32 CallbackCount = 0;
-    float LastNewValue = 0.0f;
-    const FDelegateHandle Handle = Comp->SubscribeStatChanged(Owner, ArmorTag,
-        [&CallbackCount, &LastNewValue](const FGameplayTag&, float, float NewValue, float) {
-            ++CallbackCount;
-            LastNewValue = NewValue;
-        });
-    TestTrue(TEXT("Owner 订阅返回有效句柄"), Handle.IsValid());
-    TestEqual(TEXT("Owner 订阅即回放当前值"), CallbackCount, 1);
-    TestEqual(TEXT("回放值为当前值"), LastNewValue, 80.0f);
+    Comp->RegisterStat(InvalidTag, 100.0f, 100.0f, 0.0f);
+    TestFalse(TEXT("无效标签注册被拒绝"), Comp->HasStat(InvalidTag));
 
-    Comp->ModifyStat(ArmorTag, -10.0f);
-    TestEqual(TEXT("Owner 存活时收到更新"), CallbackCount, 2);
-    TestEqual(TEXT("更新值正确"), LastNewValue, 70.0f);
+    TestFalse(TEXT("无效标签注销返回 false"), Comp->UnregisterStat(InvalidTag));
 
-    Owner->MarkAsGarbage();
-    Comp->ModifyStat(ArmorTag, -10.0f);
-    TestEqual(TEXT("Owner 销毁后不再回调"), CallbackCount, 2);
+    Comp->RegisterStat(ValidTag, 100.0f, 100.0f, 0.0f);
+    TestTrue(TEXT("有效标签注册成功"), Comp->HasStat(ValidTag));
 
-    Comp->UnsubscribeStatChanged(ArmorTag, Handle);
-    Comp->ModifyStat(ArmorTag, -10.0f);
-    TestEqual(TEXT("显式退订后不再回调"), CallbackCount, 2);
-    return true;
-}
+    Comp->RegisterStat(ValidTag, 80.0f, 120.0f, 0.0f);
+    TestEqual(TEXT("重复注册同一标签更新数值"), Comp->GetStatCurrent(ValidTag), 80.0f);
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-    FGameStatModifierTest,
-    "Game.GameplayCore.Stat.ModifierStack",
-    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
-)
+    float Delta = 0.0f;
+    TestFalse(TEXT("未注册标签 ModifyStat 返回 false"), Comp->ModifyStat(MissingTag, 10.0f, Delta));
+    TestFalse(TEXT("修改零增量返回 false"), Comp->ModifyStat(ValidTag, 0.0f, Delta));
 
-bool FGameStatModifierTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UGameStatComponent* Comp = NewObject<UGameStatComponent>();
-    const FGameplayTag AttackTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Attribute.Modifier.Attack")));
+    Comp->SetStatCurrent(ValidTag, 100.0f);
+    TestEqual(TEXT("设置相同值后当前值保持不变"), Comp->GetStatCurrent(ValidTag), 100.0f);
 
-    Comp->RegisterStat(AttackTag, 100.0f, 100.0f, 0.0f);
-    TestEqual(TEXT("无修正器时派生值等于基础值"), Comp->GetStatEffectiveCurrent(AttackTag), 100.0f);
+    Comp->SetStatMax(ValidTag, 100.0f, false);
+    TestEqual(TEXT("设置相同上限后上限保持不变"), Comp->GetStatMax(ValidTag), 100.0f);
 
-    const uint32 AddHandle = Comp->AddStatModifier(AttackTag, FGameStatModifier(20.0f, EGameStatModifierOp::Add));
-    const uint32 MultiplyHandle = Comp->AddStatModifier(AttackTag, FGameStatModifier(2.0f, EGameStatModifierOp::Multiply));
-    TestEqual(TEXT("加算后乘算的派生值正确"), Comp->GetStatEffectiveCurrent(AttackTag), 240.0f);
-    TestEqual(TEXT("基础值不被修正器改写"), Comp->GetStatCurrent(AttackTag), 100.0f);
+    TestEqual(TEXT("未注册属性有效上限为 0"), Comp->GetStatEffectiveMax(MissingTag), 0.0f);
+    TestEqual(TEXT("未注册属性基础上限为 0"), Comp->GetStatMax(MissingTag), 0.0f);
+    TestEqual(TEXT("未注册属性基础下限为 0"), Comp->GetStatMin(MissingTag), 0.0f);
+    TestEqual(TEXT("未注册属性当前值为 0"), Comp->GetStatCurrent(MissingTag), 0.0f);
+    TestEqual(TEXT("未注册属性有效当前值为 0"), Comp->GetStatEffectiveCurrent(MissingTag), 0.0f);
 
-    TestTrue(TEXT("按句柄移除加算修正器"), Comp->RemoveStatModifier(AttackTag, AddHandle));
-    TestEqual(TEXT("移除加算后仅剩乘算"), Comp->GetStatEffectiveCurrent(AttackTag), 200.0f);
+    const uint32 MissingHandle = Comp->AddStatModifier(MissingTag, FGameStatModifier(10.0f, EGameStatModifierOp::Add));
+    TestTrue(TEXT("未注册属性添加修正器分配有效句柄"), MissingHandle > 0);
+    TestTrue(TEXT("移除未注册属性修正器返回 true"), Comp->RemoveStatModifier(MissingTag, MissingHandle));
+    TestEqual(TEXT("未注册属性清空修正器返回 0"), Comp->ClearStatModifiers(MissingTag), 0);
 
-    const uint32 OverrideHandle = Comp->AddStatModifier(AttackTag, FGameStatModifier(7.0f, EGameStatModifierOp::Override));
-    TestEqual(TEXT("覆写修正器最终生效"), Comp->GetStatEffectiveCurrent(AttackTag), 7.0f);
+    UWorld* World = GetStatTestWorld();
+    TestNotNull(TEXT("测试世界有效"), World);
+    if (World != nullptr) {
+        FActorSpawnParameters SpawnParams;
+        SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+        AActor* NonAuthActor = World->SpawnActor<AActor>(AActor::StaticClass(), FTransform::Identity, SpawnParams);
+        TestNotNull(TEXT("非权威 Actor 创建成功"), NonAuthActor);
+        if (NonAuthActor != nullptr) {
+            NonAuthActor->SetRole(ROLE_SimulatedProxy);
+            UGameStatComponent* NonAuthComp = NewObject<UGameStatComponent>(NonAuthActor);
+            NonAuthComp->RegisterComponent();
 
-    TestEqual(TEXT("清空全部修正器"), Comp->ClearStatModifiers(AttackTag), 2);
-    TestEqual(TEXT("清空后派生值回落到基础值"), Comp->GetStatEffectiveCurrent(AttackTag), 100.0f);
-    TestFalse(TEXT("已移除句柄不可重复移除"), Comp->RemoveStatModifier(AttackTag, MultiplyHandle));
-    TestFalse(TEXT("已移除覆写句柄不可重复移除"), Comp->RemoveStatModifier(AttackTag, OverrideHandle));
+            NonAuthComp->RegisterStat(ValidTag, 100.0f, 100.0f, 0.0f);
+            TestFalse(TEXT("非权威端默认禁止注册属性"), NonAuthComp->HasStat(ValidTag));
 
-    int32 ModifierBroadcastCount = 0;
-    float LastBroadcastNew = 0.0f;
-    float LastBroadcastMax = 0.0f;
-    Comp->SubscribeStatChanged(
-        AttackTag,
-        FOnGameStatChangedNative::FDelegate::CreateLambda(
-            [&ModifierBroadcastCount, &LastBroadcastNew, &LastBroadcastMax](const FGameplayTag&, float, float NewValue, float MaxValue) {
-                ++ModifierBroadcastCount;
-                LastBroadcastNew = NewValue;
-                LastBroadcastMax = MaxValue;
-            }
-        )
-    );
-    TestEqual(TEXT("初始订阅回放一次"), ModifierBroadcastCount, 1);
+            NonAuthComp->bAllowNonAuthoritativeWrites = true;
+            NonAuthComp->RegisterStat(ValidTag, 50.0f, 100.0f, 0.0f);
+            TestTrue(TEXT("开启非权威写入后允许注册"), NonAuthComp->HasStat(ValidTag));
 
-    const uint32 NotifyHandle = Comp->AddStatModifier(AttackTag, FGameStatModifier(25.0f, EGameStatModifierOp::Add));
-    TestEqual(TEXT("新增修正器触发订阅广播"), ModifierBroadcastCount, 2);
-    TestEqual(TEXT("广播新有效值正确"), LastBroadcastNew, 125.0f);
-    TestTrue(TEXT("移除修正器成功"), Comp->RemoveStatModifier(AttackTag, NotifyHandle));
-    TestEqual(TEXT("移除修正器触发订阅广播"), ModifierBroadcastCount, 3);
-    TestEqual(TEXT("移除后广播有效值回落"), LastBroadcastNew, 100.0f);
+            NonAuthComp->bAllowNonAuthoritativeWrites = false;
+            TestFalse(TEXT("关闭非权威写入后拒绝修改"), NonAuthComp->ModifyStat(ValidTag, 10.0f, Delta));
+            TestFalse(TEXT("关闭非权威写入后拒绝注销"), NonAuthComp->UnregisterStat(ValidTag));
 
-    const FGameplayTag HealthMaxOnlyTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Attribute.Modifier.HealthMaxOnly")));
-    Comp->RegisterStat(HealthMaxOnlyTag, 0.0f, 100.0f, 0.0f);
-    Comp->AddStatModifier(HealthMaxOnlyTag, FGameStatModifier(50.0f, EGameStatModifierOp::Add, false, true));
-    TestEqual(TEXT("仅作用于上限的修正器不抬高零血当前值"), Comp->GetStatEffectiveCurrent(HealthMaxOnlyTag), 0.0f);
-    TestEqual(TEXT("仅作用于上限的修正器正确提升有效上限"), Comp->GetStatEffectiveMax(HealthMaxOnlyTag), 150.0f);
+            NonAuthActor->Destroy();
+        }
+    }
 
     return true;
 }
@@ -298,6 +270,11 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
+/**
+ * @brief 验证 UGameStatComponent 全部对外公开 API 边界、标签集合获取与注销行为
+ * @param Parameters 自动化测试参数
+ * @return 测试是否通过
+ */
 bool FGameStatFullApiCoverageTest::RunTest([[maybe_unused]] const FString& Parameters) {
     UGameStatComponent* Comp = NewObject<UGameStatComponent>();
     const FGameplayTag TagA = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Attribute.Test.CovA")));
@@ -340,43 +317,4 @@ bool FGameStatFullApiCoverageTest::RunTest([[maybe_unused]] const FString& Param
     return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-    FGameStatOwnerSubscriptionTargetedReplayTest,
-    "Game.GameplayCore.Stat.OwnerSubscriptionTargetedReplay",
-    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
-)
-
-bool FGameStatOwnerSubscriptionTargetedReplayTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UGameStatComponent* Comp = NewObject<UGameStatComponent>();
-    const FGameplayTag ArmorTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Attribute.Subscribe.TargetedReplay")));
-    Comp->RegisterStat(ArmorTag, 80.0f, 80.0f, 0.0f);
-
-    UGameStatComponent* FirstOwner = NewObject<UGameStatComponent>();
-    UGameStatComponent* SecondOwner = NewObject<UGameStatComponent>();
-    int32 FirstCallbackCount = 0;
-    int32 SecondCallbackCount = 0;
-    float SecondObservedValue = 0.0f;
-
-    Comp->SubscribeStatChanged(FirstOwner, ArmorTag,
-        [&FirstCallbackCount](const FGameplayTag&, float, float, float) {
-            ++FirstCallbackCount;
-        });
-    TestEqual(TEXT("首个 Owner 订阅收到初始回放"), FirstCallbackCount, 1);
-
-    Comp->SubscribeStatChanged(SecondOwner, ArmorTag,
-        [&SecondCallbackCount, &SecondObservedValue](const FGameplayTag&, float, float NewValue, float) {
-            ++SecondCallbackCount;
-            SecondObservedValue = NewValue;
-        });
-    TestEqual(TEXT("第二个 Owner 订阅不向首个订阅者重复回放"), FirstCallbackCount, 1);
-    TestEqual(TEXT("第二个 Owner 仅收到一次初始回放"), SecondCallbackCount, 1);
-    TestEqual(TEXT("第二个 Owner 收到当前值"), SecondObservedValue, 80.0f);
-
-    Comp->ModifyStat(ArmorTag, -10.0f);
-    TestEqual(TEXT("后续有效值变化仍通知首个订阅者"), FirstCallbackCount, 2);
-    TestEqual(TEXT("后续有效值变化仍通知第二个订阅者"), SecondCallbackCount, 2);
-    return true;
-}
-
 #endif
-

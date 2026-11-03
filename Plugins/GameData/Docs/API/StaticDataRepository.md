@@ -31,18 +31,18 @@ enum class EStaticDataBinError : uint8 {
 struct FStaticDataContentDigest {
     int32 TableCount = 0;
     int32 RowCount = 0;
-    FString Digest;   // 顺序无关的 SHA-1 摘要，空仓库为空输入摘要
+    FString Digest;   // 顺序无关的 SHA-1 摘要，空仓库为空输入摘要（da39a3ee5e6b4b0d3255bfef95601890afd80709）
 };
 ```
 
-表按结构名、行按行键排序后计入摘要，与装载顺序无关；同一批数据无论经 `.bin` 还是 JSON 通道装载，摘要必须一致。
+表按结构名、行按行键字典序排序后计入摘要，结构名与行键统一通过 `FTCHARToUTF8` 转为标准 UTF-8 字节流参与 SHA-1 计算，与装载顺序解耦且跨平台（Windows/Mac/Linux）保证二进制对拍摘要绝对统一；同一批数据无论经 `.bin` 还是 JSON 通道装载，摘要必须一致。
 
 ---
 
 ## 3. 文件格式
 
 ```text
-[magic:4] [格式版本:4] [表数:4]
+[magic:4 (TSDB)] [格式版本:4 (v2)] [表数:4]
   { [结构名 FString] [行数:4] { [行键 FString] [行负载长度:4] [行负载字节] } }
 [CRC32:4]
 ```
@@ -53,6 +53,8 @@ struct FStaticDataContentDigest {
 ---
 
 ## 4. 类接口
+
+### 4.1 泛型数据仓库 `FStaticDataRepository`
 
 ```cpp
 class GAMEDATACORE_API FStaticDataRepository {
@@ -78,18 +80,38 @@ public:
 };
 ```
 
-### 4.1 序列化器注册
+### 4.2 二进制编解码器 `FStaticDataBinCodec`
+
+```cpp
+class GAMEDATACORE_API FStaticDataBinCodec {
+public:
+    [[nodiscard]] static bool Encode(const TMap<FName, FStaticDataBinaryTable>& InTables, TArray<uint8>& OutFileBytes);
+    [[nodiscard]] static EStaticDataBinError Decode(const TArray<uint8>& InFileBytes, TMap<FName, FStaticDataBinaryTable>& OutTables);
+    [[nodiscard]] static FStaticDataContentDigest ComputeDigest(const TMap<FName, FStaticDataBinaryTable>& InTables);
+    [[nodiscard]] static FString DescribeError(EStaticDataBinError InError);
+};
+```
+
+### 4.3 数据表 JSON 装载工具 `FDataTableLoaderUtils`
+
+```cpp
+class FDataTableLoaderUtils {
+public:
+    FDataTableLoaderUtils() = delete;
+
+    template <typename TRowType>
+    [[nodiscard]] static bool LoadTableFromJson(const FString& FilePath, TMap<FName, TRowType>& OutMap);
+};
+```
+
+- `LoadTableFromJson` 在入口统一清空 `OutMap`，失败时不残留半填充脏数据；
+- 内部采用 `MoveTemp` 零拷贝装配行数据，消除大结构体反序列化过程中的多余深拷贝。
+
+### 4.4 序列化器注册与装载细节
 - `StructName` 必须与 `RowType::StaticStruct()->GetName()` 严格一致。
 - 生成管线为每张表产出 `Serialize{Stem}Row(FArchive&, void*)`，并在注册入口统一登记。
 - 同结构重复登记即覆盖；重复 `AddTable` 即整表覆盖。
-
-### 4.2 装载与导出
-- `ImportFromFile`：校验 magic / 格式版本 / CRC，失败时保持已装载数据不变并置错误码。
-- `ExportToFile`：整体导出；写盘失败置 `IoFailure`。
-- 运行期冷启动由 `UStaticDataSubsystem` 调用 `ImportFromFile`，失败自动回落 JSON 通道。
-
-### 4.3 原子性与诊断
-- `ImportFromFile` 先解析到临时表集合，全部成功后才换入，失败零污染。
+- `ImportFromFile` 内部委托 `FStaticDataBinCodec::Decode` 先解析到临时表集合，全部成功后原子换入，失败零污染。
 - `GetLastError()` 记录最近一次失败原因，供日志与验收脚本定位。
 - `Reset()` 清空数据与错误码，已登记序列化器保留。
 

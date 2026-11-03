@@ -52,7 +52,9 @@ public:
     using FCallback = TFunction<void(const FConfigVariant&)>;
 
 private:
-    /** 订阅条目：唯一 ID + 类型擦除回调（TFunction 无法按值比较，退订只能按 ID 匹配） */
+    /**
+     * @brief 订阅条目结构（唯一 ID + 类型擦除回调，退订按 ID 匹配）
+     */
     struct FWatcherEntry {
         uint64 SubscriptionId = 0;
         FCallback Callback;
@@ -121,16 +123,39 @@ void FConfigRegistry::FWatcherState::RemoveListener(uint64 SubscriptionId) {
     });
 }
 
+/**
+ * @brief 查询配置键是否已注册
+ * @param Name 配置键
+ * @return 已注册返回 true
+ */
 bool FConfigRegistry::IsRegistered(FName Name) const {
     FReadScopeLock ReadLock(RwLock);
     return Entries.Contains(Name);
 }
 
+/**
+ * @brief 获取全局版本号（每次注册/覆盖自增）
+ * @return 当前版本号
+ */
 uint32 FConfigRegistry::GetVersion() const noexcept {
     FReadScopeLock ReadLock(RwLock);
     return GlobalVersion;
 }
 
+/**
+ * @brief 获取全局单例
+ * @return 单例引用
+ */
+FConfigRegistry& FConfigRegistry::Get() {
+    static FConfigRegistry Instance;
+    return Instance;
+}
+
+/**
+ * @brief 注册默认值（仅未注册时写入）
+ * @param Name 配置键
+ * @param DefaultValue 默认值变体
+ */
 void FConfigRegistry::ApplyRegister(FName Name, FConfigVariant&& DefaultValue) {
     FWriteScopeLock WriteLock(RwLock);
     if (Entries.Contains(Name)) {
@@ -147,6 +172,12 @@ void FConfigRegistry::ApplyRegister(FName Name, FConfigVariant&& DefaultValue) {
     }
 }
 
+/**
+ * @brief 覆盖写入并广播订阅（只读键拒绝）
+ * @param Name 配置键
+ * @param NewValue 新值变体
+ * @return 写入结果码
+ */
 ESetConfigResult FConfigRegistry::ApplySet(FName Name, FConfigVariant&& NewValue) {
     FConfigVariant BroadcastValue;
     bool bRejected = false;
@@ -170,7 +201,7 @@ ESetConfigResult FConfigRegistry::ApplySet(FName Name, FConfigVariant&& NewValue
         }
     }
     if (bRejected) {
-        ensureMsgf(false, TEXT("【配置注册表】SetConfig 拒绝：只读配置键 [%s] 不可覆盖！"), *Name.ToString());
+        ensureAlwaysMsgf(false, TEXT("【配置注册表】SetConfig 拒绝：只读配置键 [%s] 不可覆盖！"), *Name.ToString());
         if constexpr (Game::Config::bEnableLog) {
             UE_LOG(LogGameConfig, Warning, TEXT("【配置注册表】设置配置失败：只读配置键 [%s] 不可覆盖。"), *Name.ToString());
         }
@@ -186,6 +217,12 @@ ESetConfigResult FConfigRegistry::ApplySet(FName Name, FConfigVariant&& NewValue
     return ESetConfigResult::Applied;
 }
 
+/**
+ * @brief 注册键订阅（懒创建订阅状态）
+ * @param Name 配置键
+ * @param InListener 类型擦除回调
+ * @return RAII 订阅守卫
+ */
 TSharedRef<FObserverSubscription> FConfigRegistry::AddWatcher(FName Name, TFunction<void(const FConfigVariant&)> InListener) {
     TSharedPtr<FWatcherState> State;
     {
@@ -205,11 +242,11 @@ TSharedRef<FObserverSubscription> FConfigRegistry::AddWatcher(FName Name, TFunct
     return Subscription;
 }
 
-FConfigRegistry& FConfigRegistry::Get() {
-    static FConfigRegistry Instance;
-    return Instance;
-}
-
+/**
+ * @brief 取变体当前承载的类型名（诊断用）
+ * @param InVariant 源变体
+ * @return 类型名文案
+ */
 FString FConfigRegistry::VariantTypeName(const FConfigVariant& InVariant) {
     FString TypeName = TEXT("未知类型");
     Visit([&TypeName](const auto& Stored) {

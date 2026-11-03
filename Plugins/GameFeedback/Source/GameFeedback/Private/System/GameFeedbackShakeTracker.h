@@ -14,7 +14,17 @@ class APlayerCameraManager;
  * @brief 按 PlayerCameraManager 独立维护同帧最大振幅震动实例
  */
 class FGameFeedbackShakeTracker {
+private:
+    struct FState {
+        TWeakObjectPtr<UCameraShakeBase> Instance = nullptr;
+        uint64 LastFrame = 0;
+        float MaxScale = 0.0f;
+    };
+
 public:
+    /**
+     * @brief 默认构造镜头震动追踪器
+     */
     FGameFeedbackShakeTracker() = default;
 
     /**
@@ -38,11 +48,5 @@ public:
     void StopAll();
 
 private:
-    struct FState {
-        TWeakObjectPtr<UCameraShakeBase> Instance = nullptr;
-        uint64 LastFrame = 0;
-        float MaxScale = 0.0f;
-    };
-
     TMap<TWeakObjectPtr<APlayerCameraManager>, FState> States;
 };

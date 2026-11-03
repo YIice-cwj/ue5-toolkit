@@ -40,7 +40,23 @@ public:
         LastChannel = ActualChannel;
     }
 
+    /**
+     * @brief 加载状态变动回调：记录加载态与目标关卡
+     * @param bInIsLoading 是否处于加载态
+     * @param InTargetLevelName 目标关卡名称
+     */
+    UFUNCTION()
+    void OnLoadingStateChanged(bool bInIsLoading, FName InTargetLevelName) {
+        bLastIsLoading = bInIsLoading;
+        LastTargetLevel = InTargetLevelName;
+        ++LoadingChangeCount;
+    }
+
     int32 ReceivedCount = 0;
     FGameplayTag LastChannel;
+
+    bool bLastIsLoading = false;
+    FName LastTargetLevel = NAME_None;
+    int32 LoadingChangeCount = 0;
 };
 

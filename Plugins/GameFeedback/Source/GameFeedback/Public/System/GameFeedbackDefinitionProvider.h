@@ -76,15 +76,6 @@ public:
      */
     void Deinitialize() override;
 
-private:
-    /**
-     * @brief 解析软定义，命中强缓存或已加载对象时直接返回，否则去重发起异步加载
-     * @param Definition 待解析软定义
-     * @return 已加载定义；加载中或加载失败时返回 nullptr
-     */
-    const UGameFeedbackDefinition* ResolveDefinition(const TSoftObjectPtr<UGameFeedbackDefinition>& Definition);
-
-public:
     /**
      * @brief 安全获取当前世界的定义提供者
      * @param WorldContextObject 世界上下文对象
@@ -93,6 +84,13 @@ public:
     static UGameFeedbackDefinitionProvider* GetPtr(const UObject* WorldContextObject);
 
 private:
+    /**
+     * @brief 解析软定义，命中强缓存或已加载对象时直接返回，否则去重发起异步加载
+     * @param Definition 待解析软定义
+     * @return 已加载定义；加载中或加载失败时返回 nullptr
+     */
+    const UGameFeedbackDefinition* ResolveDefinition(const TSoftObjectPtr<UGameFeedbackDefinition>& Definition);
+
     UPROPERTY()
     TObjectPtr<UGameFeedbackRegistry> LoadedRegistry = nullptr;
 

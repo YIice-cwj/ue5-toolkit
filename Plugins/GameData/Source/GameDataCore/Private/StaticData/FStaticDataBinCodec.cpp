@@ -109,8 +109,9 @@ FStaticDataContentDigest FStaticDataBinCodec::ComputeDigest(const TMap<FName, FS
     for (const FName& StructName : SortedStructNames) {
         const FStaticDataBinaryTable& Table = InTables.FindChecked(StructName);
         const FString StructNameText = StructName.ToString();
+        const FTCHARToUTF8 StructNameUtf8(*StructNameText);
         const int32 RowCount = Table.Rows.Num();
-        Hasher.Update(reinterpret_cast<const uint8*>(*StructNameText), static_cast<uint32>(StructNameText.Len() * sizeof(TCHAR)));
+        Hasher.Update(reinterpret_cast<const uint8*>(StructNameUtf8.Get()), static_cast<uint32>(StructNameUtf8.Length()));
         Hasher.Update(reinterpret_cast<const uint8*>(&RowCount), sizeof(RowCount));
 
         TArray<FName> SortedRowKeys;
@@ -120,7 +121,8 @@ FStaticDataContentDigest FStaticDataBinCodec::ComputeDigest(const TMap<FName, FS
         for (const FName& RowKey : SortedRowKeys) {
             const TArray<uint8>& Payload = Table.Rows.FindChecked(RowKey);
             const FString RowKeyText = RowKey.ToString();
-            Hasher.Update(reinterpret_cast<const uint8*>(*RowKeyText), static_cast<uint32>(RowKeyText.Len() * sizeof(TCHAR)));
+            const FTCHARToUTF8 RowKeyUtf8(*RowKeyText);
+            Hasher.Update(reinterpret_cast<const uint8*>(RowKeyUtf8.Get()), static_cast<uint32>(RowKeyUtf8.Length()));
             if (Payload.Num() > 0) {
                 Hasher.Update(Payload.GetData(), static_cast<uint32>(Payload.Num()));
             }

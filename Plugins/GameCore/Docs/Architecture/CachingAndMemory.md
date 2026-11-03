@@ -22,7 +22,7 @@ graph TD
 
     Eager --> Snapshot[不可变映射快照 TSharedPtr<const TMap>]
     Lazy --> MutexMap[读写锁保护增量填充]
-    LRU --> PoolArray[连续内存节点池 TArray<FLruNode>]
+    LRU --> PoolArray[连续内存节点池 TArray<FLruIndexPool::FLruNode>]
 ```
 
 - **策略配置**：`FCachePolicy::Resolve(Domain)` 从 `FConfigRegistry` 按 `Cache.{Domain}.*` 解析；默认阈值为 `MAX_int64`（即 Automatic 默认落 Eager），由项目按域配置 `LazyMinRows` / `LruMinRows` / `LruCapacity`。
@@ -32,7 +32,7 @@ graph TD
 - **Lazy 策略**：
   未查询过的 Key 在首次命中时动态构建，后续查询直接命中缓存。
 - **LRU 策略**：
-  采用预分配的连续节点池（`TArray<FLruNode>`），利用 `int32` 索引构成双向链表。当缓存容量到达上限时，直接 O(1) 淘汰最久未访问节点，无零散小对象内存分配，彻底消灭内存碎片。
+  采用预分配的连续节点池（`TArray<FLruIndexPool::FLruNode>`），利用 `int32` 索引构成双向链表。当缓存容量到达上限时，直接 O(1) 淘汰最久未访问节点，无零散小对象内存分配，彻底消灭内存碎片。
 
 ### 1.2 指针稳定化、单键失效与引用计数兜底
 所有从缓存中取出的复合数据，均以 `TSharedPtr<const ValueType>` 形式交付给调用方。即便在缓存执行 `Rebuild()`、执行 LRU 驱逐或调用 `Invalidate(Key)` 精确单条剔除时：

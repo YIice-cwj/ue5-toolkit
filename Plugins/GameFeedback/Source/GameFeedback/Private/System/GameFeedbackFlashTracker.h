@@ -18,7 +18,17 @@ class UWorld;
  * @brief 维护网格组件 Overlay 材质与到期定时器，保证续期与还原安全
  */
 class FGameFeedbackFlashTracker {
+private:
+    struct FRecord {
+        TStrongObjectPtr<UMaterialInterface> OriginalOverlayMaterial = nullptr;
+        double ExpirationRealTime = 0.0;
+        FTimerHandle TimerHandle;
+    };
+
 public:
+    /**
+     * @brief 默认构造闪白追踪器
+     */
     FGameFeedbackFlashTracker() = default;
 
     /**
@@ -44,18 +54,25 @@ public:
      */
     void Shutdown(UWorld* World);
 
+    /**
+     * @brief 设置时间提供者（用于测试或可控时钟注入）
+     * @param InTimeProvider 返回当前时间（秒）的函数对象
+     */
+    void SetTimeProvider(TFunction<double()> InTimeProvider);
+
 private:
+    /**
+     * @brief 获取当前时间（秒），优先使用注入的时间提供者
+     * @return 当前时间（秒）
+     */
+    double GetCurrentTime() const;
+
     /**
      * @brief 到期回调按真实时间还原 Overlay；提前触发时按剩余时间重新 arm
      * @param WeakMesh 目标网格弱引用
      */
     void OnExpiration(TWeakObjectPtr<UMeshComponent> WeakMesh);
 
-    struct FRecord {
-        TStrongObjectPtr<UMaterialInterface> OriginalOverlayMaterial = nullptr;
-        double ExpirationRealTime = 0.0;
-        FTimerHandle TimerHandle;
-    };
-
+    TFunction<double()> TimeProvider;
     TMap<TWeakObjectPtr<UMeshComponent>, FRecord> Records;
 };

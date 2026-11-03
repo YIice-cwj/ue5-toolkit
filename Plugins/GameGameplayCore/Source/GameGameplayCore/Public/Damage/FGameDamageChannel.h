@@ -28,18 +28,6 @@ public:
     FGameDamageChannel(const FGameplayTag& InTag, float InMag) : ChannelTag(InTag), Magnitude(InMag) {}
 
     /**
-     * @brief 伤害通道标签
-     */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Game|Damage")
-    FGameplayTag ChannelTag;
-
-    /**
-     * @brief 伤害通道数值大小
-     */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Game|Damage")
-    float Magnitude = 0.0f;
-
-    /**
      * @brief 在通道列表中精确查找指定标签的通道条目（常量版本）
      * @param InChannels 源通道数组
      * @param InTag 目标精确标签
@@ -118,4 +106,16 @@ public:
             InChannels.Emplace(InTag, InDelta);
         }
     }
+
+    /**
+     * @brief 伤害通道标签
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Game|Damage")
+    FGameplayTag ChannelTag;
+
+    /**
+     * @brief 伤害通道数值大小
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Game|Damage")
+    float Magnitude = 0.0f;
 };

@@ -27,10 +27,10 @@ bool UGameGameplayAbility::CanActivateAbility(const FGameplayAbilitySpecHandle H
     if (!Super::CanActivateAbility(Handle, ActorInfo, SourceTags, TargetTags, OptionalRelevantTags)) {
         return false;
     }
-    const UAbilitySystemComponent* AbilitySystemComponent = ActorInfo->AbilitySystemComponent.Get();
-    if (AbilitySystemComponent == nullptr) {
-        return false;
+    if (BlockingStateTags.IsEmpty()) {
+        return true;
     }
+    const UAbilitySystemComponent* AbilitySystemComponent = ActorInfo->AbilitySystemComponent.Get();
     if (AbilitySystemComponent->HasAnyMatchingGameplayTags(BlockingStateTags)) {
         if (OptionalRelevantTags != nullptr) {
             OptionalRelevantTags->AppendTags(AbilitySystemComponent->GetOwnedGameplayTags().Filter(BlockingStateTags));

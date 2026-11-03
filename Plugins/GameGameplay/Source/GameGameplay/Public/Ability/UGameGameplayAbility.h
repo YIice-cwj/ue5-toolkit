@@ -30,7 +30,7 @@ enum class EGameAbilityTriggerSource : uint8 {
 /**
  * @brief GAS 能力基类（游戏无关）
  */
-UCLASS(Abstract)
+UCLASS()
 class GAMEGAMEPLAY_API UGameGameplayAbility : public UGameplayAbility {
     GENERATED_BODY()
 
@@ -72,19 +72,6 @@ public:
      */
     [[nodiscard]] EGameAbilityTriggerSource GetTriggerSource() const noexcept;
 
-protected:
-    /**
-     * @brief 激活否决标签：持有任一即短路激活（死亡 / 硬直等，具体标签由游戏层配置，框架零业务字面）
-     */
-    UPROPERTY(EditDefaultsOnly, Category = "Game|Ability")
-    FGameplayTagContainer BlockingStateTags;
-
-    /**
-     * @brief 触发事件标签到触发来源的映射配置（未命中且带事件标签时按效果触发计）
-     */
-    UPROPERTY(EditDefaultsOnly, Category = "Game|Ability")
-    TMap<FGameplayTag, EGameAbilityTriggerSource> TriggerSourceTagMap;
-
 private:
     /**
      * @brief 由触发事件数据解析触发来源
@@ -100,4 +87,17 @@ private:
      */
     UPROPERTY(Replicated)
     EGameAbilityTriggerSource TriggerSource = EGameAbilityTriggerSource::Input;
+
+protected:
+    /**
+     * @brief 激活否决标签：持有任一即短路激活（死亡 / 硬直等，具体标签由游戏层配置，框架零业务字面）
+     */
+    UPROPERTY(EditDefaultsOnly, Category = "Game|Ability")
+    FGameplayTagContainer BlockingStateTags;
+
+    /**
+     * @brief 触发事件标签到触发来源的映射配置（未命中且带事件标签时按效果触发计）
+     */
+    UPROPERTY(EditDefaultsOnly, Category = "Game|Ability")
+    TMap<FGameplayTag, EGameAbilityTriggerSource> TriggerSourceTagMap;
 };

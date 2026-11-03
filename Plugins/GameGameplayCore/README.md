@@ -41,6 +41,9 @@ sequenceDiagram
   - **属性修正器与派生数值**：`AddStatModifier` / `RemoveStatModifier` / `ClearStatModifiers`，支持加算、乘算、覆写；`GetStatEffectiveCurrent/Max/Percent` 读取叠加后的派生值。
   - **按 Tag 订阅**：`SubscribeStatChanged` 订阅时立即回放当前值，UI 无初始空白。
   - **动静双轨多播委托**：同时支持蓝图动态委托与 C++ 原生弱引用 Lambda 委托。
+- **生命与存活状态机 `UGameVitalComponent`**：
+  - 遵循 SRP 职责解耦，独立承载主生命标签绑定、存活判定（`IsVitalAlive`）、致死判定与复活（`ReviveVital`）；
+  - 自动与 `UGameStatComponent` 协同，网络复制支持幂等去重，提供双轨生死状态变更广播。
 - **通用 Buff / 状态组件 `UGameBuffComponent`**：
   - 框架不预置任何具体 Buff，`FGameBuffSpec` 由开发者用 `GameplayTag` 自由描述；
   - 叠层策略（刷新时长 / 累加时长 / 独立实例）、持续时长、状态标签聚合与属性修正器挂接；
@@ -59,11 +62,12 @@ sequenceDiagram
 
 ## 快速上手
 
-### 1. 为目标 Actor 添加 `UGameStatComponent` 并实现 `IDamageable`
+### 1. 为目标 Actor 添加 `UGameStatComponent`、`UGameVitalComponent` 并实现 `IDamageable`
 
 ```cpp
 #include "Damage/IDamageable.h"
 #include "Stat/UGameStatComponent.h"
+#include "Stat/UGameVitalComponent.h"
 #include "GameplayTagsManager.h"
 
 UCLASS()
@@ -73,11 +77,13 @@ class ACombatDummy : public AActor, public IDamageable {
 public:
     ACombatDummy() {
         StatComp = CreateDefaultSubobject<UGameStatComponent>(TEXT("StatComp"));
+        VitalComp = CreateDefaultSubobject<UGameVitalComponent>(TEXT("VitalComp"));
+        VitalComp->BindStatComponent(StatComp);
 
         // 开发者自由注册所需属性（如生命、护盾）
         const FGameplayTag HealthTag = FGameplayTag::RequestGameplayTag(TEXT("Attribute.Health"));
         StatComp->RegisterStat(HealthTag, 200.0f, 200.0f, 0.0f);
-        StatComp->SetPrimaryVitalTag(HealthTag);
+        VitalComp->SetPrimaryVitalTag(HealthTag);
     }
 
     FGameDamageResult ApplyDamageContext_Implementation(const FGameDamageContext& Context) override {
@@ -92,7 +98,7 @@ public:
         
         // 开发者自由注入反馈标签与动态数值（命中、致死、材质表现等全 Tag 驱动）
         Result.AddFeedbackTag(FGameplayTag::RequestGameplayTag(TEXT("Damage.Feedback.Hit")));
-        if (!StatComp->IsVitalAlive()) {
+        if (!VitalComp->IsVitalAlive()) {
             Result.AddFeedbackTag(FGameplayTag::RequestGameplayTag(TEXT("Damage.Feedback.Fatal")));
         }
         Result.AddFeedbackTag(FGameplayTag::RequestGameplayTag(TEXT("Damage.Feedback.HitReaction.Flesh")));
@@ -103,6 +109,9 @@ public:
 private:
     UPROPERTY(VisibleAnywhere)
     TObjectPtr<UGameStatComponent> StatComp;
+
+    UPROPERTY(VisibleAnywhere)
+    TObjectPtr<UGameVitalComponent> VitalComp;
 };
 ```
 
@@ -147,11 +156,13 @@ Plugins/GameGameplayCore/
 │       │   │   ├── FGameStatAcknowledgedDiff.h       # 复制差分去重
 │       │   │   ├── UGameStatComponent.h              # 通用数值管理组件
 │       │   │   └── UGameVitalComponent.h             # 生命与生死状态组件
-│       │   └── Buff/
-│       │       ├── FGameBuffTypes.h                  # Buff 数据契约
-│       │       ├── FGameActiveBuffArray.h            # FastArray 增量复制容器
-│       │       ├── FGameBuffModifierBridge.h         # 修正器挂接与回滚桥接
-│       │       └── UGameBuffComponent.h              # 通用 Buff / 状态核心组件
+│       │   ├── Buff/
+│       │   │   ├── FGameBuffTypes.h                  # Buff 数据契约
+│       │   │   ├── FGameActiveBuffArray.h            # FastArray 增量复制容器
+│       │   │   ├── FGameBuffModifierBridge.h         # 修正器挂接与回滚桥接
+│       │   │   └── UGameBuffComponent.h              # 通用 Buff / 状态核心组件
+│       │   └── Tests/
+│       │       └── GameDamageTestTarget.h            # 测试用受击目标
 │       ├── Private/
 │       │   ├── GameGameplayCore.cpp
 │       │   ├── Stat/
@@ -166,12 +177,21 @@ Plugins/GameGameplayCore/
 │       │   │   ├── FGameBuffModifierBridge.cpp
 │       │   │   └── UGameBuffComponent.cpp
 │       │   └── Tests/
-│       │       ├── FGameStatEvaluatorTest.cpp
-│       │       ├── FGameBuffModifierBridgeTest.cpp
-│       │       ├── UGameBuffComponentTest.cpp
+│       │       ├── FGameDamageChannelTest.cpp
+│       │       ├── FGameDamageContextTest.cpp
+│       │       ├── FGameDamageResultTest.cpp
+│       │       ├── FIDamageableTest.cpp
+│       │       ├── GameDamageTestTarget.cpp
+│       │       ├── FGameStatEffectiveEvaluatorTest.cpp
+│       │       ├── FGameStatAcknowledgedDiffTest.cpp
+│       │       ├── FGameStatModifierContainerTest.cpp
+│       │       ├── FGameStatSubscriptionHubTest.cpp
 │       │       ├── UGameStatComponentTest.cpp
+│       │       ├── UGameVitalComponentTest.cpp
 │       │       ├── UGameStatPerformanceTest.cpp
-│       │       └── UGameVitalComponentTest.cpp
+│       │       ├── FGameBuffModifierBridgeTest.cpp
+│       │       ├── FGameActiveBuffArrayTest.cpp
+│       │       └── UGameBuffComponentTest.cpp
 │       └── GameGameplayCore.Build.cs
 ├── Docs/                                     # 详细技术文档库
 │   ├── Architecture/                         # 核心架构设计
@@ -181,6 +201,7 @@ Plugins/GameGameplayCore/
 │   │   ├── DamageTypes.md
 │   │   ├── IDamageable.md
 │   │   ├── GameStatComponent.md
+│   │   ├── GameVitalComponent.md
 │   │   └── BuffComponent.md
 │   └── Guides/                               # 实践指南
 │       ├── QuickStart.md
@@ -194,27 +215,55 @@ Plugins/GameGameplayCore/
 
 ## 自动化测试
 
-插件包含完整的自动化测试集（Automation Tests），可在虚幻编辑器 Test Automation 窗口中过滤 `Game.GameplayCore` 执行，或通过命令行运行：
+插件包含完整的自动化测试集（Automation Tests，共 37 项），可在虚幻编辑器 Test Automation 窗口中过滤 `Game.GameplayCore` 执行，或通过命令行运行：
 
 ```bash
 UnrealEditor-Cmd <Project.uproject> -ExecCmds="Automation RunTests Game.GameplayCore; Quit" -nullrhi -unattended
 ```
 
 测试集涵盖：
-- `Game.GameplayCore.Damage.ResultFeedback`：反馈标签增删查、动态数值参数注入与默认值测试
-- `Game.GameplayCore.Stat.RegistrationAndClamping`：多属性动态注册、加减数值 Min/Max 自动钳制与实际变动差值验证
-- `Game.GameplayCore.Stat.PrimaryVital`：主生命属性耗尽致死判定、委托广播与显式恢复
-- `Game.GameplayCore.Stat.ProxyReviveAndVital`：未本地注册属性的代理写、死亡广播与比例复活验证
-- `Game.GameplayCore.Stat.ProxyMode`：外部数据源代理旁路、原生委托透明查询、解绑自持安全回退与数值缓存
-- `Game.GameplayCore.Stat.ProxyWriteContract`：代理写委托转发、未绑定写委托时拒绝写入、写入后回读一致
-- `Game.GameplayCore.Stat.TaggedSubscription`：按 Tag 订阅、订阅即回放当前值、退订后不再回调
-- `Game.GameplayCore.Stat.RegisterReplay`：未注册属性先订阅，注册时立即以初始值回放，修正器变化继续触发
-- `Game.GameplayCore.Stat.ModifierStack`：加算 / 乘算 / 覆写叠加、句柄精确移除与派生值计算
-- `Game.GameplayCore.Buff.StackAndExpire`：叠层策略、持续时长到期移除与授予标签回收
-- `Game.GameplayCore.Buff.IndependentInstances`：独立实例策略生命周期与 MaxStacks 堆叠上限拒绝校验
-- `Game.GameplayCore.Buff.RemoveStacks`：逐层削减 Buff 层数与归零自动清理
-- `Game.GameplayCore.Buff.CooldownAsStatus`：冷却以 Buff 承载，激活期间授予状态标签并挂接属性修正
-- `Game.GameplayCore.Buff.ReplicationCallbacks`：FastArray 增 / 改 / 删回调重建修正器并分发事件
+- **伤害管线 (Damage，共 4 项)**：
+  - `Game.GameplayCore.Damage.ChannelOperations`：伤害通道增删查、精确匹配、GameplayTag 层级继承求和与可变指针修改
+  - `Game.GameplayCore.Damage.ContextOperations`：伤害上下文通道设置、通道累加、总基础伤害汇总与特质标签注入
+  - `Game.GameplayCore.Damage.IDamageableContract`：受击接口 C++ 反射契约调用、同步反馈回传与默认空实现回退
+  - `Game.GameplayCore.Damage.ResultFeedback`：反馈标签增删查、动态数值参数注入、实际通道数值读取与主通道推断（正/负值通道）
+- **通用数值 (Stat，共 13 项)**：
+  - `Game.GameplayCore.Stat.RegistrationAndClamping`：多属性动态注册、加减数值 Min/Max 自动钳制与实际变动差值验证
+  - `Game.GameplayCore.Stat.BoundaryClamping`：极值越界防御与 Clamp 边界一致性
+  - `Game.GameplayCore.Stat.SetMaxClamping`：上限调整（等比缩放 / 绝对截断）时当前值与下限钳制不变式
+  - `Game.GameplayCore.Stat.TaggedSubscription`：按 Tag 订阅、订阅即回放当前值、退订后不再回调
+  - `Game.GameplayCore.Stat.RegisterReplay`：未注册属性先订阅，注册时立即以初始值回放，修正器变化继续触发
+  - `Game.GameplayCore.Stat.OwnerBoundSubscription`：绑定 UObject Owner 生命周期的弱引用订阅与失效自动回收
+  - `Game.GameplayCore.Stat.OwnerSubscriptionTargetedReplay`：新订阅者专属初始值回放，不扰动既有订阅者
+  - `Game.GameplayCore.Stat.ModifierStack`：加算 / 乘算 / 覆写叠加、句柄精确移除与派生值计算
+  - `Game.GameplayCore.Stat.EffectiveEvaluator`：底层有效值纯函数演算器测试
+  - `Game.GameplayCore.Stat.AcknowledgedDiff`：网络复制差分计算与客户端变更去重
+  - `Game.GameplayCore.Stat.Replication`：OnRep 属性全量重构、索引映射表同步、委托差分分发与去重
+  - `Game.GameplayCore.Stat.DefensiveBranches`：无效 Tag 拒绝、零增量忽略、未注册属性防御及非权威端写门禁拦截
+  - `Game.GameplayCore.Stat.FullApiCoverage`：组件全 API 边界覆盖
+- **生命与存活状态机 (Vital，共 5 项)**：
+  - `Game.GameplayCore.Vital.LifecycleAndRevive`：主生命属性绑定、存活判定、致死跃迁、动态广播与百分比复活
+  - `Game.GameplayCore.Vital.RepAliveDeduplication`：网络复制存活状态到达与属性复制到达客户端的幂等去重验证
+  - `Game.GameplayCore.Vital.RepAliveForwardBroadcast`：客户端仅网络复制布尔到达时的纯转发广播触发与重复去重
+  - `Game.GameplayCore.Vital.ActorLifecycle`：真实 Actor 挂接生命周期、BeginPlay 自动解析数值组件与 EndPlay 安全解绑
+  - `Game.GameplayCore.Vital.TagSwitchAndBoundary`：动态切换主生命标签、清除主生命标签恢复默认态与复活极值边界校验
+- **通用状态与 Buff (Buff，共 14 项)**：
+  - `Game.GameplayCore.Buff.StackAndExpire`：叠层策略、持续时长到期移除与授予标签回收
+  - `Game.GameplayCore.Buff.IndependentInstances`：独立实例策略生命周期与 MaxStacks 堆叠上限拒绝校验
+  - `Game.GameplayCore.Buff.RemoveStacks`：逐层削减 Buff 层数与归零自动清理
+  - `Game.GameplayCore.Buff.CooldownAsStatus`：冷却以 Buff 承载，激活期间授予状态标签并挂接属性修正
+  - `Game.GameplayCore.Buff.ReplicationCallbacks`：FastArray 真实网络复制容器的增 / 改 / 删回调、修正器重建与事件分发
+  - `Game.GameplayCore.Buff.DefensiveBranches`：无效标签拦截、非法层数截断、非权威端写操作拦截与模拟端本地计时器自适应停用
+  - `Game.GameplayCore.Buff.InstanceAndQueryCoverage`：实例查询与标签覆盖
+  - `Game.GameplayCore.Buff.PermanentDurationTransition`：永久 Buff 持续时间转换
+  - `Game.GameplayCore.Buff.ReplicatedSpecChange`：网络复制规格同步
+  - `Game.GameplayCore.Buff.ReplicationEmptyTick`：空 FastArray 复制防抖 Tick
+  - `Game.GameplayCore.Buff.ModifierBridge`：修正器桥接容器、多层加算/乘算/覆写缩放与 ClearAll 批量回滚
+  - `Game.GameplayCore.Buff.ModifierLateBinding`：晚绑定修正器挂接
+  - `Game.GameplayCore.Buff.ModifierRebinding`：重绑定修正器挂接
+  - `Game.GameplayCore.Buff.ModifierDestroyRollback`：销毁时修正器精确回滚
+- **性能基准 (Perf，共 1 项)**：
+  - `Game.GameplayCore.Perf.StatLookup`：高频属性查询与内存开销性能基准
 
 ---
 
@@ -229,6 +278,7 @@ UnrealEditor-Cmd <Project.uproject> -ExecCmds="Automation RunTests Game.Gameplay
   - [伤害数据类型参考](Docs/API/DamageTypes.md)：`FGameDamageContext`、`FGameDamageResult`、`FGameDamageChannel` 详解。
   - [可受击接口参考](Docs/API/IDamageable.md)：`IDamageable` / `UDamageable` 蓝图与 C++ 调用契约。
   - [通用数值组件 API](Docs/API/GameStatComponent.md)：`UGameStatComponent` 属性注册、网络复制、修正器与按 Tag 订阅。
+  - [生命与存活状态组件 API](Docs/API/GameVitalComponent.md)：`UGameVitalComponent` 主生命绑定、存活判定、双轨事件广播与复活机制。
   - [通用 Buff 组件 API](Docs/API/BuffComponent.md)：`UGameBuffComponent`、`FGameBuffSpec`、叠层策略与修正器挂接。
 - **使用指南 (Guides)**
   - [快速上手指南](Docs/Guides/QuickStart.md)：为场景角色添加属性与受击支持。

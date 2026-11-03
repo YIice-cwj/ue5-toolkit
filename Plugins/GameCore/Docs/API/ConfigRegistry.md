@@ -12,6 +12,7 @@
 ### 1.1 `FConfigVariant`
 配置存储的基础类型擦除变体，支持标量与引擎常用数学类型：
 ```cpp
+namespace Game::Config {
 using FConfigVariant = TVariant<
     bool,
     int32,
@@ -24,35 +25,48 @@ using FConfigVariant = TVariant<
     FRotator,
     FGameplayTag
 >;
+}
 ```
 成员上限 24 字节，强类型严格匹配，杜绝隐式数值截断。
+
+### 1.2 `ESetConfigResult`
+配置覆盖写入的结果码：
+```cpp
+enum class ESetConfigResult : uint8 {
+    Applied,          // 写入成功（包含首次注册与运行时覆盖）
+    RejectedReadOnly, // 写入被拒绝（目标键为只读，如 Env.* 或 Shipping 下的 Dev.* 键）
+};
+```
 
 ---
 
 ## 2. `FConfigRegistry` 类方法
 
 ```cpp
-namespace Game::Config {
 class GAMECORE_API FConfigRegistry {
 public:
+    using FConfigVariant = Game::Config::FConfigVariant;
+
     static FConfigRegistry& Get();
 
     template<typename T>
-    void RegisterDefault(const FName& Key, T Value);
+    void RegisterConfig(FName Name, T DefaultValue);
 
     template<typename T>
-    bool SetConfig(const FName& Key, T Value);
+    ESetConfigResult SetConfig(FName Name, T NewValue);
 
     template<typename T>
-    [[nodiscard]] T GetConfig(const FName& Key, const T& Fallback = T{}) const;
+    T GetConfig(FName Name, T FallbackValue = T{}) const;
 
     template<typename T>
-    [[nodiscard]] FObserverSubscription WatchConfig(const FName& Key, TFunction<void(const T&)> Callback);
+    TOptional<T> GetConfigOptional(FName Name) const;
 
-    [[nodiscard]] bool HasKey(const FName& Key) const;
-    void ResetAllConfigs();
+    template<typename T>
+    TSharedRef<FObserverSubscription> WatchConfig(FName Name, TFunction<void(const T&)> OnChanged);
+
+    [[nodiscard]] bool IsRegistered(FName Name) const;
+    [[nodiscard]] uint32 GetVersion() const noexcept;
 };
-}
 ```
 
 ### 接口详细规范
@@ -63,40 +77,60 @@ static FConfigRegistry& Get();
 ```
 - 获取注册中心全局单例（函数局部静态单例，C++11 保证线程安全初始化）。
 
-#### `RegisterDefault<T>`
+#### `RegisterConfig<T>`
 ```cpp
 template<typename T>
-void RegisterDefault(const FName& Key, T Value);
+void RegisterConfig(FName Name, T DefaultValue);
 ```
-- **职责**：幂等注册默认值。若 Key 尚未存在，则写入该值；若已存在则保持当前值不变。
+- **职责**：幂等注册默认值。仅在键尚未注册时写入默认值；若已存在则保持当前值不变，不覆盖既有值。
 
 #### `SetConfig<T>`
 ```cpp
 template<typename T>
-bool SetConfig(const FName& Key, T Value);
+ESetConfigResult SetConfig(FName Name, T NewValue);
 ```
-- **职责**：写入配置新值，并在出锁后派发通知。
+- **职责**：运行时覆盖写入配置新值（未注册时自动注册），并在出锁后广播通知。
 - **只读键保护**：
   - 以 `Env.` 开头的配置永远为只读，运行时拦截写入并报错；
   - 在 Shipping 构建下，以 `Dev.` 开头以及 `Feature.GM` 键被自动设为只读。
-- **返回值**：成功写入返回 `true`；若键受保护或为只读则返回 `false`。
+- **返回值**：成功写入返回 `ESetConfigResult::Applied`；若键受保护或为只读则拒绝并返回 `ESetConfigResult::RejectedReadOnly`。
 
 #### `GetConfig<T>`
 ```cpp
 template<typename T>
-[[nodiscard]] T GetConfig(const FName& Key, const T& Fallback = T{}) const;
+T GetConfig(FName Name, T FallbackValue = T{}) const;
 ```
 - **职责**：按指定强类型读取配置值。
 - **并发保证**：在 `FRWLock` 读锁内完成纯值拷贝后立即出锁，返回纯值副本，调用方处于零锁状态。
-- **异常处理**：若键不存在，返回 `Fallback`；若键存在但类型不匹配，在非 Shipping 模式下触发 `ensureMsgf` 强断言。
+- **异常处理**：若键不存在，返回 `FallbackValue`；若键存在但类型不匹配，在非 Shipping 模式下触发 `ensureMsgf` 强断言。
+
+#### `GetConfigOptional<T>`
+```cpp
+template<typename T>
+TOptional<T> GetConfigOptional(FName Name) const;
+```
+- **职责**：按值取值的可选语义版本。
+- **返回值**：若键存在且类型匹配，返回包含该值的 `TOptional<T>`；若键未注册或类型不匹配，返回未设置的 `TOptional`。
 
 #### `WatchConfig<T>`
 ```cpp
 template<typename T>
-[[nodiscard]] FObserverSubscription WatchConfig(const FName& Key, TFunction<void(const T&)> Callback);
+TSharedRef<FObserverSubscription> WatchConfig(FName Name, TFunction<void(const T&)> OnChanged);
 ```
-- **职责**：订阅该配置的数值变更。
-- **返回值**：`FObserverSubscription` RAII 守卫对象。当守卫对象析构时自动取消订阅。
+- **职责**：订阅该配置的数值变更（响应式热调，零轮询）。
+- **返回值**：`TSharedRef<FObserverSubscription>` RAII 守卫对象。业务方必须持有该守卫；当守卫对象析构时自动取消订阅。
+
+#### `IsRegistered`
+```cpp
+[[nodiscard]] bool IsRegistered(FName Name) const;
+```
+- **职责**：查询指定配置键是否已注册。
+
+#### `GetVersion`
+```cpp
+[[nodiscard]] uint32 GetVersion() const noexcept;
+```
+- **职责**：获取全局版本号（每次注册或覆盖写入时自增）。
 
 ---
 

@@ -110,19 +110,6 @@ public:
         return bDefaultAbilitiesGranted;
     }
 
-protected:
-    UPROPERTY(EditDefaultsOnly, Category = "Game|GAS")
-    TArray<TSubclassOf<UGameplayAbility>> DefaultAbilities;
-
-    UPROPERTY(EditDefaultsOnly, Category = "Game|GAS", meta = (ClampMin = "0"))
-    int32 MaxReplicationRetries = 8;
-
-    UPROPERTY(EditDefaultsOnly, Category = "Game|GAS", meta = (ClampMin = "0"))
-    int32 MaxInitRetries = 60;
-
-    UPROPERTY(EditDefaultsOnly, Category = "Game|GAS", meta = (ClampMin = "0.01"))
-    float RetryIntervalSeconds = 0.05f;
-
 private:
     /**
      * @brief 按组件配置设置初始化与 ASC 复制重试门的间隔和次数上限
@@ -160,4 +147,29 @@ private:
 
     FBootstrapRetryGate InitRetryGate;
     FBootstrapRetryGate ReplicationRetryGate;
+
+protected:
+    /**
+     * @brief 引导完成后向 ASC 权威授予的默认能力规格列表
+     */
+    UPROPERTY(EditDefaultsOnly, Category = "Game|GAS")
+    TArray<TSubclassOf<UGameplayAbility>> DefaultAbilities;
+
+    /**
+     * @brief 等待 ASC 复制通道就绪的最大重试次数
+     */
+    UPROPERTY(EditDefaultsOnly, Category = "Game|GAS", meta = (ClampMin = "0"))
+    int32 MaxReplicationRetries = 8;
+
+    /**
+     * @brief 宿主兜底初始化寻找有效 Avatar 的最大重试次数
+     */
+    UPROPERTY(EditDefaultsOnly, Category = "Game|GAS", meta = (ClampMin = "0"))
+    int32 MaxInitRetries = 60;
+
+    /**
+     * @brief 引导与复制重试的时间间隔（秒）
+     */
+    UPROPERTY(EditDefaultsOnly, Category = "Game|GAS", meta = (ClampMin = "0.01"))
+    float RetryIntervalSeconds = 0.05f;
 };

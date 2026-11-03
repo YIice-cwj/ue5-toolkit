@@ -15,7 +15,9 @@
 
 namespace {
 
-/** 测试用缓存值：记录键与代次，用于区分重建前后的对象世代 */
+/**
+ * @brief 测试用缓存值（记录键与代次，用于区分重建前后的对象世代）
+ */
 struct FUnitTestCacheValue {
     FName Key;
     int32 Generation = 0;
@@ -262,6 +264,50 @@ bool FGameCacheGenerationGuardTest::RunTest([[maybe_unused]] const FString& Para
         TestEqual(TEXT("旧代构建结果被丢弃，返回新代内容"), Value->Generation, 2);
     }
     TestEqual(TEXT("旧构建与重试各执行一次"), BuildCount, 2);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameCachePolicyResolveTest, "Game.Core.Cache.PolicyResolve",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+/**
+ * @brief 验证缓存策略配置驱动解析（默认策略、各策略枚举解析、非法配置回退与容量阈值对账）
+ * @param Parameters 自动化框架参数（未使用）
+ * @return 全部断言通过返回 true
+ */
+bool FGameCachePolicyResolveTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    FConfigRegistry& Registry = FConfigRegistry::Get();
+    const FName DefaultDomain(TEXT("PolicyDefaultDomain"));
+    const FCachePolicy DefaultPolicy = FCachePolicy::Resolve(DefaultDomain);
+    TestTrue(TEXT("未配置域默认落 Automatic"), DefaultPolicy.Strategy == ECacheStrategy::Automatic);
+    TestEqual(TEXT("未配置域 LazyMinRows 默认为 MAX_int64"), DefaultPolicy.LazyMinRows, MAX_int64);
+    TestEqual(TEXT("未配置域 LruMinRows 默认为 MAX_int64"), DefaultPolicy.LruMinRows, MAX_int64);
+    TestEqual(TEXT("未配置域 LruCapacity 默认为 10000"), DefaultPolicy.LruCapacity, 10000LL);
+
+    const FName CustomDomain(TEXT("PolicyCustomDomain"));
+    Registry.SetConfig<FString>(FName(TEXT("Cache.PolicyCustomDomain.Strategy")), TEXT("lru"));
+    Registry.SetConfig<int64>(FName(TEXT("Cache.PolicyCustomDomain.LazyMinRows")), 500LL);
+    Registry.SetConfig<int64>(FName(TEXT("Cache.PolicyCustomDomain.LruMinRows")), 2000LL);
+    Registry.SetConfig<int64>(FName(TEXT("Cache.PolicyCustomDomain.LruCapacity")), 50LL);
+
+    const FCachePolicy LruPolicy = FCachePolicy::Resolve(CustomDomain);
+    TestTrue(TEXT("配置 lru 解析为 ECacheStrategy::Lru"), LruPolicy.Strategy == ECacheStrategy::Lru);
+    TestEqual(TEXT("LazyMinRows 解析准确"), LruPolicy.LazyMinRows, 500LL);
+    TestEqual(TEXT("LruMinRows 解析准确"), LruPolicy.LruMinRows, 2000LL);
+    TestEqual(TEXT("LruCapacity 解析准确"), LruPolicy.LruCapacity, 50LL);
+
+    Registry.SetConfig<FString>(FName(TEXT("Cache.PolicyCustomDomain.Strategy")), TEXT("eager"));
+    TestTrue(TEXT("配置 eager 解析为 ECacheStrategy::Eager"), FCachePolicy::Resolve(CustomDomain).Strategy == ECacheStrategy::Eager);
+
+    Registry.SetConfig<FString>(FName(TEXT("Cache.PolicyCustomDomain.Strategy")), TEXT("lazy"));
+    TestTrue(TEXT("配置 lazy 解析为 ECacheStrategy::Lazy"), FCachePolicy::Resolve(CustomDomain).Strategy == ECacheStrategy::Lazy);
+
+    Registry.SetConfig<FString>(FName(TEXT("Cache.PolicyCustomDomain.Strategy")), TEXT("auto"));
+    TestTrue(TEXT("配置 auto 解析为 ECacheStrategy::Automatic"), FCachePolicy::Resolve(CustomDomain).Strategy == ECacheStrategy::Automatic);
+
+    Registry.SetConfig<FString>(FName(TEXT("Cache.PolicyCustomDomain.Strategy")), TEXT("unknown_invalid_strategy"));
+    TestTrue(TEXT("无法识别的策略回退为 ECacheStrategy::Automatic"), FCachePolicy::Resolve(CustomDomain).Strategy == ECacheStrategy::Automatic);
+
     return true;
 }
 

@@ -1,22 +1,11 @@
+/**
+ * @file UGameplayAttributeValueMapping.cpp
+ * @brief 属性表现契约工具实现
+ */
+
 #include "Attribute/UGameplayAttributeValueMapping.h"
 
 #include "AbilitySystemComponent.h"
-
-UGameplayAttributeValueMapping* UGameplayAttributeValueMapping::CreateAttributeValueMapping(
-    UObject* Outer,
-    UAbilitySystemComponent* InAbilitySystemComponent,
-    const FGameplayAttribute& InAttribute,
-    bool bBroadcastImmediately
-) {
-    if (InAbilitySystemComponent == nullptr) {
-        return nullptr;
-    }
-
-    UObject* EffectiveOuter = Outer != nullptr ? Outer : static_cast<UObject*>(InAbilitySystemComponent);
-    UGameplayAttributeValueMapping* Mapping = NewObject<UGameplayAttributeValueMapping>(EffectiveOuter);
-    Mapping->Bind(InAbilitySystemComponent, InAttribute, bBroadcastImmediately);
-    return Mapping;
-}
 
 void UGameplayAttributeValueMapping::BeginDestroy() {
     Unbind();
@@ -67,6 +56,22 @@ void UGameplayAttributeValueMapping::QueryAndBroadcast() {
     const float CurrentVal = GetCurrentValue();
     OnValueChanged.Broadcast(CurrentVal, CurrentVal);
     OnValueChangedNative.Broadcast(CurrentVal, CurrentVal);
+}
+
+UGameplayAttributeValueMapping* UGameplayAttributeValueMapping::CreateAttributeValueMapping(
+    UObject* Outer,
+    UAbilitySystemComponent* InAbilitySystemComponent,
+    const FGameplayAttribute& InAttribute,
+    bool bBroadcastImmediately
+) {
+    if (InAbilitySystemComponent == nullptr) {
+        return nullptr;
+    }
+
+    UObject* EffectiveOuter = Outer != nullptr ? Outer : static_cast<UObject*>(InAbilitySystemComponent);
+    UGameplayAttributeValueMapping* Mapping = NewObject<UGameplayAttributeValueMapping>(EffectiveOuter);
+    Mapping->Bind(InAbilitySystemComponent, InAttribute, bBroadcastImmediately);
+    return Mapping;
 }
 
 void UGameplayAttributeValueMapping::HandleAttributeChanged(const FOnAttributeChangeData& InChangeData) {

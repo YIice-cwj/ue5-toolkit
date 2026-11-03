@@ -4,6 +4,7 @@
 
 #if WITH_AUTOMATION_TESTS
 
+#include "Async/Async.h"
 #include "Async/ParallelFor.h"
 #include "Containers/Set.h"
 #include "GameLogTestCaptureDevice.h"
@@ -44,18 +45,32 @@ bool FGameLogMacrosConcurrencyTest::RunTest([[maybe_unused]] const FString& Para
         FGameLogCaptureDevice ClogOnceCapture(TEXT("Parallel clog_once emission"));
         FGameLogCaptureDevice ThrottleCapture(TEXT("Parallel throttle emission"));
 
-        ParallelFor(WorkerCount, [&CompletedWorkers, &ThreadIdsLock, &ThreadIds](int32 Index) {
-            {
-                FScopeLock ScopeLock(&ThreadIdsLock);
-                ThreadIds.Add(FPlatformTLS::GetCurrentThreadId());
-            }
-            GAME_LOG(Log, TEXT("Parallel log emission index: %d"), Index);
-            GAME_CLOG(Index % 2 == 0, Log, TEXT("Parallel clog emission index: %d"), Index);
-            GAME_LOG_ONCE(Log, TEXT("Parallel once emission (should only appear once)"));
-            GAME_CLOG_ONCE(Index >= 0, Log, TEXT("Parallel clog_once emission (should only appear once)"));
-            GAME_LOG_THROTTLE(10.0, Log, TEXT("Parallel throttle emission (interval 10s)"));
-            CompletedWorkers.fetch_add(1, std::memory_order_relaxed);
-        });
+        constexpr int32 TaskCount = 16;
+        constexpr int32 IterationsPerTask = WorkerCount / TaskCount;
+        TArray<TFuture<void>> Futures;
+        Futures.Reserve(TaskCount);
+
+        for (int32 TaskIndex = 0; TaskIndex < TaskCount; ++TaskIndex) {
+            Futures.Add(Async(EAsyncExecution::ThreadPool, [&CompletedWorkers, &ThreadIdsLock, &ThreadIds, TaskIndex]() {
+                {
+                    FScopeLock ScopeLock(&ThreadIdsLock);
+                    ThreadIds.Add(FPlatformTLS::GetCurrentThreadId());
+                }
+                for (int32 Step = 0; Step < IterationsPerTask; ++Step) {
+                    const int32 Index = TaskIndex * IterationsPerTask + Step;
+                    GAME_LOG(Log, TEXT("Parallel log emission index: %d"), Index);
+                    GAME_CLOG(Index % 2 == 0, Log, TEXT("Parallel clog emission index: %d"), Index);
+                    GAME_LOG_ONCE(Log, TEXT("Parallel once emission (should only appear once)"));
+                    GAME_CLOG_ONCE(Index >= 0, Log, TEXT("Parallel clog_once emission (should only appear once)"));
+                    GAME_LOG_THROTTLE(10.0, Log, TEXT("Parallel throttle emission (interval 10s)"));
+                    CompletedWorkers.fetch_add(1, std::memory_order_relaxed);
+                }
+            }));
+        }
+
+        for (TFuture<void>& Future : Futures) {
+            Future.Get();
+        }
 
         TestEqual(TEXT("全部并发工作线程均应安全完成日志宏调用"),
             CompletedWorkers.load(std::memory_order_relaxed),

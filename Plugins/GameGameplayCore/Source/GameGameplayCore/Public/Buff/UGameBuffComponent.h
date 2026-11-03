@@ -23,6 +23,9 @@ UCLASS(ClassGroup = (Game), meta = (BlueprintSpawnableComponent))
 class GAMEGAMEPLAYCORE_API UGameBuffComponent : public UActorComponent {
     GENERATED_BODY()
 
+    friend class FGameBuffReplicationCallbacksTest;
+    friend class FGameBuffDefensiveBranchesTest;
+
 public:
     /**
      * @brief 构造函数：启用 Tick（默认关闭）、开启组件网络复制
@@ -206,16 +209,36 @@ private:
     void BroadcastBuffRemoved(const FGameplayTag& InBuffTag);
 
 private:
+    /**
+     * @brief 是否强制要求网络权威端才能施加或移除 Buff
+     */
     UPROPERTY(EditDefaultsOnly, Category = "Game|Buff")
     bool bRequireAuthority = true;
 
+    /**
+     * @brief 活跃 Buff 的 FastArray 增量网络复制容器
+     */
     UPROPERTY(Replicated)
     FGameActiveBuffArray ActiveBuffs;
 
+    /**
+     * @brief 客户端已确认并分发的 Buff 层数缓存表（用于复制去重与差分计算）
+     */
     TMap<FGameplayTag, int32> AcknowledgedStacks;
+
+    /**
+     * @brief 关联的通用数值组件弱引用
+     */
     TWeakObjectPtr<UGameStatComponent> BoundStatComponent;
+
+    /**
+     * @brief 下一个可用的独立 Buff 实例自增 ID
+     */
     int32 NextInstanceId = 1;
 
+    /**
+     * @brief Buff 属性修正器挂接与回滚桥接器
+     */
     FGameBuffModifierBridge ModifierBridge;
 
 public:

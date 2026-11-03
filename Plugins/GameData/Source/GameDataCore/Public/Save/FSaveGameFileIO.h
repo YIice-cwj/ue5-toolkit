@@ -62,12 +62,12 @@ public:
     /**
      * @brief 生成并签发槽位递增的写入代次序号（防止异步并发保存乱序覆写）
      * @param SlotName 存档槽位名称
-     * @return 本次签发的唯一代次序号；删除后仍严格递增，不复用历史代次
+     * @return 本次签发的唯一代次序号；删除后仍沿高水位严格递增，不复用历史代次
      */
     static uint64 IssueSlotSaveGeneration(const FString& SlotName);
 
     /**
-     * @brief 写入槽位删除墓碑，使此前签发的保存代次全部过期
+     * @brief 使槽位当前已签发的全部在途保存代次失效（将已提交高水位推至当前签发水位）
      * @param SlotName 存档槽位名称
      */
     static void InvalidateSlotSaveGeneration(const FString& SlotName);
@@ -84,7 +84,7 @@ public:
     /**
      * @brief 读取指定槽位的二进制字节（正式文件损坏或缺失时自动自 .tmp 临时文件抢救恢复）
      * @param SlotName 存档槽位名称
-     * @param OutBytes 输出的二进制字节数组
+     * @param OutBytes 输出的二进制字节数组（读取失败或恢复换入失败时保证清空重置）
      * @return 读取到有效正式档，或有效临时档成功换入正式档时返回 true，否则返回 false
      */
     static bool ReadSlotBytes(const FString& SlotName, TArray<uint8>& OutBytes);

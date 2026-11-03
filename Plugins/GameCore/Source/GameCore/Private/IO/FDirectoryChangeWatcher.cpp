@@ -15,10 +15,14 @@ DEFINE_LOG_CATEGORY_STATIC(LogGameDirectoryWatcher, Log, All);
 
 namespace {
 
-/** 配置键前缀 */
+/**
+ * @brief 目录监听配置键前缀常量
+ */
 constexpr const TCHAR* DirectoryWatchKeyPrefix = TEXT("DirectoryWatch.");
 
-/** 轮询间隔下限（秒，防空转） */
+/**
+ * @brief 轮询间隔下限（秒，防空转）
+ */
 constexpr float MinIntervalSeconds = 0.1f;
 
 }  // namespace
