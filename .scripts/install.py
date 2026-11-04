@@ -28,7 +28,8 @@ TOOLS_DIR = os.path.join(REPO_ROOT, "Tools")
 
 SAMPLE_PLUGINS = {"GameDataSamples"}
 DEFAULT_COPY_PLUGINS = {"GameData"}
-COPY_EXCLUDED_DIRS = {"Binaries", "Intermediate", "Saved", "DerivedDataCache", ".history"}
+COPY_EXCLUDED_DIRS = {"Binaries", "Intermediate", "Saved", "DerivedDataCache", ".history", ".vs"}
+COPY_EXCLUDED_FILES = ("*.pdb", ".DS_Store")
 
 SUPPORTED_MINOR_MIN = 1
 SUPPORTED_MINOR_MAX = 8
@@ -403,11 +404,53 @@ def patch_uproject_plugin(uproject_path: str, plugin_name: str, b_enable: bool) 
         return False
 
 
-def link_or_copy_dir(src: str, dst: str, mode: str) -> bool:
-    """创建软链接或全量拷贝目录"""
+def _is_repo_artifact(dst: str) -> bool:
+    """判断目标路径是否为指向本仓库的软链接产物"""
+    if not os.path.islink(dst):
+        return False
+    try:
+        real_dst = os.path.realpath(dst)
+        real_repo = os.path.realpath(REPO_ROOT)
+    except OSError:
+        return False
+    return real_dst == real_repo or real_dst.startswith(real_repo + os.sep)
+
+
+def _describe_size(path: str) -> str:
+    """统计文件或目录体积并返回人类可读描述"""
+    total = 0
+    if os.path.isdir(path) and not os.path.islink(path):
+        for root, _, files in os.walk(path):
+            for name in files:
+                try:
+                    total += os.path.getsize(os.path.join(root, name))
+                except OSError:
+                    continue
+    else:
+        try:
+            total = os.path.getsize(path)
+        except OSError:
+            total = 0
+    return f"{total / 1024 / 1024:.2f} MB / {total} 字节"
+
+
+def link_or_copy_dir(src: str, dst: str, mode: str, force_overwrite: bool = False) -> bool:
+    """创建软链接或全量拷贝目录
+
+    目标路径已存在且非本工具产物时默认拒绝覆盖并提示绝对路径与体积；
+    仅在显式 force_overwrite 下执行删除覆盖。
+    """
     if os.path.islink(dst) or os.path.isfile(dst):
+        if not force_overwrite and not _is_repo_artifact(dst):
+            print(f"[✗] 目标路径已存在且不属于本工具产物，已拒绝覆盖: {os.path.abspath(dst)}（{_describe_size(dst)}）", file=sys.stderr)
+            print("     确认要删除并覆盖请追加 --force-overwrite 后重试。", file=sys.stderr)
+            return False
         os.remove(dst)
     elif os.path.isdir(dst):
+        if not force_overwrite and not _is_repo_artifact(dst) and os.listdir(dst):
+            print(f"[✗] 目标目录已存在且非空，已拒绝覆盖: {os.path.abspath(dst)}（{_describe_size(dst)}）", file=sys.stderr)
+            print("     确认要删除并覆盖请追加 --force-overwrite 后重试。", file=sys.stderr)
+            return False
         shutil.rmtree(dst)
 
     os.makedirs(os.path.dirname(dst), exist_ok=True)
@@ -424,7 +467,7 @@ def link_or_copy_dir(src: str, dst: str, mode: str) -> bool:
         shutil.copytree(
             src,
             dst,
-            ignore=shutil.ignore_patterns(*COPY_EXCLUDED_DIRS),
+            ignore=shutil.ignore_patterns(*COPY_EXCLUDED_DIRS, *COPY_EXCLUDED_FILES),
         )
         return True
     return False
@@ -589,6 +632,7 @@ def install_plugin(
     target_uproject_path: str,
     mode: Optional[str],
     available_plugins: Dict[str, str],
+    force_overwrite: bool = False,
 ) -> bool:
     """安装指定插件并更新目标工程 *.uproject"""
     src_dir = available_plugins[plugin_name]
@@ -596,7 +640,7 @@ def install_plugin(
     effective_mode = resolve_plugin_mode(plugin_name, mode)
 
     print(f"[+] 正在安装插件: {plugin_name} ({effective_mode}) -> {dst_dir}")
-    if not link_or_copy_dir(src_dir, dst_dir, effective_mode):
+    if not link_or_copy_dir(src_dir, dst_dir, effective_mode, force_overwrite):
         print(f"[✗] 插件安装失败: {plugin_name}", file=sys.stderr)
         return False
 
@@ -640,6 +684,7 @@ def install_tool(
     target_project_root: str,
     mode: Optional[str],
     available_tools: Dict[str, str],
+    force_overwrite: bool = False,
 ) -> bool:
     """安装指定工具链至目标工程 Tools/"""
     src_dir = available_tools[tool_name]
@@ -656,7 +701,7 @@ def install_tool(
             existing_config = None
 
     print(f"[+] 正在部署工具链: {tool_name} ({effective_mode}) -> {dst_dir}")
-    if not link_or_copy_dir(src_dir, dst_dir, effective_mode):
+    if not link_or_copy_dir(src_dir, dst_dir, effective_mode, force_overwrite):
         print(f"[✗] 工具链部署失败: {tool_name}", file=sys.stderr)
         return False
 
@@ -698,7 +743,7 @@ def install_tool(
                     pass
             shutil.copy2(c_src, c_dst)
         else:
-            link_or_copy_dir(c_src, c_dst, effective_mode)
+            link_or_copy_dir(c_src, c_dst, effective_mode, force_overwrite)
 
     print(f"[✓] 工具链 {tool_name} 部署完成。")
     return True
@@ -785,6 +830,7 @@ def main() -> None:
     parser.add_argument("--uninstall", action="store_true", help="卸载指定插件或工具")
     parser.add_argument("--yes", action="store_true", help="卸载时跳过交互确认")
     parser.add_argument("--skip-sample-data", action="store_true", help="--all 安装时不注入示例数据目录")
+    parser.add_argument("--force-overwrite", action="store_true", help="允许删除并覆盖目标工程中已存在的同名插件/工具目录（默认拒绝）")
     args = parser.parse_args()
 
     available_plugins = discover_available_plugins()
@@ -842,9 +888,9 @@ def main() -> None:
                 if name in SAMPLE_PLUGINS:
                     print(f"[-] 跳过示例插件（不随通用安装部署）: {name}")
                     continue
-                install_plugin(name, target_project_root, target_uproject, args.mode, available_plugins)
+                install_plugin(name, target_project_root, target_uproject, args.mode, available_plugins, args.force_overwrite)
             for tool in available_tools:
-                install_tool(tool, target_project_root, args.mode, available_tools)
+                install_tool(tool, target_project_root, args.mode, available_tools, args.force_overwrite)
             if not args.skip_sample_data:
                 install_sample_data(target_project_root)
         print("\n[🎉] 全量资产调度完成！")
@@ -860,7 +906,7 @@ def main() -> None:
         if args.uninstall:
             uninstall_tool(target_name, target_project_root)
         else:
-            install_tool(target_name, target_project_root, args.mode, available_tools)
+            install_tool(target_name, target_project_root, args.mode, available_tools, args.force_overwrite)
         return
 
     if target_name in available_plugins:
@@ -871,7 +917,7 @@ def main() -> None:
             if len(install_order) > 1:
                 print(f"[依赖解析] 检测到前置依赖链: {' -> '.join(install_order)}")
             for name in install_order:
-                install_plugin(name, target_project_root, target_uproject, args.mode, available_plugins)
+                install_plugin(name, target_project_root, target_uproject, args.mode, available_plugins, args.force_overwrite)
         return
 
     print(f"[错误] 未在仓库中找到名为 '{args.target}' 的插件或工具！", file=sys.stderr)
