@@ -18,7 +18,7 @@
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameAbilitySystemBootstrapTest,
-    "Game.Gameplay.Bootstrap",
+    "Game.Gameplay.Bootstrap.EnsureInitialized",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
@@ -71,10 +71,26 @@ bool FGameAbilitySystemBootstrapTest::RunTest([[maybe_unused]] const FString& Pa
     NullAscBootstrap->EnsureInitialized(DummyAvatar1);
     TestFalse(TEXT("委托返回空 ASC 时拒绝引导"), NullAscBootstrap->IsInitialAttributesWritten());
 
-    APawn* DummyPawn = NewObject<APawn>(GetTransientPackage());
+    UWorld* TestWorld = UWorld::CreateWorld(EWorldType::Game, false);
+    TestNotNull(TEXT("测试世界创建成功"), TestWorld);
+    if (TestWorld == nullptr) {
+        return false;
+    }
+    TestWorld->AddToRoot();
+
+    APawn* DummyPawn = TestWorld->SpawnActor<APawn>();
+    TestNotNull(TEXT("Pawn 宿主创建成功"), DummyPawn);
+    if (DummyPawn == nullptr) {
+        return false;
+    }
     UGameAbilitySystemBootstrap* PawnBootstrap = NewObject<UGameAbilitySystemBootstrap>(DummyPawn);
+    DummyPawn->AddInstanceComponent(PawnBootstrap);
+    PawnBootstrap->RegisterComponent();
     PawnBootstrap->SetResolveAbilitySystemComponentDelegate(FResolveAbilitySystemComponent::CreateLambda([ASC1]() {
         return ASC1;
+    }));
+    PawnBootstrap->SetWriteInitialAttributesDelegate(FWriteInitialAttributes::CreateLambda([&InitialAttributesWriteCount](UAbilitySystemComponent*) {
+        ++InitialAttributesWriteCount;
     }));
     PawnBootstrap->TryInitializeFromOwner();
     TestTrue(TEXT("Pawn 宿主成功自愈引导初值"), PawnBootstrap->IsInitialAttributesWritten());
@@ -91,19 +107,16 @@ bool FGameAbilitySystemBootstrapTest::RunTest([[maybe_unused]] const FString& Pa
     EmptyDelegateBootstrap->TryInitializeFromOwner();
     TestFalse(TEXT("委托未绑定时自愈直接返回"), EmptyDelegateBootstrap->IsInitialAttributesWritten());
 
-    UWorld* TestWorld = UWorld::CreateWorld(EWorldType::Game, false);
-    if (TestWorld != nullptr) {
-        AActor* WorldActor = TestWorld->SpawnActor<AActor>();
-        UGameAbilitySystemBootstrap* WorldBootstrap = NewObject<UGameAbilitySystemBootstrap>(WorldActor);
-        WorldActor->AddInstanceComponent(WorldBootstrap);
-        WorldBootstrap->RegisterComponent();
-        WorldBootstrap->BeginPlay();
-        TestTrue(TEXT("世界 ActorComponent 成功 BeginPlay"), WorldBootstrap->HasBegunPlay());
-        WorldBootstrap->EndPlay(EEndPlayReason::Destroyed);
-        TestFalse(TEXT("EndPlay 后 HasBegunPlay 为 false"), WorldBootstrap->HasBegunPlay());
-        TestWorld->DestroyWorld(false);
-        TestWorld->RemoveFromRoot();
-    }
+    AActor* WorldActor = TestWorld->SpawnActor<AActor>();
+    UGameAbilitySystemBootstrap* WorldBootstrap = NewObject<UGameAbilitySystemBootstrap>(WorldActor);
+    WorldActor->AddInstanceComponent(WorldBootstrap);
+    WorldBootstrap->RegisterComponent();
+    WorldBootstrap->BeginPlay();
+    TestTrue(TEXT("世界 ActorComponent 成功 BeginPlay"), WorldBootstrap->HasBegunPlay());
+    WorldBootstrap->EndPlay(EEndPlayReason::Destroyed);
+    TestFalse(TEXT("EndPlay 后 HasBegunPlay 为 false"), WorldBootstrap->HasBegunPlay());
+    TestWorld->DestroyWorld(false);
+    TestWorld->RemoveFromRoot();
 
     return true;
 }

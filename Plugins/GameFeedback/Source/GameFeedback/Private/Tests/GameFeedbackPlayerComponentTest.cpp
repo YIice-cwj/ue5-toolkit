@@ -30,7 +30,7 @@ namespace {
  * @param ObjectPath 完整对象路径（Package.Object）
  * @return 测试 Definition
  */
-UGameFeedbackDefinition* CreateDefinitionAtPath(const FString& ObjectPath) {
+UGameFeedbackDefinition* CreatePlayerDefinitionAtPath(const FString& ObjectPath) {
     FString PackageName;
     FString ObjectName;
     ObjectPath.Split(TEXT("."), &PackageName, &ObjectName);
@@ -67,7 +67,7 @@ bool FGameFeedbackPlayerComponentTest::RunTest([[maybe_unused]] const FString& P
     LocalPC->AddInstanceComponent(PlayerComp);
     PlayerComp->RegisterComponent();
 
-    UGameFeedbackDefinition* Definition = CreateDefinitionAtPath(TEXT("/Game/Feedback/PlayerTest/Def.Def"));
+    UGameFeedbackDefinition* Definition = CreatePlayerDefinitionAtPath(TEXT("/Game/Feedback/PlayerTest/Def.Def"));
     Definition->CameraShake.MinMagnitude = 1.0f;
     Definition->CameraShake.AttackerShakeClass = UCameraShakeBase::StaticClass();
     Definition->CameraShake.AttackerShakeScale = 1.0f;

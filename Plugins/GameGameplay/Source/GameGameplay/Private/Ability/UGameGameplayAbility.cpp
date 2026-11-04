@@ -22,6 +22,11 @@ UGameGameplayAbility::UGameGameplayAbility() {
  * @param TargetTags 目标标签
  * @param OptionalRelevantTags 可选相关标签输出
  * @return 允许激活返回 true
+ *
+ * 前置条件：本函数先调用 Super::CanActivateAbility，后者在 ActorInfo 为空或
+ * AbilitySystemComponent 无效时均返回 false（GameplayAbility.cpp: ActorInfo 与
+ * `ActorInfo->AbilitySystemComponent.Get()` 的空值判定），因此通过该早退后
+ * 再次解引用 ActorInfo->AbilitySystemComponent 具备引擎契约保证，无需重复判空。
  */
 bool UGameGameplayAbility::CanActivateAbility(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayTagContainer* SourceTags, const FGameplayTagContainer* TargetTags, OUT FGameplayTagContainer* OptionalRelevantTags) const {
     if (!Super::CanActivateAbility(Handle, ActorInfo, SourceTags, TargetTags, OptionalRelevantTags)) {

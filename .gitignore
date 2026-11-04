@@ -39,7 +39,7 @@ compile_commands.json
 # 发布加密密钥（阶段四 K1：密钥不入库，由平台安全通道注入）
 Config/DefaultCrypto.ini
 
-# Documentation
+# Documentation（根 Docs 全量不入库；插件文档 Plugins/*/Docs 不受影响）
 /Docs/
 
 # Operating System temporary files

@@ -31,7 +31,7 @@ namespace {
  * @param ObjectPath 完整对象路径（Package.Object）
  * @return 测试 Definition
  */
-UGameFeedbackDefinition* CreateDefinitionAtPath(const FString& ObjectPath) {
+UGameFeedbackDefinition* CreateWorldDefinitionAtPath(const FString& ObjectPath) {
     FString PackageName;
     FString ObjectName;
     ObjectPath.Split(TEXT("."), &PackageName, &ObjectName);
@@ -66,7 +66,7 @@ bool FGameFeedbackWorldComponentTest::RunTest([[maybe_unused]] const FString& Pa
     GameState->AddInstanceComponent(WorldComp);
     WorldComp->RegisterComponent();
 
-    UGameFeedbackDefinition* Definition = CreateDefinitionAtPath(TEXT("/Game/Feedback/WorldTest/Def.Def"));
+    UGameFeedbackDefinition* Definition = CreateWorldDefinitionAtPath(TEXT("/Game/Feedback/WorldTest/Def.Def"));
     Definition->HitFlash.bEnable = true;
     Definition->HitFlash.TargetMode = EGameFeedbackFlashTargetMode::HitComponentOnly;
     Definition->HitFlash.Duration = 0.2f;

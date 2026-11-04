@@ -19,10 +19,10 @@ namespace {
  * @return 组装完成的文件字节流
  */
 TArray<uint8> BuildFileBytesFromPayload(const TArray<uint8>& PayloadBytes) {
-    constexpr uint32 StaticDataBinMagic = (uint32('T') << 24) | (uint32('S') << 16) | (uint32('D') << 8) | uint32('B');
+    constexpr uint32 ExpectedStaticDataBinMagic = (uint32('T') << 24) | (uint32('S') << 16) | (uint32('D') << 8) | uint32('B');
     TArray<uint8> FileBytes;
-    FileBytes.Reserve(sizeof(StaticDataBinMagic) + PayloadBytes.Num() + sizeof(uint32));
-    FileBytes.Append(reinterpret_cast<const uint8*>(&StaticDataBinMagic), sizeof(StaticDataBinMagic));
+    FileBytes.Reserve(sizeof(ExpectedStaticDataBinMagic) + PayloadBytes.Num() + sizeof(uint32));
+    FileBytes.Append(reinterpret_cast<const uint8*>(&ExpectedStaticDataBinMagic), sizeof(ExpectedStaticDataBinMagic));
     FileBytes.Append(PayloadBytes);
     const uint32 PayloadCrc = FCrc::MemCrc32(PayloadBytes.GetData(), PayloadBytes.Num());
     FileBytes.Append(reinterpret_cast<const uint8*>(&PayloadCrc), sizeof(PayloadCrc));

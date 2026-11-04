@@ -21,6 +21,8 @@
 
 判定规则：进程退出码为零、日志出现 TEST COMPLETE. EXIT CODE: 0、
 每个目标在日志中至少出现一条 Path 记录、且无任何 Fail/Error 记录。
+`--all` 全量回归额外启用口径守卫：源码中静态声明的用例路径必须与实际执行路径
+完全一致，不一致直接 FAIL 并逐条列出缺失/多出的用例名。
 """
 
 import argparse
@@ -60,6 +62,10 @@ REGRESSION_PREFIXES = (
 COMPLETED_LINE = "Test Completed."
 EXIT_OK_LINE = "TEST COMPLETE. EXIT CODE: 0"
 PATH_PATTERN = re.compile(r"Path=\{([^}]+)\}")
+DECLARED_TEST_PATTERN = re.compile(
+    r'IMPLEMENT_(?:SIMPLE|COMPLEX|CUSTOM)_AUTOMATION_TEST\s*\(\s*[A-Za-z_][A-Za-z0-9_]*\s*,\s*"([^"]+)"'
+)
+SCAN_EXCLUDED_DIRS = {"Intermediate", "Binaries", "Saved", "DerivedDataCache", ".git"}
 
 
 def platform_name() -> str:
@@ -148,6 +154,55 @@ def is_target_covered(target: str, results: Dict[str, bool]) -> bool:
         return True
     prefix_key = f"{target}."
     return any(path.startswith(prefix_key) for path in results)
+
+
+def scan_declared_tests(project_root: str) -> Dict[str, str]:
+    """扫描源码中静态声明的自动化用例路径
+
+    返回值以用例路径为键、以 `相对路径:行号` 为值，供口径守卫逐条定位缺失用例。
+    仅扫描 Plugins 与 Source 下的 *.cpp，跳过编译中间产物目录。
+    """
+    declared: Dict[str, str] = {}
+    for scan_root in ("Plugins", "Source"):
+        root_path = os.path.join(project_root, scan_root)
+        if not os.path.isdir(root_path):
+            continue
+        for current_root, dir_names, file_names in os.walk(root_path):
+            dir_names[:] = [name for name in dir_names if name not in SCAN_EXCLUDED_DIRS]
+            for file_name in file_names:
+                if not file_name.endswith(".cpp"):
+                    continue
+                full_path = os.path.join(current_root, file_name)
+                relative_path = os.path.relpath(full_path, project_root)
+                try:
+                    with open(full_path, "r", encoding="utf-8", errors="replace") as source_file:
+                        source_text = source_file.read()
+                except OSError:
+                    continue
+                for match in DECLARED_TEST_PATTERN.finditer(source_text):
+                    line_number = source_text.count("\n", 0, match.start()) + 1
+                    declared[match.group(1)] = f"{relative_path}:{line_number}"
+    return declared
+
+
+def check_declared_vs_executed(project_root: str, results: Dict[str, bool]) -> bool:
+    """校验静态声明用例与实际执行用例完全一致，返回是否一致"""
+    declared = scan_declared_tests(project_root)
+    executed = set(results)
+    missing = sorted(set(declared) - executed)
+    extra = sorted(executed - set(declared))
+
+    print("-" * 78)
+    print(f" 声明用例数: {len(declared)}    实际执行: {len(executed)}")
+    if not missing and not extra:
+        print(" 口径守卫  : OK（声明与实际执行完全一致）")
+        return True
+    for path in missing:
+        print(f"  [✗] 声明但未执行: {path}  ({declared[path]})")
+    for path in extra:
+        print(f"  [✗] 执行但未声明: {path}")
+    print(f" 口径守卫  : FAIL（声明未执行 {len(missing)} 条，执行未声明 {len(extra)} 条）")
+    return False
 
 
 def print_case_report(targets: List[str], results: Dict[str, bool]) -> Tuple[int, int, int]:
@@ -247,10 +302,16 @@ def main() -> None:
     results, completed_ok = parse_log(log_path)
     covered, missing, failed = print_case_report(targets, results)
 
+    declaration_ok = True
+    if args.all:
+        declaration_ok = check_declared_vs_executed(project_root, results)
+
     print("-" * 78)
     print(f" 已执行目标: {covered}    未执行: {missing}    失败用例: {failed}")
-    overall_ok = process_ok and completed_ok and missing == 0 and failed == 0
+    overall_ok = process_ok and completed_ok and missing == 0 and failed == 0 and declaration_ok
     print(f" 完成标记  : {'OK' if completed_ok else '缺失'}")
+    if args.all:
+        print(f" 口径守卫  : {'OK' if declaration_ok else 'FAIL'}")
     print(f" 总体结果  : {'PASS' if overall_ok else 'FAIL'}")
     print("=" * 78)
     sys.exit(0 if overall_ok else 1)

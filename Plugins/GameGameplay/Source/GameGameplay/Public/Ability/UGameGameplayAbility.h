@@ -28,9 +28,12 @@ enum class EGameAbilityTriggerSource : uint8 {
 };
 
 /**
- * @brief GAS 能力基类（游戏无关）
+ * @brief GAS 能力基类（抽象，游戏无关）
+ *
+ * 声明为 Abstract：基类仅固化触发源记账与阻断标签守卫，不承载任何可直接激活的完整能力，
+ * 具体能力必须由游戏层派生实现；自动化测试若需实例化，须显式清除 CLASS_Abstract 后归还。
  */
-UCLASS()
+UCLASS(Abstract)
 class GAMEGAMEPLAY_API UGameGameplayAbility : public UGameplayAbility {
     GENERATED_BODY()
 

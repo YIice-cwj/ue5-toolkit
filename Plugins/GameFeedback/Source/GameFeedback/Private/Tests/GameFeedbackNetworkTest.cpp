@@ -42,7 +42,7 @@ namespace {
  * @param ObjectPath 完整对象路径（Package.Object）
  * @return 测试 Definition
  */
-UGameFeedbackDefinition* CreateDefinitionAtPath(const FString& ObjectPath) {
+UGameFeedbackDefinition* CreateNetworkDefinitionAtPath(const FString& ObjectPath) {
     FString PackageName;
     FString ObjectName;
     ObjectPath.Split(TEXT("."), &PackageName, &ObjectName);
@@ -205,8 +205,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FGameFeedbackNetworkDefinitionContractTest::RunTest([[maybe_unused]] const FString& Parameters)
 {
     UGameFeedbackRegistry* Registry = NewObject<UGameFeedbackRegistry>();
-    UGameFeedbackDefinition* Definition = CreateDefinitionAtPath(TEXT("/Game/Feedback/Network/Resolved.Resolved"));
-    UGameFeedbackDefinition* OverrideDefinition = CreateDefinitionAtPath(TEXT("/Game/Feedback/Network/Override.Override"));
+    UGameFeedbackDefinition* Definition = CreateNetworkDefinitionAtPath(TEXT("/Game/Feedback/Network/Resolved.Resolved"));
+    UGameFeedbackDefinition* OverrideDefinition = CreateNetworkDefinitionAtPath(TEXT("/Game/Feedback/Network/Override.Override"));
     const FGameplayTag ChannelTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Damage.Test.Network.Resolved")));
     const FGameplayTag OverrideTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Feedback.Test.Network.Override")));
     Registry->ExactChannelMap.Add(ChannelTag, Definition);
@@ -324,7 +324,7 @@ bool FGameFeedbackNetworkDefinitionContractTest::RunTest([[maybe_unused]] const 
     }
 
     FGameFeedbackMessage UnregisteredMessage = RegularMessage;
-    UnregisteredMessage.OverrideDefinition = CreateDefinitionAtPath(TEXT("/Game/Feedback/Network/Unregistered.Unregistered"));
+    UnregisteredMessage.OverrideDefinition = CreateNetworkDefinitionAtPath(TEXT("/Game/Feedback/Network/Unregistered.Unregistered"));
     Bus->BroadcastMessage(TAG_Feedback_Channel_Play, UnregisteredMessage);
     TestEqual(TEXT("未登记 Override 不得进行远端派发"), DispatchedEvents.Num(), 2);
 
@@ -371,7 +371,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FGameFeedbackDedicatedServerServicesTest::RunTest([[maybe_unused]] const FString& Parameters)
 {
     UGameFeedbackRegistry* Registry = NewObject<UGameFeedbackRegistry>();
-    UGameFeedbackDefinition* Definition = CreateDefinitionAtPath(TEXT("/Game/Feedback/Lifetime/DedicatedServer.DedicatedServer"));
+    UGameFeedbackDefinition* Definition = CreateNetworkDefinitionAtPath(TEXT("/Game/Feedback/Lifetime/DedicatedServer.DedicatedServer"));
     Definition->HitStop.bEnable = true;
     Definition->HitStop.VictimDuration = 0.08f;
     Definition->HitStop.AttackerDuration = 0.0f;

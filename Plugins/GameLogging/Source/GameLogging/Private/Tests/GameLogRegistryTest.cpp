@@ -11,8 +11,8 @@
 
 namespace {
 
-DEFINE_LOG_CATEGORY_STATIC(LogUnitTestCatA, Log, All);
-DEFINE_LOG_CATEGORY_STATIC(LogUnitTestCatB, Log, All);
+DEFINE_LOG_CATEGORY_STATIC(LogRegistryCatA, Log, All);
+DEFINE_LOG_CATEGORY_STATIC(LogRegistryCatB, Log, All);
 
 } // namespace
 
@@ -36,8 +36,8 @@ bool FGameLogRegistryLifecycleTest::RunTest([[maybe_unused]] const FString& Para
         &Game::Log::FGameLogRegistry::GetFallbackCategory());
 
     const int32 EpochBeforeEmpty = Game::Log::FGameLogRegistry::GetEpoch();
-    Game::Log::FGameLogRegistry::RegisterCategory("", &LogUnitTestCatA);
-    Game::Log::FGameLogRegistry::RegisterCategory(nullptr, &LogUnitTestCatA);
+    Game::Log::FGameLogRegistry::RegisterCategory("", &LogRegistryCatA);
+    Game::Log::FGameLogRegistry::RegisterCategory(nullptr, &LogRegistryCatA);
     Game::Log::FGameLogRegistry::RegisterCategory(ModuleName, nullptr);
     TestEqual(TEXT("空字符串模块名应返回 LogGame 兜底分类"),
         &Game::Log::FGameLogRegistry::GetCategory(""),
@@ -51,26 +51,26 @@ bool FGameLogRegistryLifecycleTest::RunTest([[maybe_unused]] const FString& Para
         Game::Log::FGameLogRegistry::GetEpoch(), EpochBeforeEmpty);
 
     const int32 EpochBeforeReg = Game::Log::FGameLogRegistry::GetEpoch();
-    Game::Log::FGameLogRegistry::RegisterCategory(ModuleName, &LogUnitTestCatA);
+    Game::Log::FGameLogRegistry::RegisterCategory(ModuleName, &LogRegistryCatA);
 
     TestEqual(TEXT("注册后应正确获取目标日志分类 A"),
         &Game::Log::FGameLogRegistry::GetCategory(ModuleName),
-        static_cast<FLogCategoryBase*>(&LogUnitTestCatA));
+        static_cast<FLogCategoryBase*>(&LogRegistryCatA));
 
     TestTrue(TEXT("注册后纪元号应自增"),
         Game::Log::FGameLogRegistry::GetEpoch() > EpochBeforeReg);
 
     const int32 EpochBeforeIdentical = Game::Log::FGameLogRegistry::GetEpoch();
-    Game::Log::FGameLogRegistry::RegisterCategory(ModuleName, &LogUnitTestCatA);
+    Game::Log::FGameLogRegistry::RegisterCategory(ModuleName, &LogRegistryCatA);
     TestEqual(TEXT("重复注册相同分类不得推进全局纪元号"),
         Game::Log::FGameLogRegistry::GetEpoch(), EpochBeforeIdentical);
 
     const int32 EpochBeforeOverride = Game::Log::FGameLogRegistry::GetEpoch();
-    Game::Log::FGameLogRegistry::RegisterCategory(ModuleName, &LogUnitTestCatB);
+    Game::Log::FGameLogRegistry::RegisterCategory(ModuleName, &LogRegistryCatB);
 
     TestEqual(TEXT("覆写后应获取新日志分类 B"),
         &Game::Log::FGameLogRegistry::GetCategory(ModuleName),
-        static_cast<FLogCategoryBase*>(&LogUnitTestCatB));
+        static_cast<FLogCategoryBase*>(&LogRegistryCatB));
 
     TestTrue(TEXT("覆写后纪元号应自增"),
         Game::Log::FGameLogRegistry::GetEpoch() > EpochBeforeOverride);
@@ -104,18 +104,18 @@ bool FGameLogRegistrarRaiiTest::RunTest([[maybe_unused]] const FString& Paramete
         &Game::Log::FGameLogRegistry::GetFallbackCategory());
 
     {
-        Game::Log::FModuleLogRegistrar EmptyNameRegistrar("", &LogUnitTestCatA);
-        Game::Log::FModuleLogRegistrar NullNameRegistrar(nullptr, &LogUnitTestCatA);
+        Game::Log::FModuleLogRegistrar EmptyNameRegistrar("", &LogRegistryCatA);
+        Game::Log::FModuleLogRegistrar NullNameRegistrar(nullptr, &LogRegistryCatA);
         TestEqual(TEXT("空模块名注册器不得覆盖兜底分类"),
             &Game::Log::FGameLogRegistry::GetCategory(""),
             &Game::Log::FGameLogRegistry::GetFallbackCategory());
     }
 
     {
-        Game::Log::FModuleLogRegistrar ScopedRegistrar(ScopedModuleName, &LogUnitTestCatA);
+        Game::Log::FModuleLogRegistrar ScopedRegistrar(ScopedModuleName, &LogRegistryCatA);
         TestEqual(TEXT("RAII 作用域内应成功注册分类 A"),
             &Game::Log::FGameLogRegistry::GetCategory(ScopedModuleName),
-            static_cast<FLogCategoryBase*>(&LogUnitTestCatA));
+            static_cast<FLogCategoryBase*>(&LogRegistryCatA));
 
         {
             Game::Log::FModuleLogRegistrar NullCategoryRegistrar(ScopedModuleName, nullptr);
@@ -123,29 +123,29 @@ bool FGameLogRegistrarRaiiTest::RunTest([[maybe_unused]] const FString& Paramete
 
         TestEqual(TEXT("空分类注册器析构不得误删已有模块注册"),
             &Game::Log::FGameLogRegistry::GetCategory(ScopedModuleName),
-            static_cast<FLogCategoryBase*>(&LogUnitTestCatA));
+            static_cast<FLogCategoryBase*>(&LogRegistryCatA));
 
         {
-            Game::Log::FModuleLogRegistrar SameCategoryRegistrar(ScopedModuleName, &LogUnitTestCatA);
+            Game::Log::FModuleLogRegistrar SameCategoryRegistrar(ScopedModuleName, &LogRegistryCatA);
             TestEqual(TEXT("嵌套相同分类注册器应保持分类 A"),
                 &Game::Log::FGameLogRegistry::GetCategory(ScopedModuleName),
-                static_cast<FLogCategoryBase*>(&LogUnitTestCatA));
+                static_cast<FLogCategoryBase*>(&LogRegistryCatA));
         }
 
         TestEqual(TEXT("嵌套相同分类析构后应依然为分类 A"),
             &Game::Log::FGameLogRegistry::GetCategory(ScopedModuleName),
-            static_cast<FLogCategoryBase*>(&LogUnitTestCatA));
+            static_cast<FLogCategoryBase*>(&LogRegistryCatA));
 
         {
-            Game::Log::FModuleLogRegistrar NestedRegistrar(ScopedModuleName, &LogUnitTestCatB);
+            Game::Log::FModuleLogRegistrar NestedRegistrar(ScopedModuleName, &LogRegistryCatB);
             TestEqual(TEXT("嵌套 Registrar 应注册分类 B"),
                 &Game::Log::FGameLogRegistry::GetCategory(ScopedModuleName),
-                static_cast<FLogCategoryBase*>(&LogUnitTestCatB));
+                static_cast<FLogCategoryBase*>(&LogRegistryCatB));
         }
 
         TestEqual(TEXT("嵌套 Registrar 析构后应恢复外层分类 A"),
             &Game::Log::FGameLogRegistry::GetCategory(ScopedModuleName),
-            static_cast<FLogCategoryBase*>(&LogUnitTestCatA));
+            static_cast<FLogCategoryBase*>(&LogRegistryCatA));
     }
 
     TestEqual(TEXT("离开 RAII 作用域后应自动注销并回退至兜底分类"),
@@ -155,12 +155,12 @@ bool FGameLogRegistrarRaiiTest::RunTest([[maybe_unused]] const FString& Paramete
     {
         const char* OverriddenModule = "UnitTest_OverriddenScope";
         {
-            Game::Log::FModuleLogRegistrar OuterRegistrar(OverriddenModule, &LogUnitTestCatA);
-            Game::Log::FGameLogRegistry::RegisterCategory(OverriddenModule, &LogUnitTestCatB);
+            Game::Log::FModuleLogRegistrar OuterRegistrar(OverriddenModule, &LogRegistryCatA);
+            Game::Log::FGameLogRegistry::RegisterCategory(OverriddenModule, &LogRegistryCatB);
         }
         TestEqual(TEXT("失效的 Registrar 析构不得覆盖外部更新的分类 B"),
             &Game::Log::FGameLogRegistry::GetCategory(OverriddenModule),
-            static_cast<FLogCategoryBase*>(&LogUnitTestCatB));
+            static_cast<FLogCategoryBase*>(&LogRegistryCatB));
         Game::Log::FGameLogRegistry::UnregisterCategory(OverriddenModule);
     }
 
@@ -186,16 +186,16 @@ bool FGameLogRegistryDynamicCapacityTest::RunTest([[maybe_unused]] const FString
 
     for (int32 Index = 0; Index < ModuleCount; ++Index) {
         FTCHARToUTF8 AnsiName(*ModuleNames[Index]);
-        FLogCategoryBase* Category = (Index % 2 == 0) ? static_cast<FLogCategoryBase*>(&LogUnitTestCatA)
-                                                       : static_cast<FLogCategoryBase*>(&LogUnitTestCatB);
+        FLogCategoryBase* Category = (Index % 2 == 0) ? static_cast<FLogCategoryBase*>(&LogRegistryCatA)
+                                                       : static_cast<FLogCategoryBase*>(&LogRegistryCatB);
         Game::Log::FGameLogRegistry::RegisterCategory(AnsiName.Get(), Category);
     }
 
     bool bAllResolved = true;
     for (int32 Index = 0; Index < ModuleCount; ++Index) {
         FTCHARToUTF8 AnsiName(*ModuleNames[Index]);
-        FLogCategoryBase* Expected = (Index % 2 == 0) ? static_cast<FLogCategoryBase*>(&LogUnitTestCatA)
-                                                      : static_cast<FLogCategoryBase*>(&LogUnitTestCatB);
+        FLogCategoryBase* Expected = (Index % 2 == 0) ? static_cast<FLogCategoryBase*>(&LogRegistryCatA)
+                                                      : static_cast<FLogCategoryBase*>(&LogRegistryCatB);
         if (&Game::Log::FGameLogRegistry::GetCategory(AnsiName.Get()) != Expected) {
             bAllResolved = false;
             break;
@@ -205,16 +205,16 @@ bool FGameLogRegistryDynamicCapacityTest::RunTest([[maybe_unused]] const FString
 
     ANSICHAR SharedBuffer[64];
     FCStringAnsi::Strncpy(SharedBuffer, "UnitTest_BufferNameA", UE_ARRAY_COUNT(SharedBuffer));
-    Game::Log::FGameLogRegistry::RegisterCategory(SharedBuffer, &LogUnitTestCatA);
+    Game::Log::FGameLogRegistry::RegisterCategory(SharedBuffer, &LogRegistryCatA);
     FCStringAnsi::Strncpy(SharedBuffer, "UnitTest_BufferNameB", UE_ARRAY_COUNT(SharedBuffer));
-    Game::Log::FGameLogRegistry::RegisterCategory(SharedBuffer, &LogUnitTestCatB);
+    Game::Log::FGameLogRegistry::RegisterCategory(SharedBuffer, &LogRegistryCatB);
 
     TestEqual(TEXT("调用方缓冲区改写后名称 A 仍可解析（名称已拷贝）"),
         &Game::Log::FGameLogRegistry::GetCategory("UnitTest_BufferNameA"),
-        static_cast<FLogCategoryBase*>(&LogUnitTestCatA));
+        static_cast<FLogCategoryBase*>(&LogRegistryCatA));
     TestEqual(TEXT("调用方缓冲区改写后名称 B 可解析"),
         &Game::Log::FGameLogRegistry::GetCategory("UnitTest_BufferNameB"),
-        static_cast<FLogCategoryBase*>(&LogUnitTestCatB));
+        static_cast<FLogCategoryBase*>(&LogRegistryCatB));
     Game::Log::FGameLogRegistry::UnregisterCategory("UnitTest_BufferNameA");
     Game::Log::FGameLogRegistry::UnregisterCategory("UnitTest_BufferNameB");
 

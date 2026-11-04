@@ -19,7 +19,7 @@ namespace {
  * @param ObjectPath 完整对象路径（Package.Object）
  * @return 测试 Definition
  */
-UGameFeedbackDefinition* CreateDefinitionAtPath(const FString& ObjectPath) {
+UGameFeedbackDefinition* CreateRegistryDefinitionAtPath(const FString& ObjectPath) {
     FString PackageName;
     FString ObjectName;
     ObjectPath.Split(TEXT("."), &PackageName, &ObjectName);
@@ -99,10 +99,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
  */
 bool FGameFeedbackCompositeRulesTest::RunTest([[maybe_unused]] const FString& Parameters) {
     UGameFeedbackRegistry* Registry = NewObject<UGameFeedbackRegistry>();
-    UGameFeedbackDefinition* DefaultDef = CreateDefinitionAtPath(TEXT("/Game/Feedback/CompositeTest/Default.Default"));
-    UGameFeedbackDefinition* LowPriorityDef = CreateDefinitionAtPath(TEXT("/Game/Feedback/CompositeTest/Low.Low"));
-    UGameFeedbackDefinition* HighPriorityDef = CreateDefinitionAtPath(TEXT("/Game/Feedback/CompositeTest/High.High"));
-    UGameFeedbackDefinition* ExactChannelDef = CreateDefinitionAtPath(TEXT("/Game/Feedback/CompositeTest/Channel.Channel"));
+    UGameFeedbackDefinition* DefaultDef = CreateRegistryDefinitionAtPath(TEXT("/Game/Feedback/CompositeTest/Default.Default"));
+    UGameFeedbackDefinition* LowPriorityDef = CreateRegistryDefinitionAtPath(TEXT("/Game/Feedback/CompositeTest/Low.Low"));
+    UGameFeedbackDefinition* HighPriorityDef = CreateRegistryDefinitionAtPath(TEXT("/Game/Feedback/CompositeTest/High.High"));
+    UGameFeedbackDefinition* ExactChannelDef = CreateRegistryDefinitionAtPath(TEXT("/Game/Feedback/CompositeTest/Channel.Channel"));
 
     Registry->DefaultFallbackDefinition = DefaultDef;
 

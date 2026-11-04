@@ -32,7 +32,7 @@ namespace {
  * @param ObjectPath 完整对象路径（Package.Object）
  * @return 测试 Definition
  */
-UGameFeedbackDefinition* CreateDefinitionAtPath(const FString& ObjectPath) {
+UGameFeedbackDefinition* CreateDispatcherDefinitionAtPath(const FString& ObjectPath) {
     FString PackageName;
     FString ObjectName;
     ObjectPath.Split(TEXT("."), &PackageName, &ObjectName);
@@ -53,7 +53,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
  * @return 测试是否通过
  */
 bool FGameFeedbackNetworkDispatcherRateAndCullTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UGameFeedbackDefinition* Definition = CreateDefinitionAtPath(TEXT("/Game/Feedback/DispatchTest/Def.Def"));
+    UGameFeedbackDefinition* Definition = CreateDispatcherDefinitionAtPath(TEXT("/Game/Feedback/DispatchTest/Def.Def"));
     UGameFeedbackRegistry* Registry = NewObject<UGameFeedbackRegistry>();
     const FGameplayTag Channel = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Damage.Test.Dispatch.Channel")));
     Registry->ExactChannelMap.Add(Channel, Definition);
