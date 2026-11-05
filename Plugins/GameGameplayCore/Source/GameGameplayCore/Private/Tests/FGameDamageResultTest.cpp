@@ -27,6 +27,7 @@ bool FGameDamageResultTest::RunTest([[maybe_unused]] const FString& Parameters) 
     FGameDamageResult Result;
     Result.SetActualDamage(75.0f);
     TestEqual(TEXT("实际总伤害设置与读取一致"), Result.TotalActualDamage, 75.0f);
+    TestEqual(TEXT("实际总伤害 Getter 读取一致"), Result.GetActualDamage(), 75.0f);
 
     const FGameplayTag HitTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Damage.Feedback.Hit")));
     const FGameplayTag FatalTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Damage.Feedback.Fatal")));
@@ -51,6 +52,9 @@ bool FGameDamageResultTest::RunTest([[maybe_unused]] const FString& Parameters) 
     TestFalse(TEXT("不存在未添加的动态数值"), Result.HasDynamicValue(MissingDynamicTag));
     TestEqual(TEXT("Dynamic value should match"), Result.GetDynamicValue(HitStopTag), 0.12f);
     TestEqual(TEXT("Missing dynamic value should return default"), Result.GetDynamicValue(MissingDynamicTag, 5.0f), 5.0f);
+    TestTrue(TEXT("精确移除动态数值参数成功"), Result.RemoveDynamicValue(HitStopTag));
+    TestFalse(TEXT("移除后不再存在该动态数值"), Result.HasDynamicValue(HitStopTag));
+    TestFalse(TEXT("重复移除不存在动态数值返回 false"), Result.RemoveDynamicValue(HitStopTag));
 
     const FGameplayTag SlashTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Damage.Channel.Result.Slash")));
     const FGameplayTag BluntTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Damage.Channel.Result.Blunt")));
@@ -63,6 +67,10 @@ bool FGameDamageResultTest::RunTest([[maybe_unused]] const FString& Parameters) 
     TestEqual(TEXT("主通道选择最大实际伤害通道"), Result.GetDominantActualChannel(), SlashTag);
     TestEqual(TEXT("精确读取实际通道伤害正确"), Result.GetActualChannelDamageExact(SlashTag), 100.0f);
     TestEqual(TEXT("层级求和读取实际通道伤害正确"), Result.GetActualChannelDamage(PhysTag), 150.0f);
+    TestTrue(TEXT("精确移除实际伤害通道成功"), Result.RemoveActualChannel(SlashTag));
+    TestEqual(TEXT("移除后实际通道数减少"), Result.ActualChannels.Num(), 1);
+    TestEqual(TEXT("移除后主通道迁移至剩余通道"), Result.GetDominantActualChannel(), BluntTag);
+    TestFalse(TEXT("重复移除未存在通道返回 false"), Result.RemoveActualChannel(SlashTag));
 
     FGameDamageResult NegativeResult;
     FGameDamageChannel::SetExact(NegativeResult.ActualChannels, SlashTag, -20.0f);

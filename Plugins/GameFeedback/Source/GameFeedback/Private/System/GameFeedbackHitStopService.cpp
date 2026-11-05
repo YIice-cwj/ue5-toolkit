@@ -55,6 +55,8 @@ void UGameFeedbackHitStopService::OnWorldBeginPlay(UWorld& InWorld)
 {
     Super::OnWorldBeginPlay(InWorld);
 
+    State->Handles.Empty();
+
     UGameplayMessageSubsystem* Bus = UGameplayMessageSubsystem::GetPtr(this);
     if (!Bus) {
         return;
@@ -72,20 +74,6 @@ void UGameFeedbackHitStopService::Deinitialize()
 {
     State->Handles.Empty();
     Super::Deinitialize();
-}
-
-/**
- * @brief 安全获取当前世界的顿帧服务
- * @param WorldContextObject 世界上下文对象
- * @return 服务指针；未就绪时返回 nullptr
- */
-UGameFeedbackHitStopService* UGameFeedbackHitStopService::GetPtr(const UObject* WorldContextObject)
-{
-    if (!WorldContextObject) {
-        return nullptr;
-    }
-    const UWorld* World = WorldContextObject->GetWorld();
-    return World ? World->GetSubsystem<UGameFeedbackHitStopService>() : nullptr;
 }
 
 /**
@@ -141,6 +129,10 @@ void UGameFeedbackHitStopService::ApplyHitStop(const FGameFeedbackSignal& Signal
     }
 
     const UGameFeedbackSettings* Settings = GetDefault<UGameFeedbackSettings>();
+    if (!Settings->bEnableFeedback) {
+        return;
+    }
+
     if ((World->GetNetMode() == NM_ListenServer || World->GetNetMode() == NM_DedicatedServer) && !Settings->bAllowAuthoritativeHitStop) {
         return;
     }
@@ -188,20 +180,23 @@ void UGameFeedbackHitStopService::ApplyHitStop(const FGameFeedbackSignal& Signal
         return;
     }
 
+    bool bIsLocalAttacker = false;
     for (FConstPlayerControllerIterator Iterator = World->GetPlayerControllerIterator(); Iterator; ++Iterator) {
         APlayerController* LocalPC = Iterator->Get();
         if (!LocalPC || !LocalPC->IsLocalController()) {
             continue;
         }
 
-        if (GameFeedback::ResolvePerspective(LocalPC, Signal.Instigator.Get(), Signal.DamageCauser.Get(), Signal.Target.Get()) != EGameFeedbackPerspective::LocalAttacker) {
-            continue;
+        if (GameFeedback::ResolvePerspective(LocalPC, Signal.Instigator.Get(), Signal.DamageCauser.Get(), Signal.Target.Get()) == EGameFeedbackPerspective::LocalAttacker) {
+            bIsLocalAttacker = true;
+            break;
         }
+    }
 
+    if (bIsLocalAttacker || World->GetNetMode() == NM_Standalone) {
         const float AppliedDuration = State->Limiter->AcquireDuration(AttackerActor, Action.AttackerDuration, Action, CurrentRealTime);
         if (AppliedDuration > 0.0f) {
             UTimeDilationSubsystem::Get(this).RequestHitStop(AttackerActor, AppliedDuration, Action.TimeDilation);
         }
-        break;
     }
 }

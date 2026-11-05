@@ -24,26 +24,10 @@ int32 GetTagDepth(const FGameplayTag& Tag)
     return Depth;
 }
 
-/**
- * @brief 判定候选标签是否比当前标签更具体（层级更深，同深度按字典序稳定择优）
- * @param Candidate 候选标签
- * @param Current 当前最优标签
- * @return 候选更优返回 true
- */
-bool IsMoreSpecificTag(const FGameplayTag& Candidate, const FGameplayTag& Current)
-{
-    const int32 CandidateDepth = GetTagDepth(Candidate);
-    const int32 CurrentDepth = GetTagDepth(Current);
-    if (CandidateDepth != CurrentDepth) {
-        return CandidateDepth > CurrentDepth;
-    }
-    return Candidate.GetTagName().LexicalLess(Current.GetTagName());
-}
-
 }
 
 /**
- * @brief 资产加载后重建复合规则顺序与稳定 Definition 索引
+ * @brief 资产加载后重建复合规则顺序、反馈标签有序索引与稳定 Definition 索引
  */
 void UGameFeedbackRegistry::PostLoad()
 {
@@ -56,6 +40,9 @@ void UGameFeedbackRegistry::PostLoad()
  * @param PrimaryChannel 主伤害通道
  * @param FeedbackTags 特征标签集合
  * @return 最优资产软指针；若均未匹配则返回 DefaultFallbackDefinition
+ *
+ * 反馈标签与复合规则阶段依赖 RebuildDefinitionIndex 预建的有序索引（PostLoad 与 Provider 初始化时自动重建），
+ * 首个命中的反馈标签即为“深度最深、同深度字典序最小”的最优项。
  */
 TSoftObjectPtr<UGameFeedbackDefinition> UGameFeedbackRegistry::ResolveDefinitionPtr(
     const FGameplayTag& PrimaryChannel,
@@ -69,19 +56,10 @@ TSoftObjectPtr<UGameFeedbackDefinition> UGameFeedbackRegistry::ResolveDefinition
         }
     }
 
-    const FGameplayTag* MatchedTag = nullptr;
-    const TSoftObjectPtr<UGameFeedbackDefinition>* MatchedDefinition = nullptr;
-    for (const auto& Pair : ExactFeedbackTagMap) {
-        if (!Pair.Key.IsValid() || !FeedbackTags.HasTag(Pair.Key) || Pair.Value.IsNull()) {
-            continue;
+    for (const auto& Pair : SortedExactFeedbackTags) {
+        if (FeedbackTags.HasTag(Pair.Key)) {
+            return Pair.Value;
         }
-        if (!MatchedTag || IsMoreSpecificTag(Pair.Key, *MatchedTag)) {
-            MatchedTag = &Pair.Key;
-            MatchedDefinition = &Pair.Value;
-        }
-    }
-    if (MatchedDefinition) {
-        return *MatchedDefinition;
     }
 
     for (const FGameFeedbackCompositeEntry& Entry : CompositeRules) {
@@ -96,12 +74,29 @@ TSoftObjectPtr<UGameFeedbackDefinition> UGameFeedbackRegistry::ResolveDefinition
 }
 
 /**
- * @brief 重建全部映射来源的 Definition 索引、冲突集合与映射版本
+ * @brief 重建复合规则优先级顺序、反馈标签有序索引（深度降序、同深度字典序升序）及 Definition 索引、冲突集合与映射版本
  */
 void UGameFeedbackRegistry::RebuildDefinitionIndex()
 {
     CompositeRules.Sort([](const FGameFeedbackCompositeEntry& A, const FGameFeedbackCompositeEntry& B) {
         return A.Priority > B.Priority;
+    });
+
+    SortedExactFeedbackTags.Reset();
+    SortedExactFeedbackTags.Reserve(ExactFeedbackTagMap.Num());
+    for (const auto& Pair : ExactFeedbackTagMap) {
+        if (Pair.Key.IsValid() && !Pair.Value.IsNull()) {
+            SortedExactFeedbackTags.Emplace(Pair.Key, Pair.Value);
+        }
+    }
+    SortedExactFeedbackTags.Sort([](const TPair<FGameplayTag, TSoftObjectPtr<UGameFeedbackDefinition>>& A,
+                                   const TPair<FGameplayTag, TSoftObjectPtr<UGameFeedbackDefinition>>& B) {
+        const int32 DepthA = GetTagDepth(A.Key);
+        const int32 DepthB = GetTagDepth(B.Key);
+        if (DepthA != DepthB) {
+            return DepthA > DepthB;
+        }
+        return A.Key.GetTagName().LexicalLess(B.Key.GetTagName());
     });
 
     RegisteredDefinitionPaths.Reset();
@@ -143,8 +138,13 @@ void UGameFeedbackRegistry::RebuildDefinitionIndex()
     }
 
     TArray<FString> MappingParts;
+    const int32 TotalEntries = (DefaultFallbackDefinition ? 1 : 0)
+        + ExactChannelMap.Num()
+        + ExactFeedbackTagMap.Num()
+        + CompositeRules.Num();
+    MappingParts.Reserve(TotalEntries);
     if (DefaultFallbackDefinition) {
-        MappingParts.Add(FString::Printf(TEXT("Default|%s"), *DefaultFallbackDefinition->GetPathName()));
+        MappingParts.Add(FString::Printf(TEXT("Default|%s"), *FSoftObjectPath(DefaultFallbackDefinition).ToString()));
     }
     for (const auto& Pair : ExactChannelMap) {
         MappingParts.Add(FString::Printf(TEXT("Channel|%s|%s"), *Pair.Key.ToString(), *Pair.Value.ToSoftObjectPath().ToString()));

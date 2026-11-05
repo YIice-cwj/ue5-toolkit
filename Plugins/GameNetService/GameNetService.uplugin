@@ -1,0 +1,33 @@
+{
+    "FileVersion": 3,
+    "Version": 1,
+    "VersionName": "1.0.0",
+    "FriendlyName": "Game Net Service",
+    "Description": "Persistent GameInstance-scoped service networking: WebSocket (WSS) transport, SPSC GameThread dispatch, exponential-backoff reconnect with jitter, heartbeat keeper, async Request-Response, and GameCore message bus bridge.",
+    "Category": "Game",
+    "CreatedBy": "Taoist Decree Team",
+    "CanContainContent": false,
+    "Installed": false,
+    "Modules": [
+        {
+            "Name": "GameNetService",
+            "Type": "Runtime",
+            "LoadingPhase": "Default"
+        }
+    ],
+    "Plugins": [
+        {
+            "Name": "GameCore",
+            "Enabled": true
+        },
+        {
+            "Name": "GameLogging",
+            "Enabled": true
+        },
+        {
+            "Name": "GameNetCore",
+            "Enabled": true
+        }
+    ]
+}
+

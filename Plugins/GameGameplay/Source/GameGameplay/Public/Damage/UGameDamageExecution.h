@@ -15,7 +15,6 @@
 #include "GameplayEffectExecutionCalculation.h"
 #include "GameplayTagContainer.h"
 
-#include "GameGameplay.h"
 #include "Damage/FDamageModifier.h"
 #include "UGameDamageExecution.generated.h"
 

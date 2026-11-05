@@ -23,7 +23,17 @@ from typing import Dict, List, Optional, Tuple
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(SCRIPT_DIR) if os.path.basename(SCRIPT_DIR) == ".scripts" else SCRIPT_DIR
 INSTALL_SCRIPT = os.path.join(SCRIPT_DIR, "install.py")
-REQUIRED_PLUGINS = ("GameCore", "GameLogging", "GameData", "GameGameplayCore", "GameGameplay", "GameFeedback")
+REQUIRED_PLUGINS = (
+    "GameCore",
+    "GameLogging",
+    "GameData",
+    "GameGameplayCore",
+    "GameGameplay",
+    "GameFeedback",
+    "GameNetCore",
+    "GameNetService",
+    "GameNetSession",
+)
 TEST_PREFIXES = ("Game.Data", "Game.Feedback")
 SUPPORTED_MINOR_MIN = 1
 SUPPORTED_MINOR_MAX = 8

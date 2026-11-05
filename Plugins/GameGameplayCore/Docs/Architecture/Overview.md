@@ -119,3 +119,39 @@ graph LR
 - **修正器挂接**：按层数缩放后挂接到 `UGameStatComponent`，到期、移除、解绑或组件结束时按原绑定组件与句柄精确回滚；晚绑定与跨 Stat 重绑会迁移全部活跃 Buff。
 - **冷却即状态**：冷却不设独立类，用「限时 + 授予 `State.Cooldown`」的普通 Buff 表达。
 - **权威与复制**：服务端权威施加 / 移除；`ActiveBuffs` 以 FastArray 增量复制，客户端在复制回调中重建修正器，按层数差分广播，并对同叠层的 Spec 变化补发一次变更通知。
+
+---
+
+## 6. 网络边界与分层解耦原则 (Networking & Decoupling Boundaries)
+
+### 6.1 绝对零应用层网络依赖原则
+`GameGameplayCore` 维持零应用层长连接网络依赖。其内部虽然实现了 `UGameStatComponent` 与 `UGameBuffComponent` 的属性复制（`GetLifetimeReplicatedProps` / `FastArray`），但完全基于虚幻引擎原生的 `Engine` / `NetCore` 底层网络机制，绝不依赖 `GameNetCore` 或 `GameNetService`。
+
+### 6.2 协同模式架构拓扑
+
+```mermaid
+flowchart TD
+    subgraph Layer1["Layer 1: 局内核心 (GameGameplayCore) - 零应用层网络污染"]
+        Stat["UGameStatComponent<br>(生命值 / 攻击力 / 护甲)"]
+        Vital["UGameVitalComponent<br>(存活 / 倒地 / 死亡状态机)"]
+        Damage["Damage 管线<br>(计算伤害、暴击、抗性)"]
+    end
+
+    subgraph NativeReplication["多人对战局内同步 (UE 原生 UDP)"]
+        Server["Dedicated Server<br>权威数值计算"] -- "原生 UPROPERTY(Replicated)<br>FastArray 增量复制" --> Client["Client 本地预测与表现"]
+    end
+
+    subgraph Layer2_3["外围服务与业务层 (GameNetService / GameMode)"]
+        Settlement["局后战绩结算 / 任务成就<br>(战斗结束触发)"]
+        NetRPC["UGameNetServiceSubsystem<br>SendStructRequest(MsgId=结算请求)"]
+    end
+
+    Stat -.-> NativeReplication
+    Vital -.-> NativeReplication
+    Vital -- "战斗结束触发 OnDeath" --> Settlement
+    Settlement --> NetRPC
+```
+
+1. **局内高频战斗同步**：组件内部自带引擎原生属性复制，走 Dedicated Server 的毫秒级原生 UDP 通道，具备原生客户端预测与丢包容忍能力；
+2. **局后战绩结算 / 掉落上传**：战斗结束或 BOSS 击杀时，由外围业务层（`AGameMode` 或 `APlayerController`）读取 `UGameVitalComponent` 存活状态与战果，调用 `UGameNetServiceSubsystem::SendStructRequest` 向大厅服务器上报；
+3. **关键战斗事件遥测 / 埋点**：通过 `UGameplayMessageSubsystem` 广播事件，由旁路收集器统一外发，`GameGameplayCore` 自身零感知、零依赖。

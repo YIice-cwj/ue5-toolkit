@@ -60,6 +60,15 @@ public:
     }
 
     /**
+     * @brief 精确移除指定通道的伤害数值
+     * @param InChannelTag 待移除的通道标签
+     * @return 成功移除返回 true，未找到匹配通道返回 false
+     */
+    bool RemoveChannel(const FGameplayTag& InChannelTag) {
+        return FGameDamageChannel::RemoveExact(Channels, InChannelTag);
+    }
+
+    /**
      * @brief 获取所有通道基础伤害的总和
      * @return 基础伤害总和
      */
@@ -69,6 +78,20 @@ public:
             Sum += Item.Magnitude;
         }
         return Sum;
+    }
+
+    /**
+     * @brief 获取基础伤害数值最大的通道
+     * @return 主基础伤害通道；无通道时返回无效标签
+     */
+    [[nodiscard]] FGameplayTag GetDominantChannel() const noexcept {
+        const FGameDamageChannel* DominantChannel = nullptr;
+        for (const FGameDamageChannel& Channel : Channels) {
+            if (DominantChannel == nullptr || Channel.Magnitude > DominantChannel->Magnitude) {
+                DominantChannel = &Channel;
+            }
+        }
+        return DominantChannel != nullptr ? DominantChannel->ChannelTag : FGameplayTag();
     }
 
     /**

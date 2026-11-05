@@ -25,15 +25,18 @@ graph TD
 
     subgraph Layer2["服务与管线层"]
         GameDataCore["GameDataCore<br>通用静态数据仓库 / 通用分段存档"]
-        GameData["GameData<br>生成代码宿主（空模块）"]
+        GameData["GameData<br>生成代码宿主 / 云存档网络同步门面"]
         GameDataSamples["GameDataSamples<br>Item / Shop / Profile 示例（不随通用安装）"]
         GameGameplay["GameGameplay<br>GAS 绑定 / 全时序握手 / ExecCalc / Buff 桥接"]
         GameFeedback["GameFeedback<br>打击感表现中枢 / 网络派发 / 预测去重"]
+        GameNetService["GameNetService<br>WebSocket 长连接 / 心跳 / 退避重连 / 异步 RPC / 日志转发"]
+        GameNetSession["GameNetSession [按需]<br>零 SDK 局域网 UDP 发现 / OSS 会话 / Travel"]
     end
 
     subgraph Layer1["战斗契约与基础设施"]
         GameGameplayCore["GameGameplayCore<br>零 GAS 伤害管线 / 通用数值与 Buff 核心"]
-        GameLogging["GameLogging<br>双轨分发日志 / Epoch 安全缓存"]
+        GameNetCore["GameNetCore<br>16B 线格式 / 传输与序列化契约 / 预留协议 / 单机内存回环"]
+        GameLogging["GameLogging<br>双轨分发日志 / Epoch 缓存 / 远程日志管道"]
     end
 
     subgraph Layer0["基础设施核心层 (零外部依赖)"]
@@ -43,14 +46,22 @@ graph TD
     MyGame --> GameData
     MyGame --> GameGameplay
     MyGame --> GameFeedback
+    MyGame --> GameNetService
+    MyGame --> GameNetSession
     GameDataSamples --> GameData
     GameData --> GameDataCore
+    GameData --> GameNetCore
+    GameData --> GameNetService
     GameGameplay --> GameGameplayCore
     GameGameplay --> GameFeedback
     GameGameplay --> GameLogging
     GameFeedback --> GameGameplayCore
     GameFeedback --> GameLogging
     GameFeedback --> GameCore
+    GameNetService --> GameNetCore
+    GameNetSession --> GameNetCore
+    GameNetCore --> GameCore
+    GameNetCore --> GameLogging
     GameGameplayCore --> GameCore
     GameGameplayCore --> GameLogging
     GameDataCore --> GameCore
@@ -61,13 +72,16 @@ graph TD
 | 插件名称 | 职责定位 | 核心特性 | 依赖关系 | 文档入口 |
 | :--- | :--- | :--- | :--- | :--- |
 | [**GameCore**](Plugins/GameCore/README.md) | 底层基础设施 | 宏真源编译开关、读写分离配置中心、`FListenerHub`、`FObservableRegistry`（Key 订阅 + 初始回放）、`GameplayMessageSubsystem`、通用对象池、HitStop 顿帧、代际安全版本化缓存 | 零外部依赖 (仅依赖引擎基础库) | [文档中心](Plugins/GameCore/Docs/Architecture/Overview.md) |
-| [**GameLogging**](Plugins/GameLogging/README.md) | 全局日志中枢 | 模块分类一键 RAII 注册、动态容量注册表、双轨分发架构、Epoch 纪元安全缓存、`GAME_LOG_THROTTLE` 限频、Shipping 零开销 | `GameCore` | [文档中心](Plugins/GameLogging/Docs/Architecture/Overview.md) |
+| [**GameLogging**](Plugins/GameLogging/README.md) | 全局日志中枢 | 模块分类一键 RAII 注册、动态容量注册表、双轨分发架构、Epoch 纪元安全缓存、`GAME_LOG_THROTTLE` 限频、Shipping 零开销、零网络耦合远程日志管道（MPSC 队列 / GLog 挂载 / 总线广播） | `GameCore`, `GameplayMessageRuntime` | [文档中心](Plugins/GameLogging/Docs/Architecture/Overview.md) |
 | [**GameGameplayCore**](Plugins/GameGameplayCore/README.md) | 战斗核心契约 | 零 GAS 强依赖、`IDamageable` 泛型可受击契约、闭环同步打击反馈、通用数值 `UGameStatComponent`（属性字典 / 修正器 / 按 Tag 订阅）、生命组件 `UGameVitalComponent`（存活状态机 / 复活）、通用 Buff `UGameBuffComponent` | `GameCore`, `GameLogging` | [文档中心](Plugins/GameGameplayCore/Docs/Architecture/Overview.md) |
 | [**GameGameplay**](Plugins/GameGameplay/README.md) | GAS 业务绑定 | 通用 ASC 基类、全时序自动握手 Bootstrap 组件、双轨元属性集、运行时通道 Registry 的 ExecCalc、GAS Buff 桥接、UI 属性解耦映射 | `GameGameplayCore`, `GameplayAbilities`, `GameCore`, `GameLogging` | [文档中心](Plugins/GameGameplay/Docs/Architecture/Overview.md) |
-| [**GameFeedback**](Plugins/GameFeedback/README.md) | 打击感表现中枢 | 消息总线 + 能力组件（无集中上帝类）、顿帧累积预算、闪白绝对时间续期、分屏独立镜头震动、Listen/Dedicated Server 紧凑网络派发（典型 ≤64B、完整 ≤96B、视距裁剪、每帧限流）、本地预测指纹去重 | `GameCore`, `GameGameplayCore`, `GameLogging`, `Niagara` | [README](Plugins/GameFeedback/README.md) |
+| [**GameFeedback**](Plugins/GameFeedback/README.md) | 打击感表现中枢 | 消息总线 + 能力组件（无集中上帝类）、顿帧累积预算、闪白绝对时间续期、分屏独立镜头震动、Listen/Dedicated Server 紧凑网络派发（典型 ≤64B、完整 ≤96B、视距裁剪、每帧限流）、本地预测指纹去重 | `GameCore`, `GameGameplayCore`, `GameLogging`, `Niagara` | [文档中心](Plugins/GameFeedback/Docs/Architecture/Overview.md) |
 | [**GameDataCore**](Plugins/GameData/Source/GameDataCore/README.md) | 通用数据与持久化 | 二进制 `.bin` 脱机仓库（CRC32 强校验）、不可变快照与版本原子发布、通用分段存档（段注册 / 版本迁移 / 槽位白名单） | `GameCore`, `GameLogging`, `Json` | [GameData 文档](Plugins/GameData/Docs/Architecture/Overview.md) |
-| [**GameData**](Plugins/GameData/README.md) | 生成代码宿主 | 由 Excel 管线写入 `Public/Generated`、`Private/Generated`，默认以 `copy` 模式安装 | `GameDataCore` | [GameData 文档](Plugins/GameData/Docs/Architecture/Overview.md) |
+| [**GameData**](Plugins/GameData/README.md) | 业务宿主与云同步 | 由 Excel 管线写入 `Public/Generated`、`Private/Generated`；提供 `UGameCloudSaveSubsystem` 强类型 RPC 云存档上传/拉取/落盘热应用门面 | `GameDataCore`, `GameNetCore`, `GameNetService` | [GameData 文档](Plugins/GameData/Docs/Architecture/Overview.md) |
 | [**GameDataSamples**](Plugins/GameDataSamples/README.md) | 示例插件 | Item / Shop 生成域、PlayerProfile 存档段适配器与示例测试；`install.py --all` 默认跳过 | `GameData`, `GameCore`, `GameLogging` | [README](Plugins/GameDataSamples/README.md) |
+| [**GameNetCore**](Plugins/GameNetCore/README.md) | 网络核心契约 | 16 字节线格式报文头、环形粘包/半包解包器、`INetTransport` / `INetSerializer` 契约、JSON 与二进制 Archive 序列化器、单机零开销回环 `FMockNetTransport` | `GameCore`, `GameLogging` | [文档中心](Plugins/GameNetCore/Docs/Architecture/Overview.md) |
+| [**GameNetService**](Plugins/GameNetService/README.md) | 业务长连接服务 | 跨关卡 `UGameNetServiceSubsystem`、WebSocket (WSS) 驱动、无锁 GameThread 派发、指数退避抖动重连、动态心跳 RTT、异步 Request-Response、`GameCore` 消息总线双向桥接、远程日志自动转发 | `GameNetCore`, `GameCore`, `GameLogging`, `WebSockets`, `GameplayMessageRuntime` | [文档中心](Plugins/GameNetService/Docs/Architecture/Overview.md) |
+| [**GameNetSession**](Plugins/GameNetSession/README.md) | 房间会话与发现 | 零平台 SDK 局域网非阻塞 UDP 房间发现（`FLanBeaconBroadcaster`）、`IOnlineSubsystem` 在线房间封装、防注入 `ServerTravel` / `ClientTravel` 握手工具 | `GameNetCore`, `GameCore`, `GameLogging`, `OnlineSubsystem` | [文档中心](Plugins/GameNetSession/Docs/Architecture/Overview.md) |
 
 ---
 
@@ -153,7 +167,10 @@ UEToolkit/
 │   ├── GameGameplay/                # [Layer 2] GAS 业务绑定与引导组件
 │   ├── GameFeedback/                # [Layer 2] 打击感表现中枢 / 网络派发
 │   ├── GameData/                    # [Layer 2] GameDataCore + 生成宿主双模块
-│   └── GameDataSamples/             # 示例域与 Profile 适配器（不随通用安装）
+│   ├── GameDataSamples/             # 示例域与 Profile 适配器（不随通用安装）
+│   ├── GameNetCore/                 # [Layer 1] 网络报文头契约 / 序列化器 / 单机内存回环
+│   ├── GameNetService/              # [Layer 2] WebSocket 长连接 / 心跳 / 退避重连 / 异步 RPC
+│   └── GameNetSession/              # [Layer 2] 零 SDK 局域网 UDP 发现 / OSS 会话 / Travel 握手
 ├── Tools/                           # 跨平台自动化工具链
 │   ├── Build/                       # Clangd 编译数据库生成
 │   ├── Cook/                        # CI 对拍与冷启动基准

@@ -9,41 +9,47 @@
 #include "Net/UnrealNetwork.h"
 #include "Logging/GameLogCategories.h"
 
+/**
+ * @brief 构造函数：实例化策略设为 InstancedPerActor、复制策略设为 ReplicateYes
+ */
 UGameGameplayAbility::UGameGameplayAbility() {
     InstancingPolicy = EGameplayAbilityInstancingPolicy::InstancedPerActor;
     ReplicationPolicy = EGameplayAbilityReplicationPolicy::ReplicateYes;
 }
 
 /**
- * @brief 通用激活否决守卫：引擎判定通过后追加死亡 / 硬直等状态标签短路
+ * @brief 通用激活否决守卫：平直化卫语句，引擎判定通过后快速阻断死亡 / 硬直等状态标签
  * @param Handle 能力规格句柄
  * @param ActorInfo 能力宿主信息
  * @param SourceTags 来源标签
  * @param TargetTags 目标标签
  * @param OptionalRelevantTags 可选相关标签输出
  * @return 允许激活返回 true
- *
- * 前置条件：本函数先调用 Super::CanActivateAbility，后者在 ActorInfo 为空或
- * AbilitySystemComponent 无效时均返回 false（GameplayAbility.cpp: ActorInfo 与
- * `ActorInfo->AbilitySystemComponent.Get()` 的空值判定），因此通过该早退后
- * 再次解引用 ActorInfo->AbilitySystemComponent 具备引擎契约保证，无需重复判空。
  */
-bool UGameGameplayAbility::CanActivateAbility(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayTagContainer* SourceTags, const FGameplayTagContainer* TargetTags, OUT FGameplayTagContainer* OptionalRelevantTags) const {
+bool UGameGameplayAbility::CanActivateAbility(
+    const FGameplayAbilitySpecHandle Handle,
+    const FGameplayAbilityActorInfo* ActorInfo,
+    const FGameplayTagContainer* SourceTags,
+    const FGameplayTagContainer* TargetTags,
+    OUT FGameplayTagContainer* OptionalRelevantTags) const {
     if (!Super::CanActivateAbility(Handle, ActorInfo, SourceTags, TargetTags, OptionalRelevantTags)) {
         return false;
     }
-    if (BlockingStateTags.IsEmpty()) {
+
+    if (BlockingStateTags.IsEmpty() || ActorInfo == nullptr) {
         return true;
     }
+
     const UAbilitySystemComponent* AbilitySystemComponent = ActorInfo->AbilitySystemComponent.Get();
-    if (AbilitySystemComponent->HasAnyMatchingGameplayTags(BlockingStateTags)) {
-        if (OptionalRelevantTags != nullptr) {
-            OptionalRelevantTags->AppendTags(AbilitySystemComponent->GetOwnedGameplayTags().Filter(BlockingStateTags));
-        }
-        GAME_LOG(Verbose, TEXT("【GAS 能力】能力 [%s] 激活被阻断：宿主命中阻断状态标签。"), *GetName());
-        return false;
+    if (AbilitySystemComponent == nullptr || !AbilitySystemComponent->HasAnyMatchingGameplayTags(BlockingStateTags)) {
+        return true;
     }
-    return true;
+
+    if (OptionalRelevantTags != nullptr) {
+        OptionalRelevantTags->AppendTags(AbilitySystemComponent->GetOwnedGameplayTags().Filter(BlockingStateTags));
+    }
+    GAME_LOG(Verbose, TEXT("【GAS 能力】能力 [%s] 激活被阻断：宿主命中阻断状态标签。"), *GetName());
+    return false;
 }
 
 /**
@@ -68,14 +74,6 @@ void UGameGameplayAbility::ActivateAbility(const FGameplayAbilitySpecHandle Hand
 void UGameGameplayAbility::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const {
     Super::GetLifetimeReplicatedProps(OutLifetimeProps);
     DOREPLIFETIME(UGameGameplayAbility, TriggerSource);
-}
-
-/**
- * @brief 最近一次激活的触发来源
- * @return 触发来源
- */
-EGameAbilityTriggerSource UGameGameplayAbility::GetTriggerSource() const noexcept {
-    return TriggerSource;
 }
 
 /**

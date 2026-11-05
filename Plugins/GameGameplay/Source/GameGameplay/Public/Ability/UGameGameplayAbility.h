@@ -14,7 +14,6 @@
 #include "Abilities/GameplayAbility.h"
 #include "GameplayTagContainer.h"
 
-#include "GameGameplay.h"
 #include "UGameGameplayAbility.generated.h"
 
 /**
@@ -70,10 +69,12 @@ public:
     void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
     /**
-     * @brief 最近一次激活的触发来源（子类据以分叉表现层；已声明为复制属性，随能力实例复制到远端）
+     * @brief 最近一次激活的触发来源（子类据以分叉表现层；随能力实例复制到远端 · 强制内联）
      * @return 触发来源枚举值
      */
-    [[nodiscard]] EGameAbilityTriggerSource GetTriggerSource() const noexcept;
+    [[nodiscard]] FORCEINLINE EGameAbilityTriggerSource GetTriggerSource() const noexcept {
+        return TriggerSource;
+    }
 
 private:
     /**

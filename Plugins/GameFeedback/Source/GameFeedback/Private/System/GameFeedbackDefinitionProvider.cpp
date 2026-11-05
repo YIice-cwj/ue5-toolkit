@@ -7,16 +7,32 @@
 #include "Config/GameFeedbackSettings.h"
 #include "Engine/AssetManager.h"
 #include "Engine/StreamableManager.h"
+#include "Feedback/GameFeedbackSignal.h"
 #include "Logging/GameLogCategories.h"
+
+/**
+ * @brief 配置缺失时输出一次性诊断，避免每次查询重复刷屏
+ */
+void UGameFeedbackDefinitionProvider::WarnMissingGlobalRegistryOnce()
+{
+    if (bWarnedMissingGlobalRegistry) {
+        return;
+    }
+    bWarnedMissingGlobalRegistry = true;
+    GAME_LOG(Warning, TEXT("【GameFeedback】未配置 GameFeedback GlobalRegistry，表现解析将全部返回空；请在 Project Settings > Game Feedback > Registry 指定 GlobalRegistry 资产。"));
+}
 
 /**
  * @brief 按信号主通道与反馈标签解析最优表现资产
  * @param Signal 表现信号
- * @return 可安全同步访问的定义指针；注册表未配置时返回 nullptr
+ * @return 可安全同步访问的定义指针；注册表未配置时返回 nullptr，并在配置缺失路径输出一次性 Warning
  */
 const UGameFeedbackDefinition* UGameFeedbackDefinitionProvider::Resolve(const FGameFeedbackSignal& Signal)
 {
     if (!LoadedRegistry) {
+        if (GetDefault<UGameFeedbackSettings>()->GlobalRegistry.IsNull()) {
+            WarnMissingGlobalRegistryOnce();
+        }
         return nullptr;
     }
 
@@ -80,7 +96,7 @@ const UGameFeedbackDefinition* UGameFeedbackDefinitionProvider::ResolveById(uint
  * @brief 批量预热软引用定义资产
  * @param Definitions 待异步加载的定义软指针集合
  */
-void UGameFeedbackDefinitionProvider::PreloadFeedbackBundle(const TArray<TSoftObjectPtr<UGameFeedbackDefinition>>& Definitions)
+void UGameFeedbackDefinitionProvider::PreloadFeedbackBundle(TConstArrayView<TSoftObjectPtr<UGameFeedbackDefinition>> Definitions)
 {
     for (const auto& SoftDef : Definitions) {
         if (!SoftDef.IsNull()) {
@@ -128,11 +144,14 @@ void UGameFeedbackDefinitionProvider::Initialize(FSubsystemCollectionBase& Colle
 void UGameFeedbackDefinitionProvider::Deinitialize()
 {
     for (auto& Pair : DefinitionLoads) {
-        Pair.Value->CancelHandle();
+        if (Pair.Value.IsValid()) {
+            Pair.Value->CancelHandle();
+        }
     }
     DefinitionLoads.Empty();
     LoadedDefinitions.Empty();
     LoadedRegistry = nullptr;
+    bWarnedMissingGlobalRegistry = false;
     Super::Deinitialize();
 }
 
@@ -151,7 +170,7 @@ UGameFeedbackDefinitionProvider* UGameFeedbackDefinitionProvider::GetPtr(const U
 }
 
 /**
- * @brief 解析软定义，命中强缓存或已加载对象时写入缓存并返回，否则按路径去重发起异步请求
+ * @brief 解析软定义，命中强缓存或已加载对象时写入缓存并返回，否则按路径去重发起异步请求并闭环回收句柄
  * @param Definition 待解析软定义
  * @return 已加载定义；加载中或加载失败时返回 nullptr
  */
@@ -162,11 +181,26 @@ const UGameFeedbackDefinition* UGameFeedbackDefinitionProvider::ResolveDefinitio
         return CachedDefinition->Get();
     }
     if (Definition.IsValid()) {
-        LoadedDefinitions.Add(Path, Definition.Get());
-        return Definition.Get();
+        UGameFeedbackDefinition* LoadedAsset = Definition.Get();
+        LoadedDefinitions.Add(Path, LoadedAsset);
+        return LoadedAsset;
     }
     if (!DefinitionLoads.Contains(Path)) {
-        DefinitionLoads.Add(Path, UAssetManager::GetStreamableManager().RequestAsyncLoad(Path));
+        TWeakObjectPtr<UGameFeedbackDefinitionProvider> WeakThis(this);
+        TSharedPtr<FStreamableHandle> Handle = UAssetManager::GetStreamableManager().RequestAsyncLoad(
+            Path,
+            FStreamableDelegate::CreateWeakLambda(this, [WeakThis, Path]() {
+                if (UGameFeedbackDefinitionProvider* StrongThis = WeakThis.Get()) {
+                    if (UGameFeedbackDefinition* LoadedAsset = Cast<UGameFeedbackDefinition>(Path.ResolveObject())) {
+                        StrongThis->LoadedDefinitions.Add(Path, LoadedAsset);
+                    }
+                    StrongThis->DefinitionLoads.Remove(Path);
+                }
+            })
+        );
+        if (Handle.IsValid()) {
+            DefinitionLoads.Add(Path, Handle);
+        }
     }
     return nullptr;
 }

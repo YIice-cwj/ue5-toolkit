@@ -63,7 +63,37 @@ GlobalDefinitions.Add("GAME_ENABLE_LOG=0"); // 强制彻底关闭所有日志宏
 
 ---
 
-## 4. 常见问题排查 (Troubleshooting)
+## 4. 远程日志收集与网络上报最佳实践
+
+`GameLogging` 内建了由 `FGameRemoteLogOutputDevice` 与 `UGameLoggingSubsystem` 驱动的远程日志管道，使用时建议遵循以下原则：
+
+### 4.1 保持默认的高级别过滤阈值
+
+远程日志设备默认的最低输出冗余级别为 `ELogVerbosity::Warning`。
+- **最佳实践**：严禁在生产构建中将 `MinVerbosity` 降为 `Log` 或 `Verbose`，否则每秒可能产生数千条常规日志塞满队列，甚至造成主线程总线广播开销急剧攀升。
+- **动态调节**：仅在内部联调或 QA 专项测试时，通过 `UGameLoggingSubsystem::GetOutputDevice()->SetMinVerbosity(ELogVerbosity::Log)` 临时放宽阈值。
+
+### 4.2 使用黑名单（Ignored Categories）压制噪音
+
+如果个别底层系统（如物理、动画或第三方 SDK）持续打印无害但高频的 Warning，应将其加入忽略黑名单：
+
+```cpp
+if (UGameLoggingSubsystem* Subsystem = GameInstance->GetSubsystem<UGameLoggingSubsystem>())
+{
+    if (FGameRemoteLogOutputDevice* Device = Subsystem->GetOutputDevice())
+    {
+        Device->AddIgnoredCategory(TEXT("LogThirdPartySDK"));
+    }
+}
+```
+
+### 4.3 零耦合单向监听，严禁反向引用
+
+`GameLogging` 本身不依赖任何网络模块（如 `GameNetCore`、`GameNetService`）。网络服务层或远程监控插件应当通过 `UGameplayMessageSubsystem` 注册监听 `TAG_Game_Log_Remote` 标签，实现纯粹的单向观察者模式，保证底层基础设施核心的绝对独立。
+
+---
+
+## 5. 常见问题排查 (Troubleshooting)
 
 ### Q1: 为什么我的日志都输出到了 `LogGame` 而不是自定义的模块名？
 - **原因**：当前模块尚未调用 `GAME_REGISTER_MODULE_LOG(LogYourModule)`。

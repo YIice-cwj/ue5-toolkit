@@ -51,6 +51,19 @@ Plugins/GameFeedback/
 │       ├── System/GameFeedbackVFXExecutor.h / .cpp      # 粒子特效无状态执行器
 │       ├── Tests/                                      # 模块化分类自动化测试集（15 组专项测试文件）
 │       └── GameFeedback.cpp
+├── Docs/                                               # 分类技术文档库
+│   ├── Architecture/
+│   │   ├── Overview.md                                 # 总线解耦架构与视角判定拓扑
+│   │   └── NetworkAndCulling.md                        # 紧凑网络报文、版本校验、空间裁剪与预测去重
+│   ├── API/
+│   │   ├── SignalAndActions.md                         # 表现纯信号载荷与 6 组原子动作参数
+│   │   ├── BusAndLibrary.md                            # 总线通道标签、消息载荷与统一广播函数库
+│   │   ├── AssetAndRegistry.md                         # 表现资产、注册表多级匹配与定义提供者
+│   │   └── ExecutorsAndTrackers.md                     # 闪白/震动/顿帧/预测追踪器与执行器
+│   └── Guides/
+│       └── QuickStart.md                               # 快速上手与资产配置接入指南
+├── GameFeedback.uplugin
+└── README.md
 ```
 
 ## 2. 订阅拓扑
@@ -78,59 +91,88 @@ Feedback.Channel.Network ── 上述监听者（抑制时整段跳过）
 
 ## 3. 核心特性
 
-1. **单一广播入口**：`BroadcastFeedback` / `BroadcastFeedbackWithDefinition` / `BroadcastClearFeedback`，原生与蓝图一致。
-2. **顿帧保护**：攻击者/目标滑动窗口 + `MaxCumulativeDuration` 封顶；DefinitionProvider 与 HitStopService 在 Dedicated Server 正常创建，权威端物理定格仍默认由 `bAllowAuthoritativeHitStop` 禁止。
-3. **闪白安全**：按最大绝对到期时间 `ExpirationRealTime` 续期，提前回调按剩余真实时间重新 arm；原 Overlay 由强引用保活，清除、注销与最终到期均可安全还原。
-4. **分屏隔离**：镜头震动按 `APlayerCameraManager` 独立维护同帧最大振幅实例。
-5. **网络派发与拓扑预热**：Listener/Dedicated Server 自动向视距内远端客户端派发；`GameFeedbackRuntimeSubsystem` 在权威服务端为连接就绪的 PlayerController **提前预装配 `UGameFeedbackReceiverComponent`**（同时在 Dispatch 时保留惰性兜底），彻底消除首击 Unreliable RPC 瞬时组件跨端未就绪引发的丢包隐患；单帧派发上限由 `MaxDispatchPerFrame` 控制；无 Pawn 的观战者用视点位置参与裁剪。
-6. **稳定网络身份与高效匹配**：服务端解析最终 Definition，Unreliable Client RPC 仅传稳定 `DefinitionID + DefinitionMappingVersion`；ID 由完整软对象路径的确定性 CRC32 生成，0 映射为 1，冲突、未知 ID 与版本不一致均拒绝解析。`UGameFeedbackRegistry::ResolveDefinitionPtr` 遍历匹配时同步缓存最优定义值指针，消除二次哈希表寻址；同深度标签采用 `FName::LexicalLess` 进行纯键字典序比较，避免临时字符串堆内存分配。
-7. **预测去重**：按非零 `PredictionEventId + Attacker + Target` 精确匹配，0.5s 窗口内命中即广播 `bSuppressed`；ID 0 不参与记录或去重。
-8. **生命周期、异步降级与视觉稳健性**：DefinitionProvider 强缓存已解析资产、去重并持有异步句柄，注销时取消并释放；VFX / 音效 / 确认音软引用未就绪时异步预热并跳过本次播放，不阻塞主线程；`ResolveVFXRotation` 在缺少轨迹向量时（如范围伤害或无端点网络同步）优雅自适应降级为冲击法线朝向，避免粒子朝向锁定世界原点。
-9. **GAS 统一收敛**：`Plugins/GameGameplay` 提供 `UGameplayCueNotify_GameFeedback` 桥接，视听资产全工程统一配置。
+1. **单一广播入口**：`BroadcastFeedback`（支持可选 `OverrideDefinition` 参数）与 `BroadcastClearFeedback`，原生与蓝图一致。
+2. **顿帧保护与单机卡肉**：攻击者/目标滑动窗口 + `MaxCumulativeDuration` 封顶；单机模式（`NM_Standalone`）下攻击者卡肉打击感自动放行；网络环境下 DefinitionProvider 与 HitStopService 在 Dedicated Server 正常创建，权威端物理定格仍默认由 `bAllowAuthoritativeHitStop` 禁止，保障竞技对战时间同步确定性。
+3. **自伤视角优先**：`ResolvePerspective` 优先判定受击实体（`Target`）归属；当玩家伤害波及自身（火箭跳、贴身爆炸）时判定为 `LocalVictim`，仅触发受击震屏与损伤表现，严格抑制攻击命中确认音（Attacker Confirmation）。
+4. **闪白安全**：按最大绝对到期时间 `ExpirationRealTime` 续期，提前回调按剩余真实时间重新 arm；原 Overlay 由强引用保活，清除、注销与最终到期均可安全还原。
+5. **分屏隔离**：镜头震动按 `APlayerCameraManager` 独立维护同帧最大振幅实例。
+6. **网络派发与拓扑预热**：Listener/Dedicated Server 自动向视距内远端客户端派发；`GameFeedbackRuntimeSubsystem` 在权威服务端为连接就绪的 PlayerController **提前预装配 `UGameFeedbackReceiverComponent`**（同时在 Dispatch 时保留惰性兜底），彻底消除首击 Unreliable RPC 瞬时组件跨端未就绪引发的丢包隐患；单帧派发上限由 `MaxDispatchPerFrame` 控制；无 Pawn 的观战者用视点位置参与裁剪。
+7. **稳定网络身份与高效匹配**：服务端解析最终 Definition，Unreliable Client RPC 仅传稳定 `DefinitionID + DefinitionMappingVersion`；ID 由完整软对象路径的确定性 CRC32 生成，0 映射为 1，冲突、未知 ID 与版本不一致均拒绝解析。`RebuildDefinitionIndex` 会在加载阶段将 `ExactFeedbackTagMap` 按标签深度降序与键字典序升序预先构建为 `SortedExactFeedbackTags` 数组，使运行时 `ResolveDefinitionPtr` 无需每次遍历查找节点深度，首个标签匹配即可直接 $O(1 \sim K)$ 快速早出，极大降低高频触发的 CPU 开销；同深度标签采用 `FName::LexicalLess` 进行纯键字典序比较，避免临时字符串堆内存分配。
+8. **预测去重**：按非零 `PredictionEventId + Attacker + Target` 精确匹配，0.5s 窗口内命中即广播 `bSuppressed`；ID 0 不参与记录或去重。
+9. **生命周期、异步降级与视觉稳健性**：DefinitionProvider 强缓存已解析资产、去重并持有异步句柄，注销时取消并释放；VFX / 音效 / 确认音软引用未就绪时异步预热并跳过本次播放，不阻塞主线程；`ResolveVFXRotation` 在缺少轨迹向量时（如范围伤害或无端点网络同步）优雅自适应降级为冲击法线朝向，避免粒子朝向锁定世界原点。
+10. **全链路热关断与 GAS 统一收敛**：`bEnableFeedback` 提供项目级安全切断断路器，关断时派发端与各监听者零消耗早退；`Plugins/GameGameplay` 提供 `UGameplayCueNotify_GameFeedback` 桥接，视听资产全工程统一配置。
 
 ## 4. 接入步骤
 
 1. **启用插件**：在 `.uproject` 或编辑器 Plugins 面板启用 `GameFeedback`；目标模块 `Build.cs` 增加 `"GameFeedback"` 依赖。
-2. **配置注册表**：Project Settings → Game → Game Feedback → `GlobalRegistry` 指定一个 `UGameFeedbackRegistry` 资产。
+2. **配置全局设置**：在 Project Settings → Game → Game Feedback 配置参数（详见下表）：
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `bEnableFeedback` | bool | `true` | 全局总功能热关断开关；紧急故障时一键关闭所有广播、派发与监听消费 |
+| `GlobalRegistry` | `TSoftObjectPtr<UGameFeedbackRegistry>` | `None` | 全局表现映射注册表软指针 |
+| `GlobalHapticScale` | float | `1.0f` | 全局手柄触觉震动倍率（无障碍支持，0.0~1.0） |
+| `bAllowAuthoritativeHitStop` | bool | `false` | 权威端（Listen/Dedicated Server）是否允许物理定格；默认禁止保证网络竞技时间确定性 |
+| `DefaultNetworkCullDistance` | float | `5000.0f` | 权威端网络视距裁剪距离（厘米）；$\le 0$ 时关闭裁剪 |
+| `MaxDispatchPerFrame` | int32 | `32` | 单帧网络派发报文上限；$\le 0$ 时不限流，防止 AOE 瞬发报文风暴 |
+
+3. **配置注册表**：创建 `UGameFeedbackRegistry` 资产并在 `GlobalRegistry` 中指定：
    - `ExactChannelMap`：主伤害通道 → 表现资产（最高优先）。
    - `ExactFeedbackTagMap`：反馈标签 → 表现资产；多个标签命中时按标签层级深度择优（同深度按字典序，结果稳定）。
    - `CompositeRules`：`FGameplayTagQuery` 复合规则，按 `Priority` 降序。
    - `DefaultFallbackDefinition`：均未命中时的兜底资产。
-3. **创建表现资产**：新建 `UGameFeedbackDefinition`，按需配置 HitStop / CameraShake / HitFlash / VFX / Audio / Haptics。
-4. **触发表现**：
-   - 原生：`UGameFeedbackBlueprintLibrary::BroadcastFeedback(WorldContext, Signal)`。
-   - 覆盖资产：`BroadcastFeedbackWithDefinition(WorldContext, Signal, DefinitionAsset)`；Override 优先于 Registry，权威派发前必须已通过 Registry 的任一映射来源登记，未登记 Override 不进行远端派发。
+4. **创建表现资产**：新建 `UGameFeedbackDefinition`，按需配置 HitStop / CameraShake / HitFlash / VFX / Audio / Haptics。
+5. **触发表现**：
+   - 原生：`UGameFeedbackBlueprintLibrary::BroadcastFeedback(WorldContext, Signal, DefinitionAsset /*可选*/)`。Override 优先于 Registry，权威派发前必须已通过 Registry 的任一映射来源登记，未登记 Override 不进行远端派发。
    - 清除状态：`BroadcastClearFeedback(WorldContext, Target)`。
    - 伤害链路：`UGameFeedbackAdapter::MakeSignalFromDamage(Target, Context, Result)`。
    - GAS：在 GameplayCue 上使用 `UGameplayCueNotify_GameFeedback` 桥接类。
-5. **网络说明**：Listener/Dedicated Server 在服务端解析最终 Definition，通过 Unreliable Client RPC 发送其稳定 ID、映射版本及紧凑事件，客户端不得重跑 Registry 或重建 `FeedbackTags`。报文保留 `Instigator`、`DamageCauser`、`Target`、`HitComponent`、骨骼索引还原的 `BoneName`、冲击/轨迹方向、`PrimaryChannelIndex` 与 `PredictionEventId`；真实 PackageMap 下典型载荷不超过 64B，完整载荷不超过 96B。`PrimaryChannelIndex` 仅在工程启用 GameplayTag `FastReplication` 时携带真实网络索引；未启用时写入 `MAX_uint16` 哨兵，客户端依据 `DefinitionId` 与映射版本还原表现，不重建主通道标签。客户端预测方以非零事件 ID 记录本地表现，服务器回执精确命中后抑制重复表现。接收组件与表现组件都由 `GameFeedbackRuntimeSubsystem` 自动装配（服务端在玩家进入世界时提前挂载 Receiver 组件，首击直接派发），无需手动挂载。
+6. **网络说明**：Listener/Dedicated Server 在服务端解析最终 Definition，通过 Unreliable Client RPC 发送其稳定 ID、映射版本及紧凑事件，客户端不得重跑 Registry 或重建 `FeedbackTags`。报文保留 `Instigator`、`DamageCauser`、`Target`、`HitComponent`、骨骼索引还原的 `BoneName`、冲击/轨迹方向、`PrimaryChannelIndex` 与 `PredictionEventId`；真实 PackageMap 下典型载荷不超过 64B，完整载荷不超过 96B。`PrimaryChannelIndex` 仅在工程启用 GameplayTag `FastReplication` 时携带真实网络索引；未启用时写入 `MAX_uint16` 哨兵，客户端依据 `DefinitionId` 与映射版本还原表现，不重建主通道标签。客户端预测方以非零事件 ID 记录本地表现，服务器回执精确命中后抑制重复表现。接收组件与表现组件都由 `GameFeedbackRuntimeSubsystem` 自动装配（服务端在玩家进入世界时提前挂载 Receiver 组件，首击直接派发），无需手动挂载。
 
 > 本插件 `CanContainContent: false`，仓库不附带示例 `.uasset`；请按上述步骤在目标工程中创建 Registry 与 Definition 资产。
 
 ## 5. 自动化测试
 
-全套自动化测试共 21 组用例，涵盖全状态机、网络序列化、视角判定、执行器、限流器与生命周期，覆盖率达到 95% 以上，且遵循零 sleep 确定性时钟模拟原则：
+全套自动化测试共 21 组用例，涵盖全状态机、网络序列化、视角判定、执行器、限流器与生命周期，覆盖率达到 95% 以上，且遵循零 sleep 确定性时钟模拟原则与严格客观断言标准（无空洞断言）：
 
 | 用例 | 覆盖点 |
 |---|---|
-| `Game.Feedback.NetSerializeByteBudget` | 真实 PackageMap 的 64B/96B 预算、对象/骨骼/方向还原、半精度伤害、Definition 身份与预测 ID |
+| `Game.Feedback.NetSerializeByteBudget` | 真实 PackageMap 的 64B/96B 预算、对象/骨骼/方向还原、65504 半精度极限限幅与 NaN 免疫、Definition 身份与预测 ID |
 | `Game.Feedback.RegistryLookup` | 通道精确匹配、标签最具体择优、同深度稳定决策、兜底资产 |
 | `Game.Feedback.DefinitionIdentity` | 全来源稳定 ID、映射版本、未知 ID、CRC 冲突拒绝 |
 | `Game.Feedback.NetworkDefinitionContract` | Override 优先与登记门禁、真实 RPC 出口、客户端同版本解析及未知/过期事件拒绝 |
-| `Game.Feedback.HitStopLimiter` | 冷却窗口、累积预算截断、重置窗口、清除 |
+| `Game.Feedback.HitStopLimiter` | 冷却窗口、累积预算截断、重置窗口、无攻击者环境伤害放行、Prune 垃圾回收清理与 Clear 重置 |
 | `Game.Feedback.PredictionHistory` | 非零 ID 与双实体精确消费、乱序/丢失/重复、ID 0 禁用、0.5s 窗口过期 |
 | `Game.Feedback.AdapterConversion` | 主导通道、伤害总值、致死标签、冲击法线与轨迹方向 |
 | `Game.Feedback.VFXTraceOrientation` | 网络缺失 Trace 端点时按显式轨迹方向计算朝向，及缺失 TraceDirection 时自适应降级为撞击法线 |
 | `Game.Feedback.FlashTrackerLifecycle` | 最大绝对到期续期、提前回调重新 arm、原 Overlay 强引用与清除/注销还原（虚拟时间零等待） |
 | `Game.Feedback.DefinitionProviderLifetime` | 同步/异步强缓存、同路径句柄去重、真实资产重载与注销释放 |
 | `Game.Feedback.DedicatedServerServices` | DS 服务创建、权威顿帧配置门禁与端到端顿帧 |
-| `Game.Feedback.Perspective` | 攻击者、受害者、伤害源、旁观者四视角判定，深度 >5 环路保护及空指针安全 |
-| `Game.Feedback.ShakeTracker` | 镜头震动空/零振幅防御、同帧振幅择优合并、撞击方向定位与 StopAll 清理 |
-| `Game.Feedback.AudioExecutor` | 空间音与确认音最小震级门禁、空音效安全、软引用未加载异步预热及回退机制 |
-| `Game.Feedback.VFXExecutorSpawn` | 粒子特效最小震级门禁、未加载软引用异步预热、指定位置及骨骼挂接生成 |
+| `Game.Feedback.Perspective` | 攻击者、受害者、伤害源、旁观者四视角判定，自伤优先判定受害者，深度 >5 环路保护及空指针安全 |
+| `Game.Feedback.ShakeTracker` | 镜头震动空/零振幅防御、同帧振幅择优合并、撞击方向定位、全生命周期断言与 StopAll 清理 |
+| `Game.Feedback.AudioExecutor` | 空间音与确认音最小震级门禁、空音效安全、软引用未加载异步预热、客观状态断言及回退机制 |
+| `Game.Feedback.VFXExecutorSpawn` | 粒子特效最小震级门禁、未加载软引用异步预热、指定位置及骨骼挂接生成客观断言 |
 | `Game.Feedback.CompositeRules` | 复合 GameplayTagQuery 规则匹配、Priority 降序择优、与通道/标签优先序校验 |
 | `Game.Feedback.PlayerComponent` | 本地控制器自动发现、客户端预测登记、抑制重复消费及网络消息处理 |
 | `Game.Feedback.WorldComponent` | HitComponentOnly / AllSkeletalMeshes 模式切换、材质 Overlay 应用与注销还原 |
 | `Game.Feedback.NetworkDispatcherRateAndCull` | 单帧派发上限截断 (MaxDispatchPerFrame) 与超视距客户端空间裁剪（Pawn/视点空间判定） |
 | `Game.Feedback.RuntimeSubsystem` | 专用服与监听服世界组件惰性装配与自动生命周期托管 |
 | `Game.Feedback.AdapterAndLibrary` | 伤害上下文生成打击信号、蓝图函数库入口广播与全局门禁验证 |
+
+---
+
+## 6. 文档导航
+
+完整文档已按职责分类收录于 `Docs/` 目录中：
+
+- **架构设计 (Architecture)**
+  - [架构概览与总线拓扑](Docs/Architecture/Overview.md)：消息总线模型、独立能力监听者、本地视角判定与运行时自动装配。
+  - [网络同步、裁剪与预测去重](Docs/Architecture/NetworkAndCulling.md)：紧凑 64B/96B 报文 NetSerialize、CRC32 确定性 Definition ID、版本校验、空间视距裁剪与客户端预测去重。
+- **接口参考 (API Reference)**
+  - [信号载荷与原子动作 API](Docs/API/SignalAndActions.md)：`FGameFeedbackSignal`、视角枚举与 6 组原子表现动作参数。
+  - [总线与广播函数库 API](Docs/API/BusAndLibrary.md)：`Feedback.Channel.*` 通道标签、消息载荷、`UGameFeedbackBlueprintLibrary` 统一广播与清除入口、`UGameFeedbackAdapter`。
+  - [表现资产与注册表 API](Docs/API/AssetAndRegistry.md)：`UGameFeedbackDefinition`、四级路由匹配 `UGameFeedbackRegistry` 与世界级 `UGameFeedbackDefinitionProvider`。
+  - [执行器与生命周期追踪器 API](Docs/API/ExecutorsAndTrackers.md)：受击闪白、镜头震动、顿帧累积预算、预测历史去重及 VFX/Audio 无状态执行器。
+- **使用指南 (Guides)**
+  - [快速上手指南](Docs/Guides/QuickStart.md)：10 分钟完成配置、资产创建、信号广播及战斗管线接入。
+

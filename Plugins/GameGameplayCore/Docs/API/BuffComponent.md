@@ -109,10 +109,11 @@ class GAMEGAMEPLAYCORE_API UGameBuffComponent : public UActorComponent {
     GENERATED_BODY()
 
 public:
+    UFUNCTION(BlueprintCallable, Category = "Game|Buff")
     void BindStatComponent(UGameStatComponent* InStatComponent);
 
     UFUNCTION(BlueprintCallable, Category = "Game|Buff")
-    int32 ApplyBuff(const FGameBuffSpec& InSpec, UObject* InSource = nullptr);
+    int32 ApplyBuff(const FGameBuffSpec& InSpec);
 
     UFUNCTION(BlueprintCallable, Category = "Game|Buff")
     bool RemoveBuff(FGameplayTag InBuffTag, bool bRemoveAllInstances = true);
@@ -124,13 +125,13 @@ public:
     bool RemoveBuffInstance(int32 InInstanceId);
 
     UFUNCTION(BlueprintPure, Category = "Game|Buff")
-    bool HasBuff(FGameplayTag InBuffTag) const;
+    [[nodiscard]] bool HasBuff(FGameplayTag InBuffTag) const;
 
     UFUNCTION(BlueprintPure, Category = "Game|Buff")
-    int32 GetBuffStacks(FGameplayTag InBuffTag) const;
+    [[nodiscard]] int32 GetBuffStacks(FGameplayTag InBuffTag) const;
 
     UFUNCTION(BlueprintPure, Category = "Game|Buff")
-    float GetBuffRemainingTime(FGameplayTag InBuffTag) const;
+    [[nodiscard]] float GetBuffRemainingTime(FGameplayTag InBuffTag) const;
 
     UFUNCTION(BlueprintPure, Category = "Game|Buff")
     void GetActiveBuffTags(TArray<FGameplayTag>& OutTags) const;
@@ -139,7 +140,7 @@ public:
     void GetGrantedTags(FGameplayTagContainer& OutTags) const;
 
     UFUNCTION(BlueprintPure, Category = "Game|Buff")
-    bool IsApplyAllowed() const;
+    [[nodiscard]] bool IsApplyAllowed() const;
 
     UPROPERTY(BlueprintAssignable, Category = "Game|Buff")
     FOnGameBuffChanged OnBuffChanged;

@@ -10,7 +10,7 @@
 
 ## 1. `FGameDamageChannel` (伤害通道条目)
 
-表示单一类型的伤害或属性数值条目：
+表示单一类型的伤害或属性数值条目，并提供针对通道数组的高效静态算法函数：
 
 ```cpp
 USTRUCT(BlueprintType)
@@ -28,6 +28,15 @@ public:
     /** 基础数值 */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Game|Damage")
     float Magnitude = 0.0f;
+
+    // --- 针对 TArray<FGameDamageChannel> 的静态辅助函数 ---
+    [[nodiscard]] static const FGameDamageChannel* FindExact(const TArray<FGameDamageChannel>& InChannels, const FGameplayTag& InTag) noexcept;
+    [[nodiscard]] static FGameDamageChannel* FindExactMutable(TArray<FGameDamageChannel>& InChannels, const FGameplayTag& InTag) noexcept;
+    [[nodiscard]] static float GetExact(const TArray<FGameDamageChannel>& InChannels, const FGameplayTag& InTag, float DefaultValue = 0.0f) noexcept;
+    [[nodiscard]] static float GetSum(const TArray<FGameDamageChannel>& InChannels, const FGameplayTag& InTag) noexcept;
+    static void SetExact(TArray<FGameDamageChannel>& InChannels, const FGameplayTag& InTag, float InMagnitude);
+    static void AddExact(TArray<FGameDamageChannel>& InChannels, const FGameplayTag& InTag, float InDelta);
+    static bool RemoveExact(TArray<FGameDamageChannel>& InChannels, const FGameplayTag& InTag);
 };
 ```
 
@@ -83,8 +92,14 @@ public:
     /** 累加指定通道伤害数值 */
     void AddChannelDamage(const FGameplayTag& InChannelTag, float InDelta);
 
+    /** 精确移除指定通道伤害数值 */
+    bool RemoveChannel(const FGameplayTag& InChannelTag);
+
     /** 获取所有通道基础伤害总和 */
     [[nodiscard]] float GetTotalBaseDamage() const noexcept;
+
+    /** 获取基础伤害数值最大的通道 */
+    [[nodiscard]] FGameplayTag GetDominantChannel() const noexcept;
 };
 ```
 
@@ -122,7 +137,9 @@ public:
 
     [[nodiscard]] float GetActualChannelDamage(const FGameplayTag& InChannelTag) const noexcept;
     [[nodiscard]] float GetActualChannelDamageExact(const FGameplayTag& InChannelTag) const noexcept;
+    bool RemoveActualChannel(const FGameplayTag& InChannelTag);
 
+    [[nodiscard]] FORCEINLINE float GetActualDamage() const noexcept { return TotalActualDamage; }
     FORCEINLINE void SetActualDamage(float InActualDamage) noexcept { TotalActualDamage = InActualDamage; }
 
     [[nodiscard]] FORCEINLINE bool HasFeedbackTag(const FGameplayTag& InTag) const noexcept;
@@ -132,5 +149,6 @@ public:
     [[nodiscard]] float GetDynamicValue(const FGameplayTag& InTag, float DefaultValue = 0.0f) const noexcept;
     void SetDynamicValue(const FGameplayTag& InTag, float InValue);
     [[nodiscard]] bool HasDynamicValue(const FGameplayTag& InTag) const noexcept;
+    bool RemoveDynamicValue(const FGameplayTag& InTag);
 };
 ```

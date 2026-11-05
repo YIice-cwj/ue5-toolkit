@@ -9,6 +9,7 @@
 #include "Engine/World.h"
 #include "GameFramework/GameStateBase.h"
 #include "GameFramework/PlayerController.h"
+#include "TimerManager.h"
 
 namespace {
 
@@ -52,7 +53,7 @@ bool UGameFeedbackRuntimeSubsystem::ShouldCreateSubsystem(UObject* Outer) const
 }
 
 /**
- * @brief 世界 BeginPlay：装配现有组件的并启动迟到玩家补齐定时器
+ * @brief 世界 BeginPlay：装配现有组件并启动迟到玩家补齐定时器
  * @param InWorld 当前世界
  */
 void UGameFeedbackRuntimeSubsystem::OnWorldBeginPlay(UWorld& InWorld)
@@ -110,7 +111,7 @@ void UGameFeedbackRuntimeSubsystem::EnsureComponents(UWorld& World)
         }
 
         if (bIsServer) {
-            EnsureComponent<UGameFeedbackReceiverComponent>(PC);
+            UGameFeedbackReceiverComponent::EnsureOnPlayerController(PC);
         }
 
         if (!bIsDedicatedServer && PC->IsLocalController()) {

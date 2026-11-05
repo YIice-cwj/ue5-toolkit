@@ -11,7 +11,6 @@
 #include "Damage/UGameDamageExecution.h"
 #include "GameplayTagsManager.h"
 #include "Misc/AutomationTest.h"
-#include "UObject/Package.h"
 #include "UObject/UnrealType.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -44,7 +43,9 @@ bool FGameDamageChannelRegistryTest::RunTest([[maybe_unused]] const FString& Par
     );
 
     TArray<FDamageChannelBinding> Bindings;
-    Registry.GetBindings(ExecutionClass, Bindings);
+    Registry.ForEachBinding(ExecutionClass, [&Bindings](TConstArrayView<FDamageChannelBinding> InView) {
+        Bindings = InView;
+    });
     TestEqual(TEXT("注册后绑定数量为 1"), Bindings.Num(), 1);
     if (Bindings.Num() != 1) {
         return false;
@@ -55,7 +56,9 @@ bool FGameDamageChannelRegistryTest::RunTest([[maybe_unused]] const FString& Par
         TEXT("同通道重复注册覆盖而非叠加"),
         UGameDamageExecution::RegisterRuntimeChannelBinding(ExecutionClass, ChannelTag, TargetAttribute, EGameplayModOp::Multiplicitive)
     );
-    Registry.GetBindings(ExecutionClass, Bindings);
+    Registry.ForEachBinding(ExecutionClass, [&Bindings](TConstArrayView<FDamageChannelBinding> InView) {
+        Bindings = InView;
+    });
     TestEqual(TEXT("重复注册后绑定数量仍为 1"), Bindings.Num(), 1);
     if (Bindings.Num() != 1) {
         return false;
@@ -66,14 +69,18 @@ bool FGameDamageChannelRegistryTest::RunTest([[maybe_unused]] const FString& Par
         TEXT("注册第二条通道成功"),
         UGameDamageExecution::RegisterRuntimeChannelBinding(ExecutionClass, SecondChannelTag, TargetAttribute)
     );
-    Registry.GetBindings(ExecutionClass, Bindings);
+    Registry.ForEachBinding(ExecutionClass, [&Bindings](TConstArrayView<FDamageChannelBinding> InView) {
+        Bindings = InView;
+    });
     TestEqual(TEXT("两条通道合并查询正确"), Bindings.Num(), 2);
     if (Bindings.Num() != 2) {
         return false;
     }
 
     TestTrue(TEXT("运行期注销通道成功"), UGameDamageExecution::UnregisterRuntimeChannelBinding(ExecutionClass, ChannelTag));
-    Registry.GetBindings(ExecutionClass, Bindings);
+    Registry.ForEachBinding(ExecutionClass, [&Bindings](TConstArrayView<FDamageChannelBinding> InView) {
+        Bindings = InView;
+    });
     TestEqual(TEXT("注销后剩余一条通道"), Bindings.Num(), 1);
     if (Bindings.Num() != 1) {
         return false;
@@ -81,15 +88,25 @@ bool FGameDamageChannelRegistryTest::RunTest([[maybe_unused]] const FString& Par
     TestFalse(TEXT("重复注销返回失败"), UGameDamageExecution::UnregisterRuntimeChannelBinding(ExecutionClass, ChannelTag));
 
     Registry.UnregisterAll(ExecutionClass);
-    Registry.GetBindings(ExecutionClass, Bindings);
+    Registry.ForEachBinding(ExecutionClass, [&Bindings](TConstArrayView<FDamageChannelBinding> InView) {
+        Bindings = InView;
+    });
     TestEqual(TEXT("清理后无残留绑定"), Bindings.Num(), 0);
     if (Bindings.Num() != 0) {
         return false;
     }
 
     TArray<FDamageChannelBinding> CachedBindings;
-    Registry.GetBindings(ExecutionClass, CachedBindings);
+    Registry.ForEachBinding(ExecutionClass, [&CachedBindings](TConstArrayView<FDamageChannelBinding> InView) {
+        CachedBindings = InView;
+    });
     TestEqual(TEXT("连续二次查询命中读缓存"), CachedBindings.Num(), 0);
+
+    bool bNullCalled = false;
+    Registry.ForEachBinding(nullptr, [&bNullCalled](TConstArrayView<FDamageChannelBinding>) {
+        bNullCalled = true;
+    });
+    TestFalse(TEXT("空类查询不触发回调"), bNullCalled);
 
     TestEqual(TEXT("查询空类绑定返回 0"), Registry.Num(nullptr), 0);
     TestEqual(TEXT("查询未注册类绑定返回 0"), Registry.Num(UObject::StaticClass()), 0);
@@ -111,7 +128,9 @@ bool FGameDamageChannelRegistryTest::RunTest([[maybe_unused]] const FString& Par
     Registry.Register(BaseClass, FDamageChannelBinding(SecondChannelTag, TargetAttribute, EGameplayModOp::Additive));
     Registry.Register(ExecutionClass, FDamageChannelBinding(ChannelTag, TargetAttribute, EGameplayModOp::Multiplicitive));
 
-    Registry.GetBindings(ExecutionClass, Bindings);
+    Registry.ForEachBinding(ExecutionClass, [&Bindings](TConstArrayView<FDamageChannelBinding> InView) {
+        Bindings = InView;
+    });
     TestEqual(TEXT("派生类扁平化合并继承通道总数为 2"), Bindings.Num(), 2);
     const FDamageChannelBinding* FoundPhys = Bindings.FindByPredicate([&ChannelTag](const FDamageChannelBinding& B) {
         return B.ChannelTag.MatchesTagExact(ChannelTag);
@@ -129,6 +148,18 @@ bool FGameDamageChannelRegistryTest::RunTest([[maybe_unused]] const FString& Par
     TestEqual(TEXT("伤害修饰器算子顺序为先加后乘"), CombinedModifier.Evaluate(100.0f), 240.0f);
     const FDamageModifier OverrideModifier = FDamageModifier::MakeOverride(42.0f);
     TestEqual(TEXT("伤害修饰器覆写模式优先生效"), OverrideModifier.Evaluate(100.0f), 42.0f);
+
+    const FDamageChannelBinding BindingA(ChannelTag, TargetAttribute, EGameplayModOp::Additive);
+    const FDamageChannelBinding BindingB(ChannelTag, TargetAttribute, EGameplayModOp::Additive);
+    const FDamageChannelBinding BindingC(ChannelTag, TargetAttribute, EGameplayModOp::Multiplicitive);
+    TestTrue(TEXT("通道绑定相同则值相等"), BindingA == BindingB);
+    TestFalse(TEXT("修饰操作不同则值不等"), BindingA == BindingC);
+
+    const FDamageModifier ModA(2.0f, 10.0f);
+    const FDamageModifier ModB(2.0f, 10.0f);
+    const FDamageModifier ModC(1.5f, 10.0f);
+    TestTrue(TEXT("伤害修饰器相同则值相等"), ModA == ModB);
+    TestFalse(TEXT("乘数不同则值不等"), ModA == ModC);
 
     return true;
 }

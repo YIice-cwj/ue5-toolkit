@@ -96,13 +96,16 @@ public:
     [[nodiscard]] uint16 GetFeedbackEventId() const noexcept;
     void SetFeedbackEventId(uint16 InFeedbackEventId) noexcept;
 
-    // 统一转换为打击反馈结果
-    [[nodiscard]] FGameDamageResult ToDamageResult() const;
+    // 统一转换为打击反馈结果（返回常引用，消除整张结构体深拷贝）
+    [[nodiscard]] FORCEINLINE const FGameDamageResult& ToDamageResult() const noexcept {
+        return DamageResult;
+    }
 
     virtual UScriptStruct* GetScriptStruct() const override;
     virtual FGameplayEffectContext* Duplicate() const override;
     virtual bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess) override;
 
+    /** 从上下文句柄提取本工程打击反馈上下文（多态 IsChildOf 判定，派生上下文亦可安全提取） */
     [[nodiscard]] static FGameGameplayEffectContext* ExtractEffectContext(const FGameplayEffectContextHandle& InHandle);
 };
 ```

@@ -2,8 +2,8 @@
 
 **GameData** 是静态配置与持久化中枢，内部拆分为两个模块：
 
-1. **`GameDataCore`**：手写通用基础设施——生成式数据仓库、JSON 装载辅助、通用分段存档；与业务域完全无关。
-2. **`GameData`**：生成代码宿主——`Tools/Excel` 把 RowStruct、静态数据容器、快照/缓存、Query/Interface/Service、Subsystem 与注册入口写入本模块的 `Public/Generated`、`Private/Generated`；自身不手写业务代码。
+1. **`GameDataCore`**：手写通用基础设施——生成式数据仓库、JSON 装载辅助、通用分段存档；与业务域完全无关，100% 保持本地纯净（零网络依赖）。
+2. **`GameData`**：高层业务宿主与云同步集成门面——既作为 `Tools/Excel` 生成代码宿主（RowStruct、静态数据容器、快照/缓存、Query/Interface/Service、Subsystem），又集成 `GameNetCore` 与 `GameNetService` 提供 [`UGameCloudSaveSubsystem`](Source/GameData/Public/Cloud/GameCloudSaveSubsystem.h) 实现端到端云端存档上传、拉取校验、原子落盘与内存段自动热应用。
 
 示例域（Item / Shop）与 `PlayerProfile` 适配器位于独立插件 `GameDataSamples`，`.scripts/install.sh --all` 默认跳过。
 
@@ -14,24 +14,33 @@
 ## 数据与持久化架构
 
 ```mermaid
-flowchart LR
-    subgraph Pipeline["离线生成管线"]
+flowchart TD
+    subgraph OfflinePipeline["离线生成管线"]
         Excel["策划配表<br>DataTables/*.xlsx"] --> Tool["Tools/Excel 生成器"]
         Tool --> Cpp["生成 C++ 宿主代码<br>(RowStruct / Query / Interface)"]
         Tool --> Json["导出 JSON 数据<br>(DataTables_Json/)"]
     end
 
-    subgraph Runtime["运行时架构 (GameDataCore + GameData)"]
+    subgraph RuntimeLocal["本地持久化与配置 (GameDataCore)"]
         Repo["生成式行序列化仓库<br>FStaticDataRepository (CRC32 校验)"]
         Snapshot["不可变快照<br>FStaticDataSnapshot (原子发布)"]
         Query["强类型领域查询<br>FItemQuery::FindByKey"]
-        Save["通用分段持久化<br>USaveGameSubsystem (版本平滑迁移)"]
+        SaveSys["通用分段持久化<br>USaveGameSubsystem (版本平滑迁移)"]
+        FileIO["原子安全 I/O<br>FSaveGameFileIO (防断电 .sav.tmp)"]
+    end
+
+    subgraph RuntimeCloud["云端同步集成门面 (GameData)"]
+        CloudSubsystem["云端存档子系统<br>UGameCloudSaveSubsystem"]
+        CloudSubsystem --> FileIO
+        CloudSubsystem --> SaveSys
+        CloudSubsystem --> NetRpc["UGameNetServiceSubsystem<br>SendStructRequest (强类型 RPC)"]
     end
 
     Json --> Repo
     Cpp --> Repo
     Repo --> Snapshot
     Snapshot --> Query
+    SaveSys --> FileIO
 ```
 
 ---
@@ -49,13 +58,19 @@ flowchart LR
 | 通用分段存档 | `FGameSaveSegment` 段注册、段版本迁移、未知段保留回写、SlotName 白名单 | `GameDataCore/.../USaveGameSubsystem.h`<br>`GameDataCore/.../FSaveGameSegmentRegistry.h` |
 | 原子 I/O 与并发写保护 | `.sav.tmp` 原子替换、断电抢救恢复、高水位单调代次（严格防旧写穿透与 ABA 复活） | `GameDataCore/.../FSaveGameFileIO.h`<br>`GameDataCore/.../GameSaveArchive.h` |
 | 任意存档逃生口 | `SaveObjectToSlot` / `LoadObjectFromSlot` 可存取任意 `USaveGame` | `GameDataCore/.../USaveGameSubsystem.h` |
+| **云端存档网络同步** | 结合 `GameNetService` 提供强类型 RPC 上传/下载/元数据查询；下载严格校验头结构防坏包注入；代次原子落盘并支持即时热反解至已注册段 | `GameData/Public/Cloud/GameCloudSaveSubsystem.h`<br>`GameData/Public/Cloud/GameCloudSaveTypes.h` |
 
 ---
 
 ## 依赖
 
-- `GameDataCore` 公有：`Core`, `CoreUObject`, `Engine`, `Json`, `JsonUtilities`, `GameLogging`；私有：`GameCore`
-- `GameData`：`GameDataCore`
+- **`GameDataCore`**：
+  - 公有：`Core`, `CoreUObject`, `Engine`, `Json`, `JsonUtilities`, `GameLogging`
+  - 私有：`GameCore`
+  - **网络依赖：0**（100% 保持本地独立性）
+- **`GameData`**：
+  - 公有：`Core`, `CoreUObject`, `Engine`, `GameDataCore`, `GameNetCore`, `GameNetService`
+  - 私有：`GameCore`, `GameLogging`
 - 不依赖 `Niagara` / `GameplayAbilities` / `GameGameplay`
 
 ---
@@ -108,7 +123,7 @@ if (const TSharedPtr<const FItemCompositeData> Composite = FItemStaticDataInterf
 
 `FindByKey` 返回别名共享指针，调用方即使不长期持有 `Snapshot` 也能安全使用该行；跨版本数据不会被释放。
 
-### 3. 注册存档段
+### 3. 注册存档段与本地保存
 
 ```cpp
 #include "Save/USaveGameSubsystem.h"
@@ -141,6 +156,39 @@ SaveSubsystem->LoadGameFromSlot(TEXT("Slot_1"));
 - 槽位名默认拒绝空名、超长名与路径分隔符/点号；`SetAllowedSlotNames` 可启用白名单。
 - 存档类型可替换：`SetSaveGameClass(MyArchiveClass)`。
 
+### 4. 云存档网络同步与热应用
+
+```cpp
+#include "Cloud/GameCloudSaveSubsystem.h"
+
+UGameCloudSaveSubsystem& CloudSave = UGameCloudSaveSubsystem::Get(this);
+
+// 1. 上传本地存档快照至云端
+CloudSave.UploadSlotAsync(
+    TEXT("Slot_1"),
+    10.0f,
+    [](EGameCloudSaveResult Result, const FGameCloudSaveUploadRsp& Rsp) {
+        if (Result == EGameCloudSaveResult::Success) {
+            GAME_LOG(Log, TEXT("Slot_1 上传成功，云端时间戳: %s"), *Rsp.CloudTimestamp.ToString());
+        }
+    }
+);
+
+// 2. 从云端拉取存档、落盘并自动应用到当前内存段
+CloudSave.DownloadSlotAsync(
+    TEXT("Slot_1"),
+    /*bAutoApplyToSubsystem=*/ true,
+    10.0f,
+    [](EGameCloudSaveResult Result, const FGameCloudSaveDownloadRsp& Rsp) {
+        if (Result == EGameCloudSaveResult::Success) {
+            GAME_LOG(Log, TEXT("Slot_1 下载并自动恢复完成！"));
+        } else if (Result == EGameCloudSaveResult::CorruptedData) {
+            GAME_LOG(Error, TEXT("云端数据损坏，已拦截落盘"));
+        }
+    }
+);
+```
+
 ---
 
 ## 安装
@@ -166,7 +214,7 @@ SaveSubsystem->LoadGameFromSlot(TEXT("Slot_1"));
 ```text
 Plugins/GameData/
 ├── Source/
-│   ├── GameDataCore/                 # 通用模块（GAMEDATACORE_API）
+│   ├── GameDataCore/                 # 通用模块（GAMEDATACORE_API，零网络依赖）
 │   │   ├── Public/
 │   │   │   ├── StaticData/FStaticDataRepository.h      # 行负载容器与序列化器注册
 │   │   │   ├── StaticData/FStaticDataBinCodec.h        # .bin 编解码 / CRC32 / UTF-8 摘要
@@ -178,9 +226,21 @@ Plugins/GameData/
 │   │   │   ├── Save/USaveGameSubsystem.h               # 通用存档门面与异步调度
 │   │   │   └── Utils/DataTableLoaderUtils.h           # JSON 反序列化辅助工具
 │   │   └── Private/
-│   └── GameData/                     # 生成宿主（GAMEDATA_API）
-│       ├── Public/Generated/         # 生成声明
-│       └── Private/Generated/        # 生成实现
+│   └── GameData/                     # 业务宿主与云同步集成（GAMEDATA_API）
+│       ├── Public/
+│       │   ├── GameData.h                              # 聚合头文件
+│       │   ├── Cloud/
+│       │   │   ├── GameCloudSaveTypes.h                # 云存档结果枚举与 RPC 结构体
+│       │   │   └── GameCloudSaveSubsystem.h            # 云存档门面子系统声明
+│       │   └── Generated/                              # 生成声明
+│       └── Private/
+│           ├── GameData.cpp
+│           ├── Cloud/
+│           │   ├── GameCloudSaveTypes.cpp
+│           │   └── GameCloudSaveSubsystem.cpp          # 云端 RPC 调度与原子落盘
+│           ├── Generated/                              # 生成实现
+│           └── Tests/
+│               └── GameCloudSaveSubsystemTest.cpp      # 端到端闭环自动化测试
 ├── Docs/
 └── README.md
 ```
@@ -189,9 +249,10 @@ Plugins/GameData/
 
 ## 文档导航
 
-- [架构概览](Docs/Architecture/Overview.md)：双模块分工与数据流。
+- [架构概览](Docs/Architecture/Overview.md)：双模块分工、数据流与云同步体系。
 - [静态数据管线](Docs/Architecture/StaticDataPipeline.md)：Excel → C++ / JSON / Tag → 快照。
-- [持久化架构](Docs/Architecture/PersistenceArchitecture.md)：分段存档、原子写与迁移。
+- [持久化架构](Docs/Architecture/PersistenceArchitecture.md)：分段存档、原子写、迁移与云端同步。
+- [云存档子系统 API](Docs/API/GameCloudSaveSubsystem.md)：`UGameCloudSaveSubsystem` 上传/下载/元数据查询契约。
 - [静态数据子系统 API](Docs/API/StaticDataSubsystem.md)
 - [领域查询 API](Docs/API/DomainQueries.md)
 - [存档子系统 API](Docs/API/SaveGameSubsystem.md)

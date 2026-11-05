@@ -7,7 +7,6 @@
 
 #include "CoreMinimal.h"
 #include "Engine/DataAsset.h"
-#include "GameplayTagContainer.h"
 #include "Feedback/GameFeedbackActions.h"
 
 #include "GameFeedbackDefinition.generated.h"
@@ -20,12 +19,6 @@ class GAMEFEEDBACK_API UGameFeedbackDefinition : public UPrimaryDataAsset {
     GENERATED_BODY()
 
 public:
-    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Matching")
-    FGameplayTagQuery TagQuery;
-
-    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Matching")
-    int32 Priority = 0;
-
     UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Actions")
     FGameFeedbackHitStopAction HitStop;
 

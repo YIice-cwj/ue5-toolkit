@@ -8,7 +8,6 @@
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "GameplayTagContainer.h"
-#include "Stat/FGameStatTypes.h"
 
 #include "UGameVitalComponent.generated.h"
 

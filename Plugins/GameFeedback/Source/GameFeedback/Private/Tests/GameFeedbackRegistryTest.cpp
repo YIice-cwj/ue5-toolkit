@@ -62,8 +62,12 @@ bool FGameFeedbackRegistryLookupTest::RunTest([[maybe_unused]] const FString& Pa
     UGameFeedbackDefinition* BetaDef = NewObject<UGameFeedbackDefinition>();
     const FGameplayTag AlphaTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Feedback.Test.SameDepth.Alpha")));
     const FGameplayTag BetaTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Feedback.Test.SameDepth.Beta")));
-    Registry->ExactFeedbackTagMap.Add(AlphaTag, AlphaDef);
     Registry->ExactFeedbackTagMap.Add(BetaTag, BetaDef);
+    Registry->ExactFeedbackTagMap.Add(AlphaTag, AlphaDef);
+
+    const FGameplayTag DeeperNullTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Feedback.Test.A.B.C.D")));
+    Registry->ExactFeedbackTagMap.Add(DeeperNullTag, TSoftObjectPtr<UGameFeedbackDefinition>());
+    Registry->RebuildDefinitionIndex();
 
     FGameplayTagContainer Tags;
     TSoftObjectPtr<UGameFeedbackDefinition> Found = Registry->ResolveDefinitionPtr(SlashTag, Tags);
@@ -75,13 +79,17 @@ bool FGameFeedbackRegistryLookupTest::RunTest([[maybe_unused]] const FString& Pa
     Tags.AddTag(ShallowLongTag);
     Tags.AddTag(DeepShortTag);
     TSoftObjectPtr<UGameFeedbackDefinition> FoundTag = Registry->ResolveDefinitionPtr(FireTag, Tags);
-    TestEqual(TEXT("多 Tag 冲突时优先选择深度更深的 Tag"), FoundTag.Get(), DeepShortDef);
+    TestEqual(TEXT("多 Tag 冲突时优先选择深度更深的 Tag（与插入顺序无关）"), FoundTag.Get(), DeepShortDef);
+
+    Tags.AddTag(DeeperNullTag);
+    FoundTag = Registry->ResolveDefinitionPtr(FireTag, Tags);
+    TestEqual(TEXT("空 Definition 的更深标签必须在重建索引时被剔除"), FoundTag.Get(), DeepShortDef);
 
     Tags.Reset();
     Tags.AddTag(AlphaTag);
     Tags.AddTag(BetaTag);
     FoundTag = Registry->ResolveDefinitionPtr(FireTag, Tags);
-    TestEqual(TEXT("同深度按标签字典序稳定选择"), FoundTag.Get(), AlphaDef);
+    TestEqual(TEXT("同深度按标签字典序稳定选择（与插入顺序无关）"), FoundTag.Get(), AlphaDef);
 
     return true;
 }

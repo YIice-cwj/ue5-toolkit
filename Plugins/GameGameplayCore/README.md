@@ -55,8 +55,27 @@ sequenceDiagram
 ## 插件依赖
 
 - **依赖项**：`Core`, `CoreUObject`, `Engine`, `GameplayTags`, `GameCore`, `NetCore`, `GameLogging`
-- **外部依赖限制**：严格禁止依赖 `GameplayAbilities`、`GameGameplay`、`GameData`，保持其作为战斗底层契约层的独立性。
+- **外部依赖限制**：严格禁止依赖 `GameplayAbilities`、`GameGameplay`、`GameData`，以及应用层长连接网络库（`GameNetCore`、`GameNetService`），保持其作为战斗底层契约层的独立性与 100% 离线立即可用性。
 - **C++ 标准**：C++20
+
+---
+
+## 网络边界与分层解耦原则
+
+> **核心架构红线**：`GameGameplayCore` 是 Layer 1 底层战斗核心契约，**严禁接入应用层长连接网络库（如 `GameNetCore` / `GameNetService` / `WebSockets`）**。
+
+### 为什么坚决不接入长连接网络库？
+1. **传输物理特性冲突（局内高频 UDP vs 业务长连接 TCP）**：  
+   伤害结算、生命扣减、Buff 刷新属于毫秒级（10~50ms）高频实时战斗交互。在多人对战场景中，必须依赖虚幻引擎原生 **Dedicated Server 的 UDP 属性复制体系（`UPROPERTY(Replicated)` / FastArray / Iris）**，自带丢包容忍与客户端预测。若强行通过 WebSocket (TCP) 传输战斗数值，弱网丢包时会引发严重的 **TCP 队头阻塞（Head-of-Line Blocking）**，导致战斗卡顿、跳字失步与重发风暴。
+2. **纯单机项目开箱即用**：  
+   单机动作游戏可以直接剥离并集成 `GameGameplayCore`，无需携带任何网络驱动、加密证书或第三方通信库。
+3. **关注点分离（SoC）**：  
+   数值组件只关心内存数值与状态机流转，不关心目标服务器 IP 或通信协议。
+
+### 战斗数据如何与网络系统协同？
+- **局内高频战斗同步**：组件内部自带引擎原生属性复制（如 `UGameStatComponent` 内部属性同步、`UGameBuffComponent` FastArray 增量复制），走引擎原生 Dedicated Server UDP 通道。
+- **局后战绩结算 / 掉落上传**：BOSS 击杀或对局结束时，由外围业务层（`AGameMode` 或 `APlayerController`）读取 `UGameVitalComponent` 存活状态与战果，调用 `UGameNetServiceSubsystem::SendStructRequest` 向大厅服务器上报。
+- **关键战斗事件遥测 / 埋点**：通过 `UGameplayMessageSubsystem` 广播事件，由旁路收集器统一外发，`GameGameplayCore` 本身零感知。
 
 ---
 

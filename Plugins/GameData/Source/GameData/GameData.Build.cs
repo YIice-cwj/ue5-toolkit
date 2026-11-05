@@ -17,6 +17,8 @@ public class GameData : ModuleRules {
             "GameLogging",
             "GameCore",
             "GameDataCore",
+            "GameNetCore",
+            "GameNetService",
         });
     }
 }

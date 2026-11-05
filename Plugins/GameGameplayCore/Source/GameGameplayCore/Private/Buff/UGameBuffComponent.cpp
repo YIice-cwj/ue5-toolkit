@@ -5,6 +5,7 @@
 
 #include "Buff/UGameBuffComponent.h"
 
+#include "Stat/UGameStatComponent.h"
 #include "GameFramework/Actor.h"
 #include "Logging/GameLogCategories.h"
 #include "Net/UnrealNetwork.h"
@@ -76,6 +77,11 @@ void UGameBuffComponent::PostInitProperties() {
     ActiveBuffs.OwnerComponent = this;
 }
 
+void UGameBuffComponent::OnRegister() {
+    Super::OnRegister();
+    ActiveBuffs.OwnerComponent = this;
+}
+
 void UGameBuffComponent::EndPlay(const EEndPlayReason::Type EndPlayReason) {
     if (UGameStatComponent* StatComponent = BoundStatComponent.Get()) {
         ModifierBridge.ClearAll(*StatComponent);
@@ -107,7 +113,7 @@ void UGameBuffComponent::BindStatComponent(UGameStatComponent* InStatComponent) 
     }
 }
 
-int32 UGameBuffComponent::ApplyBuff(const FGameBuffSpec& InSpec, [[maybe_unused]] UObject* InSource) {
+int32 UGameBuffComponent::ApplyBuff(const FGameBuffSpec& InSpec) {
     if (!InSpec.BuffTag.IsValid()) {
         GAME_LOG(Warning, TEXT("【Buff 组件】拒绝施加无身份标签的 Buff。"));
         return 0;
@@ -301,6 +307,7 @@ float UGameBuffComponent::GetBuffRemainingTime(FGameplayTag InBuffTag) const {
 
 void UGameBuffComponent::GetActiveBuffTags(TArray<FGameplayTag>& OutTags) const {
     OutTags.Reset();
+    OutTags.Reserve(ActiveBuffs.Items.Num());
     for (const FGameBuffInstance& Instance : ActiveBuffs.Items) {
         OutTags.AddUnique(Instance.Spec.BuffTag);
     }
@@ -367,6 +374,7 @@ void UGameBuffComponent::PublishReplicatedDiff(
     TArrayView<const FGameplayTag> ForcedChangedTags
 ) {
     TMap<FGameplayTag, int32> CurrentStacks;
+    CurrentStacks.Reserve(InItems.Num());
     for (int32 Index = 0; Index < InItems.Num(); ++Index) {
         if (ExcludedIndices.Contains(Index)) {
             continue;
@@ -377,6 +385,7 @@ void UGameBuffComponent::PublishReplicatedDiff(
     }
 
     TArray<FGameplayTag> RemovedTags;
+    RemovedTags.Reserve(AcknowledgedStacks.Num());
     for (const TPair<FGameplayTag, int32>& Pair : AcknowledgedStacks) {
         if (!CurrentStacks.Contains(Pair.Key)) {
             RemovedTags.Add(Pair.Key);

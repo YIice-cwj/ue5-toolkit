@@ -68,11 +68,12 @@ struct GAMEFEEDBACK_API FGameFeedbackEventNet {
     uint16 BoneIndex = MAX_uint16;
 
     /**
-     * @brief 写入伤害数值（转为半精度浮点编码）
+     * @brief 写入伤害数值（经过限幅后转为半精度浮点编码）
      * @param InDamage 原始单精度伤害浮点数
      */
     FORCEINLINE void SetDamage(float InDamage) noexcept {
-        DamageHalf = FFloat16(InDamage).Encoded;
+        const float ClampedDamage = FMath::IsNaN(InDamage) ? 0.0f : FMath::Clamp(InDamage, 0.0f, 65504.0f);
+        DamageHalf = FFloat16(ClampedDamage).Encoded;
     }
 
     /**

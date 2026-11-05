@@ -25,18 +25,13 @@ public:
      * @brief 广播一次打击表现信号（由总线上的各能力监听者自行消费）
      * @param WorldContextObject 世界上下文对象
      * @param Signal 纯表现信号
+     * @param Definition 指定的表现资产（可选，为空时按注册表解析）
      */
-    UFUNCTION(BlueprintCallable, Category = "GameFeedback")
-    static void BroadcastFeedback(const UObject* WorldContextObject, const FGameFeedbackSignal& Signal);
-
-    /**
-     * @brief 以指定资产覆盖注册表匹配结果后广播一次表现信号
-     * @param WorldContextObject 世界上下文对象
-     * @param Signal 纯表现信号
-     * @param Definition 指定的表现资产（仅本地监听者生效）
-     */
-    UFUNCTION(BlueprintCallable, Category = "GameFeedback")
-    static void BroadcastFeedbackWithDefinition(const UObject* WorldContextObject, const FGameFeedbackSignal& Signal, const UGameFeedbackDefinition* Definition);
+    UFUNCTION(BlueprintCallable, Category = "GameFeedback", meta = (AdvancedDisplay = "Definition"))
+    static void BroadcastFeedback(
+        const UObject* WorldContextObject,
+        const FGameFeedbackSignal& Signal,
+        const UGameFeedbackDefinition* Definition = nullptr);
 
     /**
      * @brief 广播清除指定实体的表现状态

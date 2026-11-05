@@ -7,6 +7,7 @@
 3. **原子写保护**：先写 `.sav.tmp`，成功后再原子替换 `.sav`，防止断电导致旧档损毁。
 4. **真异步 I/O**：主线程只捕获段字节，磁盘读写与替换在后台线程执行。
 5. **损坏档前置拒绝**：读取前校验文件 magic 与最小头长度，避免引擎反序列化断言。
+6. **云端无缝同步**：支持将本地快照一键上行备份至云端，并从云端安全拉取、校验防篡改、原子落盘与内存热应用。
 
 ---
 
@@ -100,4 +101,37 @@ SaveSubsystem->SaveObjectToSlot(TEXT("Settings"), MySettingsObject);
 SaveSubsystem->LoadObjectFromSlot(TEXT("Settings"), UMySettings::StaticClass(), LoadedObject);
 ```
 
-该路径同样经过 `.sav.tmp` 原子替换与损坏档前置校验。
+---
+
+## 7. 云端存档网络同步与热应用 (`UGameCloudSaveSubsystem`)
+
+```mermaid
+sequenceDiagram
+    participant Game as 业务系统 / UI
+    participant Cloud as UGameCloudSaveSubsystem
+    participant FileIO as FSaveGameFileIO
+    participant Net as UGameNetServiceSubsystem
+    participant SaveSys as USaveGameSubsystem
+
+    Note over Game,Net: 1. 云端上传流程
+    Game->>Cloud: UploadSlotAsync("Slot_1")
+    Cloud->>FileIO: ReadSlotBytes("Slot_1")
+    Cloud->>FileIO: HasValidSaveGameHeader(Bytes)
+    Cloud->>Net: SendStructRequest(UploadReq, MsgId=201)
+    Net-->>Cloud: UploadRsp(bSuccess=true)
+    Cloud-->>Game: Callback(Success)
+
+    Note over Game,Net: 2. 云端拉取与自动热应用
+    Game->>Cloud: DownloadSlotAsync("Slot_1", bAutoApply=true)
+    Cloud->>Net: SendStructRequest(DownloadReq, MsgId=203)
+    Net-->>Cloud: DownloadRsp(Bytes)
+    Cloud->>FileIO: HasValidSaveGameHeader(Bytes) [拦截损坏包]
+    Cloud->>FileIO: WriteSlotBytes("Slot_1", Bytes) [原子落地]
+    Cloud->>SaveSys: LoadGameFromSlot("Slot_1") [自动热反解到业务段]
+    Cloud-->>Game: Callback(Success)
+```
+
+- **分层边界**：网络同步由 `GameData` 模块持有，底层 `GameDataCore` 继续保持零网络依赖；
+- **防坏包击穿**：云端返回字节在接触本地文件系统前必须通过 `HasValidSaveGameHeader`，若由于网络截断或服务端损坏直接报错 `EGameCloudSaveResult::CorruptedData`，绝不破坏本地磁盘原有良好存档；
+- **单调代次原子落盘**：下载数据调用 `FSaveGameFileIO::IssueSlotSaveGeneration` 签发最新代次写入，保障并发安全性；
+- **热反解支持**：拉取成功后可选自动调用 `USaveGameSubsystem::LoadGameFromSlot`，无缝将云端数据恢复并热生效至各业务系统内存分段。

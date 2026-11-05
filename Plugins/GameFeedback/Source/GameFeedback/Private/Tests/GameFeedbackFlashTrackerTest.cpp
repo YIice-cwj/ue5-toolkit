@@ -96,6 +96,16 @@ bool FGameFeedbackFlashTrackerLifecycleTest::RunTest([[maybe_unused]] const FStr
     TimerManager.Tick(1.0f);
     TestNull(TEXT("提前回调后重新 arm 必须在最终到期时还原"), RearmMesh->GetOverlayMaterial());
 
+    RearmMesh->SetOverlayMaterial(OriginalWeak.Get());
+    Action.Duration = 0.1f;
+    Tracker.Execute(World, RearmTarget, HitResult, Action, 10.0f);
+    SimulatedTime += 0.101;
+    Tracker.Execute(World, RearmTarget, HitResult, Action, 10.0f);
+    SimulatedTime += 0.2;
+    ++GFrameCounter;
+    TimerManager.Tick(1.0f);
+    TestEqual(TEXT("临界多段打击到期后仍应还原为真正的原材质而非 Flash 材质"), RearmMesh->GetOverlayMaterial(), OriginalWeak.Get());
+
     Tracker.Shutdown(World);
     World->DestroyWorld(false);
     World->RemoveFromRoot();

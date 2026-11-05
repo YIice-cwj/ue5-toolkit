@@ -10,6 +10,9 @@ public class GameLogging : ModuleRules {
 
         PublicDependencyModuleNames.AddRange(new string[] {
             "Core",
+            "CoreUObject",
+            "Engine",
+            "GameplayTags",
             "GameCore",
         });
 

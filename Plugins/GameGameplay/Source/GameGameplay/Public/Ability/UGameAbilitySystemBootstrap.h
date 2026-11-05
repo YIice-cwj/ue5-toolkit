@@ -15,7 +15,6 @@
 #include "Engine/TimerHandle.h"
 #include "GameplayAbilitySpecHandle.h"
 
-#include "GameGameplay.h"
 #include "Ability/FBootstrapRetryGate.h"
 #include "UGameAbilitySystemBootstrap.generated.h"
 

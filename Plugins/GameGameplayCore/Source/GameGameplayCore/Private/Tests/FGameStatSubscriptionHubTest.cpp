@@ -61,6 +61,25 @@ bool FGameStatTaggedSubscriptionTest::RunTest([[maybe_unused]] const FString& Pa
     Comp->ModifyStat(HealthTag, -5.0f);
     TestEqual(TEXT("取消订阅后不再触发回调"), BroadcastCount, 2);
 
+    TSharedRef<FDelegateHandle> SelfRemoveHandle = MakeShared<FDelegateHandle>();
+    int32 SelfRemoveCount = 0;
+    *SelfRemoveHandle = Comp->SubscribeStatChanged(
+        HealthTag,
+        FOnGameStatChangedNative::FDelegate::CreateLambda(
+            [&SelfRemoveCount, SelfRemoveHandle, Comp, HealthTag](const FGameplayTag&, float, float, float) {
+                ++SelfRemoveCount;
+                if (SelfRemoveHandle->IsValid()) {
+                    Comp->UnsubscribeStatChanged(HealthTag, *SelfRemoveHandle);
+                }
+            }
+        )
+    );
+    TestEqual(TEXT("单次订阅初次回放执行 1 次"), SelfRemoveCount, 1);
+    Comp->ModifyStat(HealthTag, -10.0f);
+    TestEqual(TEXT("首次变动通知时完成自我退订"), SelfRemoveCount, 2);
+    Comp->ModifyStat(HealthTag, -10.0f);
+    TestEqual(TEXT("自我退订后后续变动不再触发"), SelfRemoveCount, 2);
+
     return true;
 }
 

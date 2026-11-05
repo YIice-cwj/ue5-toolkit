@@ -1,6 +1,6 @@
 /**
  * @file UGameBaseAttributeSet.cpp
- * @brief 属性集通用基类实现（钳制 / 幂等闩 / 元属性搬运 / 增量写入）
+ * @brief 属性集通用基类实现（阈值幂等闩与增量写入）
  */
 
 #include "Attribute/UGameBaseAttributeSet.h"
@@ -8,10 +8,12 @@
 #include "AbilitySystemComponent.h"
 #include "Logging/GameLogCategories.h"
 
-float UGameBaseAttributeSet::ClampAttribute(float InValue, float InMin, float InMax) noexcept {
-    return FMath::Clamp(InValue, InMin, InMax);
-}
-
+/**
+ * @brief 阈值幂等闩：标签未授予则授予并返回 true
+ * @param InAbilitySystemComponent 目标 ASC
+ * @param InThresholdTag 临界状态标签
+ * @return 是否为本轮首次达阈
+ */
 bool UGameBaseAttributeSet::BroadcastThresholdOnce(UAbilitySystemComponent* InAbilitySystemComponent, const FGameplayTag& InThresholdTag) {
     if (InAbilitySystemComponent == nullptr || InAbilitySystemComponent->HasMatchingGameplayTag(InThresholdTag)) {
         return false;
@@ -22,6 +24,11 @@ bool UGameBaseAttributeSet::BroadcastThresholdOnce(UAbilitySystemComponent* InAb
     return true;
 }
 
+/**
+ * @brief 重置阈值幂等闩：若 ASC 持有该阈值标签则移除
+ * @param InAbilitySystemComponent 目标 ASC
+ * @param InThresholdTag 临界状态标签
+ */
 void UGameBaseAttributeSet::ResetThreshold(UAbilitySystemComponent* InAbilitySystemComponent, const FGameplayTag& InThresholdTag) {
     if (InAbilitySystemComponent != nullptr && InAbilitySystemComponent->HasMatchingGameplayTag(InThresholdTag)) {
         InAbilitySystemComponent->RemoveLooseGameplayTag(InThresholdTag);
@@ -30,13 +37,12 @@ void UGameBaseAttributeSet::ResetThreshold(UAbilitySystemComponent* InAbilitySys
     }
 }
 
-float UGameBaseAttributeSet::MoveMetaAttribute(FGameplayAttributeData& MetaAttributeData) noexcept {
-    const float Value = MetaAttributeData.GetCurrentValue();
-    MetaAttributeData.SetBaseValue(0.0f);
-    MetaAttributeData.SetCurrentValue(0.0f);
-    return Value;
-}
-
+/**
+ * @brief 将增量搬运落地至目标属性
+ * @param InAbilitySystemComponent 目标 ASC
+ * @param InTargetAttribute 落地目标属性
+ * @param InDelta 增量（伤害轨传负值表示扣减）
+ */
 void UGameBaseAttributeSet::ApplyAttributeToLocal(UAbilitySystemComponent* InAbilitySystemComponent, const FGameplayAttribute& InTargetAttribute, float InDelta) {
     if (InAbilitySystemComponent == nullptr) {
         return;

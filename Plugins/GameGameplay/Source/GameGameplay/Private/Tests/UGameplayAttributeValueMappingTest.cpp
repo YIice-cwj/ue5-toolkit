@@ -73,6 +73,7 @@ bool FGameAttributeValueMappingTest::RunTest([[maybe_unused]] const FString& Par
     TestFalse(TEXT("解绑后 BoundAttribute 无效"), Mapping->GetBoundAttribute().IsValid());
 
     TestNull(TEXT("空 ASC 创建映射返回 nullptr"), UGameplayAttributeValueMapping::CreateAttributeValueMapping(nullptr, nullptr, HealthAttr));
+    TestNull(TEXT("空属性创建映射返回 nullptr"), UGameplayAttributeValueMapping::CreateAttributeValueMapping(nullptr, ASC, FGameplayAttribute()));
 
     UGameplayAttributeValueMapping* MappingWithoutOuter = UGameplayAttributeValueMapping::CreateAttributeValueMapping(nullptr, ASC, HealthAttr, false);
     TestNotNull(TEXT("空 Outer 创建映射成功且 Outer 自动降级为 ASC"), MappingWithoutOuter);
@@ -83,6 +84,10 @@ bool FGameAttributeValueMappingTest::RunTest([[maybe_unused]] const FString& Par
     MappingWithoutOuter->Bind(nullptr, HealthAttr);
     TestTrue(TEXT("空 ASC 重新绑定安全短路保持原绑定状态"), MappingWithoutOuter->IsBound());
     TestEqual(TEXT("空 ASC 重新绑定数值保持"), MappingWithoutOuter->GetCurrentValue(), 150.0f);
+
+    MappingWithoutOuter->Bind(ASC, FGameplayAttribute());
+    TestTrue(TEXT("空属性重新绑定安全短路保持原绑定状态"), MappingWithoutOuter->IsBound());
+    TestEqual(TEXT("空属性重新绑定数值保持"), MappingWithoutOuter->GetCurrentValue(), 150.0f);
 
     UGameplayAttributeValueMapping* ImmediateMapping = UGameplayAttributeValueMapping::CreateAttributeValueMapping(GetTransientPackage(), ASC, HealthAttr, true);
     TestNotNull(TEXT("开启即时广播创建映射成功"), ImmediateMapping);

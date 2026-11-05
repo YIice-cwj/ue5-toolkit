@@ -12,11 +12,11 @@
 
 #include "CoreMinimal.h"
 #include "AttributeSet.h"
-#include "AbilitySystemComponent.h"
 #include "GameplayTagContainer.h"
 
-#include "GameGameplay.h"
 #include "UGameBaseAttributeSet.generated.h"
+
+class UAbilitySystemComponent;
 
 /**
  * @brief 属性集通用基类（游戏无关，零具体业务属性）
@@ -27,13 +27,15 @@ class GAMEGAMEPLAY_API UGameBaseAttributeSet : public UAttributeSet {
 
 public:
     /**
-     * @brief 属性上下限钳制（框架层唯一钳制入口）
+     * @brief 属性上下限钳制（框架层唯一钳制入口 · 强制内联）
      * @param InValue 待钳制数值
      * @param InMin 下限
      * @param InMax 上限
      * @return 钳制后的数值
      */
-    [[nodiscard]] static float ClampAttribute(float InValue, float InMin, float InMax) noexcept;
+    [[nodiscard]] FORCEINLINE static float ClampAttribute(float InValue, float InMin, float InMax) noexcept {
+        return FMath::Clamp(InValue, InMin, InMax);
+    }
 
     /**
      * @brief 阈值幂等闩：标签未授予则授予并返回 true（本轮首次达阈，调用方据此广播一次）
@@ -54,11 +56,16 @@ public:
     static void ResetThreshold(UAbilitySystemComponent* InAbilitySystemComponent, const FGameplayTag& InThresholdTag);
 
     /**
-     * @brief 提取元属性当前数值并立即清零归位（避免元属性在下一结算帧残留）
+     * @brief 提取元属性当前数值并立即清零归位（避免元属性在下一结算帧残留 · 强制内联）
      * @param MetaAttributeData 待消费并清零的元属性数据
      * @return 提取出的当前数值
      */
-    static float MoveMetaAttribute(FGameplayAttributeData& MetaAttributeData) noexcept;
+    [[nodiscard]] FORCEINLINE static float MoveMetaAttribute(FGameplayAttributeData& MetaAttributeData) noexcept {
+        const float Value = MetaAttributeData.GetCurrentValue();
+        MetaAttributeData.SetBaseValue(0.0f);
+        MetaAttributeData.SetCurrentValue(0.0f);
+        return Value;
+    }
 
     /**
      * @brief 将增量搬运落地至目标属性（框架层唯一属性增量写入入口）

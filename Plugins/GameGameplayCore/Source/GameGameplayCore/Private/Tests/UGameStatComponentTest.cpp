@@ -301,9 +301,16 @@ bool FGameStatFullApiCoverageTest::RunTest([[maybe_unused]] const FString& Param
     TestNearlyEqual(TEXT("有效百分比应为 0.5"), Comp->GetStatEffectivePercent(TagA), 0.5f, 0.0001f);
     TestNearlyEqual(TEXT("未注册属性有效百分比应为 0.0"), Comp->GetStatEffectivePercent(InvalidTag), 0.0f, 0.0001f);
 
+    Comp->AddStatModifier(TagA, FGameStatModifier(20.0f, EGameStatModifierOp::Add));
+    TestEqual(TEXT("注销前派生当前值包含修正器"), Comp->GetStatEffectiveCurrent(TagA), 70.0f);
+
     TestTrue(TEXT("注销属性 TagA 成功"), Comp->UnregisterStat(TagA));
     TestFalse(TEXT("TagA 不再存在"), Comp->HasStat(TagA));
     TestFalse(TEXT("重复注销 TagA 返回 false"), Comp->UnregisterStat(TagA));
+
+    Comp->RegisterStat(TagA, 50.0f, 100.0f, 0.0f);
+    TestEqual(TEXT("重新注册后历史修正器已被注销清理"), Comp->GetStatEffectiveCurrent(TagA), 50.0f);
+    TestTrue(TEXT("再次注销 TagA"), Comp->UnregisterStat(TagA));
 
     Comp->GetAllStatTags(AllTags);
     TestEqual(TEXT("注销后标签总数变为 1"), AllTags.Num(), 1);

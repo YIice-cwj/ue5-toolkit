@@ -9,12 +9,13 @@
 #include "Components/ActorComponent.h"
 #include "GameplayTagContainer.h"
 
-#include "Stat/UGameStatComponent.h"
 #include "Buff/FGameBuffTypes.h"
 #include "Buff/FGameActiveBuffArray.h"
 #include "Buff/FGameBuffModifierBridge.h"
 
 #include "UGameBuffComponent.generated.h"
+
+class UGameStatComponent;
 
 /**
  * @brief 通用 Buff / 状态组件
@@ -52,6 +53,11 @@ public:
     void PostInitProperties() override;
 
     /**
+     * @brief 组件注册生命周期回调：确保 FastArray 反向引用指针始终绑定当前组件实例
+     */
+    void OnRegister() override;
+
+    /**
      * @brief 组件结束运行生命周期回调：从原数值组件回滚全部 Buff 修正器
      * @param EndPlayReason 结束运行的原因
      */
@@ -67,11 +73,10 @@ public:
     /**
      * @brief 施加 Buff（重复施加时依据 Spec 预设的叠层策略自动处理）
      * @param InSpec Buff 完整描述配置
-     * @param InSource 施加来源对象指针（可空）
      * @return 成功生成或刷新的运行实例 ID；若操作被拒绝则返回 0
      */
     UFUNCTION(BlueprintCallable, Category = "Game|Buff")
-    int32 ApplyBuff(const FGameBuffSpec& InSpec, UObject* InSource = nullptr);
+    int32 ApplyBuff(const FGameBuffSpec& InSpec);
 
     /**
      * @brief 按 Buff 身份标签移除实例

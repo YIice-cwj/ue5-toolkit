@@ -4,6 +4,7 @@
 
 #include "Asset/GameFeedbackDefinition.h"
 #include "Bus/GameFeedbackChannels.h"
+#include "Config/GameFeedbackSettings.h"
 #include "Engine/World.h"
 #include "Message/GameplayMessageSubsystem.h"
 #include "System/GameFeedbackAudioExecutor.h"
@@ -14,7 +15,7 @@
 struct FGameFeedbackWorldComponentState {
     TArray<FGameplayMessageListenerHandle> Handles;
     TUniquePtr<FGameFeedbackFlashTracker> FlashTracker;
-    uint64 LastNetworkFrame = 0;
+    uint64 LastNetworkFrame = MAX_uint64;
     TWeakObjectPtr<AActor> LastNetworkAttacker;
     TWeakObjectPtr<AActor> LastNetworkTarget;
     FVector LastNetworkImpact = FVector::ZeroVector;
@@ -85,15 +86,15 @@ void UGameFeedbackWorldComponent::OnNetwork([[maybe_unused]] FGameplayTag Channe
     const uint64 CurrentFrame = GFrameCounter;
 
     if (State->LastNetworkFrame == CurrentFrame
-        && State->LastNetworkAttacker == Signal.Instigator.Get()
-        && State->LastNetworkTarget == Signal.Target.Get()
+        && State->LastNetworkAttacker == Signal.Instigator
+        && State->LastNetworkTarget == Signal.Target
         && State->LastNetworkImpact.Equals(ImpactLocation, KINDA_SMALL_NUMBER)) {
         return;
     }
 
     State->LastNetworkFrame = CurrentFrame;
-    State->LastNetworkAttacker = Signal.Instigator.Get();
-    State->LastNetworkTarget = Signal.Target.Get();
+    State->LastNetworkAttacker = Signal.Instigator;
+    State->LastNetworkTarget = Signal.Target;
     State->LastNetworkImpact = ImpactLocation;
     HandleSignal(Signal, Message.ResolvedDefinition);
 }
@@ -120,6 +121,10 @@ void UGameFeedbackWorldComponent::HandleSignal(const FGameFeedbackSignal& Signal
 {
     UWorld* World = GetWorld();
     if (!World) {
+        return;
+    }
+
+    if (!GetDefault<UGameFeedbackSettings>()->bEnableFeedback) {
         return;
     }
 

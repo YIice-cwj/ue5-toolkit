@@ -1,3 +1,8 @@
+/**
+ * @file FBootstrapRetryGateTest.cpp
+ * @brief GAS 引导限次重试闸门自动化测试套件
+ */
+
 #include "CoreMinimal.h"
 #include "Misc/AutomationTest.h"
 #include "Ability/FBootstrapRetryGate.h"
@@ -10,6 +15,11 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
+/**
+ * @brief 验证限次重试闸门累计、超限判定、重置与零上限边界条件
+ * @param Parameters 自动化测试参数
+ * @return 测试是否通过
+ */
 bool FBootstrapRetryGateTest::RunTest([[maybe_unused]] const FString& Parameters) {
     FBootstrapRetryGate Gate;
     Gate.Configure(0.05f, 3);

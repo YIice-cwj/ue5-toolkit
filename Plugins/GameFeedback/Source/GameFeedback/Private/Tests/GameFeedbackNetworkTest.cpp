@@ -153,6 +153,9 @@ bool FGameFeedbackNetSerializeTest::RunTest([[maybe_unused]] const FString& Para
     TestNotEqual(TEXT("有效骨骼不得使用无骨骼哨兵"), NetEvent.BoneIndex, MAX_uint16);
     TestTrue(TEXT("半精度浮点伤害还原误差应当小于 0.1"), FMath::Abs(ReadEvent.GetDamage() - 125.5f) < 0.1f);
 
+    NetEvent.SetDamage(100000.0f);
+    TestTrue(TEXT("极大伤害应安全饱和截断在 65504 范围内"), NetEvent.GetDamage() <= 65504.0f && NetEvent.GetDamage() >= 65400.0f);
+
     const FGameFeedbackSignal Restored = FGameFeedbackEventNet::ToSignal(ReadEvent);
     if (bFastReplication) {
         TestEqual(TEXT("主通道应准确还原"), Restored.PrimaryChannel, Signal.PrimaryChannel);

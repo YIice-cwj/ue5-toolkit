@@ -7,8 +7,8 @@
 
 #include "CoreMinimal.h"
 #include "Engine/HitResult.h"
+#include "Engine/TimerHandle.h"
 #include "Feedback/GameFeedbackActions.h"
-#include "TimerManager.h"
 
 class UMaterialInterface;
 class UMeshComponent;

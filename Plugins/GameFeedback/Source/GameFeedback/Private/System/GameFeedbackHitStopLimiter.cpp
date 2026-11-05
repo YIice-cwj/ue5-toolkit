@@ -2,6 +2,8 @@
 
 #include "System/GameFeedbackHitStopLimiter.h"
 
+#include "Feedback/GameFeedbackActions.h"
+
 namespace {
 constexpr double StaleStateLifetimeSeconds = 5.0;
 }
@@ -87,7 +89,10 @@ void FGameFeedbackHitStopLimiter::Prune(double RealTime)
     }
 
     for (auto It = CooldownMap.CreateIterator(); It; ++It) {
-        if (!It.Key().Key.IsValid() || !It.Key().Value.IsValid() || RealTime - It.Value() > StaleStateLifetimeSeconds) {
+        const bool bAttackerDead = It.Key().Key.IsStale();
+        const bool bTargetInvalid = !It.Key().Value.IsValid();
+        const bool bExpired = (RealTime - It.Value() > StaleStateLifetimeSeconds);
+        if (bAttackerDead || bTargetInvalid || bExpired) {
             It.RemoveCurrent();
         }
     }

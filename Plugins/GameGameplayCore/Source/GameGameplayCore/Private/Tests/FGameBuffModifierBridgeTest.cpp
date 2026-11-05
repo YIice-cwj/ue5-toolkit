@@ -71,6 +71,8 @@ bool FGameBuffModifierBridgeTest::RunTest([[maybe_unused]] const FString& Parame
     SingleStackInstance.Stacks = 1;
     Bridge.Register(SingleStackInstance.InstanceId, SingleStackInstance, *StatComponent);
     TestEqual(TEXT("单层加算修正器生效"), StatComponent->GetStatEffectiveCurrent(AttackTag), 120.0f);
+    Bridge.Register(SingleStackInstance.InstanceId, SingleStackInstance, *StatComponent);
+    TestEqual(TEXT("重复调用 Register 具备自愈幂等性不累加句柄"), StatComponent->GetStatEffectiveCurrent(AttackTag), 120.0f);
     Bridge.Unregister(SingleStackInstance.InstanceId, StatComponent);
     TestEqual(TEXT("注销单层修正器回退基础值"), StatComponent->GetStatEffectiveCurrent(AttackTag), 100.0f);
 

@@ -57,6 +57,7 @@ REGRESSION_PREFIXES = (
     "Game.Gameplay",
     "Game.Data",
     "Game.Feedback",
+    "Game.Net",
 )
 
 COMPLETED_LINE = "Test Completed."

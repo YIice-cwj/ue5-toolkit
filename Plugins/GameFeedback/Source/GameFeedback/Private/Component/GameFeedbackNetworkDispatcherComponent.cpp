@@ -16,7 +16,7 @@
 
 struct FGameFeedbackNetworkDispatcherComponentState {
     TArray<FGameplayMessageListenerHandle> Handles;
-    uint64 RateLimitFrame = 0;
+    uint64 RateLimitFrame = MAX_uint64;
     int32 DispatchedThisFrame = 0;
 };
 
@@ -76,6 +76,10 @@ void UGameFeedbackNetworkDispatcherComponent::Dispatch(const FGameFeedbackMessag
         return;
     }
 
+    if (!GetDefault<UGameFeedbackSettings>()->bEnableFeedback) {
+        return;
+    }
+
     const ENetMode NetMode = World->GetNetMode();
     if (NetMode != NM_ListenServer && NetMode != NM_DedicatedServer) {
         return;
@@ -117,11 +121,18 @@ void UGameFeedbackNetworkDispatcherComponent::Dispatch(const FGameFeedbackMessag
     }
     ++State->DispatchedThisFrame;
 
-    const float CullDistSq = FMath::Square(Settings->DefaultNetworkCullDistance);
-    const FVector BroadcastOrigin = Signal.HitResult.ImpactPoint.IsNearlyZero()
-        ? (Signal.Target.IsValid() ? Signal.Target->GetActorLocation() : FVector::ZeroVector)
-        : Signal.HitResult.ImpactPoint;
-    const bool bHasBroadcastOrigin = !BroadcastOrigin.IsNearlyZero();
+    const float CullDistance = Settings->DefaultNetworkCullDistance;
+    const bool bEnableCulling = CullDistance > 0.0f;
+    const float CullDistSq = FMath::Square(CullDistance);
+    FVector BroadcastOrigin = FVector::ZeroVector;
+    bool bHasBroadcastOrigin = false;
+    if (Signal.HitResult.bBlockingHit || !Signal.HitResult.ImpactPoint.IsNearlyZero()) {
+        BroadcastOrigin = Signal.HitResult.ImpactPoint;
+        bHasBroadcastOrigin = true;
+    } else if (Signal.Target.IsValid()) {
+        BroadcastOrigin = Signal.Target->GetActorLocation();
+        bHasBroadcastOrigin = true;
+    }
 
     const FGameFeedbackEventNet NetEvent = FGameFeedbackEventNet::FromSignal(Signal, DefinitionId, DefinitionMappingVersion);
 
@@ -131,7 +142,7 @@ void UGameFeedbackNetworkDispatcherComponent::Dispatch(const FGameFeedbackMessag
             continue;
         }
 
-        if (bHasBroadcastOrigin) {
+        if (bEnableCulling && bHasBroadcastOrigin) {
             FVector ViewLocation = FVector::ZeroVector;
             FRotator ViewRotation = FRotator::ZeroRotator;
             PC->GetPlayerViewPoint(ViewLocation, ViewRotation);

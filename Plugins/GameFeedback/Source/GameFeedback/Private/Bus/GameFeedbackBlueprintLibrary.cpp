@@ -8,15 +8,16 @@
 #include "Config/GameFeedbackSettings.h"
 #include "Message/GameplayMessageSubsystem.h"
 
-namespace {
-
 /**
- * @brief 以可选覆盖资产广播本地表现消息
+ * @brief 广播一次打击表现信号（由总线上的各能力监听者自行消费）
  * @param WorldContextObject 世界上下文对象
  * @param Signal 纯表现信号
- * @param Definition 覆盖资产；为空则由监听者按注册表解析
+ * @param Definition 指定的表现资产（可选，为空时按注册表解析）
  */
-void BroadcastPlay(const UObject* WorldContextObject, const FGameFeedbackSignal& Signal, const UGameFeedbackDefinition* Definition)
+void UGameFeedbackBlueprintLibrary::BroadcastFeedback(
+    const UObject* WorldContextObject,
+    const FGameFeedbackSignal& Signal,
+    const UGameFeedbackDefinition* Definition)
 {
     if (!GetDefault<UGameFeedbackSettings>()->bEnableFeedback) {
         return;
@@ -28,32 +29,6 @@ void BroadcastPlay(const UObject* WorldContextObject, const FGameFeedbackSignal&
         Message.OverrideDefinition = const_cast<UGameFeedbackDefinition*>(Definition);
         Bus->BroadcastMessage(TAG_Feedback_Channel_Play, Message);
     }
-}
-
-}
-
-/**
- * @brief 广播一次打击表现信号（由总线上的各能力监听者自行消费）
- * @param WorldContextObject 世界上下文对象
- * @param Signal 纯表现信号
- */
-void UGameFeedbackBlueprintLibrary::BroadcastFeedback(const UObject* WorldContextObject, const FGameFeedbackSignal& Signal)
-{
-    BroadcastPlay(WorldContextObject, Signal, nullptr);
-}
-
-/**
- * @brief 以指定资产覆盖注册表匹配结果后广播一次表现信号
- * @param WorldContextObject 世界上下文对象
- * @param Signal 纯表现信号
- * @param Definition 指定的表现资产（仅本地监听者生效）
- */
-void UGameFeedbackBlueprintLibrary::BroadcastFeedbackWithDefinition(
-    const UObject* WorldContextObject,
-    const FGameFeedbackSignal& Signal,
-    const UGameFeedbackDefinition* Definition)
-{
-    BroadcastPlay(WorldContextObject, Signal, Definition);
 }
 
 /**

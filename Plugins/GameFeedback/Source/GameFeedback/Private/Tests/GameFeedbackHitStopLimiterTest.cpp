@@ -51,6 +51,17 @@ bool FGameFeedbackHitStopLimiterTest::RunTest([[maybe_unused]] const FString& Pa
     Limiter.ClearActor(nullptr);
     Limiter.Prune(10.0);
 
+    TestTrue(TEXT("无攻击者（环境伤害）首次命中应通过冷却"), Limiter.PassCooldown(nullptr, Target, Action, 10.0));
+    Limiter.Prune(10.02);
+    TestFalse(TEXT("无攻击者在冷却内再次命中经 Prune 后仍应被拒绝"), Limiter.PassCooldown(nullptr, Target, Action, 10.02));
+    TestTrue(TEXT("无攻击者冷却结束后应重新放行"), Limiter.PassCooldown(nullptr, Target, Action, 10.10));
+
+    AActor* StaleAttacker = NewObject<AActor>(GetTransientPackage());
+    TestTrue(TEXT("临时攻击者首次命中应放行"), Limiter.PassCooldown(StaleAttacker, Target, Action, 10.15));
+    StaleAttacker->MarkAsGarbage();
+    Limiter.Prune(10.16);
+    TestTrue(TEXT("攻击者被垃圾回收后相关条目应被 Prune 清理放行"), Limiter.PassCooldown(StaleAttacker, Target, Action, 10.16));
+
     return true;
 }
 

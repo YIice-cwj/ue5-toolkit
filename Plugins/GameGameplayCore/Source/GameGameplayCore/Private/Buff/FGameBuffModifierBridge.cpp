@@ -8,6 +8,8 @@
 #include "Stat/UGameStatComponent.h"
 
 void FGameBuffModifierBridge::Register(int32 InInstanceId, const FGameBuffInstance& InInstance, UGameStatComponent& InStatComponent) {
+    Unregister(InInstanceId, &InStatComponent);
+
     if (InInstance.Spec.Modifiers.IsEmpty()) {
         return;
     }

@@ -46,8 +46,8 @@ bool FGameFeedbackPredictionHistory::ConsumeMatch(uint16 PredictionEventId, cons
 
     for (int32 Index = 0; Index < Entries.Num(); ++Index) {
         if (Entries[Index].PredictionEventId == PredictionEventId
-            && Entries[Index].Attacker == Attacker.Get()
-            && Entries[Index].Target == Target.Get()) {
+            && Entries[Index].Attacker == Attacker
+            && Entries[Index].Target == Target) {
             Entries.RemoveAtSwap(Index);
             return true;
         }

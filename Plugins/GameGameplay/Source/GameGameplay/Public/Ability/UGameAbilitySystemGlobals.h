@@ -14,7 +14,6 @@
 #include "CoreMinimal.h"
 #include "AbilitySystemGlobals.h"
 
-#include "GameGameplay.h"
 #include "UGameAbilitySystemGlobals.generated.h"
 
 /**

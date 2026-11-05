@@ -168,7 +168,9 @@ UGameStatComponent* UGameVitalComponent::ResolveStatComponent() {
     }
 
     if (AActor* OwnerActor = GetOwner()) {
-        return OwnerActor->FindComponentByClass<UGameStatComponent>();
+        UGameStatComponent* FoundComponent = OwnerActor->FindComponentByClass<UGameStatComponent>();
+        BoundStatComponent = FoundComponent;
+        return FoundComponent;
     }
 
     return nullptr;

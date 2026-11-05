@@ -2,6 +2,8 @@
 
 本文档列出 `GameLogging` 插件导出的全部核心日志宏及其调用语义与参数说明。
 
+头文件：`#include "Logging/GameLogMacros.h"`（或全局引入 `#include "Logging/GameLogCategories.h"` / `#include "GameLogging.h"`）
+
 ---
 
 ## 1. 注册宏
@@ -61,7 +63,8 @@
 单次日志宏：在应用程序整个生命周期内，该代码行仅输出首次日志，后续调用自动忽略。
 
 - **特点**：
-  - 内部基于局部 `static std::atomic<bool>` 与 `exchange(true)` 实现。
+  - 内部基于局部 `static std::atomic<bool>` 与 TTAS（Test and Test-and-Set）双重检测无锁实现；
+  - 已触发后通过 Relaxed 只读检查极速短路，彻底避免重复触发导致的 CPU 缓存行（Cache Line）排他颠簸与总线写惩罚；
   - 线程安全、绝对无锁，适合用于已知容错路径、废弃接口警告、一次性初始化提示。
 - **示例**：
   ```cpp
@@ -77,6 +80,8 @@
 ### 2.4 `GAME_CLOG_ONCE(Condition, Verbosity, Format, ...)`
 条件单次日志宏：仅在 `Condition` 首次为真时输出一次日志。
 
+- **特点**：
+  - 结合 TTAS 短路语义：在日志已触发后直接跳过 `Condition` 表达式求值，杜绝高频 Tick 下不必要的计算消耗；
 - **参数**：
   - `Condition`：布尔表达式。
 - **示例**：

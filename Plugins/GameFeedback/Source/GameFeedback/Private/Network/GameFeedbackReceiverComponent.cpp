@@ -4,6 +4,7 @@
 
 #include "Bus/GameFeedbackBlueprintLibrary.h"
 #include "Component/GameFeedbackPlayerComponent.h"
+#include "Config/GameFeedbackSettings.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "System/GameFeedbackDefinitionProvider.h"
@@ -24,6 +25,10 @@ UGameFeedbackReceiverComponent::UGameFeedbackReceiverComponent()
 void UGameFeedbackReceiverComponent::ClientReceiveFeedback_Implementation(const FGameFeedbackEventNet& Event)
 {
     if (!GetWorld()) {
+        return;
+    }
+
+    if (!GetDefault<UGameFeedbackSettings>()->bEnableFeedback) {
         return;
     }
 

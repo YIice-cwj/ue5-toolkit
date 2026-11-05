@@ -23,7 +23,11 @@ void PlayImpactAudio(UWorld* World, const FGameFeedbackSignal& Signal, const FGa
 
     USoundBase* Sound = Action.SpatialImpactSound.Get();
     if (!Sound) {
-        UAssetManager::GetStreamableManager().RequestAsyncLoad(Action.SpatialImpactSound.ToSoftObjectPath());
+        UAssetManager::GetStreamableManager().RequestAsyncLoad(
+            Action.SpatialImpactSound.ToSoftObjectPath(),
+            FStreamableDelegate(),
+            FStreamableManager::DefaultAsyncLoadPriority,
+            true);
         return;
     }
 
@@ -58,7 +62,11 @@ void PlayAttackerConfirmation(UWorld* World, const FGameFeedbackSignal& Signal, 
 
     USoundBase* Sound = Action.AttackerConfirmationSound.Get();
     if (!Sound) {
-        UAssetManager::GetStreamableManager().RequestAsyncLoad(Action.AttackerConfirmationSound.ToSoftObjectPath());
+        UAssetManager::GetStreamableManager().RequestAsyncLoad(
+            Action.AttackerConfirmationSound.ToSoftObjectPath(),
+            FStreamableDelegate(),
+            FStreamableManager::DefaultAsyncLoadPriority,
+            true);
         return;
     }
 

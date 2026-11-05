@@ -6,7 +6,8 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Feedback/GameFeedbackActions.h"
+
+struct FGameFeedbackHitStopAction;
 
 /**
  * @brief 按 Actor 维护顿帧累积窗口与（攻击者,目标）冷却的纯逻辑限流器

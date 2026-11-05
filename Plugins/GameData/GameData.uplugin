@@ -28,6 +28,14 @@
         {
             "Name": "GameLogging",
             "Enabled": true
+        },
+        {
+            "Name": "GameNetCore",
+            "Enabled": true
+        },
+        {
+            "Name": "GameNetService",
+            "Enabled": true
         }
     ]
 }

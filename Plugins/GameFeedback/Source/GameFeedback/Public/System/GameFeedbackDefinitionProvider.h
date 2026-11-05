@@ -7,13 +7,12 @@
 
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
-#include "Feedback/GameFeedbackSignal.h"
-#include "UObject/SoftObjectPtr.h"
 
 #include "GameFeedbackDefinitionProvider.generated.h"
 
 class UGameFeedbackDefinition;
 class UGameFeedbackRegistry;
+struct FGameFeedbackSignal;
 struct FStreamableHandle;
 
 /**
@@ -27,7 +26,7 @@ public:
     /**
      * @brief 按信号主通道与反馈标签解析最优表现资产
      * @param Signal 表现信号
-     * @return 可安全同步访问的定义指针；注册表未配置时返回 nullptr
+     * @return 可安全同步访问的定义指针；注册表未配置时返回 nullptr，并在配置缺失路径输出一次性 Warning
      */
     const UGameFeedbackDefinition* Resolve(const FGameFeedbackSignal& Signal);
 
@@ -56,7 +55,7 @@ public:
      * @brief 批量预热软引用定义资产
      * @param Definitions 待异步加载的定义软指针集合
      */
-    void PreloadFeedbackBundle(const TArray<TSoftObjectPtr<UGameFeedbackDefinition>>& Definitions);
+    void PreloadFeedbackBundle(TConstArrayView<TSoftObjectPtr<UGameFeedbackDefinition>> Definitions);
 
     /**
      * @brief 仅在游戏世界创建（包含 Dedicated Server）
@@ -85,11 +84,18 @@ public:
 
 private:
     /**
-     * @brief 解析软定义，命中强缓存或已加载对象时直接返回，否则去重发起异步加载
+     * @brief 解析软定义，命中强缓存或已加载对象时写入缓存并返回，否则按路径去重发起异步请求并闭环回收句柄
      * @param Definition 待解析软定义
      * @return 已加载定义；加载中或加载失败时返回 nullptr
      */
     const UGameFeedbackDefinition* ResolveDefinition(const TSoftObjectPtr<UGameFeedbackDefinition>& Definition);
+
+    /**
+     * @brief 配置缺失时输出一次性诊断，避免每次查询重复刷屏
+     */
+    void WarnMissingGlobalRegistryOnce();
+
+    bool bWarnedMissingGlobalRegistry = false;
 
     UPROPERTY()
     TObjectPtr<UGameFeedbackRegistry> LoadedRegistry = nullptr;

@@ -28,7 +28,37 @@ DECLARE_DELEGATE_RetVal(bool, FQueryDataReady);
 
 ---
 
-## 2. 组件类声明
+## 2. 引导限次重试闸门 `FBootstrapRetryGate`
+
+头文件：`#include "Ability/FBootstrapRetryGate.h"`
+
+专为 GAS 引导时序设计的纯 C++ 轻量控制闸门，所有成员方法均在头文件 `FORCEINLINE` 内联，零函数调用开销与堆分配：
+
+```cpp
+struct GAMEGAMEPLAY_API FBootstrapRetryGate {
+    /** 配置重试间隔与次数上限（不重置已累计次数 · 强制内联） */
+    FORCEINLINE void Configure(float InIntervalSeconds, int32 InMaxRetries) noexcept;
+
+    /** 累计一次尝试并判定是否仍允许重试（强制内联） */
+    [[nodiscard]] FORCEINLINE bool Advance() noexcept;
+
+    /** 重置已累计次数（配置保持不变 · 强制内联） */
+    FORCEINLINE void Reset() noexcept;
+
+    /** 获取已累计的尝试次数（强制内联） */
+    [[nodiscard]] FORCEINLINE int32 GetAttempt() const noexcept;
+
+    /** 获取允许的最大重试次数（强制内联） */
+    [[nodiscard]] FORCEINLINE int32 GetMaxRetries() const noexcept;
+
+    /** 获取重试间隔（强制内联） */
+    [[nodiscard]] FORCEINLINE float GetIntervalSeconds() const noexcept;
+};
+```
+
+---
+
+## 3. 组件类声明
 
 ```cpp
 UCLASS(ClassGroup = (Game), meta = (BlueprintSpawnableComponent))
@@ -89,7 +119,7 @@ protected:
 
 ---
 
-## 3. 核心机制
+## 4. 核心机制
 
 1. **时序与幂等门**：
    - 内部缓存弱指针 `CurrentAvatar` 与 `CurrentASC`。

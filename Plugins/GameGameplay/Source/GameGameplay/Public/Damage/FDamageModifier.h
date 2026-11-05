@@ -63,4 +63,16 @@ struct FDamageModifier {
     [[nodiscard]] FORCEINLINE float Evaluate(float BaseDamage) const noexcept {
         return bOverride ? OverrideValue : (BaseDamage + Additive) * Multiplier;
     }
+
+    /**
+     * @brief 值相等比较
+     * @param Other 待比较对象
+     * @return 各修饰字段均一致返回 true
+     */
+    [[nodiscard]] bool operator==(const FDamageModifier& Other) const noexcept {
+        return bOverride == Other.bOverride
+            && FMath::IsNearlyEqual(OverrideValue, Other.OverrideValue)
+            && FMath::IsNearlyEqual(Multiplier, Other.Multiplier)
+            && FMath::IsNearlyEqual(Additive, Other.Additive);
+    }
 };

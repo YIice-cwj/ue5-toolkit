@@ -11,7 +11,7 @@ namespace Game::Log {
 /**
  * @brief 模块日志注册中心（全局线程安全）
  */
-class GAMELOGGING_API FGameLogRegistry {
+class GAMELOGGING_API FGameLogRegistry final {
 public:
     /**
      * @brief 纯静态单例工具类，禁止构造实例
@@ -61,10 +61,10 @@ private:
     [[nodiscard]] static TArray<ANSICHAR> MakeAnsiName(const char* InName);
 
     /**
-     * @brief 为 RAII 注册器登记分类并原子取得被覆盖的前一项分类
-     * @param InModuleName 已校验的非空模块名
-     * @param InCategory 已校验的新日志分类指针
-     * @return 前一项分类指针；此前未注册时返回 nullptr
+     * @brief 为 RAII 注册器登记分类并取得被覆盖的前一项分类（支持非空校验与防御）
+     * @param InModuleName 模块名（为空指针或空字符串时直接返回 nullptr）
+     * @param InCategory 新日志分类指针（为空时直接返回 nullptr）
+     * @return 前一项分类指针；此前未注册或入参无效时返回 nullptr
      */
     [[nodiscard]] static FLogCategoryBase* RegisterScopedCategory(const char* InModuleName, FLogCategoryBase* InCategory);
 

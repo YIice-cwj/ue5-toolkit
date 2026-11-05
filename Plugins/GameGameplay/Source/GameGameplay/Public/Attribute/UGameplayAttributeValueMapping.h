@@ -14,7 +14,6 @@
 #include "GameplayEffectTypes.h"
 #include "UObject/Object.h"
 
-#include "GameGameplay.h"
 #include "UGameplayAttributeValueMapping.generated.h"
 
 class UAbilitySystemComponent;

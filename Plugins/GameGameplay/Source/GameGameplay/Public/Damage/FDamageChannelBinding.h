@@ -38,5 +38,16 @@ struct FDamageChannelBinding {
      */
     FDamageChannelBinding(const FGameplayTag& InTag, const FGameplayAttribute& InAttr, EGameplayModOp::Type InModOp = EGameplayModOp::Additive)
         : ChannelTag(InTag), TargetAttribute(InAttr), ModOp(InModOp) {}
+
+    /**
+     * @brief 值相等比较
+     * @param Other 待比较对象
+     * @return 标签、属性与修饰操作均一致返回 true
+     */
+    [[nodiscard]] bool operator==(const FDamageChannelBinding& Other) const noexcept {
+        return ChannelTag.MatchesTagExact(Other.ChannelTag)
+            && TargetAttribute == Other.TargetAttribute
+            && ModOp == Other.ModOp;
+    }
 };
 

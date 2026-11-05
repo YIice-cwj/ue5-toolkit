@@ -1,3 +1,8 @@
+/**
+ * @file UGameAbilitySystemBootstrap.cpp
+ * @brief GAS 引导通用组件实现（触发矩阵全时序固化）
+ */
+
 #include "Ability/UGameAbilitySystemBootstrap.h"
 
 #include "Abilities/GameplayAbility.h"
@@ -9,16 +14,26 @@
 
 #include "Logging/GameLogCategories.h"
 
+/**
+ * @brief 构造函数：关闭组件 Tick（引导全程由定时器与握手事件驱动）
+ */
 UGameAbilitySystemBootstrap::UGameAbilitySystemBootstrap() {
     PrimaryComponentTick.bCanEverTick = false;
 }
 
+/**
+ * @brief 组件启动生命周期回调：配置重试闸门并尝试兜底引导
+ */
 void UGameAbilitySystemBootstrap::BeginPlay() {
     Super::BeginPlay();
     ConfigureRetryGates();
     TryInitializeFromOwner();
 }
 
+/**
+ * @brief 组件销毁生命周期回调：清理重试定时器并撤销本组件授予的全部默认能力
+ * @param EndPlayReason 结束运行的原因
+ */
 void UGameAbilitySystemBootstrap::EndPlay(const EEndPlayReason::Type EndPlayReason) {
     if (UWorld* World = GetWorld()) {
         World->GetTimerManager().ClearTimer(InitRetryTimerHandle);
@@ -35,18 +50,34 @@ void UGameAbilitySystemBootstrap::EndPlay(const EEndPlayReason::Type EndPlayReas
     }
 }
 
+/**
+ * @brief 注入取 ASC 委托
+ * @param InDelegate 取 ASC 委托
+ */
 void UGameAbilitySystemBootstrap::SetResolveAbilitySystemComponentDelegate(const FResolveAbilitySystemComponent& InDelegate) {
     ResolveAbilitySystemComponent = InDelegate;
 }
 
+/**
+ * @brief 注入写初值委托
+ * @param InDelegate 写初值委托
+ */
 void UGameAbilitySystemBootstrap::SetWriteInitialAttributesDelegate(const FWriteInitialAttributes& InDelegate) {
     WriteInitialAttributes = InDelegate;
 }
 
+/**
+ * @brief 注入数据就绪判定委托
+ * @param InDelegate 数据就绪判定委托
+ */
 void UGameAbilitySystemBootstrap::SetDataReadyQueryDelegate(const FQueryDataReady& InDelegate) {
     DataReadyQuery = InDelegate;
 }
 
+/**
+ * @brief 统一幂等初始化入口（服务器与本地客户端均可调用，宿主握手钩子驱动）
+ * @param InAvatar 当前附身的 Avatar
+ */
 void UGameAbilitySystemBootstrap::EnsureInitialized(AActor* InAvatar) {
     if (!ResolveAbilitySystemComponent.IsBound() || InAvatar == nullptr) {
         return;
@@ -97,10 +128,16 @@ void UGameAbilitySystemBootstrap::EnsureInitialized(AActor* InAvatar) {
     AdvanceAuthoritativeInitialization();
 }
 
+/**
+ * @brief 数据就绪通知（推进已完成 ActorInfo 握手的权威引导）
+ */
 void UGameAbilitySystemBootstrap::NotifyDataReady() {
     AdvanceAuthoritativeInitialization();
 }
 
+/**
+ * @brief 兜底自愈入口（仅极端离线 / 重连脱节时触发）
+ */
 void UGameAbilitySystemBootstrap::TryInitializeFromOwner() {
     if (!ResolveAbilitySystemComponent.IsBound()) {
         return;
@@ -132,11 +169,18 @@ void UGameAbilitySystemBootstrap::TryInitializeFromOwner() {
     EnsureInitialized(Avatar);
 }
 
+/**
+ * @brief 按组件配置设置初始化与 ASC 复制重试门的间隔和次数上限
+ */
 void UGameAbilitySystemBootstrap::ConfigureRetryGates() {
     ReplicationRetryGate.Configure(RetryIntervalSeconds, MaxReplicationRetries);
     InitRetryGate.Configure(RetryIntervalSeconds, MaxInitRetries);
 }
 
+/**
+ * @brief 从组件拥有者解析兜底引导使用的 Pawn Avatar
+ * @return 拥有者自身或其 PlayerState 关联的 Pawn；无法解析时返回 nullptr
+ */
 APawn* UGameAbilitySystemBootstrap::ResolveOwnerAvatar() const {
     AActor* OwnerActor = GetOwner();
     if (APawn* OwnerAsPawn = Cast<APawn>(OwnerActor)) {
@@ -148,6 +192,9 @@ APawn* UGameAbilitySystemBootstrap::ResolveOwnerAvatar() const {
     return nullptr;
 }
 
+/**
+ * @brief 在 ActorInfo 已初始化且数据就绪后写入初值并推进默认能力授予
+ */
 void UGameAbilitySystemBootstrap::AdvanceAuthoritativeInitialization() {
     UAbilitySystemComponent* AbilitySystemComponent = CurrentASC.Get();
     if (AbilitySystemComponent == nullptr || CurrentAvatar.Get() == nullptr) {
@@ -178,6 +225,9 @@ void UGameAbilitySystemBootstrap::AdvanceAuthoritativeInitialization() {
     GrantDefaultAbilities();
 }
 
+/**
+ * @brief 向当前已完成握手的 ASC 权威授予默认能力并跟踪句柄
+ */
 void UGameAbilitySystemBootstrap::GrantDefaultAbilities() {
     if (bDefaultAbilitiesGranted) {
         return;
@@ -214,7 +264,9 @@ void UGameAbilitySystemBootstrap::GrantDefaultAbilities() {
             continue;
         }
         const FGameplayAbilitySpecHandle NewHandle = AbilitySystemComponent->GiveAbility(FGameplayAbilitySpec(AbilityClass, 1, INDEX_NONE, SourceActor));
-        GrantedAbilityHandles.AddUnique(NewHandle);
+        if (NewHandle.IsValid()) {
+            GrantedAbilityHandles.Add(NewHandle);
+        }
     }
     bDefaultAbilitiesGranted = true;
 }

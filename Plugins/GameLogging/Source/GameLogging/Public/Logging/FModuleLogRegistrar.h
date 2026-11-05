@@ -13,7 +13,7 @@ namespace Game::Log {
  *
  * 同一模块的多个实例必须按 LIFO 顺序销毁；不支持通过堆分配等方式进行非嵌套或乱序生命周期管理。
  */
-class GAMELOGGING_API FModuleLogRegistrar {
+class GAMELOGGING_API FModuleLogRegistrar final {
 public:
     /**
      * @brief 拷贝模块名并立即注册分类，同时保存被覆盖的前一项分类

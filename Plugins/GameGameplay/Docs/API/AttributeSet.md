@@ -16,13 +16,15 @@ class GAMEGAMEPLAY_API UGameBaseAttributeSet : public UAttributeSet {
 
 public:
     /**
-     * @brief 属性上下限钳制（框架层唯一钳制入口）
+     * @brief 属性上下限钳制（框架层唯一钳制入口 · 强制内联）
      * @param InValue 待钳制数值
      * @param InMin 下限
      * @param InMax 上限
      * @return 钳制后的数值
      */
-    [[nodiscard]] static float ClampAttribute(float InValue, float InMin, float InMax) noexcept;
+    [[nodiscard]] FORCEINLINE static float ClampAttribute(float InValue, float InMin, float InMax) noexcept {
+        return FMath::Clamp(InValue, InMin, InMax);
+    }
 
     /**
      * @brief 阈值幂等闩：标签未授予则授予并返回 true（本轮首次达阈，调用方据此广播一次）
@@ -43,11 +45,16 @@ public:
     static void ResetThreshold(UAbilitySystemComponent* InAbilitySystemComponent, const FGameplayTag& InThresholdTag);
 
     /**
-     * @brief 提取元属性当前数值并立即清零归位（避免元属性在下一结算帧残留）
+     * @brief 提取元属性当前数值并立即清零归位（避免元属性在下一结算帧残留 · 强制内联）
      * @param MetaAttributeData 待消费并清零的元属性数据
      * @return 提取出的当前数值
      */
-    static float MoveMetaAttribute(FGameplayAttributeData& MetaAttributeData) noexcept;
+    [[nodiscard]] FORCEINLINE static float MoveMetaAttribute(FGameplayAttributeData& MetaAttributeData) noexcept {
+        const float Value = MetaAttributeData.GetCurrentValue();
+        MetaAttributeData.SetBaseValue(0.0f);
+        MetaAttributeData.SetCurrentValue(0.0f);
+        return Value;
+    }
 
     /**
      * @brief 将增量搬运落地至目标属性（框架层统一属性增量写入入口）
@@ -69,9 +76,11 @@ public:
 
 ### 2.1 `ClampAttribute`
 ```cpp
-[[nodiscard]] static float ClampAttribute(float InValue, float InMin, float InMax) noexcept;
+[[nodiscard]] FORCEINLINE static float ClampAttribute(float InValue, float InMin, float InMax) noexcept {
+    return FMath::Clamp(InValue, InMin, InMax);
+}
 ```
-- **职责**：通用的上下限钳制，将数值限制在 `[InMin, InMax]` 之间。通常在派生属性集的 `PreAttributeChange` 与 `PreAttributeBaseChange` 中调用。
+- **职责**：通用的上下限钳制，将数值限制在 `[InMin, InMax]` 之间。强制头文件内联，零函数调用开销。通常在派生属性集的 `PreAttributeChange` 与 `PreAttributeBaseChange` 中调用。
 
 ### 2.2 `BroadcastThresholdOnce`
 ```cpp
@@ -90,14 +99,26 @@ static void ResetThreshold(UAbilitySystemComponent* InAbilitySystemComponent, co
 
 ### 2.4 `MoveMetaAttribute`
 ```cpp
-static float MoveMetaAttribute(FGameplayAttributeData& MetaAttributeData) noexcept;
+[[nodiscard]] FORCEINLINE static float MoveMetaAttribute(FGameplayAttributeData& MetaAttributeData) noexcept {
+    const float Value = MetaAttributeData.GetCurrentValue();
+    MetaAttributeData.SetBaseValue(0.0f);
+    MetaAttributeData.SetCurrentValue(0.0f);
+    return Value;
+}
 ```
-- **职责**：提取当前元属性的值，并在提取后立即将其清零归位，避免元属性在下一个结算帧残留。常用于在 `PostGameplayEffectExecute` 中消费 ExecCalc 写入的伤害载体。
+- **职责**：提取当前元属性的值，并在提取后立即将其清零归位，避免元属性在下一个结算帧残留。强制头文件内联。常用于在 `PostGameplayEffectExecute` 中消费 ExecCalc 写入的伤害载体。
 
 ### 2.5 `ApplyAttributeToLocal`
 ```cpp
 static void ApplyAttributeToLocal(UAbilitySystemComponent* InAbilitySystemComponent, const FGameplayAttribute& InTargetAttribute, float InDelta);
 ```
+- **职责**：安全地将伤害或回复增量累加回写到落地目标属性的基础值上，框架层统一入口。
+
+---
+
+## 3. 依赖解耦设计
+
+- 头文件中仅对 `class UAbilitySystemComponent;` 进行前置声明，不再直接包含重量级 `AbilitySystemComponent.h`，极大降低了项目业务层继承或引入基础属性集时的编译展开开销与物理耦合。
 - **职责**：收敛“读当前值 -> 叠加增量 -> 写回 BaseValue”三段样板代码，统一将增量落地至目标属性。
 
 ---

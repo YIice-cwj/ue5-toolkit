@@ -39,17 +39,26 @@ bool FGameFeedbackAudioExecutorTest::RunTest([[maybe_unused]] const FString& Par
     FGameFeedbackAudioAction Action;
     Action.MinMagnitude = 5.0f;
 
+    TestNotNull(TEXT("测试世界有效"), World);
+    TestNotNull(TEXT("目标实体有效"), Target);
+
     GameFeedback::Execution::PlayImpactAudio(nullptr, Signal, Action);
     Signal.Magnitude = 1.0f;
     GameFeedback::Execution::PlayImpactAudio(World, Signal, Action);
+    TestTrue(TEXT("低于最小强度门禁时安全跳过"), Signal.Magnitude < Action.MinMagnitude);
     Signal.Magnitude = 10.0f;
     GameFeedback::Execution::PlayImpactAudio(World, Signal, Action);
+    TestTrue(TEXT("未配置音效软指针时安全返回"), Action.SpatialImpactSound.IsNull());
 
     Action.SpatialImpactSound = TSoftObjectPtr<USoundBase>(FSoftObjectPath(TEXT("/Game/Feedback/Test/NonExistentSound.NonExistentSound")));
+    TestFalse(TEXT("配置软指针后非空"), Action.SpatialImpactSound.IsNull());
+    TestFalse(TEXT("未加载软资产有效指针为空"), Action.SpatialImpactSound.IsValid());
     GameFeedback::Execution::PlayImpactAudio(World, Signal, Action);
 
     USoundWave* Sound = NewObject<USoundWave>(GetTransientPackage());
+    TestNotNull(TEXT("测试音效实例创建成功"), Sound);
     Action.SpatialImpactSound = Sound;
+    TestTrue(TEXT("直接绑定音效对象时有效"), Action.SpatialImpactSound.IsValid());
     GameFeedback::Execution::PlayImpactAudio(World, Signal, Action);
 
     Signal.HitResult.ImpactPoint = FVector::ZeroVector;
@@ -62,13 +71,18 @@ bool FGameFeedbackAudioExecutorTest::RunTest([[maybe_unused]] const FString& Par
     GameFeedback::Execution::PlayAttackerConfirmation(nullptr, Signal, ConfirmAction);
     Signal.Magnitude = 2.0f;
     GameFeedback::Execution::PlayAttackerConfirmation(World, Signal, ConfirmAction);
+    TestTrue(TEXT("低于确认音最小强度门禁时安全跳过"), Signal.Magnitude < ConfirmAction.MinMagnitude);
     Signal.Magnitude = 10.0f;
     GameFeedback::Execution::PlayAttackerConfirmation(World, Signal, ConfirmAction);
+    TestTrue(TEXT("未配置确认音软指针时安全返回"), ConfirmAction.AttackerConfirmationSound.IsNull());
 
     ConfirmAction.AttackerConfirmationSound = TSoftObjectPtr<USoundBase>(FSoftObjectPath(TEXT("/Game/Feedback/Test/NonExistentConfirm.NonExistentConfirm")));
+    TestFalse(TEXT("配置确认音软指针后非空"), ConfirmAction.AttackerConfirmationSound.IsNull());
+    TestFalse(TEXT("未加载确认音有效指针为空"), ConfirmAction.AttackerConfirmationSound.IsValid());
     GameFeedback::Execution::PlayAttackerConfirmation(World, Signal, ConfirmAction);
 
     ConfirmAction.AttackerConfirmationSound = Sound;
+    TestTrue(TEXT("直接绑定确认音对象时有效"), ConfirmAction.AttackerConfirmationSound.IsValid());
     GameFeedback::Execution::PlayAttackerConfirmation(World, Signal, ConfirmAction);
 
     World->DestroyWorld(false);

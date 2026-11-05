@@ -7,7 +7,6 @@
 
 #include "CoreMinimal.h"
 #include "Engine/DeveloperSettings.h"
-#include "UObject/SoftObjectPtr.h"
 
 #include "GameFeedbackSettings.generated.h"
 
@@ -30,9 +29,7 @@ public:
      * @brief 获取配置所属分类名
      * @return 容器名
      */
-    FName GetCategoryName() const override {
-        return TEXT("Game");
-    }
+    FName GetCategoryName() const override;
 
     /**
      * @brief 总功能热关断开关（风险应急回滚）

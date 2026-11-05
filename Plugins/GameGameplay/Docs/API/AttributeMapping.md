@@ -31,8 +31,6 @@ class GAMEGAMEPLAY_API UGameplayAttributeValueMapping : public UObject {
     GENERATED_BODY()
 
 public:
-    UGameplayAttributeValueMapping();
-
     /** 蓝图/动态多播委托，UI 蓝图可直接绑定 */
     UPROPERTY(BlueprintAssignable, Category = "Game|GAS")
     FOnMappedAttributeChanged OnValueChanged;
@@ -88,7 +86,7 @@ public:
     /**
      * @brief 获取当前映射属性的数值（解绑或无效时返回 0.0f）
      */
-    UFUNCTION(BlueprintCallable, Category = "Game|GAS")
+    UFUNCTION(BlueprintPure, Category = "Game|GAS")
     [[nodiscard]] float GetCurrentValue() const;
 
     /**
@@ -97,7 +95,13 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Game|GAS")
     void QueryAndBroadcast();
 
+    UFUNCTION(BlueprintPure, Category = "Game|GAS")
     [[nodiscard]] const FGameplayAttribute& GetBoundAttribute() const noexcept;
+
+    UFUNCTION(BlueprintPure, Category = "Game|GAS")
+    [[nodiscard]] UAbilitySystemComponent* GetBoundAbilitySystemComponent() const noexcept;
+
+    UFUNCTION(BlueprintPure, Category = "Game|GAS")
     [[nodiscard]] bool IsBound() const noexcept;
 };
 ```

@@ -2,6 +2,7 @@
 
 #include "System/GameFeedbackShakeTracker.h"
 
+#include "Camera/CameraShakeBase.h"
 #include "Camera/PlayerCameraManager.h"
 
 /**

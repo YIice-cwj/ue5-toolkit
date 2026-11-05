@@ -1,11 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "Logging/GameLogCategories.h"
+#include "Logging/GameLogMacros.h"
 
 #if WITH_AUTOMATION_TESTS
 
 #include "Async/Async.h"
-#include "Async/ParallelFor.h"
 #include "Containers/Set.h"
 #include "GameLogTestCaptureDevice.h"
 #include "HAL/CriticalSection.h"

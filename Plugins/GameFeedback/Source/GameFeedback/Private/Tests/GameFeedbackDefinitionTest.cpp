@@ -16,6 +16,7 @@
 #include "Engine/GameInstance.h"
 #include "Engine/StreamableManager.h"
 #include "Engine/World.h"
+#include "Feedback/GameFeedbackSignal.h"
 #include "GameplayTagsManager.h"
 #include "HAL/FileManager.h"
 #include "Misc/PackageName.h"
@@ -193,6 +194,7 @@ bool FGameFeedbackDefinitionProviderLifetimeTest::RunTest([[maybe_unused]] const
     CollectGarbage(RF_NoFlags);
     TestFalse(TEXT("异步测试资产必须在 Resolve 前真实卸载"), AsyncWeak.IsValid());
 
+    Provider->PreloadFeedbackBundle({AsyncSoft, TSoftObjectPtr<UGameFeedbackDefinition>()});
     Provider->Resolve(AsyncSignal);
     Provider->Resolve(AsyncSignal);
 

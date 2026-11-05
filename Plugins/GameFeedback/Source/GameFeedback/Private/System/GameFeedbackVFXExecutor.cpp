@@ -5,7 +5,6 @@
 #include "Engine/AssetManager.h"
 #include "Engine/StreamableManager.h"
 #include "Engine/World.h"
-#include "Feedback/GameFeedbackActions.h"
 #include "NiagaraFunctionLibrary.h"
 #include "NiagaraSystem.h"
 
@@ -50,7 +49,11 @@ void SpawnVFX(UWorld* World, const FGameFeedbackSignal& Signal, const FGameFeedb
 
     UNiagaraSystem* System = Action.NiagaraSystem.Get();
     if (!System) {
-        UAssetManager::GetStreamableManager().RequestAsyncLoad(Action.NiagaraSystem.ToSoftObjectPath());
+        UAssetManager::GetStreamableManager().RequestAsyncLoad(
+            Action.NiagaraSystem.ToSoftObjectPath(),
+            FStreamableDelegate(),
+            FStreamableManager::DefaultAsyncLoadPriority,
+            true);
         return;
     }
 

@@ -13,7 +13,7 @@
 
 ```cpp
 namespace Game::Log {
-class GAMELOGGING_API FGameLogRegistry {
+class GAMELOGGING_API FGameLogRegistry final {
 public:
     FGameLogRegistry() = delete;
     static void RegisterCategory(const char* InModuleName, FLogCategoryBase* InCategory);
@@ -39,7 +39,7 @@ private:
 static void RegisterCategory(const char* InModuleName, FLogCategoryBase* InCategory);
 ```
 - **职责**：将日志分类指针与模块名称（ANSI 字符串）进行绑定。
-- **线程安全与 SIOF 防御**：底层基于内部 `FRegistryStorage::Get()`（Meyers' Singleton 局部静态单例），杜绝跨编译单元全局静态初始化顺序死锁（SIOF）；获取独占写锁（`Storage.Lock`，`SLT_Write`），更新静态映射条目并原子递增全局纪元号（`Storage.Epoch`）。
+- **线程安全与 SIOF 防御**：底层基于内部 `FRegistryStorage::Get()` 常驻指针单例，按需延迟初始化根除跨编译单元静态初始化顺序死锁（SIOF），且常驻进程全生命周期彻底避免程序退出期静态逆序析构（Use-After-Destruction）崩溃；获取独占写锁（`Storage.Lock`，`SLT_Write`），更新静态映射条目并原子递增全局纪元号（`Storage.Epoch`）。
 - **说明**：
   - 模块名经内部静态方法 `MakeAnsiName` 按 ANSI 字符串深拷贝入自持数组，调用方临时缓冲区销毁后仍安全；
   - 若模块已存在且分类指针改变，覆写其分类指针并原子递增全局 `Epoch`；
@@ -67,7 +67,7 @@ static void UnregisterCategory(const char* InModuleName);
 [[nodiscard]] static FLogCategoryBase& GetFallbackCategory();
 ```
 - **职责**：获取未注册或默认全局兜底分类。
-- **返回值**：返回引擎全局导出的 `LogGame` 引用。
+- **返回值**：在常规构建下返回引擎全局导出的 `LogGame` 引用；在 `NO_LOGGING` 宏生效下返回局部静态 `NoLoggingFallback` 引用。
 
 #### `GetEpoch`
 ```cpp
@@ -84,7 +84,7 @@ RAII 自动注册守卫。
 
 ```cpp
 namespace Game::Log {
-class GAMELOGGING_API FModuleLogRegistrar {
+class GAMELOGGING_API FModuleLogRegistrar final {
 public:
     FModuleLogRegistrar(const char* InModuleName, FLogCategoryBase* InCategory);
     ~FModuleLogRegistrar();

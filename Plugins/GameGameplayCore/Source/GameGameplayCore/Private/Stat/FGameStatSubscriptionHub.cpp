@@ -43,9 +43,6 @@ void FGameStatSubscriptionHub::Unsubscribe(const FGameplayTag& InStatTag, FDeleg
 
     if (FOnGameStatChangedNative* Multicast = TaggedStatChanged.Find(InStatTag)) {
         Multicast->Remove(InHandle);
-        if (!Multicast->IsBound()) {
-            TaggedStatChanged.Remove(InStatTag);
-        }
     }
 
     OwnerStatSubscriptions.RemoveAll([InHandle](const FStatOwnerSubscription& Entry) {
@@ -67,9 +64,6 @@ void FGameStatSubscriptionHub::PurgeExpiredOwnerSubscriptions(const FGameplayTag
         if (Sub.Tag.MatchesTagExact(InStatTag) && !Sub.Owner.IsValid()) {
             if (FOnGameStatChangedNative* Multicast = TaggedStatChanged.Find(InStatTag)) {
                 Multicast->Remove(Sub.Handle);
-                if (!Multicast->IsBound()) {
-                    TaggedStatChanged.Remove(InStatTag);
-                }
             }
             OwnerStatSubscriptions.RemoveAtSwap(Index);
         }

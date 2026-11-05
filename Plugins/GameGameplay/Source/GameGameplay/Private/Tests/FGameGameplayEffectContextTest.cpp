@@ -11,7 +11,6 @@
 #include "Misc/AutomationTest.h"
 #include "Serialization/BufferArchive.h"
 #include "Serialization/MemoryReader.h"
-#include "UObject/Package.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameGameplayEffectContextTest,
@@ -120,6 +119,14 @@ bool FGameGameplayEffectContextTest::RunTest([[maybe_unused]] const FString& Par
     TestTrue(TEXT("近零非零伤害读入标记置位"), bNearZeroReadSuccess);
     TestEqual(TEXT("NetSerialize 保留近零非零总伤害"), NearZeroLoaded.GetActualDamage(), NearZeroDamage, 0.0f);
     TestEqual(TEXT("NetSerialize 保留近零非零通道伤害"), NearZeroLoaded.GetActualChannelDamage(ChannelPhysTag), NearZeroDamage, 0.0f);
+
+    const FGameDamageResult& DamageResult = Source.ToDamageResult();
+    TestEqual(TEXT("ToDamageResult 常引用导出实际总伤害正确"), DamageResult.TotalActualDamage, NearZeroDamage, 0.0f);
+
+    FGameplayEffectContextHandle ValidHandle(new FGameGameplayEffectContext());
+    TestNotNull(TEXT("ExtractEffectContext 提取有效上下文成功"), FGameGameplayEffectContext::ExtractEffectContext(ValidHandle));
+    FGameplayEffectContextHandle NullHandle;
+    TestNull(TEXT("ExtractEffectContext 提取空句柄返回 nullptr"), FGameGameplayEffectContext::ExtractEffectContext(NullHandle));
 
     return true;
 }

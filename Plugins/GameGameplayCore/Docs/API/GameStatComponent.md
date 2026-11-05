@@ -161,6 +161,7 @@ public:
 
 - `ModifyStat` / `SetStatCurrent` / `SetStatMax` 直接修改内部值并按 `Min/Max` 钳制，`ModifyStat` 输出实际生效增量。
 - 写入生效后重新计算修正器派生值；派生当前值或派生上限发生变化时触发 `BroadcastStatChanged` 通知订阅者。
+- **属性注销 (UnregisterStat)**：注销属性时同步清理网络复制条目、差分记录器，并清空内部 `ModifierContainer` 中该 Tag 挂接的全部修正器，彻底防止内存泄漏及后续重新注册时的陈旧修正器污染。
 - **复活**：生命恢复与存活状态迁移由 [UGameVitalComponent](./GameVitalComponent.md) 的 `ReviveVital(FillPercent)` 承载，它以 `Min + (Max - Min) × FillPercent` 计算目标值，并通过 `SetStatCurrent` 写入绑定的数值组件。
 - **权威校验**：非权威端默认拒绝写入并记录 Warning；确需客户端预测时可在类默认值中开启 `bAllowNonAuthoritativeWrites`。
 

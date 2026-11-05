@@ -14,7 +14,6 @@
 #include "GameplayEffectTypes.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 
-#include "GameGameplay.h"
 #include "UGameGasBuffBridge.generated.h"
 
 class UAbilitySystemComponent;

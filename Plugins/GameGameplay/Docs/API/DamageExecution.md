@@ -12,6 +12,7 @@
 通道绑定由 `FGameDamageChannelRegistry`（`Damage/FGameDamageChannelRegistry.h`）统一托管：
 
 - 按 ExecCalc 类隔离，线程安全（`FRWLock` + `FRWScopeLock` 读写锁，注册 / 注销走写锁、查询走读锁）。
+- **零分配遍历 (`ForEachBinding`)**：提供 `ForEachBinding(const UClass* InExecutionClass, TFunctionRef<void(TConstArrayView<FDamageChannelBinding>)> InAction) const`，在读锁保护下直接向调用方提供只读切片视图，彻底消除高频受击结算时的临时堆内存分配。
 - **读穿透缓存（Read-Through Cache）**：内部维护 `CachedFlattenedBindings` 只读缓存字典。高频受击查询时，双重检查读写锁并在首次合并后冻结缓存，后续查询以 $O(1)$ 无额外堆分配极速命中，消除战斗热点性能开销；在 `Register` / `Unregister` / `Reset` 写操作时自动重置失效。
 - 可在子类构造函数中声明，也可在运行期任意系统动态注册 / 注销。
 - 查询时从被查询类沿继承链向上合并，同名通道以最派生类的绑定为准，避免基类与派生类重复绑定导致数值双算。
@@ -20,7 +21,7 @@
 ## 1. 结构体定义
 
 ### 1.1 `FDamageChannelBinding`
-伤害通道到目标 GAS 元属性的输出映射规则：
+伤害通道到目标 GAS 元属性的输出映射规则（支持 `operator==` 值比较）：
 ```cpp
 struct FDamageChannelBinding {
     /** 匹配的伤害通道标签（例如 Data.Damage.Physical） */
@@ -34,11 +35,13 @@ struct FDamageChannelBinding {
 
     FDamageChannelBinding() = default;
     FDamageChannelBinding(const FGameplayTag& InTag, const FGameplayAttribute& InAttr, EGameplayModOp::Type InModOp = EGameplayModOp::Additive);
+
+    [[nodiscard]] bool operator==(const FDamageChannelBinding& Other) const noexcept;
 };
 ```
 
 ### 1.2 `FDamageModifier`
-通道伤害修饰器（支持倍率缩放、固定加减减免与绝对覆写）：
+通道伤害修饰器（支持倍率缩放、固定加减减免、绝对覆写与 `operator==` 值比较）：
 ```cpp
 struct FDamageModifier {
     /** 百分比乘法倍率（默认 1.0f，用于元素克制或百分比增减伤） */
@@ -56,6 +59,9 @@ struct FDamageModifier {
     FDamageModifier() = default;
     explicit FDamageModifier(float InMult, float InAdd = 0.0f);
     static FDamageModifier MakeOverride(float InVal);
+
+    [[nodiscard]] FORCEINLINE float Evaluate(float BaseDamage) const noexcept;
+    [[nodiscard]] bool operator==(const FDamageModifier& Other) const noexcept;
 };
 ```
 
@@ -154,7 +160,7 @@ protected:
 
 ---
 
-> `RegisterTargetAttribute` / `RegisterSourceAttribute` 每调用一次都会向 `RelevantAttributesToCapture` **追加**一项，请勿对同一属性重复调用，否则会产生重复捕获项。
+> `RegisterTargetAttribute` / `RegisterSourceAttribute` 内部采用 `RelevantAttributesToCapture.AddUnique` 自动去重，保证属性注册幂等性，杜绝多处或多次注册导致重复捕获项。
 
 ### 运行期注册示例
 

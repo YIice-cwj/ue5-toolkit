@@ -16,7 +16,6 @@
 #include "Damage/FGameDamageContext.h"
 #include "Damage/FGameDamageResult.h"
 
-#include "GameGameplay.h"
 #include "FGameGameplayEffectContext.generated.h"
 
 /**
@@ -120,10 +119,12 @@ public:
     [[nodiscard]] const TArray<FGameDamageChannel>& GetDynamicValues() const noexcept;
 
     /**
-     * @brief 转换为战斗框架统一打击反馈契约
-     * @return 统一打击反馈
+     * @brief 转换为战斗框架统一打击反馈契约（返回常引用，消除整张结构体深拷贝）
+     * @return 统一打击反馈常引用
      */
-    [[nodiscard]] FGameDamageResult ToDamageResult() const;
+    [[nodiscard]] FORCEINLINE const FGameDamageResult& ToDamageResult() const noexcept {
+        return DamageResult;
+    }
 
     /**
      * @brief 获取跨端打击反馈事件 ID

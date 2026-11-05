@@ -14,7 +14,6 @@
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "GameplayTagContainer.h"
-#include "UObject/WeakObjectPtrTemplates.h"
 
 #include "Stat/FGameStatTypes.h"
 #include "Stat/FGameStatAcknowledgedDiff.h"

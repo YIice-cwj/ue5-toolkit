@@ -6,8 +6,8 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Engine/TimerHandle.h"
 #include "Subsystems/WorldSubsystem.h"
-#include "TimerManager.h"
 
 #include "GameFeedbackRuntimeSubsystem.generated.h"
 
@@ -27,7 +27,7 @@ public:
     bool ShouldCreateSubsystem(UObject* Outer) const override;
 
     /**
-     * @brief 世界 BeginPlay：装配现有组件的并启动迟到玩家补齐定时器
+     * @brief 世界 BeginPlay：装配现有组件并启动迟到玩家补齐定时器
      * @param InWorld 当前世界
      */
     void OnWorldBeginPlay(UWorld& InWorld) override;

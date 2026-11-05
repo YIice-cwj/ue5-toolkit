@@ -100,7 +100,7 @@ bool FGameFeedbackAdapterAndLibraryTest::RunTest([[maybe_unused]] const FString&
 
     Settings->bEnableFeedback = false;
     UGameFeedbackBlueprintLibrary::BroadcastFeedback(World, Signal);
-    UGameFeedbackBlueprintLibrary::BroadcastFeedbackWithDefinition(World, Signal, nullptr);
+    UGameFeedbackBlueprintLibrary::BroadcastFeedback(World, Signal, nullptr);
     UGameFeedbackBlueprintLibrary::BroadcastClearFeedback(World, Target);
     UGameFeedbackBlueprintLibrary::BroadcastNetworkFeedback(World, Signal, nullptr, false);
 

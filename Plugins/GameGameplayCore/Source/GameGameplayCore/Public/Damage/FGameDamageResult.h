@@ -41,6 +41,15 @@ public:
     }
 
     /**
+     * @brief 精确移除指定通道实际生效伤害记录
+     * @param InChannelTag 待移除的通道标签
+     * @return 成功移除返回 true，未找到匹配通道返回 false
+     */
+    bool RemoveActualChannel(const FGameplayTag& InChannelTag) {
+        return FGameDamageChannel::RemoveExact(ActualChannels, InChannelTag);
+    }
+
+    /**
      * @brief 获取实际伤害数值最大的通道
      * @return 主实际伤害通道；无通道时返回无效标签
      */
@@ -52,6 +61,14 @@ public:
             }
         }
         return DominantChannel != nullptr ? DominantChannel->ChannelTag : FGameplayTag();
+    }
+
+    /**
+     * @brief 获取实际生效的总伤害数值
+     * @return 实际生效的总伤害数值
+     */
+    [[nodiscard]] FORCEINLINE float GetActualDamage() const noexcept {
+        return TotalActualDamage;
     }
 
     /**
@@ -113,6 +130,15 @@ public:
      */
     [[nodiscard]] bool HasDynamicValue(const FGameplayTag& InTag) const noexcept {
         return FGameDamageChannel::FindExact(DynamicValues, InTag) != nullptr;
+    }
+
+    /**
+     * @brief 精确移除指定动态数值参数
+     * @param InTag 待移除的数值标签
+     * @return 成功移除返回 true，未找到匹配条目返回 false
+     */
+    bool RemoveDynamicValue(const FGameplayTag& InTag) {
+        return FGameDamageChannel::RemoveExact(DynamicValues, InTag);
     }
 
     /**

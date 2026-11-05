@@ -31,12 +31,12 @@ public:
 struct FRegistryStorage {
 public:
     /**
-     * @brief 获取延迟初始化的进程级注册表存储
+     * @brief 获取常驻进程生命周期的注册表存储（防退出期静态逆序析构踩踏）
      * @return 注册表存储单例引用
      */
     static FRegistryStorage& Get() {
-        static FRegistryStorage Instance;
-        return Instance;
+        static FRegistryStorage* Instance = new FRegistryStorage();
+        return *Instance;
     }
 
 public:
@@ -48,25 +48,7 @@ public:
 } // namespace
 
 void FGameLogRegistry::RegisterCategory(const char* InModuleName, FLogCategoryBase* InCategory) {
-    if (!InModuleName || InModuleName[0] == '\0' || !InCategory) {
-        return;
-    }
-    FRegistryStorage& Storage = FRegistryStorage::Get();
-    FRWScopeLock WriteLock(Storage.Lock, SLT_Write);
-    for (FModuleLogEntry& Entry : Storage.Entries) {
-        if (Entry.Matches(InModuleName)) {
-            if (Entry.Category == InCategory) {
-                return;
-            }
-            Entry.Category = InCategory;
-            Storage.Epoch.fetch_add(1, std::memory_order_release);
-            return;
-        }
-    }
-    FModuleLogEntry& NewEntry = Storage.Entries.AddDefaulted_GetRef();
-    NewEntry.Name = MakeAnsiName(InModuleName);
-    NewEntry.Category = InCategory;
-    Storage.Epoch.fetch_add(1, std::memory_order_release);
+    RegisterScopedCategory(InModuleName, InCategory);
 }
 
 void FGameLogRegistry::UnregisterCategory(const char* InModuleName) {
@@ -81,13 +63,15 @@ void FGameLogRegistry::UnregisterCategory(const char* InModuleName) {
 }
 
 FLogCategoryBase& FGameLogRegistry::GetCategory(const char* InModuleName) {
-    if (InModuleName && InModuleName[0] != '\0') {
-        FRegistryStorage& Storage = FRegistryStorage::Get();
-        FRWScopeLock ReadLock(Storage.Lock, SLT_ReadOnly);
-        for (const FModuleLogEntry& Entry : Storage.Entries) {
-            if (Entry.Matches(InModuleName)) {
-                return *Entry.Category;
-            }
+    if (!InModuleName || InModuleName[0] == '\0') {
+        return GetFallbackCategory();
+    }
+
+    FRegistryStorage& Storage = FRegistryStorage::Get();
+    FRWScopeLock ReadLock(Storage.Lock, SLT_ReadOnly);
+    for (const FModuleLogEntry& Entry : Storage.Entries) {
+        if (Entry.Matches(InModuleName)) {
+            return *Entry.Category;
         }
     }
     return GetFallbackCategory();
@@ -110,23 +94,27 @@ TArray<ANSICHAR> FGameLogRegistry::MakeAnsiName(const char* InName) {
     const int32 Length = FCStringAnsi::Strlen(InName);
     TArray<ANSICHAR> Result;
     Result.SetNumUninitialized(Length + 1);
-    FCStringAnsi::Strncpy(Result.GetData(), InName, Length + 1);
+    FMemory::Memcpy(Result.GetData(), InName, Length + 1);
     return Result;
 }
 
 FLogCategoryBase* FGameLogRegistry::RegisterScopedCategory(const char* InModuleName, FLogCategoryBase* InCategory) {
+    if (!InModuleName || InModuleName[0] == '\0' || !InCategory) {
+        return nullptr;
+    }
     FRegistryStorage& Storage = FRegistryStorage::Get();
     FRWScopeLock WriteLock(Storage.Lock, SLT_Write);
     for (FModuleLogEntry& Entry : Storage.Entries) {
-        if (Entry.Matches(InModuleName)) {
-            FLogCategoryBase* PreviousCategory = Entry.Category;
-            if (Entry.Category == InCategory) {
-                return PreviousCategory;
-            }
-            Entry.Category = InCategory;
-            Storage.Epoch.fetch_add(1, std::memory_order_release);
+        if (!Entry.Matches(InModuleName)) {
+            continue;
+        }
+        FLogCategoryBase* PreviousCategory = Entry.Category;
+        if (Entry.Category == InCategory) {
             return PreviousCategory;
         }
+        Entry.Category = InCategory;
+        Storage.Epoch.fetch_add(1, std::memory_order_release);
+        return PreviousCategory;
     }
     FModuleLogEntry& NewEntry = Storage.Entries.AddDefaulted_GetRef();
     NewEntry.Name = MakeAnsiName(InModuleName);
@@ -141,21 +129,26 @@ void FGameLogRegistry::UnregisterScopedCategory(const char* InModuleName, FLogCa
     FRWScopeLock WriteLock(Storage.Lock, SLT_Write);
     for (int32 Index = 0; Index < Storage.Entries.Num(); ++Index) {
         FModuleLogEntry& Entry = Storage.Entries[Index];
-        if (Entry.Matches(InModuleName)) {
-            if (Entry.Category != InCategory) {
-                return;
-            }
-            if (InPreviousCategory != nullptr) {
-                if (Entry.Category == InPreviousCategory) {
-                    return;
-                }
-                Entry.Category = InPreviousCategory;
-            } else {
-                Storage.Entries.RemoveAtSwap(Index);
-            }
-            Storage.Epoch.fetch_add(1, std::memory_order_release);
+        if (!Entry.Matches(InModuleName)) {
+            continue;
+        }
+
+        if (Entry.Category != InCategory) {
             return;
         }
+
+        if (InPreviousCategory != nullptr && Entry.Category == InPreviousCategory) {
+            return;
+        }
+
+        if (InPreviousCategory != nullptr) {
+            Entry.Category = InPreviousCategory;
+        } else {
+            Storage.Entries.RemoveAtSwap(Index);
+        }
+
+        Storage.Epoch.fetch_add(1, std::memory_order_release);
+        return;
     }
 }
 

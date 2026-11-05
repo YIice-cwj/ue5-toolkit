@@ -23,7 +23,7 @@ enum class EGameAbilityTriggerSource : uint8 {
 ## 2. `UGameGameplayAbility` 类接口
 
 ```cpp
-UCLASS()
+UCLASS(Abstract)
 class GAMEGAMEPLAY_API UGameGameplayAbility : public UGameplayAbility {
     GENERATED_BODY()
 
@@ -45,8 +45,10 @@ public:
 
     virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
-    /** 最近一次激活的触发来源（已网络复制，子类可据此分叉表现） */
-    [[nodiscard]] EGameAbilityTriggerSource GetTriggerSource() const noexcept;
+    /** 最近一次激活的触发来源（已网络复制，强制内联，子类可据此分叉表现） */
+    [[nodiscard]] FORCEINLINE EGameAbilityTriggerSource GetTriggerSource() const noexcept {
+        return TriggerSource;
+    }
 
 protected:
     /** 激活否决标签：持有任一即短路激活（死亡 / 硬直等，具体由业务层配置） */

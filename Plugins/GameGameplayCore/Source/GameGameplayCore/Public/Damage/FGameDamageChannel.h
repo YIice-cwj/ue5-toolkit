@@ -108,6 +108,19 @@ public:
     }
 
     /**
+     * @brief 精确移除指定标签的通道条目
+     * @param InChannels 目标通道数组
+     * @param InTag 目标精确标签
+     * @return 成功移除至少一个条目返回 true，未命中返回 false
+     */
+    static bool RemoveExact(TArray<FGameDamageChannel>& InChannels, const FGameplayTag& InTag) {
+        const int32 Removed = InChannels.RemoveAll([&InTag](const FGameDamageChannel& Item) {
+            return Item.ChannelTag.MatchesTagExact(InTag);
+        });
+        return Removed > 0;
+    }
+
+    /**
      * @brief 伤害通道标签
      */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Game|Damage")

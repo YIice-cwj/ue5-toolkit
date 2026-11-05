@@ -3,7 +3,6 @@
 #include "Network/GameFeedbackEventNet.h"
 
 #include "Components/SkeletalMeshComponent.h"
-#include "Engine/PackageMapClient.h"
 #include "GameplayTagsManager.h"
 
 /**
@@ -38,21 +37,10 @@ bool FGameFeedbackEventNet::NetSerialize(FArchive& Ar, class UPackageMap* Map, b
     bOutSuccess &= Map->SerializeObject(Ar, UPrimitiveComponent::StaticClass(), RawHitComponent);
     HitComponent = Cast<UPrimitiveComponent>(RawHitComponent);
 
-    bool bLocationSuccess = true;
-    ImpactLocation.NetSerialize(Ar, Map, bLocationSuccess);
-    bOutSuccess &= bLocationSuccess;
-
-    bool bNormalSuccess = true;
-    ImpactNormal.NetSerialize(Ar, Map, bNormalSuccess);
-    bOutSuccess &= bNormalSuccess;
-
-    bool bDirectionSuccess = true;
-    ImpactDirection.NetSerialize(Ar, Map, bDirectionSuccess);
-    bOutSuccess &= bDirectionSuccess;
-
-    bool bTraceDirectionSuccess = true;
-    TraceDirection.NetSerialize(Ar, Map, bTraceDirectionSuccess);
-    bOutSuccess &= bTraceDirectionSuccess;
+    ImpactLocation.NetSerialize(Ar, Map, bOutSuccess);
+    ImpactNormal.NetSerialize(Ar, Map, bOutSuccess);
+    ImpactDirection.NetSerialize(Ar, Map, bOutSuccess);
+    TraceDirection.NetSerialize(Ar, Map, bOutSuccess);
 
     Ar << DefinitionId;
     Ar << DefinitionMappingVersion;
@@ -129,7 +117,9 @@ FGameFeedbackSignal FGameFeedbackEventNet::ToSignal(const FGameFeedbackEventNet&
     Signal.Instigator = NetEvent.Instigator;
     Signal.DamageCauser = NetEvent.DamageCauser;
     Signal.Target = NetEvent.Target;
+    Signal.HitResult.Location = NetEvent.ImpactLocation;
     Signal.HitResult.ImpactPoint = NetEvent.ImpactLocation;
+    Signal.HitResult.Normal = NetEvent.ImpactNormal;
     Signal.HitResult.ImpactNormal = NetEvent.ImpactNormal;
     Signal.HitResult.Component = NetEvent.HitComponent;
     Signal.ImpactDirection = NetEvent.ImpactDirection;

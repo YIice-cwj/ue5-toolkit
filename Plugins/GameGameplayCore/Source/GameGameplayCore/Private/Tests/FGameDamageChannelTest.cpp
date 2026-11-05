@@ -60,6 +60,11 @@ bool FGameDamageChannelTest::RunTest([[maybe_unused]] const FString& Parameters)
     }
     TestEqual(TEXT("通过可变指针修改成功生效"), FGameDamageChannel::GetExact(Channels, SlashTag), 70.0f);
 
+    TestTrue(TEXT("精确移除 Slash 通道成功"), FGameDamageChannel::RemoveExact(Channels, SlashTag));
+    TestNull(TEXT("移除后查找返回 nullptr"), FGameDamageChannel::FindExact(Channels, SlashTag));
+    TestFalse(TEXT("重复移除不存在通道返回 false"), FGameDamageChannel::RemoveExact(Channels, SlashTag));
+    TestEqual(TEXT("移除后剩余通道数正确"), Channels.Num(), 2);
+
     return true;
 }
 

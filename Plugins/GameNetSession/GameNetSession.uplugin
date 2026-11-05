@@ -1,0 +1,41 @@
+{
+    "FileVersion": 3,
+    "Version": 1,
+    "VersionName": "1.0.0",
+    "FriendlyName": "Game Net Session",
+    "Description": "Optional room, session matchmaking, zero-SDK UDP LAN beacon discovery, OnlineSubsystem wrapper, and Seamless/Client Travel URL handshake helpers.",
+    "Category": "Game",
+    "CreatedBy": "Taoist Decree Team",
+    "CanContainContent": false,
+    "Installed": false,
+    "Modules": [
+        {
+            "Name": "GameNetSession",
+            "Type": "Runtime",
+            "LoadingPhase": "Default"
+        }
+    ],
+    "Plugins": [
+        {
+            "Name": "GameCore",
+            "Enabled": true
+        },
+        {
+            "Name": "GameLogging",
+            "Enabled": true
+        },
+        {
+            "Name": "GameNetCore",
+            "Enabled": true
+        },
+        {
+            "Name": "OnlineSubsystem",
+            "Enabled": true
+        },
+        {
+            "Name": "OnlineSubsystemUtils",
+            "Enabled": true
+        }
+    ]
+}
+

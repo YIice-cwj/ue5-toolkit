@@ -109,6 +109,10 @@ void UGameFeedbackPlayerComponent::HandleSignal(const FGameFeedbackSignal& Signa
         return;
     }
 
+    if (!GetDefault<UGameFeedbackSettings>()->bEnableFeedback) {
+        return;
+    }
+
     const UGameFeedbackDefinition* Definition = OverrideDefinition;
     if (!Definition) {
         UGameFeedbackDefinitionProvider* Provider = UGameFeedbackDefinitionProvider::GetPtr(this);

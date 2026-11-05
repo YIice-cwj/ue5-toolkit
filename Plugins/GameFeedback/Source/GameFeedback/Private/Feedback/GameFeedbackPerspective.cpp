@@ -39,12 +39,14 @@ EGameFeedbackPerspective ResolvePerspective(
         return false;
     };
 
-    if (IsOwnedByLocal(Instigator) || IsOwnedByLocal(DamageCauser)) {
-        return EGameFeedbackPerspective::LocalAttacker;
-    }
-
     if (IsOwnedByLocal(Target)) {
         return EGameFeedbackPerspective::LocalVictim;
+    }
+
+    const bool bIsAttacker = IsOwnedByLocal(Instigator)
+        || (DamageCauser != Instigator && IsOwnedByLocal(DamageCauser));
+    if (bIsAttacker) {
+        return EGameFeedbackPerspective::LocalAttacker;
     }
 
     return EGameFeedbackPerspective::Bystander;

@@ -6,9 +6,9 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Camera/CameraShakeBase.h"
 
 class APlayerCameraManager;
+class UCameraShakeBase;
 
 /**
  * @brief 按 PlayerCameraManager 独立维护同帧最大振幅震动实例
@@ -46,6 +46,14 @@ public:
      * @brief 停止全部已启动震动并清理失效摄像机记录
      */
     void StopAll();
+
+    /**
+     * @brief 获取当前追踪的有效摄像机管理器数量（供测试与可观测性）
+     * @return 追踪状态数量
+     */
+    [[nodiscard]] int32 GetTrackedCount() const {
+        return States.Num();
+    }
 
 private:
     TMap<TWeakObjectPtr<APlayerCameraManager>, FState> States;

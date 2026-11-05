@@ -63,6 +63,7 @@ bool UGameStatComponent::UnregisterStat(const FGameplayTag& InStatTag) {
     if (Index != INDEX_NONE) {
         ReplicatedStats.RemoveAt(Index);
         AcknowledgedDiff.Remove(InStatTag);
+        ModifierContainer.ClearModifiers(InStatTag);
         RebuildStatIndex();
         GAME_LOG(Log, TEXT("【数值组件】宿主 [%s] 成功注销属性 [%s]。"),
             *GetNameSafe(GetOwner()), *InStatTag.ToString());
@@ -224,7 +225,9 @@ void UGameStatComponent::SetStatCurrent(const FGameplayTag& InStatTag, float New
     const float OldEffectiveValue = FGameStatEffectiveEvaluator::EvaluateCurrent(OldValue, FoundStat->Min, InStatTag, ModifierContainer);
     const float NewEffectiveValue = FGameStatEffectiveEvaluator::EvaluateCurrent(TargetValue, FoundStat->Min, InStatTag, ModifierContainer);
     const float EffectiveMax = GetStatEffectiveMax(InStatTag);
-    BroadcastStatChanged(InStatTag, OldEffectiveValue, NewEffectiveValue, EffectiveMax);
+    if (!FMath::IsNearlyEqual(OldEffectiveValue, NewEffectiveValue)) {
+        BroadcastStatChanged(InStatTag, OldEffectiveValue, NewEffectiveValue, EffectiveMax);
+    }
     GAME_LOG(Log, TEXT("【数值组件】宿主 [%s] 设置属性 [%s] 当前值: %.2f -> %.2f (上限: %.2f)。"),
         *GetNameSafe(GetOwner()), *InStatTag.ToString(), OldValue, TargetValue, EffectiveMax);
 }
@@ -324,7 +327,8 @@ int32 UGameStatComponent::ResolveStatIndex(const FGameplayTag& InStatTag) const 
 }
 
 FGameStatValue* UGameStatComponent::FindMutableStat(const FGameplayTag& InStatTag) {
-    return const_cast<FGameStatValue*>(const_cast<const UGameStatComponent*>(this)->FindStat(InStatTag));
+    const int32 Index = ResolveStatIndex(InStatTag);
+    return Index != INDEX_NONE ? &ReplicatedStats[Index].Value : nullptr;
 }
 
 const FGameStatValue* UGameStatComponent::FindStat(const FGameplayTag& InStatTag) const {
@@ -336,7 +340,6 @@ void UGameStatComponent::SyncEntryToReplicatedList(const FGameplayTag& InStatTag
     const int32 Index = ResolveStatIndex(InStatTag);
     if (Index != INDEX_NONE) {
         ReplicatedStats[Index].Value = InValue;
-        StatIndex.Add(InStatTag, Index);
         return;
     }
 

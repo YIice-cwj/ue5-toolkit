@@ -14,7 +14,7 @@
 #include "HAL/CriticalSection.h"
 #include "UObject/ObjectKey.h"
 
-#include "Damage/UGameDamageExecution.h"
+#include "Damage/FDamageChannelBinding.h"
 
 /**
  * @brief 运行时通道注册表（进程级单例）
@@ -49,11 +49,11 @@ public:
     int32 UnregisterAll(const UClass* InExecutionClass);
 
     /**
-     * @brief 查询指定类的合并绑定（沿继承链合并，派生类同名通道优先）
+     * @brief 零分配遍历指定类的合并绑定（在读锁内以只读切片执行，避免高频堆拷贝）
      * @param InExecutionClass 目标 ExecCalc 类
-     * @param OutBindings 合并结果
+     * @param InAction 对合并绑定切片执行的只读闭包
      */
-    void GetBindings(const UClass* InExecutionClass, TArray<FDamageChannelBinding>& OutBindings) const;
+    void ForEachBinding(const UClass* InExecutionClass, TFunctionRef<void(TConstArrayView<FDamageChannelBinding>)> InAction) const;
 
     /**
      * @brief 查询指定类直属的绑定数量（不含继承）

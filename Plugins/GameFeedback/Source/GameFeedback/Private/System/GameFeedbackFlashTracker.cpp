@@ -5,6 +5,7 @@
 #include "Components/MeshComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/World.h"
+#include "TimerManager.h"
 
 namespace {
 
@@ -71,10 +72,12 @@ void FGameFeedbackFlashTracker::Execute(UWorld* World, AActor* Target, const FHi
             continue;
         }
 
-        FRecord& Record = Records.FindOrAdd(Mesh);
-        if (Record.ExpirationRealTime <= CurrentRealTime) {
-            Record.OriginalOverlayMaterial = TStrongObjectPtr<UMaterialInterface>(Mesh->GetOverlayMaterial());
+        FRecord* ExistingRecord = Records.Find(Mesh);
+        if (!ExistingRecord) {
+            ExistingRecord = &Records.Add(Mesh);
+            ExistingRecord->OriginalOverlayMaterial = TStrongObjectPtr<UMaterialInterface>(Mesh->GetOverlayMaterial());
         }
+        FRecord& Record = *ExistingRecord;
         Record.ExpirationRealTime = FMath::Max(Record.ExpirationRealTime, NewExpirationTime);
         Mesh->SetOverlayMaterial(Action.OverlayMaterial);
 
@@ -100,14 +103,16 @@ void FGameFeedbackFlashTracker::ClearActor(UWorld* World, AActor* Target)
         return;
     }
 
+    UWorld* EffectiveWorld = World ? World : Target->GetWorld();
     TInlineComponentArray<UMeshComponent*> Meshes(Target);
     for (UMeshComponent* Mesh : Meshes) {
         if (!Mesh) {
             continue;
         }
         if (FRecord* Record = Records.Find(Mesh)) {
-            if (World) {
-                World->GetTimerManager().ClearTimer(Record->TimerHandle);
+            UWorld* TargetWorld = EffectiveWorld ? EffectiveWorld : Mesh->GetWorld();
+            if (TargetWorld) {
+                TargetWorld->GetTimerManager().ClearTimer(Record->TimerHandle);
             }
             Mesh->SetOverlayMaterial(Record->OriginalOverlayMaterial.Get());
             Records.Remove(Mesh);
@@ -121,13 +126,13 @@ void FGameFeedbackFlashTracker::ClearActor(UWorld* World, AActor* Target)
  */
 void FGameFeedbackFlashTracker::Shutdown(UWorld* World)
 {
-    if (World) {
-        FTimerManager& TimerManager = World->GetTimerManager();
-        for (auto& Pair : Records) {
-            TimerManager.ClearTimer(Pair.Value.TimerHandle);
-            if (UMeshComponent* Mesh = Pair.Key.Get()) {
-                Mesh->SetOverlayMaterial(Pair.Value.OriginalOverlayMaterial.Get());
-            }
+    for (auto& Pair : Records) {
+        UWorld* TargetWorld = World ? World : (Pair.Key.IsValid() ? Pair.Key.Get()->GetWorld() : nullptr);
+        if (TargetWorld) {
+            TargetWorld->GetTimerManager().ClearTimer(Pair.Value.TimerHandle);
+        }
+        if (UMeshComponent* Mesh = Pair.Key.Get()) {
+            Mesh->SetOverlayMaterial(Pair.Value.OriginalOverlayMaterial.Get());
         }
     }
 
@@ -176,7 +181,14 @@ void FGameFeedbackFlashTracker::OnExpiration(TWeakObjectPtr<UMeshComponent> Weak
         return;
     }
 
-    TargetMesh->GetWorld()->GetTimerManager().SetTimer(
+    UWorld* World = TargetMesh->GetWorld();
+    if (!World) {
+        TargetMesh->SetOverlayMaterial(Record->OriginalOverlayMaterial.Get());
+        Records.Remove(TargetMesh);
+        return;
+    }
+
+    World->GetTimerManager().SetTimer(
         Record->TimerHandle,
         FTimerDelegate::CreateRaw(this, &FGameFeedbackFlashTracker::OnExpiration, WeakMesh),
         static_cast<float>(RemainingTime),

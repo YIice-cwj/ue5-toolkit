@@ -38,10 +38,17 @@ bool FGameDamageContextTest::RunTest([[maybe_unused]] const FString& Parameters)
     TestEqual(TEXT("精确获取 Fire 伤害正确"), Context.GetChannelDamageExact(FireTag), 20.0f);
     TestEqual(TEXT("层级匹配 Phys 伤害正确"), Context.GetChannelDamage(PhysTag), 80.0f);
     TestEqual(TEXT("总基础伤害等于各通道之和"), Context.GetTotalBaseDamage(), 100.0f);
+    TestEqual(TEXT("主通道选择基础伤害最大者"), Context.GetDominantChannel(), SlashTag);
 
     const FGameplayTag TraitCrit = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Damage.Trait.Crit")));
     Context.TraitTags.AddTag(TraitCrit);
     TestTrue(TEXT("伤害特质标签记录成功"), Context.TraitTags.HasTag(TraitCrit));
+
+    TestTrue(TEXT("精确移除 Slash 通道成功"), Context.RemoveChannel(SlashTag));
+    TestEqual(TEXT("移除后精确获取 Slash 伤害为 0"), Context.GetChannelDamageExact(SlashTag), 0.0f);
+    TestEqual(TEXT("移除后总基础伤害更新"), Context.GetTotalBaseDamage(), 20.0f);
+    TestEqual(TEXT("移除后主通道迁移至剩余最大通道"), Context.GetDominantChannel(), FireTag);
+    TestFalse(TEXT("重复移除未存在通道返回 false"), Context.RemoveChannel(SlashTag));
 
     return true;
 }

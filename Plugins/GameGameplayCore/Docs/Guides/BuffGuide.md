@@ -51,7 +51,7 @@ FGameBuffSpec MakePoisonSpec()
 ## 3. 施加、叠层与移除
 
 ```cpp
-const int32 InstanceId = BuffComponent->ApplyBuff(MakePoisonSpec(), this);
+const int32 InstanceId = BuffComponent->ApplyBuff(MakePoisonSpec());
 
 const bool bPoisoned = BuffComponent->HasBuff(PoisonTag);
 const int32 Stacks = BuffComponent->GetBuffStacks(PoisonTag);

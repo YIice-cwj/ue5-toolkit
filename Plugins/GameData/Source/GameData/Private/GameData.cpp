@@ -1,5 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+#include "GameData.h"
+
 #include "Modules/ModuleManager.h"
 #include "Logging/GameLogCategories.h"
 

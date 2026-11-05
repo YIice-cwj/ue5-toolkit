@@ -61,6 +61,9 @@ struct GAMEFEEDBACK_API FGameFeedbackSignal {
     UPROPERTY(BlueprintReadWrite, Category = "GameFeedback")
     bool bLethal = false;
 
+    /**
+     * @brief 本地预测事件指纹 ID（0 表示未启用预测）
+     */
     UPROPERTY()
     uint16 PredictionEventId = 0;
 };

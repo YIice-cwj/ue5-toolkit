@@ -38,12 +38,12 @@ class GAMEFEEDBACK_API UGameFeedbackRegistry : public UDataAsset {
 
 public:
     /**
-     * @brief 资产加载后重建复合规则顺序与稳定 Definition 索引
+     * @brief 资产加载后重建复合规则顺序、反馈标签有序索引与稳定 Definition 索引
      */
     void PostLoad() override;
 
     /**
-     * @brief 匹配最优 Definition 软引用
+     * @brief 匹配最优 Definition 软引用（精确通道 → 最具体反馈标签 → 复合规则 → 缺省资产）
      * @param PrimaryChannel 主伤害通道
      * @param FeedbackTags 特征标签集合
      * @return 最优资产软指针；若均未匹配则返回 DefaultFallbackDefinition
@@ -53,7 +53,7 @@ public:
         const FGameplayTagContainer& FeedbackTags) const;
 
     /**
-     * @brief 重建全部映射来源的 Definition 索引、冲突集合与映射版本
+     * @brief 重建复合规则优先级顺序、反馈标签有序索引（深度降序、同深度字典序升序）及 Definition 索引、冲突集合与映射版本
      */
     void RebuildDefinitionIndex();
 
@@ -88,6 +88,7 @@ private:
     TSet<FSoftObjectPath> RegisteredDefinitionPaths;
     TMap<uint32, TSoftObjectPtr<UGameFeedbackDefinition>> DefinitionsById;
     TSet<uint32> ConflictedDefinitionIds;
+    TArray<TPair<FGameplayTag, TSoftObjectPtr<UGameFeedbackDefinition>>> SortedExactFeedbackTags;
     uint32 DefinitionMappingVersion = 0;
 
 public:

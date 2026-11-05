@@ -82,17 +82,27 @@ bool FGameFeedbackVFXExecutorSpawnTest::RunTest([[maybe_unused]] const FString& 
     FGameFeedbackVFXAction Action;
     Action.MinMagnitude = 5.0f;
 
+    TestNotNull(TEXT("测试世界有效"), World);
+    TestNotNull(TEXT("测试目标实体有效"), Target);
+    TestNotNull(TEXT("测试网格组件有效"), Mesh);
+
     GameFeedback::Execution::SpawnVFX(nullptr, Signal, Action);
     Signal.Magnitude = 2.0f;
     GameFeedback::Execution::SpawnVFX(World, Signal, Action);
+    TestTrue(TEXT("低于最小强度门禁时安全跳过"), Signal.Magnitude < Action.MinMagnitude);
     Signal.Magnitude = 10.0f;
     GameFeedback::Execution::SpawnVFX(World, Signal, Action);
+    TestTrue(TEXT("未配置特效软指针时安全返回"), Action.NiagaraSystem.IsNull());
 
     Action.NiagaraSystem = TSoftObjectPtr<UNiagaraSystem>(FSoftObjectPath(TEXT("/Game/Feedback/Test/NonExistentFX.NonExistentFX")));
+    TestFalse(TEXT("配置软指针后非空"), Action.NiagaraSystem.IsNull());
+    TestFalse(TEXT("未加载软资产有效指针为空"), Action.NiagaraSystem.IsValid());
     GameFeedback::Execution::SpawnVFX(World, Signal, Action);
 
     UNiagaraSystem* System = NewObject<UNiagaraSystem>(GetTransientPackage());
+    TestNotNull(TEXT("测试粒子系统创建成功"), System);
     Action.NiagaraSystem = System;
+    TestTrue(TEXT("直接绑定粒子系统对象时有效"), Action.NiagaraSystem.IsValid());
     Action.bAttachToHitComponent = false;
     GameFeedback::Execution::SpawnVFX(World, Signal, Action);
 
