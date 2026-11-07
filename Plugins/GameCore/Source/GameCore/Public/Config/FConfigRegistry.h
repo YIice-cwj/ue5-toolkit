@@ -107,6 +107,20 @@ public:
     [[nodiscard]] bool IsRegistered(FName Name) const;
 
     /**
+     * @brief 查询指定配置键在当前构建配置下是否属于只读保护键
+     * @param Name 配置键
+     * @return 属于只读键返回 true
+     */
+    [[nodiscard]] bool IsReadOnly(FName Name) const;
+
+    /**
+     * @brief 按类型擦除变体获取已注册配置值快照（未注册时返回空可选值）
+     * @param Name 配置键
+     * @return 变体可选对象
+     */
+    [[nodiscard]] TOptional<FConfigVariant> GetRawConfigOptional(FName Name) const;
+
+    /**
      * @brief 获取全局版本号（每次注册/覆盖自增）
      * @return 当前版本号
      */

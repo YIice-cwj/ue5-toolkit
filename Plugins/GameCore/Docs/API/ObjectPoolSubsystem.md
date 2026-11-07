@@ -1,16 +1,17 @@
 # GameCore 通用对象池 API 参考
 
-`UObjectPoolSubsystem` 是一个世界子系统（`UWorldSubsystem`），负责 Actor 的复用、休眠、唤醒与生命周期管理，旨在消除高频生成/销毁 Actor 导致的 GC 顿卡。
+`UObjectPoolSubsystem` 是一个世界子系统（`UWorldSubsystem`），负责 `AActor` 与非 Actor 纯 `UObject` 的复用、休眠、唤醒、分帧预热与生命周期管理，旨在消除高频生成/销毁对象导致的 GC 顿卡与主线程尖峰。
 
 头文件：
 - `#include "Pool/ObjectPoolSubsystem.h"`
+- `#include "Pool/ObjectPoolTypes.h"`
 - `#include "Pool/IGamePoolable.h"`
 
 ---
 
 ## 1. 契约接口 `IGamePoolable`
 
-需要接入对象池生命周期回调的 Actor 需继承并实现此接口：
+需要接入对象池生命周期回调的 `AActor` 或纯 `UObject` 派生类均可继承并实现此接口：
 
 ```cpp
 UINTERFACE(BlueprintType, Blueprintable)
@@ -51,65 +52,61 @@ public:
     static UObjectPoolSubsystem& Get(const UObject* WorldContextObject);
     static UObjectPoolSubsystem* GetPtr(const UObject* WorldContextObject);
 
-    /**
-     * @brief 预热指定类别的对象池（提前批量生成进入空闲队列）
-     * @param ActorClass 目标 Actor 类
-     * @param PrewarmCount 预热生成的空闲实例数量
-     */
     UFUNCTION(BlueprintCallable, Category = "GameCore|Pool")
     void Prewarm(TSubclassOf<AActor> ActorClass, int32 PrewarmCount);
 
-    /**
-     * @brief 设置指定类别的最大空闲实例缓存容量（防长期闲置内存泄漏）
-     * @param ActorClass 目标 Actor 类
-     * @param InMaxIdleCount 最大空闲数（<=0 表示无限制）
-     */
+    FTimeSlicedTaskHandle PrewarmTimeSliced(
+        TSubclassOf<AActor> ActorClass,
+        int32 PrewarmCount,
+        int32 MaxSpawnsPerStep = 1);
+
     UFUNCTION(BlueprintCallable, Category = "GameCore|Pool")
     void SetMaxPoolCapacity(TSubclassOf<AActor> ActorClass, int32 InMaxIdleCount);
 
-    /**
-     * @brief 从池中借出或生成 Actor 实例（C++ 模板版本，自动 Cast）
-     * @tparam T 返回的 Actor 具体派生类型
-     * @param ActorClass 目标类
-     * @param SpawnTransform 初始空间变换
-     * @return 激活的 Actor 实例指针
-     */
+    void SetPoolResetFlags(TSubclassOf<AActor> ActorClass, EPoolResetFlags InResetFlags);
+    [[nodiscard]] EPoolResetFlags GetPoolResetFlags(TSubclassOf<AActor> ActorClass) const;
+
     template <typename T = AActor>
     [[nodiscard]] T* AcquireActor(TSubclassOf<AActor> ActorClass, const FTransform& SpawnTransform = FTransform::Identity);
 
-    /**
-     * @brief 蓝图借出接口
-     * @param ActorClass 目标类
-     * @param SpawnTransform 初始空间变换
-     * @return 激活的 Actor 实例指针
-     */
     UFUNCTION(BlueprintCallable, Category = "GameCore|Pool", meta = (DeterminesOutputType = "ActorClass"))
     AActor* AcquireActor(TSubclassOf<AActor> ActorClass, const FTransform& SpawnTransform);
 
-    /**
-     * @brief 将已借出的 Actor 归还回池休眠
-     * @param Actor 待归还的实例
-     */
     UFUNCTION(BlueprintCallable, Category = "GameCore|Pool")
     void ReleaseActor(AActor* Actor);
 
-    /**
-     * @brief 查询指定类别的池状态统计
-     */
     UFUNCTION(BlueprintPure, Category = "GameCore|Pool")
     void GetPoolStats(TSubclassOf<AActor> ActorClass, int32& OutTotalCount, int32& OutActiveCount, int32& OutIdleCount) const;
 
-    /**
-     * @brief 释放指定类别的全部闲置对象
-     */
     UFUNCTION(BlueprintCallable, Category = "GameCore|Pool")
     void ClearPool(TSubclassOf<AActor> ActorClass);
 
-    /**
-     * @brief 释放所有类别的对象池
-     */
     UFUNCTION(BlueprintCallable, Category = "GameCore|Pool")
     void ClearAllPools();
+
+    UFUNCTION(BlueprintCallable, Category = "GameCore|Pool")
+    void PrewarmObjectPool(TSubclassOf<UObject> ObjectClass, int32 PrewarmCount);
+
+    UFUNCTION(BlueprintCallable, Category = "GameCore|Pool")
+    void SetMaxObjectPoolCapacity(TSubclassOf<UObject> ObjectClass, int32 InMaxIdleCount);
+
+    UFUNCTION(BlueprintCallable, Category = "GameCore|Pool", meta = (DeterminesOutputType = "ObjectClass"))
+    UObject* AcquireObject(TSubclassOf<UObject> ObjectClass);
+
+    template <typename T>
+    [[nodiscard]] T* AcquireObject(TSubclassOf<UObject> ObjectClass = T::StaticClass());
+
+    UFUNCTION(BlueprintCallable, Category = "GameCore|Pool")
+    void ReleaseObject(UObject* Object);
+
+    UFUNCTION(BlueprintPure, Category = "GameCore|Pool")
+    [[nodiscard]] FPoolStats GetObjectPoolStats(TSubclassOf<UObject> ObjectClass) const;
+
+    UFUNCTION(BlueprintCallable, Category = "GameCore|Pool")
+    void ClearObjectPool(TSubclassOf<UObject> ObjectClass);
+
+    UFUNCTION(BlueprintCallable, Category = "GameCore|Pool")
+    void ClearAllObjectPools();
 };
 ```
 
@@ -117,25 +114,19 @@ public:
 
 ## 3. 核心行为细节与安全保障
 
-1. **自动状态深度重置**：
-   - `ReleaseActor` 时，子系统自动对 Actor 执行：
-     - 先解绑 `OnDestroyed` 委托（避免正常归还被外部销毁逻辑误扣活跃计数）；
-     - 调用 `IGamePoolable::OnReleaseToPool` 接口通知；
-     - 解除层级附加关系（`DetachFromActor`）；
-     - 清理该 Actor 在 `UTimeDilationSubsystem` 上的活跃顿帧（`ClearHitStop`）；
-     - 清理挂接在 Actor 身上的全部定时器（`ClearAllTimersForObject`）；
-     - 清零根组件物理线速度与角速度；
-     - 停止移动组件惯性速度（`UMovementComponent::StopMovementImmediately`）；
-     - 停止播放中的音频组件与发射中的粒子系统；
-     - 关闭渲染（`SetActorHiddenInGame(true)`）、物理碰撞（`SetActorEnableCollision(false)`）与 Tick（`SetActorTickEnabled(false)`）。
-   - `AcquireActor` 时，子系统先更新其 `ActorTransform`，唤醒渲染、物理与 Tick，并自动触发 `IGamePoolable::OnAcquireFromPool`。
-   - `Prewarm` 对空 `ActorClass` 或 `PrewarmCount <= 0` 直接返回，不做任何生成。
-2. **O(1) 快速重复归还拦截**：
-   - 每个池存储桶同时维护 `TArray` 与 `TSet`，归还时以 $O(1)$ 速度判定是否已在闲置列表中，避免高频遍历耗时。
-3. **容量保护**：
-   - 当池内闲置对象数量达到 `MaxIdleCount` 时，继续归还的对象将直接被销毁（调用 `AActor::Destroy`），防止内存无限膨胀。
-4. **外部意外销毁自愈**：
-   - 借出实例时自动监听 `OnDestroyed`，即便外界绕过 `ReleaseActor` 直接调用 `DestroyActor`，对象池也会自动同步扣减活跃计数，确保统计恒定准确。
-5. **安全清空闲置对象（Idle-Only 清理）**：
-   - `ClearPool` 与 `ClearAllPools` 仅销毁缓存中的空闲实例（`IdleActors`），绝不清零借出计数（`ActiveCount`）或擦除类型映射表；
-   - 外部仍在使用的借出实例不受影响：稍后正常归还时会重新进入空闲队列（若已超容量则按容量规则销毁），不会出现下溢或反注册崩溃。
+1. **按位可裁剪自动状态重置 (`EPoolResetFlags`)**：
+   - `ReleaseActor` 时，子系统先解绑 `OnDestroyed`、调用 `IGamePoolable::OnReleaseToPool`、解除附加并清理 `UTimeDilationSubsystem` 活跃顿帧；
+   - 随后按该类配置的 `EPoolResetFlags`（默认 `EPoolResetFlags::All`）选择性重置：
+     - `Timers`：清理挂接在 Actor 上的全部定时器（`ClearAllTimersForObject`）；
+     - `Physics`：清零根组件物理线速度与角速度；
+     - `Movement`：停止移动组件惯性速度（`UMovementComponent::StopMovementImmediately`）；
+     - `Audio`：经栈内联数组 `TInlineComponentArray<UAudioComponent*>` 零堆分配停止播放中的音效；
+     - `FXSystem`：经 `TInlineComponentArray<UFXSystemComponent*>` 统一调用 `DeactivateImmediate()`（同时覆盖 `UNiagaraComponent` 与 `UParticleSystemComponent`，保持 `GameCore` 零 `Niagara` 插件依赖）；
+     - 对高频纯变换子弹可配置 `EPoolResetFlags::None` 直接跳过组件遍历；
+   - 最后关闭渲染、碰撞与 Tick 进入池内休眠。
+2. **分帧渐进预热 (`PrewarmTimeSliced`)**：
+   - 自动委托 `UTimeSlicedTaskSubsystem` 在每帧毫秒预算内按批生成空闲实例，消除进入战斗关卡时的同步预热卡顿，且在触达 `MaxIdleCount` 上限或返回句柄调用 `Cancel()` 时立即停机。
+3. **非 Actor 纯 `UObject` 双轨池化**：
+   - 面向高频 Buff 实例、技能上下文、伤害计算包等纯 `UObject` 对象提供 `AcquireObject<T>()` / `ReleaseObject()`，内部通过 `UPROPERTY()` 强引用桶防止 GC 回收闲置对象，并在边界自动拒绝抽象类与 `AActor` 派生类误用。
+4. **O(1) 归属校验、重入防护与外部销毁自愈**：
+   - 维护活跃集合与空闲集合防止外部非池属实例污染；若 `OnAcquireFromPool` 回调内部立即自归还或自销毁，借出接口安全返回 `nullptr` 杜绝双重计数；借出 Actor 监听 `OnDestroyed` 实现外部销毁自动扣减活跃数。

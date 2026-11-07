@@ -1,12 +1,11 @@
 # GameCore 中央监听总线与观察者 API 参考
 
-`FListenerHub`、`FValueObserver<T>`、`FObservableRegistry` 是 `GameCore` 提供的纯 C++ 事件与响应式基础设施。
+`FListenerHub` 与 `FValueObserver<T>` 是 `GameCore` 提供的纯 C++ 高性能事件总线与响应式属性基础设施。
 
 头文件：
 
 - `#include "Listener/FListenerHub.h"`
 - `#include "Listener/FValueObserver.h"`
-- `#include "Listener/FObservableRegistry.h"`
 - `#include "Listener/FObserverSubscription.h"`
 
 ---
@@ -102,41 +101,11 @@ public:
 
 ---
 
-## 4. `FObservableRegistry`（任意类型观察者注册表）
+## 4. 通信选型指南
 
-```cpp
-namespace Game::Core {
-class GAMECORE_API FObservableRegistry {
-public:
-    template<typename T> FValueObserver<T>* Register(const FName& Key);
-    template<typename T> [[nodiscard]] TSharedPtr<FValueObserver<T>> Find(const FName& Key) const;
-    template<typename T> bool Set(const FName& Key, const T& Value);
-    template<typename T> TSharedRef<FObserverSubscription> Subscribe(
-        const FName& Key, TFunction<void(const T&)> InListener);
-    template<typename T> TSharedRef<FObserverSubscription> Subscribe(
-        UObject* Owner, const FName& Key, TFunction<void(const T&)> InListener);
-    bool Unregister(const FName& Key);
-    [[nodiscard]] bool Contains(const FName& Key) const;
-    [[nodiscard]] int32 Num() const;
-    void Reset();
-};
-}
-```
-
-- 每个 Key 对应一个 `FValueObserver<T>`，值类型由注册方决定。
-- `Register` 幂等：同类型已注册时复用；类型不一致返回 `nullptr` 并记录 Error。
-- `Subscribe` 不存在时自动注册，并立即回放当前值。
-- `Subscribe(Owner, Key, ...)` 额外绑定 Owner 生命周期：Owner 销毁后不再回调，失效条目由观察者在 `Set` 时惰性清理。
-- 注册表以读写锁保护键表，注册/注销在游戏线程完成；订阅与读取可在任意线程。
-- 世界级入口：`UObservableRegistrySubsystem::Get(WorldContextObject)->GetRegistry()`。
-
----
-
-## 5. 选型
-
-| 需求 | 选择 |
-| :--- | :--- |
-| 事件广播，多个订阅者，无当前值 | `FListenerHub` |
-| 单一数值变化感知 | `FValueObserver<T>` |
-| 任意业务数据（暴击/闪避/冷却）按 Key 注册与订阅 | `FObservableRegistry` |
-| 蓝图可监听、GameplayTag 寻址 | `UGameplayMessageSubsystem` |
+| 需求场景 | 推荐选型 | 核心优势 |
+| :--- | :--- | :--- |
+| **底层纯 C++ 高频事件广播**（多个订阅者，瞬时事件无当前值） | `FListenerHub` | 64 位类型指纹，Copy-on-Write 零锁派发，纳秒级延迟 |
+| **实体内部响应式属性**（单一数值变化感知，带当前值回放） | `FValueObserver<T>` | 强类型值语义，内聚于持有者实体或组件，自动回放当前值 |
+| **Gameplay 跨模块与蓝图通信**（解耦广播，GameplayTag 寻址） | `UGameplayMessageSubsystem` | 树状分层寻址，原生蓝图异步节点，跨线程安全入队 |
+| **全局配置项与运行时开关覆盖** | `FConfigRegistry` | 读写分离出锁派发，支持 INI / 命令行自动注入与只读保护 |

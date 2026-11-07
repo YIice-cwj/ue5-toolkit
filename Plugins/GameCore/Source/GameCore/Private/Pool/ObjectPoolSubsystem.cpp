@@ -1,15 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Pool/ObjectPoolSubsystem.h"
-#include "Engine/World.h"
-#include "Engine/Engine.h"
+
 #include "Components/AudioComponent.h"
-#include "Particles/ParticleSystemComponent.h"
-#include "GameFramework/MovementComponent.h"
-#include "TimerManager.h"
-#include "Pool/IGamePoolable.h"
-#include "Time/TimeDilationSubsystem.h"
+#include "Components/PrimitiveComponent.h"
 #include "Config/GameCompileSwitches.h"
+#include "Engine/Engine.h"
+#include "Engine/World.h"
+#include "GameFramework/MovementComponent.h"
+#include "Particles/ParticleSystemComponent.h"
+#include "Pool/IGamePoolable.h"
+#include "Tasks/UTimeSlicedTaskSubsystem.h"
+#include "Time/TimeDilationSubsystem.h"
+#include "TimerManager.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogGameObjectPool, Log, All);
 
@@ -21,26 +24,80 @@ void DeactivateActorForPool(AActor* Actor) {
     Actor->SetActorTickEnabled(false);
 }
 
-void InvokePoolableCallback(AActor* Actor, bool bAcquire) {
-    if (!Actor->GetClass()->ImplementsInterface(UGamePoolable::StaticClass())) {
+void InvokePoolableCallback(UObject* TargetObject, bool bAcquire) {
+    if (!TargetObject->GetClass()->ImplementsInterface(UGamePoolable::StaticClass())) {
         return;
     }
     IGamePoolable* NativePoolable = static_cast<IGamePoolable*>(
-        Actor->GetNativeInterfaceAddress(UGamePoolable::StaticClass()));
-    const bool bUseNative = NativePoolable != nullptr && Actor->GetClass()->HasAnyClassFlags(CLASS_Native);
+        TargetObject->GetNativeInterfaceAddress(UGamePoolable::StaticClass()));
+    const bool bUseNative = NativePoolable != nullptr && TargetObject->GetClass()->HasAnyClassFlags(CLASS_Native);
+
     if (bAcquire) {
         if (bUseNative) {
             NativePoolable->OnAcquireFromPool_Implementation();
         } else {
-            IGamePoolable::Execute_OnAcquireFromPool(Actor);
+            IGamePoolable::Execute_OnAcquireFromPool(TargetObject);
         }
+        return;
+    }
+
+    if (bUseNative) {
+        NativePoolable->OnReleaseToPool_Implementation();
     } else {
-        if (bUseNative) {
-            NativePoolable->OnReleaseToPool_Implementation();
-        } else {
-            IGamePoolable::Execute_OnReleaseToPool(Actor);
+        IGamePoolable::Execute_OnReleaseToPool(TargetObject);
+    }
+}
+
+void ResetActorComponents(AActor* Actor, EPoolResetFlags ResetFlags) {
+    if (ResetFlags == EPoolResetFlags::None) {
+        return;
+    }
+
+    if (EnumHasAnyFlags(ResetFlags, EPoolResetFlags::Timers)) {
+        Actor->GetWorldTimerManager().ClearAllTimersForObject(Actor);
+    }
+
+    if (EnumHasAnyFlags(ResetFlags, EPoolResetFlags::Physics)) {
+        if (UPrimitiveComponent* RootPrim = Cast<UPrimitiveComponent>(Actor->GetRootComponent())) {
+            RootPrim->SetPhysicsLinearVelocity(FVector::ZeroVector);
+            RootPrim->SetPhysicsAngularVelocityInDegrees(FVector::ZeroVector);
         }
     }
+
+    if (EnumHasAnyFlags(ResetFlags, EPoolResetFlags::Movement)) {
+        if (UMovementComponent* MovementComp = Actor->FindComponentByClass<UMovementComponent>()) {
+            MovementComp->StopMovementImmediately();
+        }
+    }
+
+    if (EnumHasAnyFlags(ResetFlags, EPoolResetFlags::Audio)) {
+        TInlineComponentArray<UAudioComponent*> AudioComponents(Actor);
+        for (UAudioComponent* AudioComp : AudioComponents) {
+            if (AudioComp == nullptr || !AudioComp->IsPlaying()) {
+                continue;
+            }
+            AudioComp->Stop();
+        }
+    }
+
+    if (EnumHasAnyFlags(ResetFlags, EPoolResetFlags::FXSystem)) {
+        TInlineComponentArray<UFXSystemComponent*> FXComponents(Actor);
+        for (UFXSystemComponent* FXComp : FXComponents) {
+            if (FXComp == nullptr || !FXComp->IsActive()) {
+                continue;
+            }
+            FXComp->DeactivateImmediate();
+            if (FXComp->IsActive()) {
+                FXComp->Deactivate();
+            }
+        }
+    }
+}
+
+bool IsValidPoolableUObjectClass(const UClass* ObjectClass) {
+    return ObjectClass != nullptr &&
+        !ObjectClass->HasAnyClassFlags(CLASS_Abstract) &&
+        !ObjectClass->IsChildOf(AActor::StaticClass());
 }
 
 }  // namespace
@@ -63,38 +120,73 @@ UObjectPoolSubsystem* UObjectPoolSubsystem::GetPtr(const UObject* WorldContextOb
 
 void UObjectPoolSubsystem::Deinitialize() {
     if constexpr (Game::Config::bEnableLog) {
-        UE_LOG(LogGameObjectPool, Log, TEXT("【对象池】子系统注销，清空 %d 个对象池。"), PoolMap.Num());
+        UE_LOG(LogGameObjectPool, Log, TEXT("【对象池】子系统注销，清空 %d 个 Actor 池与 %d 个 UObject 池。"),
+            PoolMap.Num(), ObjectPoolMap.Num());
     }
     ClearAllPools();
+    ObjectPoolMap.Empty();
+    PoolMap.Empty();
     Super::Deinitialize();
 }
 
 void UObjectPoolSubsystem::Prewarm(TSubclassOf<AActor> ActorClass, int32 PrewarmCount) {
-    UWorld* World = GetWorld();
-    if (!ActorClass || PrewarmCount <= 0) {
+    if (!ActorClass || ActorClass->HasAnyClassFlags(CLASS_Abstract) || PrewarmCount <= 0) {
         if constexpr (Game::Config::bEnableLog) {
-            UE_LOG(LogGameObjectPool, Warning, TEXT("【对象池】预热失败：ActorClass 为空或预热数量 <= 0。"));
+            UE_LOG(LogGameObjectPool, Warning, TEXT("【对象池】预热失败：ActorClass 无效或预热数量 <= 0。"));
         }
         return;
     }
 
-    FActorSpawnParameters SpawnParams;
-    SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-
     for (int32 Index = 0; Index < PrewarmCount; ++Index) {
-        AActor* NewActor = World->SpawnActor<AActor>(ActorClass, FTransform::Identity, SpawnParams);
-        if (NewActor) {
-            DeactivateActorForPool(NewActor);
-            FPoolBucket& Bucket = PoolMap.FindOrAdd(ActorClass);
-            Bucket.IdleActors.Add(NewActor);
-            Bucket.IdleActorSet.Add(NewActor);
-        }
+        SpawnIdleActorToPool(ActorClass);
     }
 
     if constexpr (Game::Config::bEnableLog) {
         UE_LOG(LogGameObjectPool, Log, TEXT("【对象池】预热完成: 类=[%s], 请求数量=%d, 当前空闲池大小=%d"),
             *ActorClass->GetName(), PrewarmCount, PoolMap.FindOrAdd(ActorClass).IdleActors.Num());
     }
+}
+
+FTimeSlicedTaskHandle UObjectPoolSubsystem::PrewarmTimeSliced(
+    TSubclassOf<AActor> ActorClass,
+    int32 PrewarmCount,
+    int32 MaxSpawnsPerStep) {
+    if (!ActorClass || ActorClass->HasAnyClassFlags(CLASS_Abstract) || PrewarmCount <= 0) {
+        return FTimeSlicedTaskHandle();
+    }
+
+    UWorld* World = GetWorld();
+    UTimeSlicedTaskSubsystem* TaskSubsystem = World != nullptr ? World->GetSubsystem<UTimeSlicedTaskSubsystem>() : nullptr;
+    if (TaskSubsystem == nullptr) {
+        Prewarm(ActorClass, PrewarmCount);
+        return FTimeSlicedTaskHandle();
+    }
+
+    const int32 BatchSize = FMath::Max(1, MaxSpawnsPerStep);
+    TSharedRef<int32> RemainingCount = MakeShared<int32>(PrewarmCount);
+    TWeakObjectPtr<UObjectPoolSubsystem> WeakThis(this);
+
+    return TaskSubsystem->EnqueueTask(this, [WeakThis, ActorClass, BatchSize, RemainingCount]() {
+        UObjectPoolSubsystem* Self = WeakThis.Get();
+        if (Self == nullptr || *RemainingCount <= 0) {
+            return false;
+        }
+
+        const int32 StepTarget = FMath::Min(*RemainingCount, BatchSize);
+        for (int32 StepIdx = 0; StepIdx < StepTarget; ++StepIdx) {
+            const FPoolBucket& Bucket = Self->PoolMap.FindOrAdd(ActorClass);
+            if (Bucket.MaxIdleCount > 0 && Bucket.IdleActors.Num() >= Bucket.MaxIdleCount) {
+                *RemainingCount = 0;
+                return false;
+            }
+            if (!Self->SpawnIdleActorToPool(ActorClass)) {
+                *RemainingCount = 0;
+                return false;
+            }
+            --(*RemainingCount);
+        }
+        return *RemainingCount > 0;
+    });
 }
 
 void UObjectPoolSubsystem::SetMaxPoolCapacity(TSubclassOf<AActor> ActorClass, int32 InMaxIdleCount) {
@@ -120,11 +212,28 @@ void UObjectPoolSubsystem::SetMaxPoolCapacity(TSubclassOf<AActor> ActorClass, in
     }
 }
 
+void UObjectPoolSubsystem::SetPoolResetFlags(TSubclassOf<AActor> ActorClass, EPoolResetFlags InResetFlags) {
+    if (!ActorClass) {
+        return;
+    }
+    PoolMap.FindOrAdd(ActorClass).ResetFlags = InResetFlags;
+}
+
+EPoolResetFlags UObjectPoolSubsystem::GetPoolResetFlags(TSubclassOf<AActor> ActorClass) const {
+    if (!ActorClass) {
+        return EPoolResetFlags::All;
+    }
+    if (const FPoolBucket* Bucket = PoolMap.Find(ActorClass)) {
+        return Bucket->ResetFlags;
+    }
+    return EPoolResetFlags::All;
+}
+
 AActor* UObjectPoolSubsystem::AcquireActor(TSubclassOf<AActor> ActorClass, const FTransform& SpawnTransform) {
     UWorld* World = GetWorld();
-    if (!ActorClass) {
+    if (!ActorClass || ActorClass->HasAnyClassFlags(CLASS_Abstract) || World == nullptr) {
         if constexpr (Game::Config::bEnableLog) {
-            UE_LOG(LogGameObjectPool, Warning, TEXT("【对象池】借出 Actor 失败：ActorClass 为空。"));
+            UE_LOG(LogGameObjectPool, Warning, TEXT("【对象池】借出 Actor 失败：ActorClass 或世界上下文无效。"));
         }
         return nullptr;
     }
@@ -213,6 +322,7 @@ void UObjectPoolSubsystem::ReleaseActor(AActor* Actor) {
         return;
     }
     --Bucket->ActiveCount;
+    const EPoolResetFlags ResetFlags = Bucket->ResetFlags;
 
     Actor->OnDestroyed.RemoveAll(this);
     InvokePoolableCallback(Actor, false);
@@ -222,36 +332,19 @@ void UObjectPoolSubsystem::ReleaseActor(AActor* Actor) {
 
     Actor->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
 
+    TArray<AActor*> AttachedChildren;
+    Actor->GetAttachedActors(AttachedChildren);
+    for (AActor* ChildActor : AttachedChildren) {
+        if (IsValid(ChildActor)) {
+            ChildActor->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+        }
+    }
+
     if (UTimeDilationSubsystem* TimeDilationSubsystem = UTimeDilationSubsystem::GetPtr(this)) {
         TimeDilationSubsystem->ClearHitStop(Actor);
     }
 
-    Actor->GetWorldTimerManager().ClearAllTimersForObject(Actor);
-
-    if (UPrimitiveComponent* RootPrim = Cast<UPrimitiveComponent>(Actor->GetRootComponent())) {
-        RootPrim->SetPhysicsLinearVelocity(FVector::ZeroVector);
-        RootPrim->SetPhysicsAngularVelocityInDegrees(FVector::ZeroVector);
-    }
-
-    if (UMovementComponent* MovementComp = Actor->FindComponentByClass<UMovementComponent>()) {
-        MovementComp->StopMovementImmediately();
-    }
-
-    TArray<UAudioComponent*> AudioComponents;
-    Actor->GetComponents<UAudioComponent>(AudioComponents);
-    for (UAudioComponent* AudioComp : AudioComponents) {
-        if (AudioComp->IsPlaying()) {
-            AudioComp->Stop();
-        }
-    }
-
-    TArray<UParticleSystemComponent*> ParticleComponents;
-    Actor->GetComponents<UParticleSystemComponent>(ParticleComponents);
-    for (UParticleSystemComponent* ParticleComp : ParticleComponents) {
-        if (ParticleComp->IsActive()) {
-            ParticleComp->DeactivateSystem();
-        }
-    }
+    ResetActorComponents(Actor, ResetFlags);
 
     if (!IsValid(Actor)) {
         return;
@@ -314,6 +407,165 @@ void UObjectPoolSubsystem::ClearAllPools() {
             DestroyBucketIdleActors(*Bucket);
         }
     }
+    ClearAllObjectPools();
+}
+
+void UObjectPoolSubsystem::PrewarmObjectPool(TSubclassOf<UObject> ObjectClass, int32 PrewarmCount) {
+    UClass* RawClass = ObjectClass.Get();
+    if (!IsValidPoolableUObjectClass(RawClass) || PrewarmCount <= 0) {
+        if constexpr (Game::Config::bEnableLog) {
+            UE_LOG(LogGameObjectPool, Warning, TEXT("【对象池】UObject 预热失败：类型无效（禁传抽象类或 AActor 派生类）或数量 <= 0。"));
+        }
+        return;
+    }
+
+    FObjectPoolBucket& Bucket = ObjectPoolMap.FindOrAdd(RawClass);
+    for (int32 Index = 0; Index < PrewarmCount; ++Index) {
+        if (Bucket.MaxIdleCount > 0 && Bucket.IdleObjects.Num() >= Bucket.MaxIdleCount) {
+            break;
+        }
+        UObject* NewObj = NewObject<UObject>(this, RawClass);
+        if (NewObj != nullptr) {
+            Bucket.IdleObjects.Add(NewObj);
+            Bucket.IdleObjectSet.Add(NewObj);
+        }
+    }
+}
+
+void UObjectPoolSubsystem::SetMaxObjectPoolCapacity(TSubclassOf<UObject> ObjectClass, int32 InMaxIdleCount) {
+    UClass* RawClass = ObjectClass.Get();
+    if (!IsValidPoolableUObjectClass(RawClass)) {
+        return;
+    }
+
+    FObjectPoolBucket& Bucket = ObjectPoolMap.FindOrAdd(RawClass);
+    Bucket.MaxIdleCount = InMaxIdleCount;
+    while (InMaxIdleCount > 0 && Bucket.IdleObjects.Num() > InMaxIdleCount) {
+        TObjectPtr<UObject> ExcessObject = Bucket.IdleObjects.Pop();
+        Bucket.IdleObjectSet.Remove(ExcessObject);
+        if (IsValid(ExcessObject.Get())) {
+            ExcessObject->MarkAsGarbage();
+        }
+    }
+}
+
+UObject* UObjectPoolSubsystem::AcquireObject(TSubclassOf<UObject> ObjectClass) {
+    UClass* RawClass = ObjectClass.Get();
+    if (!IsValidPoolableUObjectClass(RawClass)) {
+        if constexpr (Game::Config::bEnableLog) {
+            UE_LOG(LogGameObjectPool, Warning, TEXT("【对象池】借出 UObject 失败：ObjectClass 无效或属于 AActor 派生类。"));
+        }
+        return nullptr;
+    }
+
+    UObject* ResultObject = nullptr;
+    while (true) {
+        TObjectPtr<UObject> Candidate;
+        {
+            FObjectPoolBucket& Bucket = ObjectPoolMap.FindOrAdd(RawClass);
+            if (Bucket.IdleObjects.IsEmpty()) {
+                break;
+            }
+            Candidate = Bucket.IdleObjects.Pop();
+            Bucket.IdleObjectSet.Remove(Candidate);
+        }
+        if (IsValid(Candidate.Get())) {
+            ResultObject = Candidate.Get();
+            break;
+        }
+    }
+
+    if (ResultObject == nullptr) {
+        ResultObject = NewObject<UObject>(this, RawClass);
+    }
+    if (ResultObject == nullptr) {
+        return nullptr;
+    }
+
+    {
+        FObjectPoolBucket& Bucket = ObjectPoolMap.FindOrAdd(RawClass);
+        Bucket.ActiveObjectSet.Add(ResultObject);
+        ++Bucket.ActiveCount;
+    }
+
+    InvokePoolableCallback(ResultObject, true);
+    FObjectPoolBucket* Bucket = ObjectPoolMap.Find(RawClass);
+    if (!IsValid(ResultObject)) {
+        if (Bucket != nullptr && Bucket->ActiveObjectSet.Remove(ResultObject) > 0) {
+            --Bucket->ActiveCount;
+        }
+        return nullptr;
+    }
+    if (Bucket == nullptr || !Bucket->ActiveObjectSet.Contains(ResultObject)) {
+        return nullptr;
+    }
+
+    return ResultObject;
+}
+
+void UObjectPoolSubsystem::ReleaseObject(UObject* Object) {
+    if (!IsValid(Object)) {
+        return;
+    }
+
+    UClass* RawClass = Object->GetClass();
+    FObjectPoolBucket* Bucket = ObjectPoolMap.Find(RawClass);
+    if (Bucket == nullptr || Bucket->ActiveObjectSet.Remove(Object) == 0) {
+        if constexpr (Game::Config::bEnableLog) {
+            UE_LOG(LogGameObjectPool, Warning, TEXT("【对象池】归还警告：UObject [%s] 不是当前活跃池属实例，已忽略归还。"),
+                *GetNameSafe(Object));
+        }
+        return;
+    }
+    --Bucket->ActiveCount;
+
+    InvokePoolableCallback(Object, false);
+    if (!IsValid(Object)) {
+        return;
+    }
+
+    FObjectPoolBucket& CurrentBucket = ObjectPoolMap.FindOrAdd(RawClass);
+    if (CurrentBucket.MaxIdleCount > 0 && CurrentBucket.IdleObjects.Num() >= CurrentBucket.MaxIdleCount) {
+        Object->MarkAsGarbage();
+    } else {
+        CurrentBucket.IdleObjects.Add(Object);
+        CurrentBucket.IdleObjectSet.Add(Object);
+    }
+}
+
+FPoolStats UObjectPoolSubsystem::GetObjectPoolStats(TSubclassOf<UObject> ObjectClass) const {
+    FPoolStats Stats;
+    const UClass* RawClass = ObjectClass.Get();
+    if (RawClass == nullptr) {
+        return Stats;
+    }
+
+    if (const FObjectPoolBucket* Bucket = ObjectPoolMap.Find(RawClass)) {
+        Stats.IdleCount = Bucket->IdleObjects.Num();
+        Stats.ActiveCount = Bucket->ActiveCount;
+        Stats.TotalCount = Stats.IdleCount + Stats.ActiveCount;
+    }
+    return Stats;
+}
+
+void UObjectPoolSubsystem::ClearObjectPool(TSubclassOf<UObject> ObjectClass) {
+    UClass* RawClass = ObjectClass.Get();
+    if (RawClass == nullptr) {
+        return;
+    }
+    if (FObjectPoolBucket* Bucket = ObjectPoolMap.Find(RawClass)) {
+        DestroyBucketIdleObjects(*Bucket);
+    }
+}
+
+void UObjectPoolSubsystem::ClearAllObjectPools() {
+    TArray<TObjectPtr<UClass>> ObjectClasses;
+    ObjectPoolMap.GenerateKeyArray(ObjectClasses);
+    for (const TObjectPtr<UClass>& ObjectClass : ObjectClasses) {
+        if (FObjectPoolBucket* Bucket = ObjectPoolMap.Find(ObjectClass)) {
+            DestroyBucketIdleObjects(*Bucket);
+        }
+    }
 }
 
 void UObjectPoolSubsystem::OnPooledActorDestroyed(AActor* DestroyedActor) {
@@ -331,6 +583,27 @@ void UObjectPoolSubsystem::OnPooledActorDestroyed(AActor* DestroyedActor) {
     }
 }
 
+bool UObjectPoolSubsystem::SpawnIdleActorToPool(TSubclassOf<AActor> ActorClass) {
+    UWorld* World = GetWorld();
+    if (World == nullptr || !ActorClass) {
+        return false;
+    }
+
+    FActorSpawnParameters SpawnParams;
+    SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+    AActor* NewActor = World->SpawnActor<AActor>(ActorClass, FTransform::Identity, SpawnParams);
+    if (NewActor == nullptr) {
+        return false;
+    }
+
+    DeactivateActorForPool(NewActor);
+    FPoolBucket& Bucket = PoolMap.FindOrAdd(ActorClass);
+    Bucket.IdleActors.Add(NewActor);
+    Bucket.IdleActorSet.Add(NewActor);
+    return true;
+}
+
 void UObjectPoolSubsystem::DestroyBucketIdleActors(FPoolBucket& Bucket) {
     TArray<TObjectPtr<AActor>> IdleActors = MoveTemp(Bucket.IdleActors);
     Bucket.IdleActors.Empty();
@@ -339,6 +612,17 @@ void UObjectPoolSubsystem::DestroyBucketIdleActors(FPoolBucket& Bucket) {
         if (IsValid(IdleActor.Get())) {
             IdleActor->OnDestroyed.RemoveAll(this);
             IdleActor->Destroy();
+        }
+    }
+}
+
+void UObjectPoolSubsystem::DestroyBucketIdleObjects(FObjectPoolBucket& Bucket) {
+    TArray<TObjectPtr<UObject>> IdleObjects = MoveTemp(Bucket.IdleObjects);
+    Bucket.IdleObjects.Empty();
+    Bucket.IdleObjectSet.Empty();
+    for (TObjectPtr<UObject>& IdleObj : IdleObjects) {
+        if (IsValid(IdleObj.Get())) {
+            IdleObj->MarkAsGarbage();
         }
     }
 }

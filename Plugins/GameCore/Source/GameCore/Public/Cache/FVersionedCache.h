@@ -10,6 +10,7 @@
 #include "Misc/ScopeRWLock.h"
 
 #include "Cache/FCachePolicy.h"
+#include "Cache/FLruIndexPool.h"
 #include "Config/FConfigRegistry.h"
 
 /**
@@ -24,15 +25,6 @@ public:
     using ValueMap = TMap<FName, ValueTypePtr>;
 
 private:
-    /**
-     * @brief LRU 池节点（连续内存，Prev/Next 为池内索引链）
-     */
-    struct FLruNode {
-        FName Key;
-        int32 Prev = INDEX_NONE;
-        int32 Next = INDEX_NONE;
-    };
-
     /**
      * @brief 待析构旧状态（在锁内转移所有权，出锁后离开作用域自然析构，消除锁内析构延迟）
      */
@@ -82,14 +74,7 @@ public:
     [[nodiscard]] int32 Num() const;
 
 private:
-    int32 AcquireNode(FName Key) const;
-    void LinkHead(int32 NodeIndex) const;
-    void Unlink(int32 NodeIndex) const;
-    void TouchLru(FName Key) const;
-    void EvictIfNeeded() const;
     FRetiredStorage RetireAllStorage();
-
-private:
     static ECacheStrategy ResolveEffectiveStrategy(const FCachePolicy& Policy, int32 RowCount);
 
 private:
@@ -105,12 +90,7 @@ private:
 
     mutable TSet<FName> ValidKeys;
     mutable ValueMap Entries;
-
-    mutable TMap<FName, int32> LruIndex;
-    mutable TArray<FLruNode> NodePool;
-    mutable TArray<int32> FreeList;
-    mutable int32 Head = INDEX_NONE;
-    mutable int32 Tail = INDEX_NONE;
+    mutable FLruIndexPool LruPool;
 };
 
 template<typename T>
@@ -154,8 +134,7 @@ void FVersionedCache<T>::Rebuild(const TArray<FName>& AllKeys, TFunction<ValueTy
             ValidKeys = MoveTemp(BuiltValidKeys);
             Entries.Reserve(FMath::Min(AllKeys.Num(), static_cast<int32>(NewPolicy.LruCapacity)));
             if (NewStrategy == ECacheStrategy::Lru) {
-                NodePool.Reserve(static_cast<int32>(NewPolicy.LruCapacity));
-                FreeList.Reserve(static_cast<int32>(NewPolicy.LruCapacity));
+                LruPool.Reserve(static_cast<int32>(NewPolicy.LruCapacity));
             }
         }
     }
@@ -176,18 +155,12 @@ typename FVersionedCache<T>::ValueTypePtr FVersionedCache<T>::FindShared(FName K
             if (EffectiveStrategy != ECacheStrategy::Eager && !ValidKeys.Contains(Key)) {
                 return ValueTypePtr();
             }
-            if (EffectiveStrategy == ECacheStrategy::Lazy) {
-                if (const ValueTypePtr* Found = Entries.Find(Key)) {
+            const bool bCanReadUnlocked = (EffectiveStrategy == ECacheStrategy::Lazy) ||
+                                          (EffectiveStrategy == ECacheStrategy::Lru && LruPool.IsHead(Key));
+            if (bCanReadUnlocked) {
+                const ValueTypePtr* Found = Entries.Find(Key);
+                if (Found != nullptr) {
                     return *Found;
-                }
-            }
-            if (EffectiveStrategy == ECacheStrategy::Lru) {
-                if (const int32* NodeIndex = LruIndex.Find(Key)) {
-                    if (Head == *NodeIndex) {
-                        if (const ValueTypePtr* Found = Entries.Find(Key)) {
-                            return *Found;
-                        }
-                    }
                 }
             }
         }
@@ -205,7 +178,9 @@ typename FVersionedCache<T>::ValueTypePtr FVersionedCache<T>::FindShared(FName K
                 return ValueTypePtr();
             }
             if (const ValueTypePtr* Found = Entries.Find(Key)) {
-                TouchLru(Key);
+                if (EffectiveStrategy == ECacheStrategy::Lru) {
+                    LruPool.Touch(Key);
+                }
                 return *Found;
             }
             if (!BuildFn) {
@@ -228,15 +203,22 @@ typename FVersionedCache<T>::ValueTypePtr FVersionedCache<T>::FindShared(FName K
             return ValueTypePtr();
         }
         if (const ValueTypePtr* Found = Entries.Find(Key)) {
-            TouchLru(Key);
+            if (EffectiveStrategy == ECacheStrategy::Lru) {
+                LruPool.Touch(Key);
+            }
             return *Found;
         }
         Entries.Add(Key, Built);
         if (EffectiveStrategy == ECacheStrategy::Lru) {
-            const int32 NodeIndex = AcquireNode(Key);
-            LruIndex.Add(Key, NodeIndex);
-            LinkHead(NodeIndex);
-            EvictIfNeeded();
+            const int32 NodeIndex = LruPool.AllocateNode(Key);
+            LruPool.InsertAtHead(NodeIndex);
+            while (static_cast<int64>(Entries.Num()) > Policy.LruCapacity) {
+                const FName VictimKey = LruPool.EvictTail();
+                if (VictimKey.IsNone()) {
+                    break;
+                }
+                Entries.Remove(VictimKey);
+            }
         }
         return Built;
     }
@@ -275,12 +257,7 @@ bool FVersionedCache<T>::Invalidate(FName Key) {
         }
 
         if (EffectiveStrategy == ECacheStrategy::Lru) {
-            if (const int32* FoundIndex = LruIndex.Find(Key)) {
-                const int32 NodeIndex = *FoundIndex;
-                Unlink(NodeIndex);
-                FreeList.Add(NodeIndex);
-                LruIndex.Remove(Key);
-            }
+            LruPool.Remove(Key);
         }
     }
 
@@ -297,80 +274,12 @@ int32 FVersionedCache<T>::Num() const {
 }
 
 template<typename T>
-int32 FVersionedCache<T>::AcquireNode(FName Key) const {
-#if UE_VERSION_OLDER_THAN(5, 4, 0)
-    const int32 NodeIndex = FreeList.Num() > 0 ? FreeList.Pop(false) : NodePool.AddDefaulted();
-#else
-    const int32 NodeIndex = FreeList.Num() > 0 ? FreeList.Pop(EAllowShrinking::No) : NodePool.AddDefaulted();
-#endif
-    NodePool[NodeIndex].Key = Key;
-    return NodeIndex;
-}
-
-template<typename T>
-void FVersionedCache<T>::LinkHead(int32 NodeIndex) const {
-    FLruNode& Node = NodePool[NodeIndex];
-    Node.Prev = INDEX_NONE;
-    Node.Next = Head;
-    if (Head != INDEX_NONE) {
-        NodePool[Head].Prev = NodeIndex;
-    }
-    Head = NodeIndex;
-    if (Tail == INDEX_NONE) {
-        Tail = NodeIndex;
-    }
-}
-
-template<typename T>
-void FVersionedCache<T>::Unlink(int32 NodeIndex) const {
-    FLruNode& Node = NodePool[NodeIndex];
-    if (Node.Prev != INDEX_NONE) {
-        NodePool[Node.Prev].Next = Node.Next;
-    } else {
-        Head = Node.Next;
-    }
-    if (Node.Next != INDEX_NONE) {
-        NodePool[Node.Next].Prev = Node.Prev;
-    } else {
-        Tail = Node.Prev;
-    }
-    Node.Prev = INDEX_NONE;
-    Node.Next = INDEX_NONE;
-}
-
-template<typename T>
-void FVersionedCache<T>::TouchLru(FName Key) const {
-    const int32* NodeIndex = LruIndex.Find(Key);
-    if (NodeIndex == nullptr || Head == *NodeIndex) {
-        return;
-    }
-    Unlink(*NodeIndex);
-    LinkHead(*NodeIndex);
-}
-
-template<typename T>
-void FVersionedCache<T>::EvictIfNeeded() const {
-    while (static_cast<int64>(Entries.Num()) > Policy.LruCapacity && Tail != INDEX_NONE) {
-        const int32 VictimIndex = Tail;
-        const FName VictimKey = NodePool[VictimIndex].Key;
-        Unlink(VictimIndex);
-        LruIndex.Remove(VictimKey);
-        Entries.Remove(VictimKey);
-        FreeList.Add(VictimIndex);
-    }
-}
-
-template<typename T>
 typename FVersionedCache<T>::FRetiredStorage FVersionedCache<T>::RetireAllStorage() {
     FRetiredStorage Retired;
     Retired.EagerMap = MoveTemp(EagerMap);
     Retired.ValidKeys = MoveTemp(ValidKeys);
     Retired.Entries = MoveTemp(Entries);
-    LruIndex.Reset();
-    NodePool.Reset();
-    FreeList.Reset();
-    Head = INDEX_NONE;
-    Tail = INDEX_NONE;
+    LruPool.Reset();
     BuildFn.Reset();
     EffectiveStrategy = ECacheStrategy::Eager;
     return Retired;

@@ -1,10 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Message/GameplayMessageSubsystem.h"
+
+#include "Async/Async.h"
+#include "Config/GameCompileSwitches.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
-#include "Config/GameCompileSwitches.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogGameplayMessage, Log, All);
 
@@ -26,7 +28,17 @@ UGameplayMessageSubsystem* UGameplayMessageSubsystem::GetPtr(const UObject* Worl
     return nullptr;
 }
 
+void UGameplayMessageSubsystem::Initialize(FSubsystemCollectionBase& Collection) {
+    Super::Initialize(Collection);
+    bIsShuttingDown.store(false, std::memory_order_release);
+}
+
 void UGameplayMessageSubsystem::Deinitialize() {
+    bIsShuttingDown.store(true, std::memory_order_release);
+    while (PendingMessageQueue.Dequeue().IsSet()) {
+    }
+    bDrainScheduled.store(false, std::memory_order_release);
+
     if constexpr (Game::Config::bEnableLog) {
         UE_LOG(LogGameplayMessage, Log, TEXT("【消息子系统】子系统注销，清空 %d 个通道的监听器。"), ListenerMap.Num());
     }
@@ -46,23 +58,51 @@ bool UGameplayMessageSubsystem::HasListener(FGameplayTag Channel, EGameplayMessa
         }
     }
 
-    if (MatchRule == EGameplayMessageMatch::PartialMatch) {
-        const FGameplayTagContainer ParentTags = Channel.GetGameplayTagParents();
-        for (const FGameplayTag& ParentTag : ParentTags) {
-            if (ParentTag == Channel) {
-                continue;
-            }
-            if (const FChannelListenerList* ParentList = ListenerMap.Find(ParentTag)) {
-                for (const FListenerEntry& Entry : ParentList->Listeners) {
-                    if (Entry.MatchRule == EGameplayMessageMatch::PartialMatch) {
-                        return true;
-                    }
-                }
+    if (MatchRule != EGameplayMessageMatch::PartialMatch) {
+        return false;
+    }
+
+    const FGameplayTagContainer ParentTags = Channel.GetGameplayTagParents();
+    for (const FGameplayTag& ParentTag : ParentTags) {
+        if (ParentTag == Channel) {
+            continue;
+        }
+        const FChannelListenerList* ParentList = ListenerMap.Find(ParentTag);
+        if (ParentList == nullptr) {
+            continue;
+        }
+        for (const FListenerEntry& Entry : ParentList->Listeners) {
+            if (Entry.MatchRule == EGameplayMessageMatch::PartialMatch) {
+                return true;
             }
         }
     }
 
     return false;
+}
+
+int32 UGameplayMessageSubsystem::FlushPendingMessages() {
+    check(IsInGameThread());
+    int32 DispatchedCount = 0;
+
+    while (true) {
+        bDrainScheduled.store(false, std::memory_order_release);
+
+        bool bDequeuedAny = false;
+        while (TOptional<TUniqueFunction<void()>> Task = PendingMessageQueue.Dequeue()) {
+            bDequeuedAny = true;
+            if (!bIsShuttingDown.load(std::memory_order_acquire) && *Task) {
+                (*Task)();
+                ++DispatchedCount;
+            }
+        }
+
+        if (!bDequeuedAny || PendingMessageQueue.IsEmpty()) {
+            break;
+        }
+    }
+
+    return DispatchedCount;
 }
 
 void UGameplayMessageSubsystem::UnregisterListener(FGameplayTag Channel, int64 ListenerId) {
@@ -114,7 +154,7 @@ FGameplayMessageListenerHandle UGameplayMessageSubsystem::RegisterListenerIntern
         ListenerId,
         MatchRule,
         StructType,
-        MoveTemp(Callback)
+        MakeShared<const FRawMessageCallback>(MoveTemp(Callback))
     });
 
     if constexpr (Game::Config::bEnableLog) {
@@ -138,15 +178,18 @@ void UGameplayMessageSubsystem::BroadcastMessageInternal(
         return;
     }
 
-    TArray<FListenerEntry> ListenersToInvoke;
+    TArray<TSharedPtr<const FRawMessageCallback>, TInlineAllocator<16>> CallbacksToInvoke;
 
-    auto CheckAndAdd = [&ListenersToInvoke, StructType](const FListenerEntry& Entry) {
+    auto CheckAndAdd = [&CallbacksToInvoke, StructType](const FListenerEntry& Entry) {
+        if (!Entry.Callback.IsValid()) {
+            return;
+        }
         if (const UScriptStruct* ExpectedStruct = Entry.ExpectedStructType.Get()) {
             if (StructType->IsChildOf(ExpectedStruct)) {
-                ListenersToInvoke.Add(Entry);
+                CallbacksToInvoke.Add(Entry.Callback);
             }
         } else {
-            ListenersToInvoke.Add(Entry);
+            CallbacksToInvoke.Add(Entry.Callback);
         }
     };
 
@@ -161,21 +204,41 @@ void UGameplayMessageSubsystem::BroadcastMessageInternal(
         if (ParentTag == Channel) {
             continue;
         }
-        if (const FChannelListenerList* ParentList = ListenerMap.Find(ParentTag)) {
-            for (const FListenerEntry& Entry : ParentList->Listeners) {
-                if (Entry.MatchRule == EGameplayMessageMatch::PartialMatch) {
-                    CheckAndAdd(Entry);
-                }
+        const FChannelListenerList* ParentList = ListenerMap.Find(ParentTag);
+        if (ParentList == nullptr) {
+            continue;
+        }
+        for (const FListenerEntry& Entry : ParentList->Listeners) {
+            if (Entry.MatchRule == EGameplayMessageMatch::PartialMatch) {
+                CheckAndAdd(Entry);
             }
         }
     }
 
     if constexpr (Game::Config::bEnableLog) {
         UE_LOG(LogGameplayMessage, Verbose, TEXT("【消息子系统】广播消息: 通道 [%s], 载荷类型=[%s], 匹配触发监听器数=%d"),
-            *Channel.ToString(), *StructType->GetName(), ListenersToInvoke.Num());
+            *Channel.ToString(), *StructType->GetName(), CallbacksToInvoke.Num());
     }
 
-    for (const FListenerEntry& Entry : ListenersToInvoke) {
-        Entry.Callback(Channel, StructType, Payload);
+    for (const TSharedPtr<const FRawMessageCallback>& CallbackPtr : CallbacksToInvoke) {
+        (*CallbackPtr)(Channel, StructType, Payload);
+    }
+}
+
+void UGameplayMessageSubsystem::EnqueuePendingBroadcast(TUniqueFunction<void()> BroadcastTask) {
+    if (!BroadcastTask || bIsShuttingDown.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    PendingMessageQueue.Enqueue(MoveTemp(BroadcastTask));
+
+    bool bExpected = false;
+    if (bDrainScheduled.compare_exchange_strong(bExpected, true, std::memory_order_acq_rel)) {
+        TWeakObjectPtr<UGameplayMessageSubsystem> WeakSelf(this);
+        AsyncTask(ENamedThreads::GameThread, [WeakSelf]() {
+            if (UGameplayMessageSubsystem* Self = WeakSelf.Get()) {
+                Self->FlushPendingMessages();
+            }
+        });
     }
 }

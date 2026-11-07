@@ -6,11 +6,33 @@
 
 #if WITH_AUTOMATION_TESTS
 
+#include <atomic>
+
+#include "Async/ParallelFor.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "GameplayTagsManager.h"
 #include "Misc/AutomationTest.h"
+
+namespace {
+
+struct FClosureCopyProbe {
+    TSharedRef<int32> CopyCount = MakeShared<int32>(0);
+
+    FClosureCopyProbe() = default;
+
+    FClosureCopyProbe(const FClosureCopyProbe& Other)
+        : CopyCount(Other.CopyCount) {
+        ++(*CopyCount);
+    }
+
+    FClosureCopyProbe(FClosureCopyProbe&&) noexcept = default;
+    FClosureCopyProbe& operator=(const FClosureCopyProbe&) = default;
+    FClosureCopyProbe& operator=(FClosureCopyProbe&&) noexcept = default;
+};
+
+}  // namespace
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameMessageBroadcastAndListenTest, "Game.Core.Message.BroadcastAndListen",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -214,6 +236,108 @@ bool FGameMessageHasListenerAndAsyncActionTest::RunTest([[maybe_unused]] const F
     Subsystem->BroadcastMessage(Channel, Msg);
     TestEqual(TEXT("销毁异步动作后不再收到广播"), Receiver->ReceivedCount, 1);
 
+    GameInstance->Shutdown();
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameMessageCrossThreadAndZeroCopyTest,
+    "Game.Core.Message.CrossThreadEnqueueAndZeroCopy",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证多线程并发 EnqueueMessage 主线程串行排空、广播热路径闭包零拷贝及回调内自退订安全
+ * @param Parameters 自动化框架参数（未使用）
+ * @return 全部断言通过返回 true
+ */
+bool FGameMessageCrossThreadAndZeroCopyTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UGameInstance* GameInstance = NewObject<UGameInstance>(GEngine);
+    GameInstance->InitializeStandalone(FName(TEXT("GameplayMessageCrossThreadTestWorld")));
+    UWorld* World = GameInstance->GetWorld();
+    TestNotNull(TEXT("测试世界有效"), World);
+    if (World == nullptr) {
+        GameInstance->Shutdown();
+        return false;
+    }
+
+    UGameplayMessageSubsystem* Subsystem = UGameplayMessageSubsystem::GetPtr(World);
+    TestNotNull(TEXT("消息子系统实例有效"), Subsystem);
+    if (Subsystem == nullptr) {
+        GameInstance->Shutdown();
+        return false;
+    }
+
+    const FGameplayTag AsyncChannel = UGameplayTagsManager::Get().AddNativeGameplayTag(
+        FName(TEXT("UnitTest.Message.CrossThread")));
+
+    int32 DeliveredCount = 0;
+    int64 DeliveredSum = 0;
+    FClosureCopyProbe Probe;
+    const TSharedRef<int32> CopyCounter = Probe.CopyCount;
+
+    FGameplayMessageListenerHandle Handle = Subsystem->RegisterListener<FTestGameplayMessage>(
+        AsyncChannel,
+        [&DeliveredCount, &DeliveredSum, CapturedProbe = MoveTemp(Probe)](
+            [[maybe_unused]] FGameplayTag Channel,
+            const FTestGameplayMessage& Payload) {
+            if (*CapturedProbe.CopyCount >= 0) {
+                ++DeliveredCount;
+                DeliveredSum += Payload.Value;
+            }
+        }
+    );
+
+    const int32 CopiesAfterRegister = *CopyCounter;
+    for (int32 Index = 1; Index <= 20; ++Index) {
+        FTestGameplayMessage SyncMsg;
+        SyncMsg.Value = Index;
+        Subsystem->BroadcastMessage(AsyncChannel, SyncMsg);
+    }
+    TestEqual(TEXT("高频广播热路径期间监听器闭包发生 0 次拷贝"), *CopyCounter, CopiesAfterRegister);
+    TestEqual(TEXT("同步广播 20 次计数准确"), DeliveredCount, 20);
+
+    DeliveredCount = 0;
+    DeliveredSum = 0;
+    constexpr int32 WorkerCount = 8;
+    constexpr int32 MessagesPerWorker = 25;
+
+    ParallelFor(WorkerCount, [Subsystem, AsyncChannel](int32 WorkerIdx) {
+        for (int32 Step = 1; Step <= MessagesPerWorker; ++Step) {
+            FTestGameplayMessage QueuedMsg;
+            QueuedMsg.Value = WorkerIdx * 100 + Step;
+            Subsystem->EnqueueMessage(AsyncChannel, MoveTemp(QueuedMsg));
+        }
+    });
+
+    const int32 FlushedCount = Subsystem->FlushPendingMessages();
+    TestTrue(TEXT("主线程显式排空处理的跨线程消息数大于 0"), FlushedCount > 0);
+    TestEqual(TEXT("8 个工作线程共 200 条跨线程消息零丢失送达"), DeliveredCount, WorkerCount * MessagesPerWorker);
+
+    int64 ExpectedSum = 0;
+    for (int32 WorkerIdx = 0; WorkerIdx < WorkerCount; ++WorkerIdx) {
+        for (int32 Step = 1; Step <= MessagesPerWorker; ++Step) {
+            ExpectedSum += WorkerIdx * 100 + Step;
+        }
+    }
+    TestEqual(TEXT("跨线程消息载荷累加和精确一致"), DeliveredSum, ExpectedSum);
+
+    int32 SelfRemoveTriggered = 0;
+    FGameplayMessageListenerHandle SelfRemoveHandle;
+    SelfRemoveHandle = Subsystem->RegisterListener<FTestGameplayMessage>(
+        AsyncChannel,
+        [&SelfRemoveTriggered, &SelfRemoveHandle](FGameplayTag, const FTestGameplayMessage&) {
+            ++SelfRemoveTriggered;
+            SelfRemoveHandle.Unregister();
+        }
+    );
+    FTestGameplayMessage TriggerMsg;
+    TriggerMsg.Value = 1;
+    Subsystem->BroadcastMessage(AsyncChannel, TriggerMsg);
+    Subsystem->BroadcastMessage(AsyncChannel, TriggerMsg);
+    TestEqual(TEXT("广播回调内自注销安全且仅触发一次"), SelfRemoveTriggered, 1);
+
+    Handle.Unregister();
     GameInstance->Shutdown();
     return true;
 }

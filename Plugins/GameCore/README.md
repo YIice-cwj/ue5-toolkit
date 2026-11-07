@@ -1,6 +1,6 @@
 # GameCore 插件
 
-**GameCore** 是全项目的通用底层核心框架库。它遵循**零外部依赖、跨项目无缝拔插复用、纯值语义、强类型安全与高并发无锁/快照并发**设计原则，为上层模块提供统一的配置注册中心、类型安全解耦消息通信、高复用对象池、分层时间缩放（HitStop）、多策略自适应缓存、异步续体调度与关卡加载中枢。
+**GameCore** 是全项目的通用底层核心框架库（当前版本 **2.2.0**）。它遵循**零外部依赖、跨项目无缝拔插复用、纯值语义、强类型安全与高并发无锁/快照并发**设计原则，为上层模块提供统一的配置注册中心与外部源桥接、确定性随机数与抽卡算法、强类型结果与代际槽位表、纯逻辑 2D/3D 空间哈希网格、轻量状态机与帧率无关游戏数学、通用异步取消令牌、无锁 MPMC 环形缓冲区、多源优先级属性仲裁器、类型安全解耦消息通信、Actor/UObject 双轨通用对象池、分层时间缩放（HitStop）、多策略自适应缓存、安全软引用批量资源加载、主线程时间切片调度、模块化 GM 注册表与关卡加载屏障中枢。
 
 ---
 
@@ -8,23 +8,32 @@
 
 ```mermaid
 graph TD
-    subgraph Config["配置与编译中枢"]
+    subgraph Config["配置、调试与基础原语"]
         Switches["编译开关 GameCompileSwitches<br>(constexpr 零分支开销)"]
-        ConfigReg["配置注册中心 FConfigRegistry<br>(读写分离 / RAII 订阅)"]
+        ConfigReg["配置中心 FConfigRegistry + FConfigSourceBridge<br>(读写分离 / INI & CLI 桥接)"]
+        CheatReg["GM 调试注册表 FGameCheatRegistry<br>(Shipping 编译期剥离)"]
+        Types["值原语 TGameResult / TGameHandle / TSlotMap<br>(强类型错误 / O(1) 代际槽位表)"]
+    end
+
+    subgraph Determinism["确定性随机、状态机与数学"]
+        Rng["确定性随机 FGameRandomStream / URandomSubsystem<br>(PCG32 / PRD 防脸黑 / ShuffleBag / WeightedPicker)"]
+        FsmMath["轻量状态机 TGameStateMachine & FGameMath<br>(重入安全转换表 / 指数阻尼 / 临界弹簧)"]
     end
 
     subgraph Messaging["解耦通信网络"]
         ListenerHub["中央事件总线 FListenerHub<br>(64位指纹 / Copy-on-Write)"]
-        ObservableReg["动态观察者 FObservableRegistry<br>(按Key订阅 / 初始回放)"]
-        GMS["Gameplay 消息总线 GameplayMessageSubsystem<br>(Tag 分层广播)"]
+        ValueObs["响应式数值属性 FValueObserver<br>(值语义 / 初始回放)"]
+        GMS["Gameplay 消息总线 GameplayMessageSubsystem<br>(Tag 分层 / MPSC 跨线程入队)"]
     end
 
-    subgraph Runtime["运行时支撑系统"]
-        Pool["通用对象池 UObjectPoolSubsystem<br>(IGamePoolable 契约)"]
+    subgraph Runtime["运行时与流转支撑系统"]
+        Pool["通用对象池 UObjectPoolSubsystem<br>(Actor & UObject / 分帧预热 / 按位重置)"]
+        AssetLoader["安全异步资源门面 FGameAssetLoader<br>(宿主弱引用防悬垂)"]
+        TimeSlice["时间切片调度 UTimeSlicedTaskSubsystem<br>(毫秒预算防掉帧)"]
         TimeDilation["分层时间与顿帧 UTimeDilationSubsystem<br>(HitStop / SlowMo)"]
         VersionedCache["多策略缓存 FVersionedCache<br>(Eager / Lazy / LRU)"]
         TaskRunner["异步任务执行器 FGameThreadTaskRunner<br>(弱引用防悬垂)"]
-        Loading["关卡过渡幕布 ULoadingSubsystem"]
+        Loading["关卡过渡幕布 ULoadingSubsystem<br>(FLoadingBarrierToken 就绪屏障)"]
     end
 ```
 
@@ -35,17 +44,29 @@ graph TD
 | 模块 / 机制 | 关键技术亮点 | 核心文件 / 接口 |
 | :--- | :--- | :--- |
 | **集中编译开关** | 宏为唯一真源，派生 `constexpr bool` 镜像，消除双源漂移与分支损耗 | `Config/GameCompileSwitches.h` |
-| **配置注册中心** | `FRWLock` 读写分离，纯值语义拷贝出锁，RAII 订阅（`FObserverSubscription`），只读保护 | `Config/FConfigRegistry.h`<br>`Config/UConfigBPLibrary.h` |
+| **配置中心与外部桥接** | `FRWLock` 读写分离，纯值拷贝出锁，RAII 订阅；支持 INI 节与命令行引号参数按已注册类型自动注入及只读拦截 | `Config/FConfigRegistry.h`<br>`Config/FConfigSourceBridge.h`<br>`Config/UConfigBPLibrary.h` |
+| **确定性随机数体系** | 纯整数算术 PCG32 跨平台位级一致随机流、子流 `Fork` 与回滚快照、PRD 伪随机防连黑、洗牌袋、二分权重抽取及世界级命名流隔离 | `Random/FGameRandomStream.h`<br>`Random/FPseudoRandomDistribution.h`<br>`Random/TShuffleBag.h`<br>`Random/TWeightedPicker.h`<br>`Random/URandomSubsystem.h` |
+| **强类型结果与槽位表** | `TGameResult<T, E>` 链式错误处理；`TGameHandle` 64 位代际防悬垂句柄与 $O(1)$ 紧凑缓存友好容器 `TSlotMap` | `Types/TGameResult.h`<br>`Types/TGameHandle.h`<br>`Types/TSlotMap.h` |
+| **通用异步取消令牌** | 纯值语义 `FCancellationToken` 与 `FCancellationTokenSource`，支持级联取消、超时取消、弱引用守卫与零锁轮询 | `Types/FCancellationToken.h` |
+| **无锁 MPMC 环形缓冲区** | 基于 Vyukov 序列号算法的固定容量无锁环形队列，Cache-line 对齐防伪共享，等待自由零堆分配 | `Types/TLockFreeRingBuffer.h` |
+| **多源优先级属性仲裁器** | 纯值模板 `TPriorityArbitrator<T>`，支持抢占覆盖、加权累加与链式乘算三种仲裁策略 | `Types/TPriorityArbitrator.h` |
+| **可取消事务作用域守卫** | 纯值语义 RAII 守卫，支持早退回滚与 `.Dismiss()` 事务提交，零堆分配与移动安全 | `Types/TCancelableScopeGuard.h` |
+| **64 位雪花分布式唯一 ID** | 毫秒时间戳 + 节点号 + 自增序列，多线程无锁高并发零碰撞，时间戳自解与极低网络带宽 | `Types/FGameDistId.h` |
+| **纯逻辑空间哈希网格** | 2D/3D 均匀网格分桶，脱离物理引擎，同单元微移零开销，纳秒级半径球/圆、AABB、圆柱体及最近邻查询 | `Spatial/TSpatialHashGrid2D.h`<br>`Spatial/TSpatialHashGrid3D.h` |
+| **轻量状态机与数学库** | 零 UObject 表驱动 `TGameStateMachine`（延迟队列防重入）；帧率无关半衰期指数衰减阻尼与二阶临界阻尼弹簧 `FGameMath` | `FSM/TGameStateMachine.h`<br>`Math/FGameMath.h` |
 | **中央事件总线** | 跨 DLL 稳定 64 位类型指纹（`GAME_TYPE_FINGERPRINT`），Copy-on-Write 回调快照，回调遍历全程零锁 | `Listener/FListenerHub.h` |
 | **响应式数值观察者** | 泛型响应式容器 `FValueObserver<T>`，值变更时自动触发订阅通知，`SubscribeWithReplay` 订阅即得当前值 | `Listener/FValueObserver.h` |
-| **任意数据观察者注册表** | 按 `FName` 键注册任意类型观察者（`FObservableRegistry`），跨 DLL 类型指纹守卫，世界级子系统 `UObservableRegistrySubsystem` 随关卡自动隔离 | `Listener/FObservableRegistry.h`<br>`System/UObservableRegistrySubsystem.h` |
-| **Gameplay 消息子系统** | 基于 `GameplayTag` 分层寻址与 `UScriptStruct` 强类型校验的解耦消息总线 | `Message/GameplayMessageSubsystem.h` |
-| **通用 Actor 对象池** | 世界级子系统，自动休眠/唤醒/容量控制，防 GC 卡顿，契约式 `IGamePoolable` | `Pool/ObjectPoolSubsystem.h`<br>`Pool/IGamePoolable.h` |
+| **Gameplay 消息子系统** | `GameplayTag` 分层寻址、`UScriptStruct` 强类型校验、零闭包拷贝快照与 `EnqueueMessage` 无锁跨线程安全入队 | `Message/GameplayMessageSubsystem.h` |
+| **Actor & UObject 对象池** | 同时支持 `AActor` 与纯 `UObject` 池化、分帧渐进预热、`EPoolResetFlags` 按位组件重置与零插件依赖 `UFXSystemComponent` 停用 | `Pool/ObjectPoolSubsystem.h`<br>`Pool/ObjectPoolTypes.h`<br>`Pool/IGamePoolable.h` |
+| **软引用异步资源加载** | 封装 `FStreamableManager`，内置宿主 `TWeakObjectPtr` 守卫（宿主销毁自动丢弃回调）与可取消 `FGameAssetLoadHandle` | `Asset/FGameAssetLoader.h`<br>`Asset/FGameAssetLoadHandle.h` |
+| **主线程帧预算时间切片** | 按单帧毫秒预算（默认 `1.5ms`）增量步进重型主线程任务，空闲时自动休眠零 Tick 开销 | `Tasks/UTimeSlicedTaskSubsystem.h`<br>`Tasks/FTimeSlicedTaskHandle.h` |
+| **分级交错节流调度器** | 频率分级分桶（30Hz/10Hz/2Hz/1Hz），交错分相打散平摊峰值，宿主弱引用守卫与空闲零开销休眠 | `Tasks/UThrottledTickerSubsystem.h`<br>`Tasks/FThrottledTickTypes.h` |
 | **分层时间与顿帧 (HitStop)** | 局部 Actor 卡肉顿帧 + 全局分层时间缩放，优先级覆盖与时间平滑恢复 | `Time/TimeDilationSubsystem.h` |
 | **三策略版本化缓存** | Eager 全量预热 / Lazy 惰性填充 / LRU 限长连续节点池，不可变快照与指针稳定化 | `Cache/FVersionedCache.h` |
 | **目录变更监听器** | `FTSTicker` 周期扫描文件时间戳，自增序号广播，消费方零轮询成本 | `IO/FDirectoryChangeWatcher.h` |
 | **异步任务执行器** | `UE::Tasks::Launch` 配合主线程 `AsyncTask` 续体，宿主弱引用（`TWeakObjectPtr`）自动短路防悬垂 | `Tasks/FGameThreadTaskRunner.h` |
-| **关卡流转与加载幕布** | 配置驱动的平滑关卡过渡中枢，无硬编码关卡名 | `System/ULoadingSubsystem.h` |
+| **关卡流转与就绪屏障** | 平滑关卡过渡中枢，支持多子系统并发申请 `FLoadingBarrierToken` 异步就绪投票后再揭开加载幕布 | `System/ULoadingSubsystem.h`<br>`System/FLoadingBarrierToken.h` |
+| **模块化 GM 调试注册表** | 统一注册 GM 指令并联动 `IConsoleManager`，Shipping 构建自动编译期零开销裁剪 | `Debug/FGameCheatRegistry.h` |
 
 ---
 
@@ -59,67 +80,53 @@ graph TD
 
 ## 快速上手示例
 
-### 1. 动态配置注册与监听
+### 1. 动态配置注册、外部桥接与监听
 ```cpp
 #include "Config/FConfigRegistry.h"
+#include "Config/FConfigSourceBridge.h"
 
-// 注册并获取配置
-FConfigRegistry::Get().SetConfig(TEXT("Player.WalkSpeed"), 600.0f);
-float WalkSpeed = FConfigRegistry::Get().GetConfig<float>(TEXT("Player.WalkSpeed"), 450.0f);
+FConfigRegistry::Get().RegisterConfig<float>(TEXT("Player.WalkSpeed"), 600.0f);
+FConfigSourceBridge::ApplyCommandLineOverrides(FCommandLine::Get(), TEXT("Config."));
 
-// 响应式监听（RAII 订阅，离开作用域自动退订）
 const TSharedRef<FObserverSubscription> Sub = FConfigRegistry::Get().WatchConfig<float>(
     TEXT("Player.WalkSpeed"),
-    [](float NewSpeed) {
+    [](const float& NewSpeed) {
         UE_LOG(LogTemp, Log, TEXT("Player walk speed changed to: %.1f"), NewSpeed);
     }
 );
 ```
 
-### 2. 注册任意游戏数据并订阅
-
+### 2. 确定性随机流与防脸黑伪随机 (PRD)
 ```cpp
-#include "System/UObservableRegistrySubsystem.h"
+#include "Random/URandomSubsystem.h"
+#include "Random/FPseudoRandomDistribution.h"
 
-UObservableRegistrySubsystem* Observables = UObservableRegistrySubsystem::Get(this);
-Game::Core::FObservableRegistry& Registry = Observables->GetRegistry();
+URandomSubsystem& Rng = URandomSubsystem::Get(GetWorld());
+Rng.InitializeMasterSeed(1024ULL);
 
-Registry.Register<float>(TEXT("Combat.CritChance"));
-Registry.Set<float>(TEXT("Combat.CritChance"), 0.25f);
-
-// 订阅即回放当前值，之后每次 Set 收到更新
-const TSharedPtr<FObserverSubscription> CritSub = Registry.Subscribe<float>(
-    TEXT("Combat.CritChance"),
-    [](const float& Value) {
-        UE_LOG(LogTemp, Log, TEXT("Crit chance: %.2f"), Value);
-    }
-);
+FGameRandomStream& CritStream = Rng.GetOrCreateStream(TEXT("Combat.Crit"));
+FPseudoRandomDistribution CritPrd(0.25f);
+const bool bIsCrit = CritPrd.Roll(CritStream);
 ```
 
-- Key 与值类型均由业务决定，暴击、闪避、冷却等任意数据无需框架预定义。
-- 同一 Key 注册为不同类型时返回 `nullptr` 并记录错误，绝不静默踩踏。
-- 注册表随 World 销毁自动回收，不跨关卡泄漏。
-
-### 3. 对象池借出与归还 Actor
+### 3. 对象池分帧预热与借出归还
 ```cpp
 #include "Pool/ObjectPoolSubsystem.h"
 
-// 从池中借出 Actor 并自动唤醒（复用或自动 Spawn）
-APawn* Monster = UObjectPoolSubsystem::Get(GetWorld()).AcquireActor<APawn>(MonsterClass, SpawnTransform);
+UObjectPoolSubsystem& Pool = UObjectPoolSubsystem::Get(GetWorld());
+Pool.PrewarmTimeSliced(MonsterClass, 30, 2);
 
-// 使用完毕后归还给池休眠，避免 SpawnActor/DestroyActor 的 GC 与分配开销
-UObjectPoolSubsystem::Get(GetWorld()).ReleaseActor(Monster);
+APawn* Monster = Pool.AcquireActor<APawn>(MonsterClass, SpawnTransform);
+Pool.ReleaseActor(Monster);
 ```
 
-### 4. HitStop 顿帧（打击感停顿）
+### 4. HitStop 顿帧与帧率无关相机阻尼
 ```cpp
 #include "Time/TimeDilationSubsystem.h"
+#include "Math/FGameMath.h"
 
-// 受击者受击定格 0.08 秒
 UTimeDilationSubsystem::Get(GetWorld()).RequestHitStop(VictimActor, 0.08f);
-
-// 全局慢动作（子弹时间）：将全局 SlowMo 通道缩放设为 0.2，持续 1.0 秒（结束时 0.2 秒平滑淡出）
-UTimeDilationSubsystem::Get(GetWorld()).RequestGlobalDilation(ETimeDilationChannel::SlowMo, 1.0f, 0.2f, 0.2f);
+CameraLocation = FGameMath::ExpDecayVector(CameraLocation, TargetLocation, 0.06f, DeltaSeconds);
 ```
 
 ---
@@ -132,39 +139,31 @@ Plugins/GameCore/
 │   └── GameCore/
 │       ├── Public/
 │       │   ├── GameCore.h
+│       │   ├── Asset/         # FGameAssetLoader 软引用安全异步资源加载
 │       │   ├── Cache/         # FVersionedCache 多策略缓存
-│       │   ├── Config/        # 编译开关与配置注册表
+│       │   ├── Config/        # 编译开关、配置注册表与 FConfigSourceBridge
+│       │   ├── Debug/         # FGameCheatRegistry 模块化 GM 指令注册表
+│       │   ├── FSM/           # TGameStateMachine 轻量表驱动状态机
 │       │   ├── IO/            # 目录与文件变更监听器
-│       │   ├── Listener/      # FListenerHub 事件总线、FValueObserver、FObservableRegistry
-│       │   ├── Message/       # GameplayMessageSubsystem 消息总线
-│       │   ├── Pool/          # UObjectPoolSubsystem 通用对象池
+│       │   ├── Listener/      # FListenerHub 纯 C++ 事件总线、FValueObserver 响应式观察者
+│       │   ├── Math/          # FGameMath 帧率无关指数衰减与临界阻尼弹簧
+│       │   ├── Message/       # GameplayMessageSubsystem 消息总线（含跨线程入队）
+│       │   ├── Pool/          # UObjectPoolSubsystem Actor & UObject 双轨对象池（带参借出与深度清理）
+│       │   ├── Random/        # PCG32 确定性随机流、PRD、洗牌袋、权重抽取与 URandomSubsystem
 │       │   ├── Registration/  # 模块生命周期注册契约
-│       │   ├── System/        # ULoadingSubsystem、UObservableRegistrySubsystem
-│       │   ├── Tasks/         # FGameThreadTaskRunner 异步任务调度
+│       │   ├── Spatial/       # TSpatialHashGrid2D 与 TSpatialHashGrid3D 纯逻辑空间哈希网格
+│       │   ├── System/        # ULoadingSubsystem（含 FLoadingBarrierToken 就绪幕布）
+│       │   ├── Tasks/         # FGameThreadTaskRunner、UThrottledTickerSubsystem 与 UTimeSlicedTaskSubsystem
 │       │   ├── Tests/         # 自动化单元测试
-│       │   └── Time/          # UTimeDilationSubsystem、FActorHitStopTable、FGlobalDilationMixer
+│       │   ├── Time/          # UTimeDilationSubsystem、FActorHitStopTable、FGlobalDilationMixer
+│       │   └── Types/         # TGameResult、TSlotMap、FCancellationToken、TLockFreeRingBuffer、TPriorityArbitrator
 │       ├── Private/
 │       │   └── ... (对应实现文件)
 │       └── GameCore.Build.cs
 ├── Docs/                      # 分类技术文档库
 │   ├── Architecture/          # 核心架构设计文档
-│   │   ├── Overview.md
-│   │   ├── EventAndMessaging.md
-│   │   ├── CachingAndMemory.md
-│   │   └── Performance.md
 │   ├── API/                   # 公共接口详细参考
-│   │   ├── ConfigRegistry.md
-│   │   ├── ListenerHub.md
-│   │   ├── ObservableRegistry.md
-│   │   ├── GameplayMessageSubsystem.md
-│   │   ├── ObjectPoolSubsystem.md
-│   │   ├── TimeDilationSubsystem.md
-│   │   └── AsyncAndIO.md
 │   └── Guides/                # 实践与集成指南
-│       ├── QuickStart.md
-│       ├── ConfigAndSwitchesGuide.md
-│       ├── ObjectPoolingGuide.md
-│       └── MessagingGuide.md
 ├── GameCore.uplugin
 └── README.md
 ```
@@ -181,16 +180,16 @@ Plugins/GameCore/
   - [缓存与内存管理架构](Docs/Architecture/CachingAndMemory.md)：不可变快照、LRU 连续节点池与通用对象池的复用机制。
   - [性能基准与预算](Docs/Architecture/Performance.md)：缓存查找、监听吞吐、Stat 查询的实测基线与回归阈值。
 - **接口参考 (API Reference)**
-  - [配置注册中心 API](Docs/API/ConfigRegistry.md)：`FConfigRegistry`、`UConfigBPLibrary`、`FConfigVariant`。
+  - [配置注册中心、外部桥接与 GM 注册表 API](Docs/API/ConfigRegistry.md)：`FConfigRegistry`、`FConfigSourceBridge`、`FGameCheatRegistry`、`UConfigBPLibrary`。
+  - [确定性随机数、强类型结果与槽位容器 API](Docs/API/RandomAndTypes.md)：`TGameResult`、`TGameHandle`、`TSlotMap`、`FGameRandomStream`、`FPseudoRandomDistribution`、`TShuffleBag`、`TWeightedPicker`、`URandomSubsystem`。
+  - [轻量状态机与游戏数学库 API](Docs/API/StateMachineAndMath.md)：`TGameStateMachine`、`FGameMath`。
   - [中央监听总线 API](Docs/API/ListenerHub.md)：`FListenerHub`、`FValueObserver`、`FObserverSubscription`。
-  - [任意数据观察者注册表 API](Docs/API/ObservableRegistry.md)：`FObservableRegistry`、`UObservableRegistrySubsystem`。
-  - [Gameplay 消息总线 API](Docs/API/GameplayMessageSubsystem.md)：`UGameplayMessageSubsystem` 标签消息派发与注册句柄。
-  - [通用对象池 API](Docs/API/ObjectPoolSubsystem.md)：`UObjectPoolSubsystem`、`IGamePoolable` 生命周期接口。
+  - [Gameplay 消息总线 API](Docs/API/GameplayMessageSubsystem.md)：`UGameplayMessageSubsystem` 标签消息派发、跨线程入队与注册句柄。
+  - [通用对象池 API](Docs/API/ObjectPoolSubsystem.md)：`UObjectPoolSubsystem`（Actor & UObject 池化、分帧预热与按位重置）、`IGamePoolable`。
   - [时间膨胀与顿帧 API](Docs/API/TimeDilationSubsystem.md)：`UTimeDilationSubsystem`、通道优先级与 HitStop 状态。
-  - [异步任务与 I/O 监听 API](Docs/API/AsyncAndIO.md)：`FGameThreadTaskRunner`、`FDirectoryChangeWatcher`、`ULoadingSubsystem`。
+  - [异步任务、时间切片、资源加载与关卡屏障 API](Docs/API/AsyncAndIO.md)：`FGameThreadTaskRunner`、`UTimeSlicedTaskSubsystem`、`FGameAssetLoader`、`FDirectoryChangeWatcher`、`ULoadingSubsystem`、`FLoadingBarrierToken`。
 - **使用指南 (Guides)**
   - [快速上手指南](Docs/Guides/QuickStart.md)：新工程挂载与核心基础设施初始化。
   - [编译开关与动态配置指南](Docs/Guides/ConfigAndSwitchesGuide.md)：硬开关定制、只读保护与蓝图读写。
   - [对象池使用与最佳实践](Docs/Guides/ObjectPoolingGuide.md)：预热、生成、回收、防 GC 卡顿实战。
   - [消息通信实战指南](Docs/Guides/MessagingGuide.md)：跨模块解耦通信的最佳选型与实战代码样例。
-

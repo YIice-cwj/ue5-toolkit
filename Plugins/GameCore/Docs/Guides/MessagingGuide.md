@@ -1,6 +1,6 @@
 # GameCore 消息通信实战指南
 
-本文指导在实际游戏开发中，如何在 `FListenerHub`、`UGameplayMessageSubsystem`、`FValueObserver` 与 `FObservableRegistry` 之间做出正确的技术选型，并提供完整的模块间解耦通信实战代码。
+本文指导在实际游戏开发中，如何在 `UGameplayMessageSubsystem`、`FValueObserver` 与 `FListenerHub` 之间做出正确的技术选型，并提供完整的模块间解耦通信实战代码。
 
 ---
 
@@ -9,15 +9,15 @@
 ```text
 通信需求
 │
-├── 是任意业务数据（暴击/闪避/冷却等），写入方与订阅方互不感知？
-│   └── 选【FObservableRegistry】（按 FName Key 注册，订阅即回放当前值）
+├── 是单个变量/状态的持续追踪与响应式监听（需当前值自动回放）？
+│   └── 选【FValueObserver<T>】（最轻量，直接内嵌作为实体成员变量）
 │
-├── 是单个变量/状态的持续追踪？
-│   └── 选【FValueObserver<T>】（最轻量，直接包装成员变量）
-│
-├── 需不需要蓝图访问，或者基于 GameplayTag 进行通道层级管理？
-│   ├── 是 ──> 选【UGameplayMessageSubsystem】（GAS/蓝图/UI推荐）
-│   └── 否 ──> 选【FListenerHub】（极致性能纯 C++ 底层通信推荐）
+└── 是事件/消息的解耦广播？
+    ├── 需要跨模块业务解耦、GameplayTag 树形寻址、蓝图访问或工作线程安全入队？
+    │   └── 选【UGameplayMessageSubsystem】（全项目业务层统一推荐骨干）
+    │
+    └── 是纯 C++ 引擎/底层子系统内部分发，载荷为非反射纯结构体，追求微秒级零开销？
+        └── 选【FListenerHub】（底层纳秒级静态事件总线）
 ```
 
 ---
@@ -118,34 +118,36 @@ FListenerHub::Get().Emit(TEXT("Net.OnPacketReceived"), RawPacket);
 
 ---
 
-## 4. 实战案例：任意战斗属性注册与订阅
+## 4. 实战案例：实体响应式属性监听与解耦
 
 ### 目标
-战斗模块写入暴击率，UI 模块读取并展示；两者互不 `#include` 对方头文件。
+实体/组件维护状态（如血量、暴击率），UI 或其他系统订阅变化，解耦且订阅即得初始值。
 
-### 方案：使用 `FObservableRegistry`
+### 方案：使用内聚的 `FValueObserver<T>`
 
 ```cpp
-#include "System/UObservableRegistrySubsystem.h"
+#include "Listener/FValueObserver.h"
 
-// 战斗模块：写入
-void UCombatAttributeComponent::RefreshCritChance()
+// 战斗组件声明响应式属性
+class UCombatAttributeComponent : public UActorComponent {
+public:
+    FValueObserver<float>& GetCritChanceObserver() { return CritChance; }
+
+private:
+    FValueObserver<float> CritChance{0.05f};
+};
+
+// UI 模块：订阅（SubscribeWithReplay 立即拿到当前值，之后每次变化收到回调）
+void UCombatHudWidget::BindCritChance(UCombatAttributeComponent* AttributeComp)
 {
-    UObservableRegistrySubsystem* Observables = UObservableRegistrySubsystem::Get(this);
-    if (!Observables) return;
+    if (!AttributeComp) return;
 
-    Observables->GetRegistry().Set<float>(TEXT("Combat.CritChance"), ComputedCritChance);
-}
-
-// UI 模块：订阅（立即拿到当前值，之后每次变化收到回调）
-void UCombatHudWidget::BindCritChance()
-{
-    UObservableRegistrySubsystem* Observables = UObservableRegistrySubsystem::Get(this);
-    if (!Observables) return;
-
-    CritSubscription = Observables->GetRegistry().Subscribe<float>(
-        TEXT("Combat.CritChance"),
-        [this](const float& Chance) { UpdateCritLabel(Chance); });
+    CritSubscription = AttributeComp->GetCritChanceObserver().SubscribeWithReplay(
+        this,
+        [this](const float& Chance) {
+            UpdateCritLabel(Chance);
+        }
+    );
 }
 ```
 

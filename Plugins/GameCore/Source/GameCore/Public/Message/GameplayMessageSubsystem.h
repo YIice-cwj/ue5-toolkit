@@ -2,15 +2,18 @@
 
 #pragma once
 
+#include <atomic>
+
+#include "Containers/MpscQueue.h"
 #include "CoreMinimal.h"
-#include "Subsystems/GameInstanceSubsystem.h"
 #include "GameplayTagContainer.h"
 #include "Message/GameplayMessageTypes.h"
+#include "Subsystems/GameInstanceSubsystem.h"
 
 #include "GameplayMessageSubsystem.generated.h"
 
 /**
- * @brief 全局解耦消息总线子系统（基于 GameplayTag 寻址与 UScriptStruct 强类型校验）
+ * @brief 全局解耦消息总线子系统（基于 GameplayTag 寻址、UScriptStruct 强类型校验、零闭包深拷贝快照与跨线程安全入队）
  */
 UCLASS()
 class GAMECORE_API UGameplayMessageSubsystem : public UGameInstanceSubsystem {
@@ -32,7 +35,13 @@ public:
     static UGameplayMessageSubsystem* GetPtr(const UObject* WorldContextObject);
 
     /**
-     * @brief 子系统销毁生命周期回调：清空并注销所有通道上的消息监听器
+     * @brief 子系统初始化生命周期回调：重置跨线程队列运行标志
+     * @param Collection 子系统集合
+     */
+    void Initialize(FSubsystemCollectionBase& Collection) override;
+
+    /**
+     * @brief 子系统销毁生命周期回调：关闭跨线程入队通道、排空丢弃残留任务并清空所有监听器
      */
     void Deinitialize() override;
 
@@ -46,13 +55,28 @@ public:
     bool HasListener(FGameplayTag Channel, EGameplayMessageMatch MatchRule = EGameplayMessageMatch::ExactMatch) const;
 
     /**
-     * @brief 广播强类型结构体消息
+     * @brief 在主线程立即广播强类型结构体消息
      * @tparam TMessageStructType 载荷结构体类型（需为 USTRUCT）
      * @param Channel 目标广播通道 GameplayTag
      * @param Message 消息载荷实例
      */
     template <typename TMessageStructType>
     void BroadcastMessage(FGameplayTag Channel, const TMessageStructType& Message);
+
+    /**
+     * @brief 线程安全异步入队强类型消息（支持任意工作线程调用，自动合并投递至 GameThread 串行派发）
+     * @tparam TMessageStructType 载荷结构体类型（需为可移动或可拷贝 USTRUCT）
+     * @param Channel 目标广播通道 GameplayTag
+     * @param Message 消息载荷实例（按值移动捕获）
+     */
+    template <typename TMessageStructType>
+    void EnqueueMessage(FGameplayTag Channel, TMessageStructType Message);
+
+    /**
+     * @brief 在主线程立即排空并派发所有跨线程待处理消息队列
+     * @return 本次排空实际派发的消息数量
+     */
+    int32 FlushPendingMessages();
 
     /**
      * @brief 注册成员函数监听器（接收通道 Tag 与 Payload 引用）
@@ -128,7 +152,7 @@ private:
         int64 Id = 0;
         EGameplayMessageMatch MatchRule = EGameplayMessageMatch::ExactMatch;
         TWeakObjectPtr<const UScriptStruct> ExpectedStructType;
-        FRawMessageCallback Callback;
+        TSharedPtr<const FRawMessageCallback> Callback;
     };
 
     struct FChannelListenerList {
@@ -148,15 +172,32 @@ private:
         const void* Payload
     );
 
+    void EnqueuePendingBroadcast(TUniqueFunction<void()> BroadcastTask);
+
 private:
     TMap<FGameplayTag, FChannelListenerList> ListenerMap;
     int64 NextListenerId = 0;
+    TMpscQueue<TUniqueFunction<void()>> PendingMessageQueue;
+    std::atomic<bool> bDrainScheduled{false};
+    std::atomic<bool> bIsShuttingDown{false};
 };
 
 template <typename TMessageStructType>
 void UGameplayMessageSubsystem::BroadcastMessage(FGameplayTag Channel, const TMessageStructType& Message) {
     const UScriptStruct* StructType = TBaseStructure<TMessageStructType>::Get();
     BroadcastMessageInternal(Channel, StructType, &Message);
+}
+
+template <typename TMessageStructType>
+void UGameplayMessageSubsystem::EnqueueMessage(FGameplayTag Channel, TMessageStructType Message) {
+    if (!Channel.IsValid() || bIsShuttingDown.load(std::memory_order_acquire)) {
+        return;
+    }
+    EnqueuePendingBroadcast(
+        [this, Channel, CapturedMessage = MoveTemp(Message)]() {
+            BroadcastMessage(Channel, CapturedMessage);
+        }
+    );
 }
 
 template <typename TMessageStructType, typename TOwner>
@@ -213,4 +254,3 @@ FGameplayMessageListenerHandle UGameplayMessageSubsystem::RegisterListener(
 
     return RegisterListenerInternal(Channel, StructType, MoveTemp(Thunk), MatchRule);
 }
-

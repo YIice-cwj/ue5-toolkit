@@ -164,3 +164,29 @@ TSharedRef<FObserverSubscription> WatchConfig(FName Name, TFunction<void(const T
 
 未注册键一律返回调用方传入的默认值；写入统一经 `FConfigRegistry::SetConfig`，只读键拒绝语义由注册表保证。
 
+---
+
+## 4. 外部配置源桥接器 `FConfigSourceBridge`
+
+头文件：`#include "Config/FConfigSourceBridge.h"`
+
+用于将 `.ini` 配置节（如 `GGameIni`）与启动命令行参数（如 `-Config.Combat.Crit=0.5`）安全注入 `FConfigRegistry`：
+- `LoadIniSection(ConfigFilename, SectionName)`：读取指定 INI 节中的全部 `Key=Value` 并按类型解析写入。
+- `ApplyCommandLineOverrides(CommandLine, ArgPrefix = TEXT("Config."))`：支持双引号包裹空格字符串（如 `-Config.Motd="Hello World"`）与前导 `-`/`--` 前缀。
+- `ApplyKeyValueMap(KeyValues)` / `ApplySingleEntry(RawKeySpec, RawValue)`：
+  - 若键已预先在 `FConfigRegistry` 中注册，自动按已注册的变体类型精确反序列化，无需手写类型标签；
+  - 若键尚未注册，支持显式类型前缀（`bool:`、`int32:`、`int64:`、`float:`、`double:`、`string:`、`name:`、`vector:`、`rotator:`、`tag:`），未加前缀默认按 `FString` 落库；
+  - 在外部不可信边界前置调用 `FConfigRegistry::IsReadOnly` 拦截对 `Env.*` 等只读键的覆盖尝试，安全忽略且不触发断言。
+
+---
+
+## 5. 模块化 GM / 调试指令注册中心 `FGameCheatRegistry`
+
+头文件：`#include "Debug/FGameCheatRegistry.h"`
+
+面向各业务模块注册开发期调试/作弊命令，自动联动 `IConsoleManager`（标记 `ECVF_Cheat`）并在 Shipping 构建（`Game::Config::bEnableGM == false`）下于编译期零开销剥离：
+- `RegisterCheat(CommandName, HelpText, Handler)` / `UnregisterCheat(CommandName)`
+- `ExecuteCheat(CommandLine)`：支持引号参数切分并在锁外安全执行回调（支持回调内重入查询或自注销）
+- 模块卸载时由 `FGameCoreModule::ShutdownModule` 自动调用 `ClearAll()` 卸载控制台命令，杜绝悬垂句柄。
+
+

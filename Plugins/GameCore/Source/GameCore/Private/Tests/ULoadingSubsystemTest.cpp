@@ -1,6 +1,6 @@
 /**
  * @file ULoadingSubsystemTest.cpp
- * @brief ULoadingSubsystem 自动化测试（加载状态流转、委托广播、跨实例隔离与上下文解析），Shipping 构建自动剔除
+ * @brief ULoadingSubsystem 与 FLoadingBarrierToken 自动化测试（状态流转、异步就绪屏障投票、RAII 释放与跨实例隔离）
  */
 
 #include "CoreMinimal.h"
@@ -8,6 +8,7 @@
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "Misc/AutomationTest.h"
+#include "System/FLoadingBarrierToken.h"
 #include "System/ULoadingSubsystem.h"
 #include "Tests/GameMessageTestReceiver.h"
 
@@ -29,7 +30,7 @@ ULoadingSubsystem* CreateTestSubsystem(UGameInstance*& OutGameInstance) {
     return OutGameInstance->GetSubsystem<ULoadingSubsystem>();
 }
 
-} // namespace
+}  // namespace
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameLoadingSubsystemStateFlowTest,
@@ -81,7 +82,7 @@ bool FGameLoadingSubsystemStateFlowTest::RunTest([[maybe_unused]] const FString&
     TestEqual(TEXT("重复请求不产生额外广播"), Receiver->LoadingChangeCount, 1);
 
     UGameInstance* OtherGameInstance = nullptr;
-    ULoadingSubsystem* OtherSubsystem = CreateTestSubsystem(OtherGameInstance);
+    [[maybe_unused]] ULoadingSubsystem* OtherSubsystem = CreateTestSubsystem(OtherGameInstance);
     if (OtherGameInstance != nullptr && OtherGameInstance->GetWorld() != nullptr) {
         FCoreUObjectDelegates::PostLoadMapWithWorld.Broadcast(OtherGameInstance->GetWorld());
         TestTrue(TEXT("异源世界加载完成不误清本子系统的加载态"), LoadingSubsystem->IsLoading());
@@ -100,6 +101,82 @@ bool FGameLoadingSubsystemStateFlowTest::RunTest([[maybe_unused]] const FString&
     TestEqual(TEXT("空关卡名不产生广播"), Receiver->LoadingChangeCount, 2);
 
     GameInstance->Shutdown();
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameLoadingBarrierTokenTest,
+    "Game.Core.System.LoadingBarrierToken",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证 FLoadingBarrierToken 异步就绪屏障投票、同名多票独立计数、RAII 自动释放与提前释放契约
+ * @param Parameters 自动化框架参数（未使用）
+ * @return 全部断言通过返回 true
+ */
+bool FGameLoadingBarrierTokenTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UGameInstance* GameInstance = nullptr;
+    ULoadingSubsystem* LoadingSubsystem = CreateTestSubsystem(GameInstance);
+    TestNotNull(TEXT("加载子系统创建成功"), LoadingSubsystem);
+    if (LoadingSubsystem == nullptr || GameInstance == nullptr) {
+        return false;
+    }
+
+    UWorld* World = GameInstance->GetWorld();
+    TestNotNull(TEXT("测试世界有效"), World);
+    if (World == nullptr) {
+        GameInstance->Shutdown();
+        return false;
+    }
+
+    UGameMessageTestReceiver* Receiver = NewObject<UGameMessageTestReceiver>(GameInstance);
+    LoadingSubsystem->OnLoadingStateChanged.AddDynamic(Receiver, &UGameMessageTestReceiver::OnLoadingStateChanged);
+
+    TestFalse(TEXT("初始无活跃屏障"), LoadingSubsystem->HasActiveBarriers());
+    TestEqual(TEXT("初始活跃屏障数为 0"), LoadingSubsystem->GetActiveBarrierCount(), 0);
+
+    const FString LevelOne = TEXT("/Game/Maps/BarrierLevel_One");
+    FCoreUObjectDelegates::PreLoadMap.Broadcast(LevelOne);
+    TestEqual(TEXT("进入加载开始广播计数为 1"), Receiver->LoadingChangeCount, 1);
+
+    TSharedPtr<FLoadingBarrierToken> EarlyToken = LoadingSubsystem->AcquireLoadingBarrier(FName(TEXT("EarlyPreload")));
+    TestTrue(TEXT("申请屏障后存在活跃屏障"), LoadingSubsystem->HasActiveBarriers());
+    TestEqual(TEXT("屏障名称一致"), EarlyToken->GetBarrierName(), FName(TEXT("EarlyPreload")));
+    TestTrue(TEXT("屏障 ID 大于 0"), EarlyToken->GetBarrierId() > 0ULL);
+
+    EarlyToken->Release();
+    EarlyToken->Release();
+    TestTrue(TEXT("显式释放后令牌状态标记为已释放"), EarlyToken->IsReleased());
+    TestTrue(TEXT("PostLoadMap 尚未到达前释放屏障不会提前关闭加载幕布"), LoadingSubsystem->IsLoading());
+    TestEqual(TEXT("未提前触发结束广播"), Receiver->LoadingChangeCount, 1);
+
+    TSharedPtr<FLoadingBarrierToken> DupTokenA = LoadingSubsystem->AcquireLoadingBarrier(FName(TEXT("PoolWarmup")));
+    {
+        TSharedRef<FLoadingBarrierToken> DupTokenB = LoadingSubsystem->AcquireLoadingBarrier(FName(TEXT("PoolWarmup")));
+        TestNotEqual(TEXT("同名屏障分配独立递增 ID"), DupTokenA->GetBarrierId(), DupTokenB->GetBarrierId());
+        TestEqual(TEXT("同名双屏障独立计数为 2"), LoadingSubsystem->GetActiveBarrierCount(), 2);
+
+        FCoreUObjectDelegates::PostLoadMapWithWorld.Broadcast(World);
+        TestTrue(TEXT("PostLoadMap 已完成但屏障未清空时保持加载幕布开启"), LoadingSubsystem->IsLoading());
+        TestEqual(TEXT("屏障挂起期间不广播加载完成"), Receiver->LoadingChangeCount, 1);
+    }
+
+    TestEqual(TEXT("DupTokenB 离开作用域析构后剩余 1 个活跃屏障"), LoadingSubsystem->GetActiveBarrierCount(), 1);
+    TestTrue(TEXT("尚余 1 票屏障时仍保持加载态"), LoadingSubsystem->IsLoading());
+    TestEqual(TEXT("尚余 1 票屏障时不广播完成"), Receiver->LoadingChangeCount, 1);
+
+    DupTokenA->Release();
+    TestFalse(TEXT("最后一票屏障释放后立即退出加载态"), LoadingSubsystem->IsLoading());
+    TestFalse(TEXT("全部屏障清空"), LoadingSubsystem->HasActiveBarriers());
+    TestEqual(TEXT("最后一票释放触发加载结束广播"), Receiver->LoadingChangeCount, 2);
+    TestFalse(TEXT("结束广播标志为 false"), Receiver->bLastIsLoading);
+    TestEqual(TEXT("结束广播携带原目标地图名"), Receiver->LastTargetLevel, FName(*LevelOne));
+
+    TSharedPtr<FLoadingBarrierToken> SurvivingToken = LoadingSubsystem->AcquireLoadingBarrier(FName(TEXT("SurvivingAfterShutdown")));
+    GameInstance->Shutdown();
+    SurvivingToken.Reset();
+
     return true;
 }
 

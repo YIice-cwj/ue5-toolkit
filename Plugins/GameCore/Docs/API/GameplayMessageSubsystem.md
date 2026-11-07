@@ -45,13 +45,24 @@ public:
     static UGameplayMessageSubsystem* GetPtr(const UObject* WorldContextObject);
 
     /**
-     * @brief 广播强类型消息
+     * @brief 广播强类型消息（主线程同步派发，内部采用栈内联数组 + TSharedPtr 零闭包拷贝快照）
      * @tparam FMessageStructType 必须是带有 USTRUCT() 的反射结构体
      * @param Channel 寻址通道 GameplayTag
      * @param Message 消息结构体实例
      */
     template <typename FMessageStructType>
     void BroadcastMessage(FGameplayTag Channel, const FMessageStructType& Message);
+
+    /**
+     * @brief 跨线程安全异步入队强类型消息（可在任意后台工作线程调用，经无锁 MPSC 队列合并投递回 GameThread 串行派发）
+     */
+    template <typename FMessageStructType>
+    void EnqueueMessage(FGameplayTag Channel, FMessageStructType Message);
+
+    /**
+     * @brief 在主线程立即排空并派发所有待处理的跨线程消息
+     */
+    int32 FlushPendingMessages();
 
     /**
      * @brief 注册成员函数监听器（仅接收通道与载荷）

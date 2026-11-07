@@ -1,31 +1,31 @@
 # GameCore 事件与消息通信体系架构
 
-在大型游戏项目中，跨模块、跨对象的通信需求极其多样。`GameCore` 针对不同维度的通信场景，提供了四种职责清晰、定位互补的通信设施：
+在大型游戏项目中，跨模块、跨对象的通信需求极其多样。`GameCore` 针对不同维度的通信场景，提供了三种职责清晰、定位互补的通信设施：
 
 ```mermaid
 graph TD
     A["通信需求产生"] --> B{"通信特点与场景"}
 
-    B -- "纯 C++ 零 UObject 依赖<br>微秒级极速单例总线" --> C["FListenerHub<br>(中央监听总线)"]
-    B -- "蓝图/C++ 强类型解耦<br>GameplayTag 树形通道寻址" --> D["UGameplayMessageSubsystem<br>(Gameplay 消息总线)"]
-    B -- "单值变更感知<br>响应式容器" --> E["FValueObserver<T><br>(值观察者)"]
-    B -- "任意业务数据按 Key 注册<br>订阅即回放当前值" --> F["FObservableRegistry<br>(任意数据观察者注册表)"]
+    B -- "纯 C++ 零 UObject 依赖<br>纳秒级极速单例总线" --> C["FListenerHub<br>(中央监听总线)"]
+    B -- "蓝图/C++ 强类型解耦<br>GameplayTag 树形寻址/跨线程安全入队" --> D["UGameplayMessageSubsystem<br>(Gameplay 消息总线)"]
+    B -- "单值变更感知<br>响应式容器/初始回放" --> E["FValueObserver<T><br>(值观察者)"]
 ```
 
 ---
 
-## 1. 四种通信机制详细对比
+## 1. 三种通信机制详细对比与技术选型
 
-| 特性 | `FListenerHub` | `UGameplayMessageSubsystem` | `FValueObserver<T>` | `FObservableRegistry` |
-| :--- | :--- | :--- | :--- | :--- |
-| **存在形态** | 纯 C++ 静态单例 (函数局部静态) | `UGameInstanceSubsystem` (伴随游戏生命周期) | 独立 C++ 实例 (可内嵌到任意类中) | 纯 C++ 注册表 + `UWorldSubsystem` 入口 |
-| **寻址方式** | `FName` 事件名 | `FGameplayTag` 标签 (支持层级匹配) | 变量直接持有绑定 | `FName` 数据键 |
-| **载荷类型** | 任意 C++ 结构体/类 (值传递或引用) | `UScriptStruct` 反射结构体 (支持动态多态) | 单一泛型类型 `T` | 任意泛型类型 `T`，由注册方决定 |
-| **类型安全机制** | `GAME_TYPE_FINGERPRINT` 64 位编译期哈希 + `sizeof` 双指纹校验 | `UScriptStruct` 强类型 RTTI 校验 | C++ 模板静态类型检查 | `GetTypeFingerprint<T>()` 类型指纹守卫 |
-| **当前值回放** | 否（事件无状态） | 否 | `SubscribeWithReplay` | `Subscribe` 内部即回放 |
-| **蓝图支持** | 否 (专为高性能 C++ 设计) | 是 (`UAsyncAction_ListenForGameplayMessage` 异步动作监听与 `HasListener` 判定) | 否 | 否 |
-| **并发保证** | Copy-on-Write 瞬态读锁快照，出锁派发 | 主线程派发 | 内部锁保护，出锁通知 | 键表读写锁保护，观察者出锁通知 |
-| **退订管理** | `FObserverSubscription` (RAII 守卫) | `FGameplayMessageListenerHandle` | `FObserverSubscription` (RAII 守卫) | `TSharedRef<FObserverSubscription>` (RAII 守卫) |
+| 特性 | `FListenerHub` | `UGameplayMessageSubsystem` [全项目统一推荐] | `FValueObserver<T>` |
+| :--- | :--- | :--- | :--- |
+| **存在形态** | 纯 C++ 静态单例 (函数局部静态) | `UGameInstanceSubsystem` (伴随游戏生命周期) | 独立 C++ 实例 (可内嵌到任意类中) |
+| **推荐定位** | **引擎/系统底层纯 C++ 高频内部通信** | **业务层/跨插件 Gameplay 解耦通信骨干** | **实体/组件内部响应式属性** |
+| **寻址方式** | `FName` 事件名 | `FGameplayTag` 标签 (支持层级匹配与通配) | 变量直接持有绑定 |
+| **载荷类型** | 任意 C++ 结构体/类 (支持非 UObject) | `UScriptStruct` 反射结构体 (支持动态多态) | 单一泛型类型 `T` |
+| **类型安全机制** | `GAME_TYPE_FINGERPRINT` 64 位编译期哈希 + `sizeof` 双指纹校验 | `UScriptStruct` 强类型 RTTI 校验 | C++ 模板静态类型检查 |
+| **当前值回放** | 否（事件无状态） | 否 | `SubscribeWithReplay` |
+| **蓝图支持** | 否 (专为高性能 C++ 设计) | 是 (`UAsyncAction_ListenForGameplayMessage` 异步动作监听与 `HasListener` 判定) | 否 |
+| **并发保证** | Copy-on-Write 瞬态读锁快照，出锁派发 | 主线程派发 + `EnqueueMessage` 跨线程安全入队 | 内部锁保护，出锁通知 |
+| **退订管理** | `FObserverSubscription` (RAII 守卫) | `FGameplayMessageListenerHandle` | `FObserverSubscription` (RAII 守卫) |
 
 ---
 
@@ -75,24 +75,4 @@ sequenceDiagram
 ### 3.2 强类型结构体验证
 派发载荷必须派生自 `UScriptStruct`（通过 `USTRUCT()` 宏声明）。注册监听器时，监听器声明期望的 `UScriptStruct`；派发时，系统校验实际传入的结构体类型是否与期望类型匹配，若不匹配则拒绝派发并打印错误，确保类型绝对安全。
 
----
-
-## 4. FObservableRegistry 架构
-
-### 4.1 按 Key 的任意类型注册
-`Game::Core::FObservableRegistry` 将「数据键」与「值类型」一起注册：
-
-```cpp
-Registry.Register<float>(TEXT("Combat.CritChance"));
-Registry.Register<int32>(TEXT("Skill.Fire.CooldownMs"));
-```
-
-- 同一 Key 只能绑定一种值类型；类型不一致时注册/查找返回 `nullptr` 并记录 Error。
-- 暴击、闪避、冷却等属性无需框架预定义，完全由业务决定。
-
-### 4.2 订阅即回放
-`Subscribe<T>` 内部复用 `FValueObserver<T>::SubscribeWithReplay`：先注入监听，再回放当前值，保证订阅方不会因为「数据在订阅前已就绪」而漏读。
-
-### 4.3 世界级生命周期
-`UObservableRegistrySubsystem` 为 `UWorldSubsystem`，注册表随 World 销毁自动回收；跨关卡不残留监听与数据，避免 PIE 多次运行间的脏状态。
 

@@ -1,15 +1,16 @@
 /**
  * @file ULoadingSubsystem.h
- * @brief 通用关卡流转与加载幕布子系统
+ * @brief 通用关卡流转与加载幕布子系统（支持异步业务就绪屏障令牌）
  *
  * 设计思路：在子系统 Initialize / Deinitialize 生命周期内自动挂钩与注销
- * FCoreUObjectDelegates::PreLoadMap / PostLoadMapWithWorld 委托，对外提供标准关卡跳转与加载态广播。
+ * FCoreUObjectDelegates::PreLoadMap / PostLoadMapWithWorld 委托，对外提供标准关卡跳转、加载态广播与异步就绪屏障投票机制。
  */
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "Subsystems/GameInstanceSubsystem.h"
+#include "System/FLoadingBarrierToken.h"
 
 #include "ULoadingSubsystem.generated.h"
 
@@ -24,7 +25,8 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnLoadingStateChanged, bool, bIsLo
  * @brief 全局加载与关卡流转子系统
  *
  * 继承自 UGameInstanceSubsystem，作为跨关卡加载控制中枢。
- * 负责平滑关卡跳转调度、全屏遮罩/幕布广播以及引擎底层地图加载生命周期事件监听。
+ * 负责平滑关卡跳转调度、全屏遮罩/幕布广播、引擎底层地图加载事件监听，
+ * 以及通过 FLoadingBarrierToken 汇聚异步业务子系统（对象池预热、资源预载、网络握手等）的就绪投票。
  */
 UCLASS(BlueprintType)
 class GAMECORE_API ULoadingSubsystem : public UGameInstanceSubsystem {
@@ -40,7 +42,7 @@ public:
     static ULoadingSubsystem* Get(const UObject* WorldContextObject);
 
     /**
-     * @brief 加载状态变动多播委托（关卡加载开始与结束时广播）
+     * @brief 加载状态变动多播委托（关卡加载开始及全部屏障解除结束时广播）
      */
     UPROPERTY(BlueprintAssignable, Category = "GameCore|Loading")
     FOnLoadingStateChanged OnLoadingStateChanged;
@@ -52,7 +54,7 @@ public:
     void Initialize(FSubsystemCollectionBase& Collection) override;
 
     /**
-     * @brief 子系统销毁生命周期回调：注销引擎地图加载委托
+     * @brief 子系统销毁生命周期回调：注销引擎地图加载委托并清空活跃屏障
      */
     void Deinitialize() override;
 
@@ -64,8 +66,15 @@ public:
     void OpenLevelWithLoading(const FName& LevelName);
 
     /**
-     * @brief 查询当前是否正处于关卡流转或加载状态中
-     * @return 若正在加载返回 true，否则返回 false
+     * @brief 申请异步加载就绪屏障令牌（在令牌全部释放前，即使地图加载完毕也将保持加载幕布不提前关闭）
+     * @param BarrierName 屏障诊断名称（允许多个子系统使用相同名称，内部按唯一 ID 独立跟踪）
+     * @return RAII 屏障共享引用，析构或显式调用 Release() 时自动解除该票屏障
+     */
+    [[nodiscard]] TSharedRef<FLoadingBarrierToken> AcquireLoadingBarrier(const FName& BarrierName);
+
+    /**
+     * @brief 查询当前是否正处于关卡流转或等待就绪屏障状态中
+     * @return 若正在加载或等待屏障返回 true，否则返回 false
      */
     UFUNCTION(BlueprintPure, Category = "GameCore|Loading")
     bool IsLoading() const;
@@ -77,7 +86,29 @@ public:
     UFUNCTION(BlueprintPure, Category = "GameCore|Loading")
     FName GetTargetLevelName() const;
 
+    /**
+     * @brief 查询当前是否存在尚未释放的加载就绪屏障
+     * @return 存在至少一个活跃屏障返回 true
+     */
+    UFUNCTION(BlueprintPure, Category = "GameCore|Loading")
+    bool HasActiveBarriers() const;
+
+    /**
+     * @brief 获取当前尚未释放的加载就绪屏障数量
+     * @return 活跃屏障数
+     */
+    UFUNCTION(BlueprintPure, Category = "GameCore|Loading")
+    int32 GetActiveBarrierCount() const;
+
 private:
+    friend class FLoadingBarrierToken;
+
+    /**
+     * @brief 内部释放指定 ID 的加载就绪屏障；若地图已加载完成且屏障全部归零则触发加载结束广播
+     * @param BarrierId 屏障唯一递增 ID
+     */
+    void ReleaseLoadingBarrierInternal(uint64 BarrierId);
+
     /**
      * @brief 引擎开始加载地图委托回调
      * @param MapName 即将加载的目标地图路径
@@ -89,6 +120,11 @@ private:
      * @param LoadedWorld 加载完成的新世界对象指针
      */
     void OnPostLoadMap(UWorld* LoadedWorld);
+
+    /**
+     * @brief 完成本次加载流转状态复位并对外广播结束事件
+     */
+    void FinishLoadingTransition();
 
 private:
     /**
@@ -102,4 +138,8 @@ private:
      */
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GameCore|Loading", meta = (AllowPrivateAccess = "true"))
     FName TargetLevelName = NAME_None;
+
+    TMap<uint64, FName> ActiveBarriers;
+    uint64 NextBarrierId = 0ULL;
+    bool bMapLoadCompletedPendingBarriers = false;
 };

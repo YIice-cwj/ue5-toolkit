@@ -4,7 +4,9 @@
 
 #include "Modules/ModuleManager.h"
 
+#include "Asset/FGameAssetLoader.h"
 #include "Config/GameCompileSwitches.h"
+#include "Debug/FGameCheatRegistry.h"
 #include "Registration/FGameCoreRegistration.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogGameCore, Log, All);
@@ -49,6 +51,8 @@ void FGameCoreModule::StartupModule() {
  * @brief 模块卸载实现：清理基础注册并记录注销里程碑
  */
 void FGameCoreModule::ShutdownModule() {
+    FGameAssetLoader::ClearAllPinnedAssets();
+    FGameCheatRegistry::Get().ClearAll();
     FGameCoreRegistration::UnregisterAll(nullptr);
     if constexpr (Game::Config::bEnableLog) {
         UE_LOG(LogGameCore, Log, TEXT("【GameCore】核心层主模块注销完成。"));

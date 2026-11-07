@@ -9,7 +9,7 @@
 
 本项目采用**分层解耦、零无序依赖、契约优先与配置驱动**的设计哲学。无论是从零起步的新项目，还是已有成熟的大型游戏工程，均可按需引入特定的独立插件或工具，亦可直接以 Git Submodule / 软链接模式快速挂载。
 
-> 当前插件版本以各插件 `.uplugin` 的 `VersionName` 为准（GameGameplayCore 为 **2.1.0**，其余插件为 **2.0.0**）。旧 API 迁移见 [MIGRATION.md](MIGRATION.md)，发布检查见 [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)，性能预算见 [Performance.md](Plugins/GameCore/Docs/Architecture/Performance.md)。
+> 当前插件版本以各插件 `.uplugin` 的 `VersionName` 为准（GameCore 与 GameGameplayCore 为 **2.1.0**，其余插件为 **2.0.0**）。旧 API 迁移见 [MIGRATION.md](MIGRATION.md)，发布检查见 [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)，性能预算见 [Performance.md](Plugins/GameCore/Docs/Architecture/Performance.md)。
 
 ---
 
@@ -71,7 +71,7 @@ graph TD
 
 | 插件名称 | 职责定位 | 核心特性 | 依赖关系 | 文档入口 |
 | :--- | :--- | :--- | :--- | :--- |
-| [**GameCore**](Plugins/GameCore/README.md) | 底层基础设施 | 宏真源编译开关、读写分离配置中心、`FListenerHub`、`FObservableRegistry`（Key 订阅 + 初始回放）、`GameplayMessageSubsystem`、通用对象池、HitStop 顿帧、代际安全版本化缓存 | 零外部依赖 (仅依赖引擎基础库) | [文档中心](Plugins/GameCore/Docs/Architecture/Overview.md) |
+| [**GameCore**](Plugins/GameCore/README.md) | 底层基础设施 | 宏真源编译开关、配置中心与 INI/CLI 桥接、PCG32 确定性随机流与防脸黑抽卡、`TGameResult` 与代际 `TSlotMap`、轻量状态机与帧率无关阻尼数学、`FListenerHub`、`FObservableRegistry`、`GameplayMessageSubsystem`（含跨线程入队）、Actor/UObject 双轨对象池（分帧预热）、软引用异步资源门面、主线程时间切片、加载就绪屏障与 GM 注册表 | 零外部依赖 (仅依赖引擎基础库) | [文档中心](Plugins/GameCore/Docs/Architecture/Overview.md) |
 | [**GameLogging**](Plugins/GameLogging/README.md) | 全局日志中枢 | 模块分类一键 RAII 注册、动态容量注册表、双轨分发架构、Epoch 纪元安全缓存、`GAME_LOG_THROTTLE` 限频、Shipping 零开销、零网络耦合远程日志管道（MPSC 队列 / GLog 挂载 / 总线广播） | `GameCore`, `GameplayMessageRuntime` | [文档中心](Plugins/GameLogging/Docs/Architecture/Overview.md) |
 | [**GameGameplayCore**](Plugins/GameGameplayCore/README.md) | 战斗核心契约 | 零 GAS 强依赖、`IDamageable` 泛型可受击契约、闭环同步打击反馈、通用数值 `UGameStatComponent`（属性字典 / 修正器 / 按 Tag 订阅）、生命组件 `UGameVitalComponent`（存活状态机 / 复活）、通用 Buff `UGameBuffComponent` | `GameCore`, `GameLogging` | [文档中心](Plugins/GameGameplayCore/Docs/Architecture/Overview.md) |
 | [**GameGameplay**](Plugins/GameGameplay/README.md) | GAS 业务绑定 | 通用 ASC 基类、全时序自动握手 Bootstrap 组件、双轨元属性集、运行时通道 Registry 的 ExecCalc、GAS Buff 桥接、UI 属性解耦映射 | `GameGameplayCore`, `GameplayAbilities`, `GameCore`, `GameLogging` | [文档中心](Plugins/GameGameplay/Docs/Architecture/Overview.md) |

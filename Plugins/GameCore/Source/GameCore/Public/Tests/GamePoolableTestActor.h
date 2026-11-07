@@ -42,8 +42,16 @@ public:
         }
     }
 
+    void OnAcquireFromPoolWithPayload(const void* InPayload) override {
+        OnAcquireFromPool_Implementation();
+        if (InPayload != nullptr) {
+            LastReceivedPayloadValue = *reinterpret_cast<const int32*>(InPayload);
+        }
+    }
+
     int32 AcquireCount = 0;
     int32 ReleaseCount = 0;
+    int32 LastReceivedPayloadValue = 0;
     TFunction<void(AGamePoolableTestActor*)> AcquireCallback;
     TFunction<void(AGamePoolableTestActor*)> ReleaseCallback;
 };

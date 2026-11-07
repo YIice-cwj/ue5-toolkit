@@ -69,6 +69,36 @@ public:
     }
 
     /**
+     * @brief 预分配节点池与哈希表容量
+     * @param Capacity 预期容量上限
+     */
+    void Reserve(int32 Capacity) {
+        Pool.Reserve(Capacity);
+        KeyToNode.Reserve(Capacity);
+    }
+
+    /**
+     * @brief 检查指定键是否存在于 LRU 索引中
+     * @param Key 目标缓存键
+     * @return 存在返回 true
+     */
+    [[nodiscard]] bool Contains(FName Key) const {
+        return KeyToNode.Contains(Key);
+    }
+
+    /**
+     * @brief 检查指定键是否处于活跃链表头部（最热条目）
+     * @param Key 目标缓存键
+     * @return 处于头部返回 true
+     */
+    [[nodiscard]] bool IsHead(FName Key) const {
+        if (const int32* FoundIdx = KeyToNode.Find(Key)) {
+            return Head == *FoundIdx;
+        }
+        return false;
+    }
+
+    /**
      * @brief 刷新指定键的访问热度（将其移至双向链表头部）
      * @param Key 被访问的缓存键
      */
@@ -84,6 +114,24 @@ public:
 
         RemoveFromChain(NodeIdx);
         InsertAtHead(NodeIdx);
+    }
+
+    /**
+     * @brief 从索引池与双向链表中移除指定键并回收节点槽位
+     * @param Key 待移除的缓存键
+     * @return 成功移除返回 true，键不存在返回 false
+     */
+    bool Remove(FName Key) {
+        if (const int32* FoundIdx = KeyToNode.Find(Key)) {
+            const int32 NodeIdx = *FoundIdx;
+            RemoveFromChain(NodeIdx);
+            KeyToNode.Remove(Key);
+            Pool[NodeIdx].Key = NAME_None;
+            Pool[NodeIdx].Next = FreeHead;
+            FreeHead = NodeIdx;
+            return true;
+        }
+        return false;
     }
 
     /**

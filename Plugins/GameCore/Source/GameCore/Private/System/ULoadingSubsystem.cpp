@@ -5,10 +5,12 @@
 
 #include "System/ULoadingSubsystem.h"
 
+#include "Config/GameCompileSwitches.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "Kismet/GameplayStatics.h"
+
 DEFINE_LOG_CATEGORY_STATIC(LogGameLoading, Log, All);
 
 ULoadingSubsystem* ULoadingSubsystem::Get(const UObject* WorldContextObject) {
@@ -29,37 +31,56 @@ void ULoadingSubsystem::Initialize(FSubsystemCollectionBase& Collection) {
     Super::Initialize(Collection);
     FCoreUObjectDelegates::PreLoadMap.AddUObject(this, &ULoadingSubsystem::OnPreLoadMap);
     FCoreUObjectDelegates::PostLoadMapWithWorld.AddUObject(this, &ULoadingSubsystem::OnPostLoadMap);
-    UE_LOG(LogGameLoading, Log, TEXT("【加载子系统】已挂钩引擎地图加载生命周期委托。"));
+    if constexpr (Game::Config::bEnableLog) {
+        UE_LOG(LogGameLoading, Log, TEXT("【加载子系统】已挂钩引擎地图加载生命周期委托。"));
+    }
 }
 
 void ULoadingSubsystem::Deinitialize() {
     FCoreUObjectDelegates::PreLoadMap.RemoveAll(this);
     FCoreUObjectDelegates::PostLoadMapWithWorld.RemoveAll(this);
-    UE_LOG(LogGameLoading, Log, TEXT("【加载子系统】已注销引擎地图加载生命周期委托。"));
+    ActiveBarriers.Reset();
+    bMapLoadCompletedPendingBarriers = false;
+    if constexpr (Game::Config::bEnableLog) {
+        UE_LOG(LogGameLoading, Log, TEXT("【加载子系统】已注销引擎地图加载生命周期委托。"));
+    }
     Super::Deinitialize();
 }
 
 void ULoadingSubsystem::OpenLevelWithLoading(const FName& LevelName) {
     if (bIsLoading) {
-        UE_LOG(LogGameLoading, Warning, TEXT("【加载子系统】OpenLevelWithLoading 被重复调用，当前仍处于加载中，忽略本次请求。"));
+        if constexpr (Game::Config::bEnableLog) {
+            UE_LOG(LogGameLoading, Warning, TEXT("【加载子系统】OpenLevelWithLoading 被重复调用，当前仍处于加载中，忽略本次请求。"));
+        }
         return;
     }
     if (LevelName.IsNone()) {
-        UE_LOG(LogGameLoading, Warning, TEXT("【加载子系统】OpenLevelWithLoading 执行失败：目标关卡名称为空 (None)。"));
+        if constexpr (Game::Config::bEnableLog) {
+            UE_LOG(LogGameLoading, Warning, TEXT("【加载子系统】OpenLevelWithLoading 执行失败：目标关卡名称为空 (None)。"));
+        }
         return;
     }
 
     UGameInstance* GameInstance = GetGameInstance();
     if (GameInstance == nullptr || GameInstance->GetWorld() == nullptr) {
-        UE_LOG(LogGameLoading, Warning, TEXT("【加载子系统】OpenLevelWithLoading 执行失败：GameInstance 或世界上下文无效，未置位加载态。"));
+        if constexpr (Game::Config::bEnableLog) {
+            UE_LOG(LogGameLoading, Warning, TEXT("【加载子系统】OpenLevelWithLoading 执行失败：GameInstance 或世界上下文无效，未置位加载态。"));
+        }
         return;
     }
 
     bIsLoading = true;
+    bMapLoadCompletedPendingBarriers = false;
     TargetLevelName = LevelName;
     OnLoadingStateChanged.Broadcast(true, TargetLevelName);
 
     UGameplayStatics::OpenLevel(GameInstance, LevelName);
+}
+
+TSharedRef<FLoadingBarrierToken> ULoadingSubsystem::AcquireLoadingBarrier(const FName& BarrierName) {
+    const uint64 BarrierId = ++NextBarrierId;
+    ActiveBarriers.Add(BarrierId, BarrierName);
+    return MakeShareable(new FLoadingBarrierToken(this, BarrierId, BarrierName));
 }
 
 bool ULoadingSubsystem::IsLoading() const {
@@ -70,12 +91,33 @@ FName ULoadingSubsystem::GetTargetLevelName() const {
     return TargetLevelName;
 }
 
+bool ULoadingSubsystem::HasActiveBarriers() const {
+    return !ActiveBarriers.IsEmpty();
+}
+
+int32 ULoadingSubsystem::GetActiveBarrierCount() const {
+    return ActiveBarriers.Num();
+}
+
+void ULoadingSubsystem::ReleaseLoadingBarrierInternal(uint64 BarrierId) {
+    if (ActiveBarriers.Remove(BarrierId) == 0) {
+        return;
+    }
+
+    if (ActiveBarriers.IsEmpty() && bIsLoading && bMapLoadCompletedPendingBarriers) {
+        FinishLoadingTransition();
+    }
+}
+
 void ULoadingSubsystem::OnPreLoadMap(const FString& MapName) {
+    bMapLoadCompletedPendingBarriers = false;
     if (!bIsLoading) {
         bIsLoading = true;
         TargetLevelName = FName(*MapName);
         OnLoadingStateChanged.Broadcast(true, TargetLevelName);
-        UE_LOG(LogGameLoading, Log, TEXT("【加载子系统】引擎触发 PreLoadMap，即将开始载入地图: %s"), *MapName);
+        if constexpr (Game::Config::bEnableLog) {
+            UE_LOG(LogGameLoading, Log, TEXT("【加载子系统】引擎触发 PreLoadMap，即将开始载入地图: %s"), *MapName);
+        }
     }
 }
 
@@ -84,11 +126,30 @@ void ULoadingSubsystem::OnPostLoadMap(UWorld* LoadedWorld) {
         return;
     }
 
-    if (bIsLoading) {
-        bIsLoading = false;
-        const FName CompletedLevelName = TargetLevelName;
-        TargetLevelName = NAME_None;
-        OnLoadingStateChanged.Broadcast(false, CompletedLevelName);
-        UE_LOG(LogGameLoading, Log, TEXT("【加载子系统】引擎完成 PostLoadMap，目标关卡 [%s] 加载就绪。"), *CompletedLevelName.ToString());
+    if (!bIsLoading) {
+        return;
+    }
+
+    if (!ActiveBarriers.IsEmpty()) {
+        bMapLoadCompletedPendingBarriers = true;
+        if constexpr (Game::Config::bEnableLog) {
+            UE_LOG(LogGameLoading, Log, TEXT("【加载子系统】PostLoadMap 已完成，等待 %d 个异步就绪屏障释放后再关闭幕布。"),
+                ActiveBarriers.Num());
+        }
+        return;
+    }
+
+    FinishLoadingTransition();
+}
+
+void ULoadingSubsystem::FinishLoadingTransition() {
+    bMapLoadCompletedPendingBarriers = false;
+    bIsLoading = false;
+    const FName CompletedLevelName = TargetLevelName;
+    TargetLevelName = NAME_None;
+    OnLoadingStateChanged.Broadcast(false, CompletedLevelName);
+    if constexpr (Game::Config::bEnableLog) {
+        UE_LOG(LogGameLoading, Log, TEXT("【加载子系统】目标关卡 [%s] 及全部就绪屏障已完成，退出加载态。"),
+            *CompletedLevelName.ToString());
     }
 }

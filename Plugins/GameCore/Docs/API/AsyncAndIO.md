@@ -1,9 +1,11 @@
-# GameCore 异步任务、目录监听与关卡流转 API 参考
+# GameCore 异步任务、时间切片、资源加载、目录监听与关卡流转 API 参考
 
-本文档汇总 `GameCore` 提供的三个跨系统支撑设施：
-1. `FGameThreadTaskRunner`：后台任务与回主线程安全续体
-2. `FDirectoryChangeWatcher`：通用目录时间戳轮询监听器
-3. `ULoadingSubsystem`：关卡流转与加载遮罩调度子系统
+本文档汇总 `GameCore` 提供的五个跨系统异步与流转支撑设施：
+1. `FGameThreadTaskRunner`：后台工作线程任务与回主线程安全续体
+2. `UTimeSlicedTaskSubsystem`：主线程帧预算时间切片调度器（平摊重型主线程批处理防掉帧）
+3. `FGameAssetLoader`：宿主弱引用安全软引用异步资源加载门面
+4. `FDirectoryChangeWatcher`：通用目录时间戳轮询监听器
+5. `ULoadingSubsystem` + `FLoadingBarrierToken`：关卡流转与异步业务就绪屏障调度子系统
 
 ---
 
@@ -161,4 +163,76 @@ public:
 ### 典型用法
 
 蓝图侧在 `BeginPlay` 绑定 `OnLoadingStateChanged` 控制遮罩显隐，跳转统一走 `OpenLevelWithLoading`；`IsLoading` / `GetTargetLevelName` 供纯查询与断线恢复判断。
+在 C++ 中，若关卡加载完毕后还需等待对象池分帧预热或核心资产异步加载完成再揭开加载幕布，可调用 `TSharedRef<FLoadingBarrierToken> Token = LoadingSubsystem->AcquireLoadingBarrier(TEXT("PoolWarmup"))`：当 `PostLoadMap` 到达而仍存在未释放屏障时，幕布自动保持开启，直至所有屏障令牌调用 `Release()` 或离开作用域 RAII 析构后才统一广播 `OnLoadingStateChanged(false, LevelName)`。
+
+---
+
+## 4. `UTimeSlicedTaskSubsystem` (主线程帧预算时间切片执行器)
+
+头文件：
+- `#include "Tasks/UTimeSlicedTaskSubsystem.h"`
+- `#include "Tasks/FTimeSlicedTaskHandle.h"`
+
+基类：`UTickableWorldSubsystem`（当任务队列为空时 `IsTickable()` 返回 `false`，保持零空闲 Tick 损耗）
+
+- `SetFrameBudgetMilliseconds(double BudgetMs)`：配置单帧最大执行预算（默认 `1.5ms`）。
+- `EnqueueTask(Owner, StepWork)` / `EnqueueGlobalTask(StepWork)`：步进闭包返回 `true` 代表尚有后续工作留待下一帧，返回 `false` 代表完成。宿主 `Owner` 销毁时自动摘除跳过。
+- `EnqueueBatch(Owner, TotalCount, PerItemWork, OnComplete)`：定长数组分帧批处理并在全部完成后回调 `OnComplete`。
+- 返回 `FTimeSlicedTaskHandle`，支持随时调用 `Cancel()`（即使在步进回调内部自取消亦安全）。
+
+---
+
+## 5. `FGameAssetLoader` 与 `FScopedPinnedAsset` (安全软引用资产加载与内存保活门面)
+
+头文件：
+- `#include "Asset/FGameAssetLoader.h"`
+- `#include "Asset/FGameAssetLoadHandle.h"`
+
+封装引擎 `UAssetManager::GetStreamableManager()`，补齐宿主弱引用守卫、强类型类加载与内存保活原语：
+- **异步安全加载**：
+  - `LoadAsync<TAsset>(SoftAsset, Owner, OnLoaded, Priority)`：异步加载对象实例，常驻短路，宿主销毁自动防悬垂。
+  - `LoadClassAsync<TClass>(SoftClass, Owner, OnLoaded, Priority)`：异步加载蓝图类或 C++ 派生类并解析 `UClass*`。
+  - `LoadBatchAsync(AssetPaths, Owner, OnAllLoaded, Priority)`：批量异步加载一组软路径，过滤无效路径并提供批次通知。
+- **同步阻塞降级**：
+  - `LoadSync<TAsset>(SoftAsset)`：同步阻塞加载资产裸指针（常驻则直接返回）。
+  - `LoadClassSync<TClass>(SoftClass)`：同步阻塞加载目标 `UClass*`。
+- **内存保活与防 GC 误杀**：
+  - `PinAsset(AssetPath)` / `UnpinAsset(AssetPath)`：引用计数管理底层流式句柄持有，杜绝未挂载被 GC 误杀。
+  - `IsAssetPinned(AssetPath)` / `ClearAllPinnedAssets()`：状态查询与测试重置。
+  - `FScopedPinnedAsset`：基于 RAII 的作用域保活句柄，离开作用域自动执行 `UnpinAsset`。
+- 返回 `FGameAssetLoadHandle`，支持 `Cancel()`、`GetProgress()`、`IsLoading()` 与 `HasCompleted()`。若宿主 `Owner` 在磁盘 I/O 完成前已销毁，完成回调自动短路丢弃，杜绝野指针崩溃。
+
+---
+
+## 6. `UThrottledTickerSubsystem` (分级交错节流心跳子系统)
+
+头文件：
+- `#include "Tasks/UThrottledTickerSubsystem.h"`
+- `#include "Tasks/FThrottledTickTypes.h"`
+
+### 职责与原理
+- 解决海量纯 C++ 实体、AI 决策、未挂载 Component 的轻量对象每帧 Tick 开销过大的痛点；
+- 支持预设频率档位（`EveryFrame`、`Rate30Hz`、`Rate10Hz`、`Rate2Hz`、`Rate1Hz`）或自定义秒级间隔；
+- **分相交错（Interleaved Phase Staggering）**：注册时自动计算相位偏移，将相同频率的心跳对象均匀打散到不同帧执行，彻底削峰平摊帧耗时；
+- **宿主弱引用守卫**：宿主对象销毁时自动短路并不解引用，Tick 结束后自动安全剔除；
+- **零空闲开销**：当没有注册任务时，`IsTickable()` 返回 `false` 自动休眠；
+- 返回 `FThrottledTickHandle`，支持随时 `Unregister()`、`SetRate()` 或 `SetInterval()` 动态调频。
+
+```cpp
+UThrottledTickerSubsystem& Ticker = UThrottledTickerSubsystem::Get(GetWorld());
+
+// 注册 10Hz 节流心跳（自动分相平摊，宿主销毁自动解挂）
+FThrottledTickHandle Handle = Ticker.RegisterTick(
+    this,
+    EThrottledRate::Rate10Hz,
+    [this](float AccumulatedDeltaTime) {
+        this->PerformLowFrequencyUpdate(AccumulatedDeltaTime);
+    }
+);
+
+// 动态调频或主动解挂
+Handle.SetRate(EThrottledRate::Rate2Hz);
+Handle.Unregister();
+```
+
 
