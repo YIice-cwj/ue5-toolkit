@@ -67,29 +67,29 @@ bool FGameNetPacketCodecTest::RunTest([[maybe_unused]] const FString& Parameters
     TestEqual(TEXT("小端序 MessageId 首字节为 0x04"), WireHeader[8], static_cast<uint8>(0x04));
     TestEqual(TEXT("小端序 MessageId 末字节为 0x01"), WireHeader[11], static_cast<uint8>(0x01));
 
-    TestFalse(TEXT("空切片反解报文头返回空值"), FNetPacketCodec::TryDecodeHeader({}).IsSet());
-    TestFalse(
-        TEXT("不足 16 字节切片反解返回空值"),
-        FNetPacketCodec::TryDecodeHeader(TConstArrayView<uint8>(WireHeader.GetData(), 15)).IsSet()
+    TestTrue(TEXT("空切片反解报文头返回失败态"), FNetPacketCodec::TryDecodeHeader({}).IsFailure());
+    TestTrue(
+        TEXT("不足 16 字节切片反解返回失败态"),
+        FNetPacketCodec::TryDecodeHeader(TConstArrayView<uint8>(WireHeader.GetData(), 15)).IsFailure()
     );
 
-    const TOptional<FNetPacketHeader> Decoded = FNetPacketCodec::TryDecodeHeader(WireHeader);
-    TestTrue(TEXT("完整 16 字节切片成功反解"), Decoded.IsSet());
-    if (!Decoded.IsSet()) {
+    const TGameStatusResult<FNetPacketHeader> Decoded = FNetPacketCodec::TryDecodeHeader(WireHeader);
+    TestTrue(TEXT("完整 16 字节切片成功反解"), Decoded.IsSuccess());
+    if (Decoded.IsFailure()) {
         return false;
     }
-    TestTrue(TEXT("反解后的报文头与原始结构严格相等"), *Decoded == Original);
+    TestTrue(TEXT("反解后的报文头与原始结构严格相等"), Decoded.GetValue() == Original);
 
     const TArray<uint8> EmptyFrame = FNetPacketCodec::EncodeFrame(Original, {});
     TestEqual(TEXT("空负载帧总长度为 16 字节"), EmptyFrame.Num(), 16);
-    const TOptional<FNetPacketHeader> EmptyDecoded = FNetPacketCodec::TryDecodeHeader(EmptyFrame);
-    TestTrue(TEXT("空负载帧头自动归一化 PayloadLength 为 0"), EmptyDecoded.IsSet() && EmptyDecoded->PayloadLength == 0);
+    const TGameStatusResult<FNetPacketHeader> EmptyDecoded = FNetPacketCodec::TryDecodeHeader(EmptyFrame);
+    TestTrue(TEXT("空负载帧头自动归一化 PayloadLength 为 0"), EmptyDecoded.IsSuccess() && EmptyDecoded.GetValue().PayloadLength == 0);
 
     const uint8 SamplePayload[] = {10, 20, 30, 40, 50};
     const TArray<uint8> FullFrame = FNetPacketCodec::EncodeFrame(Original, SamplePayload);
     TestEqual(TEXT("带 5 字节负载的完整帧长度为 21"), FullFrame.Num(), 21);
-    const TOptional<FNetPacketHeader> FullDecoded = FNetPacketCodec::TryDecodeHeader(FullFrame);
-    TestTrue(TEXT("带负载帧头 PayloadLength 归一化为 5"), FullDecoded.IsSet() && FullDecoded->PayloadLength == 5);
+    const TGameStatusResult<FNetPacketHeader> FullDecoded = FNetPacketCodec::TryDecodeHeader(FullFrame);
+    TestTrue(TEXT("带负载帧头 PayloadLength 归一化为 5"), FullDecoded.IsSuccess() && FullDecoded.GetValue().PayloadLength == 5);
 
     return true;
 }

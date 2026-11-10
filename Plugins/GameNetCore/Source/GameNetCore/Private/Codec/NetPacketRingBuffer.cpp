@@ -52,24 +52,28 @@ FNetFrameDecodeOutcome FNetPacketRingBuffer::TryPopPacket() {
     uint8 RawHeader[FNetPacketHeader::WIRE_HEADER_BYTES];
     CopyFromOffset(0, RawHeader, FNetPacketHeader::WIRE_HEADER_BYTES);
 
-    const TOptional<FNetPacketHeader> ParsedHeader = FNetPacketCodec::TryDecodeHeader(RawHeader);
-    const ENetFrameParseStatus ValidationStatus = FNetPacketCodec::ValidateHeader(*ParsedHeader, MaxAllowedPayloadBytes);
+    const TGameStatusResult<FNetPacketHeader> ParsedHeader = FNetPacketCodec::TryDecodeHeader(RawHeader);
+    if (ParsedHeader.IsFailure()) {
+        Reset();
+        return FNetFrameDecodeOutcome{ENetFrameParseStatus::InvalidMagic, {}};
+    }
+    const ENetFrameParseStatus ValidationStatus = FNetPacketCodec::ValidateHeader(ParsedHeader.GetValue(), MaxAllowedPayloadBytes);
     if (ValidationStatus != ENetFrameParseStatus::CompleteFrame) {
         Reset();
         return FNetFrameDecodeOutcome{ValidationStatus, {}};
     }
 
     const int64 TotalFrameBytes =
-        static_cast<int64>(FNetPacketHeader::WIRE_HEADER_BYTES) + static_cast<int64>(ParsedHeader->PayloadLength);
+        static_cast<int64>(FNetPacketHeader::WIRE_HEADER_BYTES) + static_cast<int64>(ParsedHeader.GetValue().PayloadLength);
     if (static_cast<int64>(ReadableBytes) < TotalFrameBytes) {
         return FNetFrameDecodeOutcome{ENetFrameParseStatus::NeedMoreData, {}};
     }
 
     FNetFrameDecodeOutcome Outcome;
     Outcome.Status = ENetFrameParseStatus::CompleteFrame;
-    Outcome.Packet.Header = *ParsedHeader;
-    if (ParsedHeader->PayloadLength > 0) {
-        const int32 PayloadBytes = static_cast<int32>(ParsedHeader->PayloadLength);
+    Outcome.Packet.Header = ParsedHeader.GetValue();
+    if (ParsedHeader.GetValue().PayloadLength > 0) {
+        const int32 PayloadBytes = static_cast<int32>(ParsedHeader.GetValue().PayloadLength);
         Outcome.Packet.Payload.SetNumUninitialized(PayloadBytes);
         CopyFromOffset(FNetPacketHeader::WIRE_HEADER_BYTES, Outcome.Packet.Payload.GetData(), PayloadBytes);
     }

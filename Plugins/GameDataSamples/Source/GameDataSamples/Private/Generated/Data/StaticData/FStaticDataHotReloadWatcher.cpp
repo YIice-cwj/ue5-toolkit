@@ -4,7 +4,7 @@
  */
 #include "Generated/Data/StaticData/FStaticDataHotReloadWatcher.h"
 
-#include "IO/FDirectoryChangeWatcher.h"
+#include "Utils/FDirectoryChangeWatcher.h"
 #include "Generated/Data/StaticData/UStaticDataSubsystem.h"
 #include "Config/GameCompileSwitches.h"
 

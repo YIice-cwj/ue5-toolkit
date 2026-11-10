@@ -133,12 +133,12 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSnapshotStoreReloadLatchTest, "Game.Data.Snaps
 bool FSnapshotStoreReloadLatchTest::RunTest([[maybe_unused]] const FString& Parameters) {
     FStaticDataSnapshotStore Store;
 
-    TestTrue(TEXT("首次抢占重载门闩成功"), Store.TryBeginReload());
-    TestFalse(TEXT("重载进行中二次抢占必失败"), Store.TryBeginReload());
+    TestTrue(TEXT("首次抢占重载门闩成功"), Store.TryBeginReload().IsSuccess());
+    TestTrue(TEXT("重载进行中二次抢占必失败"), Store.TryBeginReload().IsFailure());
 
     Store.EndReload();
-    TestTrue(TEXT("释放门闩后可再次抢占"), Store.TryBeginReload());
-    TestFalse(TEXT("再次抢占后二次抢占仍失败"), Store.TryBeginReload());
+    TestTrue(TEXT("释放门闩后可再次抢占"), Store.TryBeginReload().IsSuccess());
+    TestTrue(TEXT("再次抢占后二次抢占仍失败"), Store.TryBeginReload().IsFailure());
     Store.EndReload();
     return true;
 }

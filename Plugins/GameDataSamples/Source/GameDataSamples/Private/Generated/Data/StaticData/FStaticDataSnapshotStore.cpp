@@ -41,11 +41,14 @@ void FStaticDataSnapshotStore::Publish(TSharedPtr<const FStaticDataSnapshot> Nex
 
 /**
  * @brief CAS 抢占重载门闩
- * @return 抢占成功返回 true，已有重载进行中返回 false
+ * @return 抢占成功返回 Success，已有重载进行中返回 Failure(7001)
  */
-bool FStaticDataSnapshotStore::TryBeginReload() {
+TGameStatusResult<void> FStaticDataSnapshotStore::TryBeginReload() {
     bool bExpected = false;
-    return bReloadInProgress.compare_exchange_strong(bExpected, true);
+    if (!bReloadInProgress.compare_exchange_strong(bExpected, true)) {
+        return TGameStatusResult<void>::Failure(7001, TEXT("Reload is already in progress"));
+    }
+    return TGameStatusResult<void>::Success();
 }
 
 /**

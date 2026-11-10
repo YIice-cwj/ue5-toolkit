@@ -49,52 +49,52 @@ bool FGameNetJsonSerializerTest::RunTest([[maybe_unused]] const FString& Paramet
     const FJsonNetSerializer DefaultJsonSerializer;
     TestFalse(TEXT("默认 JSON 序列化器关闭严格模式以保持向前兼容"), DefaultJsonSerializer.IsStrictMode());
 
-    TestFalse(TEXT("JSON 序列化空数据指针返回空值"), DefaultJsonSerializer.Serialize(nullptr, StructMeta).IsSet());
-    TestFalse(TEXT("JSON 序列化空类型指针返回空值"), DefaultJsonSerializer.Serialize(&Expected, nullptr).IsSet());
+    TestTrue(TEXT("JSON 序列化空数据指针返回失败态"), DefaultJsonSerializer.Serialize(nullptr, StructMeta).IsFailure());
+    TestTrue(TEXT("JSON 序列化空类型指针返回失败态"), DefaultJsonSerializer.Serialize(&Expected, nullptr).IsFailure());
 
-    const TOptional<TArray<uint8>> JsonBytes = DefaultJsonSerializer.SerializeStruct(Expected);
-    TestTrue(TEXT("JSON 泛型序列化复杂结构体成功"), JsonBytes.IsSet() && !JsonBytes->IsEmpty());
-    if (!JsonBytes.IsSet()) {
+    const TGameStatusResult<TArray<uint8>> JsonBytes = DefaultJsonSerializer.SerializeStruct(Expected);
+    TestTrue(TEXT("JSON 泛型序列化复杂结构体成功"), JsonBytes.IsSuccess() && !JsonBytes.GetValue().IsEmpty());
+    if (JsonBytes.IsFailure()) {
         return false;
     }
 
-    const TOptional<FGameNetTestPurchaseRsp> JsonDecoded =
-        DefaultJsonSerializer.DeserializeStruct<FGameNetTestPurchaseRsp>(*JsonBytes);
-    TestTrue(TEXT("JSON 泛型反序列化成功"), JsonDecoded.IsSet());
-    if (!JsonDecoded.IsSet()) {
+    const TGameStatusResult<FGameNetTestPurchaseRsp> JsonDecoded =
+        DefaultJsonSerializer.DeserializeStruct<FGameNetTestPurchaseRsp>(JsonBytes.GetValue());
+    TestTrue(TEXT("JSON 泛型反序列化成功"), JsonDecoded.IsSuccess());
+    if (JsonDecoded.IsFailure()) {
         return false;
     }
 
-    TestEqual(TEXT("bSuccess 字段一致"), JsonDecoded->bSuccess, Expected.bSuccess);
-    TestEqual(TEXT("RemainingGold 字段一致"), JsonDecoded->RemainingGold, Expected.RemainingGold);
-    TestTrue(TEXT("DiscountRate 浮点近似一致"), FMath::IsNearlyEqual(JsonDecoded->DiscountRate, Expected.DiscountRate));
-    TestEqual(TEXT("ReceiptMessage 字符串一致"), JsonDecoded->ReceiptMessage, Expected.ReceiptMessage);
-    TestEqual(TEXT("GrantedSerialNumbers 数组一致"), JsonDecoded->GrantedSerialNumbers, Expected.GrantedSerialNumbers);
-    TestTrue(TEXT("BonusItem 嵌套结构一致"), JsonDecoded->BonusItem == Expected.BonusItem);
+    TestEqual(TEXT("bSuccess 字段一致"), JsonDecoded.GetValue().bSuccess, Expected.bSuccess);
+    TestEqual(TEXT("RemainingGold 字段一致"), JsonDecoded.GetValue().RemainingGold, Expected.RemainingGold);
+    TestTrue(TEXT("DiscountRate 浮点近似一致"), FMath::IsNearlyEqual(JsonDecoded.GetValue().DiscountRate, Expected.DiscountRate));
+    TestEqual(TEXT("ReceiptMessage 字符串一致"), JsonDecoded.GetValue().ReceiptMessage, Expected.ReceiptMessage);
+    TestEqual(TEXT("GrantedSerialNumbers 数组一致"), JsonDecoded.GetValue().GrantedSerialNumbers, Expected.GrantedSerialNumbers);
+    TestTrue(TEXT("BonusItem 嵌套结构一致"), JsonDecoded.GetValue().BonusItem == Expected.BonusItem);
 
     FGameNetTestPurchaseRsp TempOut;
-    TestFalse(TEXT("JSON 反序列化空字节切片返回 false"), DefaultJsonSerializer.Deserialize({}, StructMeta, &TempOut));
-    TestFalse(TEXT("JSON 反序列化空类型指针返回 false"), DefaultJsonSerializer.Deserialize(*JsonBytes, nullptr, &TempOut));
-    TestFalse(TEXT("JSON 反序列化空目标指针返回 false"), DefaultJsonSerializer.Deserialize(*JsonBytes, StructMeta, nullptr));
+    TestTrue(TEXT("JSON 反序列化空字节切片返回失败态"), DefaultJsonSerializer.Deserialize({}, StructMeta, &TempOut).IsFailure());
+    TestTrue(TEXT("JSON 反序列化空类型指针返回失败态"), DefaultJsonSerializer.Deserialize(JsonBytes.GetValue(), nullptr, &TempOut).IsFailure());
+    TestTrue(TEXT("JSON 反序列化空目标指针返回失败态"), DefaultJsonSerializer.Deserialize(JsonBytes.GetValue(), StructMeta, nullptr).IsFailure());
 
     const ANSICHAR BrokenJson[] = "{invalid_json";
-    TestFalse(
+    TestTrue(
         TEXT("畸形 JSON 文本安全拒绝"),
         DefaultJsonSerializer.Deserialize(
             TConstArrayView<uint8>(reinterpret_cast<const uint8*>(BrokenJson), sizeof(BrokenJson) - 1),
             StructMeta,
             &TempOut
-        )
+        ).IsFailure()
     );
 
     const ANSICHAR ArrayJson[] = "[1, 2, 3]";
-    TestFalse(
+    TestTrue(
         TEXT("非对象顶层 JSON 数组安全拒绝"),
         DefaultJsonSerializer.Deserialize(
             TConstArrayView<uint8>(reinterpret_cast<const uint8*>(ArrayJson), sizeof(ArrayJson) - 1),
             StructMeta,
             &TempOut
-        )
+        ).IsFailure()
     );
 
     const ANSICHAR ForwardCompatJson[] = R"({"bSuccess":true,"remainingGold":777,"unknownServerField":"v2"})";
@@ -102,19 +102,19 @@ bool FGameNetJsonSerializerTest::RunTest([[maybe_unused]] const FString& Paramet
         reinterpret_cast<const uint8*>(ForwardCompatJson),
         sizeof(ForwardCompatJson) - 1
     );
-    const TOptional<FGameNetTestPurchaseRsp> CompatDecoded =
+    const TGameStatusResult<FGameNetTestPurchaseRsp> CompatDecoded =
         DefaultJsonSerializer.DeserializeStruct<FGameNetTestPurchaseRsp>(ForwardCompatView);
-    TestTrue(TEXT("默认非严格模式忽略服务端新增未知字段保持兼容"), CompatDecoded.IsSet());
-    if (CompatDecoded.IsSet()) {
-        TestEqual(TEXT("向前兼容报文已知字段正常读取"), CompatDecoded->RemainingGold, 777);
+    TestTrue(TEXT("默认非严格模式忽略服务端新增未知字段保持兼容"), CompatDecoded.IsSuccess());
+    if (CompatDecoded.IsSuccess()) {
+        TestEqual(TEXT("向前兼容报文已知字段正常读取"), CompatDecoded.GetValue().RemainingGold, 777);
     }
 
     const FJsonNetSerializer StrictJsonSerializer(true);
     TestTrue(TEXT("严格模式标志位查询为 true"), StrictJsonSerializer.IsStrictMode());
     AddExpectedError(TEXT("Missing JSON value named"), EAutomationExpectedErrorFlags::Contains, 1);
-    TestFalse(
+    TestTrue(
         TEXT("严格模式下缺失结构体必填反射字段的报文被拒绝"),
-        StrictJsonSerializer.DeserializeStruct<FGameNetTestPurchaseRsp>(ForwardCompatView).IsSet()
+        StrictJsonSerializer.DeserializeStruct<FGameNetTestPurchaseRsp>(ForwardCompatView).IsFailure()
     );
 
     return true;

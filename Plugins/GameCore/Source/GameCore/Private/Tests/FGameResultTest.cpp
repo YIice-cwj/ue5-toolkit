@@ -11,7 +11,7 @@
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameResultSuccessAndMoveTest,
-    "Game.Core.Types.GameResult.SuccessAndMove",
+    "Game.Core.Result.GameResult.SuccessAndMove",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
@@ -45,7 +45,7 @@ bool FGameResultSuccessAndMoveTest::RunTest([[maybe_unused]] const FString& Para
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameResultFailureAndHomogeneousTest,
-    "Game.Core.Types.GameResult.FailureAndHomogeneousTypes",
+    "Game.Core.Result.GameResult.FailureAndHomogeneousTypes",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
@@ -71,6 +71,43 @@ bool FGameResultFailureAndHomogeneousTest::RunTest([[maybe_unused]] const FStrin
     TestTrue(TEXT("同构类型 Failure 分支正确识别"), HomogeneousErr.IsFailure() && !HomogeneousErr.IsSuccess());
     TestEqual(TEXT("同构类型成功载荷读取无误"), HomogeneousOk.GetValue(), FString(TEXT("PayloadText")));
     TestEqual(TEXT("同构类型失败载荷读取无误"), HomogeneousErr.GetError(), FString(TEXT("PayloadText")));
+
+    struct FNonDefaultConstructibleError {
+        int32 Code;
+        explicit FNonDefaultConstructibleError(int32 InCode)
+            : Code(InCode) {
+        }
+    };
+    const TGameResult<void, FNonDefaultConstructibleError> VoidOk =
+        TGameResult<void, FNonDefaultConstructibleError>::Success();
+    TestTrue(TEXT("TGameResult<void> 支持无默认构造函数的 ErrorType 且成功态零开销"), VoidOk.IsSuccess());
+
+    const TGameResult<void, FNonDefaultConstructibleError> VoidErr =
+        TGameResult<void, FNonDefaultConstructibleError>::Failure(FNonDefaultConstructibleError(503));
+    TestTrue(TEXT("TGameResult<void> 失败态正确保存无默认构造错误对象"), VoidErr.IsFailure());
+    TestEqual(TEXT("TGameResult<void> 提取无默认构造错误码一致"), VoidErr.GetError().Code, 503);
+
+    auto InnerFailInt = []() -> TGameStatusResult<int32> {
+        return TGameStatusResult<int32>::Failure(404, TEXT("ResourceMissing"));
+    };
+    auto OuterPropagateToString = [&InnerFailInt]() -> TGameStatusResult<FString> {
+        TGameStatusResult<int32> LValueResult = InnerFailInt();
+        GAME_TRY_CTX(LValueResult, TEXT("OuterStringStage"));
+        return TGameStatusResult<FString>::Success(TEXT("Unreachable"));
+    };
+    auto TopPropagateToVoid = [&OuterPropagateToString]() -> TGameStatusResult<void> {
+        GAME_TRY_CTX(OuterPropagateToString(), TEXT("TopVoidStage"));
+        return TGameStatusResult<void>::Success();
+    };
+
+    const TGameStatusResult<void> PropagatedVoid = TopPropagateToVoid();
+    TestTrue(TEXT("GAME_TRY_CTX 支持左值与跨不同 TSuccess/void 返回类型链式传播失败"), PropagatedVoid.IsFailure());
+    TestEqual(TEXT("跨类型传播后错误码保持一致"), PropagatedVoid.GetError().ErrorCode, 404);
+    TestTrue(
+        TEXT("跨类型传播后错误消息包含两层调用栈上下文"),
+        PropagatedVoid.GetError().Message.Contains(TEXT("OuterStringStage")) &&
+            PropagatedVoid.GetError().Message.Contains(TEXT("TopVoidStage"))
+    );
 
     return true;
 }

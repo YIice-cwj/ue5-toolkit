@@ -48,30 +48,30 @@ bool FGameNetMockTransportTest::RunTest([[maybe_unused]] const FString& Paramete
 
     FNetPacketHeader DummyHeader;
     DummyHeader.MessageId = 10;
-    TestFalse(TEXT("未连接时 Send 返回 false"), Transport.Send(DummyHeader, {}));
+    TestTrue(TEXT("未连接时 Send 返回失败态"), Transport.Send(DummyHeader, {}).IsFailure());
     TestFalse(TEXT("未连接时 SimulateServerPush 返回 false"), Transport.SimulateServerPush(10, {}));
     Transport.Tick(0.016f);
 
-    TestFalse(TEXT("空端点地址连接被拒绝"), Transport.Connect(TEXT("")));
+    TestTrue(TEXT("空端点地址连接被拒绝返回失败态"), Transport.Connect(TEXT("")).IsFailure());
     TestEqual(TEXT("空端点触发一次错误通知"), ObservedErrors.Num(), 1);
 
     Transport.SetAcceptConnections(false);
-    TestFalse(TEXT("关闭连接许可时 Connect 返回 false"), Transport.Connect(TEXT("mock://rejected")));
+    TestTrue(TEXT("关闭连接许可时 Connect 返回失败态"), Transport.Connect(TEXT("mock://rejected")).IsFailure());
     TestEqual(TEXT("拒绝连接经历 Connecting -> Disconnected 两次状态转移"), ObservedStates.Num(), 2);
     TestEqual(TEXT("拒绝连接后状态回到 Disconnected"), Transport.GetState(), ENetConnectionState::Disconnected);
     TestEqual(TEXT("拒绝连接触发错误回调"), ObservedErrors.Num(), 2);
 
     ObservedStates.Reset();
     Transport.SetAcceptConnections(true);
-    TestTrue(TEXT("开启许可后成功建立虚拟回环连接"), Transport.Connect(TEXT("mock://standalone")));
-    TestFalse(TEXT("已连接状态下重复 Connect 返回 false"), Transport.Connect(TEXT("mock://duplicate")));
+    TestTrue(TEXT("开启许可后成功建立虚拟回环连接"), Transport.Connect(TEXT("mock://standalone")).IsSuccess());
+    TestTrue(TEXT("已连接状态下重复 Connect 返回失败态"), Transport.Connect(TEXT("mock://duplicate")).IsFailure());
     TestEqual(TEXT("连接成功后状态为 Connected"), Transport.GetState(), ENetConnectionState::Connected);
     TestEqual(TEXT("记录的端点地址精确匹配"), Transport.GetConnectedEndpoint(), FString(TEXT("mock://standalone")));
     TestEqual(TEXT("成功连接产生 Connecting -> Connected 两次状态转移"), ObservedStates.Num(), 2);
 
     FNetPacketHeader InvalidHeader;
     InvalidHeader.Magic = 0x0000;
-    TestFalse(TEXT("非法魔数报文头在 Send 边界被拦截"), Transport.Send(InvalidHeader, {}));
+    TestTrue(TEXT("非法魔数报文头在 Send 边界被拦截返回失败态"), Transport.Send(InvalidHeader, {}).IsFailure());
     TestEqual(TEXT("被拦截报文不计入已发送计数"), Transport.GetSentPacketCount(), 0);
 
     Transport.RegisterMockHandler(
@@ -96,20 +96,20 @@ bool FGameNetMockTransportTest::RunTest([[maybe_unused]] const FString& Paramete
     BuyHeader.MessageId = 1001;
     BuyHeader.SequenceId = 42;
     const uint8 BuyPayload[] = {9};
-    TestTrue(TEXT("命中模拟处理器的请求发送成功"), Transport.Send(BuyHeader, BuyPayload));
+    TestTrue(TEXT("命中模拟处理器的请求发送成功"), Transport.Send(BuyHeader, BuyPayload).IsSuccess());
     TestEqual(TEXT("Tick 前响应尚未派发到主线程"), ReceivedPackets.Num(), 0);
 
     FNetPacketHeader OneWayHeader;
     OneWayHeader.MessageId = 1002;
     OneWayHeader.SequenceId = 43;
-    TestTrue(TEXT("单向通知模拟请求发送成功"), Transport.Send(OneWayHeader, {}));
+    TestTrue(TEXT("单向通知模拟请求发送成功"), Transport.Send(OneWayHeader, {}).IsSuccess());
 
     FNetPacketHeader UnhandledHeader;
     UnhandledHeader.MessageId = 9999;
     UnhandledHeader.SequenceId = 44;
     const uint8 RawEchoBytes[] = {77, 88};
     Transport.SetEchoUnregisteredMessages(false);
-    TestTrue(TEXT("关闭回声时未注册消息仍成功投递"), Transport.Send(UnhandledHeader, RawEchoBytes));
+    TestTrue(TEXT("关闭回声时未注册消息仍成功投递"), Transport.Send(UnhandledHeader, RawEchoBytes).IsSuccess());
 
     Transport.Tick(0.016f);
     TestEqual(TEXT("Tick 后仅收到有响应的 2001 报文"), ReceivedPackets.Num(), 1);
@@ -119,7 +119,7 @@ bool FGameNetMockTransportTest::RunTest([[maybe_unused]] const FString& Paramete
 
     Transport.SetEchoUnregisteredMessages(true);
     Transport.UnregisterMockHandler(1001);
-    TestTrue(TEXT("注销处理器并开启回声后再次发送"), Transport.Send(BuyHeader, BuyPayload));
+    TestTrue(TEXT("注销处理器并开启回声后再次发送"), Transport.Send(BuyHeader, BuyPayload).IsSuccess());
     const uint8 PushBytes[] = {55};
     TestTrue(TEXT("模拟服务端主动推送成功入队"), Transport.SimulateServerPush(3001, PushBytes, 0));
 
@@ -134,7 +134,7 @@ bool FGameNetMockTransportTest::RunTest([[maybe_unused]] const FString& Paramete
     TestEqual(TEXT("远端闪断后状态转为 Disconnected"), Transport.GetState(), ENetConnectionState::Disconnected);
     TestTrue(TEXT("远端闪断清空已连接端点"), Transport.GetConnectedEndpoint().IsEmpty());
 
-    TestTrue(TEXT("闪断后允许重新建立连接"), Transport.Connect(TEXT("mock://reconnected")));
+    TestTrue(TEXT("闪断后允许重新建立连接"), Transport.Connect(TEXT("mock://reconnected")).IsSuccess());
     Transport.Disconnect(1000, TEXT("NormalShutdown"));
     TestEqual(TEXT("主动断开后状态为 Disconnected"), Transport.GetState(), ENetConnectionState::Disconnected);
 

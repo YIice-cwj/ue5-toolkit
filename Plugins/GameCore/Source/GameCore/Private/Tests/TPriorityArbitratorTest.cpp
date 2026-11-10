@@ -3,7 +3,7 @@
  * @brief TPriorityArbitrator 多源优先级属性仲裁器自动化单元测试
  */
 
-#include "Types/TPriorityArbitrator.h"
+#include "State/TPriorityArbitrator.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -11,7 +11,7 @@
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FPriorityArbitratorOverrideModeTest,
-    "Game.Core.Types.PriorityArbitrator.OverrideMode",
+    "Game.Core.Arbitration.PriorityArbitrator.OverrideMode",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
@@ -26,8 +26,14 @@ bool FPriorityArbitratorOverrideModeTest::RunTest([[maybe_unused]] const FString
     TestTrue(TEXT("初始状态为空"), Arbitrator.IsEmpty());
     TestEqual(TEXT("初始状态返回默认基准值 1.0"), Arbitrator.GetEffectiveValue(1.0f), 1.0f);
     TestEqual(TEXT("初始胜出通道为 NAME_None"), Arbitrator.GetWinningChannel(), NAME_None);
+    TestNull(TEXT("未注册通道 FindChannelValue 返回 nullptr"), Arbitrator.FindChannelValue(FName(TEXT("NonExistent"))));
+    TestFalse(TEXT("未注册通道 GetChannelValue 返回 unset"), Arbitrator.GetChannelValue(FName(TEXT("NonExistent"))).IsSet());
 
     Arbitrator.SetChannel(FName(TEXT("BaseMovement")), 500.0f, 10);
+    TestNotNull(TEXT("已注册通道 FindChannelValue 返回有效指针"), Arbitrator.FindChannelValue(FName(TEXT("BaseMovement"))));
+    TestEqual(TEXT("指针指向数值 500.0"), *Arbitrator.FindChannelValue(FName(TEXT("BaseMovement"))), 500.0f);
+    TestTrue(TEXT("已注册通道 GetChannelValue 返回 set"), Arbitrator.GetChannelValue(FName(TEXT("BaseMovement"))).IsSet());
+    TestEqual(TEXT("可选对象数值 500.0"), Arbitrator.GetChannelValue(FName(TEXT("BaseMovement"))).GetValue(), 500.0f);
     TestEqual(TEXT("单一通道生效，当前值 500.0"), Arbitrator.GetEffectiveValue(1.0f), 500.0f);
     TestEqual(TEXT("胜出通道为 BaseMovement"), Arbitrator.GetWinningChannel(), FName(TEXT("BaseMovement")));
 
@@ -54,7 +60,7 @@ bool FPriorityArbitratorOverrideModeTest::RunTest([[maybe_unused]] const FString
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FPriorityArbitratorMathModesTest,
-    "Game.Core.Types.PriorityArbitrator.MathModes",
+    "Game.Core.Arbitration.PriorityArbitrator.MathModes",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 

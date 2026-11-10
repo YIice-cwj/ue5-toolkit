@@ -28,10 +28,14 @@ public:
     using FListener = TFunction<void(ConstReference)>;
 
     /**
-     * @brief 监听条目结构（包含订阅 ID、回调及弱引用宿主）
+     * @brief 监听条目结构（包含订阅 ID、回调及弱引用宿主；若绑定 UObject 宿主，订阅与广播应在 GameThread 调用以保证 UObject 生命周期校验线程安全）
      */
     struct FListenerEntry {
     public:
+        /**
+         * @brief 检查显式绑定的宿主 UObject 是否已失效销毁
+         * @return 宿主已销毁返回 true，未绑定宿主或宿主仍有效返回 false
+         */
         [[nodiscard]] bool IsOwnerExpired() const {
             return !Owner.IsExplicitlyNull() && !Owner.IsValid();
         }
@@ -56,12 +60,51 @@ public:
 private:
     template<typename> friend class FValueObserver;
 
+    /**
+     * @brief 线程安全注册监听回调并生成新 COW 监听列表快照
+     * @param InListener 监听回调闭包
+     * @param InOwner 可选绑定宿主弱引用
+     * @return 分配的订阅 ID（空回调返回 0）
+     */
     uint64 AddListener(FListener InListener, const TWeakObjectPtr<UObject>& InOwner);
+
+    /**
+     * @brief 在同一把写锁内完成监听注册并将首帧当前值回放压入通知队列
+     * @param InListener 监听回调闭包
+     * @param InOwner 可选绑定宿主弱引用
+     * @return 包含订阅 ID 与是否需要触发队列排空的结果快照
+     */
     [[nodiscard]] FSubscribeSnapshot AddListenerWithReplay(FListener InListener, const TWeakObjectPtr<UObject>& InOwner);
+
+    /**
+     * @brief 写入新值、清理失效宿主条目并按需将快照广播任务压入通知队列
+     * @param InValue 待写入的新值
+     * @param bBroadcast 是否向监听者广播本次变更
+     * @return 若由当前调用触发顶层通知队列排空则返回 true
+     */
     [[nodiscard]] bool SetValueAndPurge(ConstReference InValue, bool bBroadcast);
+
+    /**
+     * @brief 在读锁保护下读取当前值拷贝
+     * @return 当前值副本
+     */
     [[nodiscard]] ValueType GetValue() const;
+
+    /**
+     * @brief 按订阅 ID 移除对应监听者
+     * @param SubscriptionId 待移除的订阅 ID
+     */
     void RemoveListener(uint64 SubscriptionId) override;
+
+    /**
+     * @brief 扫描并移除所有宿主已销毁的失效监听条目
+     */
     void PurgeInvalidListeners();
+
+    /**
+     * @brief 清理失效监听条目后返回当前存活监听者数量
+     * @return 存活监听者数量
+     */
     [[nodiscard]] int32 NumListeners();
 
 private:
@@ -79,7 +122,10 @@ uint64 FObserverState<T>::AddListener(FListener InListener, const TWeakObjectPtr
     FWriteScopeLock WriteLock(ListenersLock);
     TArray<FListenerEntry> Updated;
     if (Listeners.IsValid()) {
-        Updated = *Listeners;
+        Updated.Reserve(Listeners->Num() + 1);
+        Updated.Append(*Listeners);
+    } else {
+        Updated.Reserve(1);
     }
     const uint64 SubscriptionId = ++NextId;
     Updated.Add(FListenerEntry{SubscriptionId, MoveTemp(InListener), InOwner});
@@ -98,7 +144,10 @@ typename FObserverState<T>::FSubscribeSnapshot FObserverState<T>::AddListenerWit
     FListener ReplayListener = InListener;
     TArray<FListenerEntry> Updated;
     if (Listeners.IsValid()) {
-        Updated = *Listeners;
+        Updated.Reserve(Listeners->Num() + 1);
+        Updated.Append(*Listeners);
+    } else {
+        Updated.Reserve(1);
     }
     Result.SubscriptionId = ++NextId;
     Updated.Add(FListenerEntry{Result.SubscriptionId, MoveTemp(InListener), InOwner});
@@ -116,8 +165,16 @@ template<typename T>
 bool FObserverState<T>::SetValueAndPurge(ConstReference InValue, bool bBroadcast) {
     FWriteScopeLock WriteLock(ListenersLock);
     if (Listeners.IsValid()) {
-        TArray<FListenerEntry> Updated = *Listeners;
-        if (Updated.RemoveAll([](const FListenerEntry& Entry) { return Entry.IsOwnerExpired(); }) > 0) {
+        bool bHasExpired = false;
+        for (const FListenerEntry& Entry : *Listeners) {
+            if (Entry.IsOwnerExpired()) {
+                bHasExpired = true;
+                break;
+            }
+        }
+        if (bHasExpired) {
+            TArray<FListenerEntry> Updated = *Listeners;
+            Updated.RemoveAll([](const FListenerEntry& Entry) { return Entry.IsOwnerExpired(); });
             Listeners = MakeShared<const TArray<FListenerEntry>>(MoveTemp(Updated));
         }
     }

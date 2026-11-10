@@ -3,7 +3,7 @@
  * @brief 异步任务调度与主线程续体工具自动化测试，Shipping 构建自动剔除
  */
 
-#include "Tasks/FGameThreadTaskRunner.h"
+#include "Async/FGameThreadTaskRunner.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -31,15 +31,18 @@ bool FGameTaskRunnerBasicContinuationTest::RunTest([[maybe_unused]] const FStrin
     std::atomic<bool> bContinuationExecutedOnGameThread{false};
     std::atomic<int32> ReceivedResult{0};
 
-    FGameThreadTaskRunner::RunWithContinuation<int32>(
+    FGameThreadTaskRunner::Run(
         Owner,
-        []() {
-            return 42;
-        },
-        [ContinuationDoneEvent, &bContinuationExecutedOnGameThread, &ReceivedResult](int32 Result) {
-            bContinuationExecutedOnGameThread.store(IsInGameThread());
-            ReceivedResult.store(Result);
-            ContinuationDoneEvent->Trigger();
+        [Owner, ContinuationDoneEvent, &bContinuationExecutedOnGameThread, &ReceivedResult]() {
+            const int32 Result = 42;
+            FGameThreadTaskRunner::RunOnGameThread(
+                Owner,
+                [ContinuationDoneEvent, &bContinuationExecutedOnGameThread, &ReceivedResult, Result]() {
+                    bContinuationExecutedOnGameThread.store(IsInGameThread());
+                    ReceivedResult.store(Result);
+                    ContinuationDoneEvent->Trigger();
+                }
+            );
         }
     );
 
@@ -81,14 +84,14 @@ bool FGameTaskRunnerVoidContinuationTest::RunTest([[maybe_unused]] const FString
     std::atomic<bool> bBackgroundRan{false};
     std::atomic<bool> bContinuationRanOnGameThread{false};
 
-    FGameThreadTaskRunner::RunWithContinuation(
-        Owner,
-        [&bBackgroundRan]() {
+    FGameThreadTaskRunner::Run(
+        FCancellationToken::None(),
+        [ContinuationDoneEvent, &bBackgroundRan, &bContinuationRanOnGameThread]() {
             bBackgroundRan.store(true);
-        },
-        [ContinuationDoneEvent, &bContinuationRanOnGameThread]() {
-            bContinuationRanOnGameThread.store(IsInGameThread());
-            ContinuationDoneEvent->Trigger();
+            FGameThreadTaskRunner::RunOnGameThread([ContinuationDoneEvent, &bContinuationRanOnGameThread]() {
+                bContinuationRanOnGameThread.store(IsInGameThread());
+                ContinuationDoneEvent->Trigger();
+            });
         }
     );
 
@@ -136,6 +139,21 @@ bool FGameTaskRunnerInvalidOwnerTest::RunTest([[maybe_unused]] const FString& Pa
 
     TestFalse(TEXT("宿主失效时后台任务直接短路不执行"), bBackgroundExecuted.load());
     TestFalse(TEXT("宿主失效时主线程续体直接短路不执行"), bGameThreadExecuted.load());
+
+    FGameAsyncTaskHandle ValidOwnerHandle;
+    UGameInstance* ActiveOwner = NewObject<UGameInstance>();
+    std::atomic<int32> TaskStepCount{0};
+    ValidOwnerHandle = FGameThreadTaskRunner::Run(ActiveOwner, [&TaskStepCount]() {
+        TaskStepCount.fetch_add(1, std::memory_order_relaxed);
+    });
+    TestTrue(TEXT("有效宿主派发任务返回有效 FGameAsyncTaskHandle"), ValidOwnerHandle.IsValid());
+    TestTrue(TEXT("WaitWithTimeout 等待任务完成返回 true"), ValidOwnerHandle.WaitWithTimeout(FTimespan::FromSeconds(2.0)));
+    TestTrue(TEXT("Wait 完成后 IsCompleted 为 true"), ValidOwnerHandle.IsCompleted());
+    TestEqual(TEXT("任务执行计数为 1"), TaskStepCount.load(std::memory_order_relaxed), 1);
+
+    FGameAsyncTaskHandle StopHandle = FGameThreadTaskRunner::Run(ActiveOwner, []() {});
+    TestTrue(TEXT("Stop 协同取消并等待完成返回 true"), StopHandle.Stop(FTimespan::FromSeconds(2.0)));
+    ActiveOwner->MarkAsGarbage();
 
     return true;
 }

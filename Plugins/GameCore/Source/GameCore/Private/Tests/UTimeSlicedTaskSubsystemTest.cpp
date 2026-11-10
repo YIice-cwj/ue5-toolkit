@@ -3,7 +3,7 @@
  * @brief FTimeSlicedTaskHandle 与 UTimeSlicedTaskSubsystem 主线程时间切片调度单元测试
  */
 
-#include "Tasks/UTimeSlicedTaskSubsystem.h"
+#include "Async/UTimeSlicedTaskSubsystem.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -69,7 +69,7 @@ bool FTimeSlicedSubsystemBudgetAndBatchTest::RunTest([[maybe_unused]] const FStr
     Subsystem.SetFrameBudgetMilliseconds(0.001);
     TestTrue(
         TEXT("极小帧预算自动钳制到 MIN_FRAME_BUDGET_MS"),
-        FMath::IsNearlyEqual(Subsystem.GetFrameBudgetMilliseconds(), UTimeSlicedTaskSubsystem::MIN_FRAME_BUDGET_MS, 1e-4)
+        FMath::IsNearlyEqual(Subsystem.GetFrameBudgetMilliseconds(), FTimeSliceScheduler::MIN_FRAME_BUDGET_MS, 1e-4)
     );
 
     UGameInstance* Owner = NewObject<UGameInstance>();
@@ -118,7 +118,7 @@ bool FTimeSlicedSubsystemBudgetAndBatchTest::RunTest([[maybe_unused]] const FStr
         TestEqual(TEXT("顺序索引 3"), ProcessedIndices[3], 3);
     }
 
-    Subsystem.SetFrameBudgetMilliseconds(UTimeSlicedTaskSubsystem::DEFAULT_FRAME_BUDGET_MS);
+    Subsystem.SetFrameBudgetMilliseconds(FTimeSliceScheduler::DEFAULT_FRAME_BUDGET_MS);
     Owner->MarkAsGarbage();
     return true;
 }
@@ -146,9 +146,9 @@ bool FTimeSlicedSubsystemWeakOwnerAndCancelTest::RunTest([[maybe_unused]] const 
     Subsystem.SetFrameBudgetMilliseconds(5.0);
 
     TestFalse(TEXT("失效宿主入队返回空句柄"), Subsystem.EnqueueTask(nullptr, []() { return false; }).IsActive());
-    TestFalse(TEXT("空回调全局任务入队返回空句柄"), Subsystem.EnqueueGlobalTask(nullptr).IsActive());
-    TestFalse(TEXT("取消无效 ID 0 返回 false"), Subsystem.CancelTask(0ULL));
-    TestFalse(TEXT("取消不存在 ID 返回 false"), Subsystem.CancelTask(999999ULL));
+    TestFalse(TEXT("空回调全局任务入队返回空句柄"), Subsystem.EnqueueTask(nullptr).IsActive());
+    TestFalse(TEXT("取消无效 ID 0 返回 false"), Subsystem.GetScheduler().CancelTask(0ULL));
+    TestFalse(TEXT("取消不存在 ID 返回 false"), Subsystem.GetScheduler().CancelTask(999999ULL));
 
     UGameInstance* DyingOwner = NewObject<UGameInstance>();
     bool bDyingTaskInvoked = false;
@@ -164,7 +164,7 @@ bool FTimeSlicedSubsystemWeakOwnerAndCancelTest::RunTest([[maybe_unused]] const 
     TestEqual(TEXT("跳过失效宿主后队列清空"), Subsystem.GetPendingTaskCount(), 0);
 
     int32 GlobalSteps = 0;
-    FTimeSlicedTaskHandle CancelableGlobal = Subsystem.EnqueueGlobalTask([&GlobalSteps]() {
+    FTimeSlicedTaskHandle CancelableGlobal = Subsystem.EnqueueTask([&GlobalSteps]() {
         ++GlobalSteps;
         return true;
     });
@@ -175,7 +175,7 @@ bool FTimeSlicedSubsystemWeakOwnerAndCancelTest::RunTest([[maybe_unused]] const 
 
     int32 SelfCancelSteps = 0;
     FTimeSlicedTaskHandle SelfCancelHandle;
-    SelfCancelHandle = Subsystem.EnqueueGlobalTask([this, &SelfCancelSteps, &SelfCancelHandle, &Subsystem]() {
+    SelfCancelHandle = Subsystem.EnqueueTask([this, &SelfCancelSteps, &SelfCancelHandle, &Subsystem]() {
         ++SelfCancelSteps;
         TestEqual(TEXT("执行期间活跃计数包含当前运行项"), Subsystem.GetPendingTaskCount(), 1);
         SelfCancelHandle.Cancel();

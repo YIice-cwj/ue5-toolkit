@@ -1,14 +1,14 @@
 # GameCore 轻量状态机与游戏数学库 API 参考
 
 本文档汇总 `GameCore` 提供的纯 C++ 轻量表驱动状态机与帧率无关游戏数学工具：
-- `TGameStateMachine<TStateId, TContext>` (`Public/FSM/TGameStateMachine.h`)
+- `TGameStateMachine<TStateId, TContext>` (`Public/State/TGameStateMachine.h`)
 - `FGameMath` (`Public/Math/FGameMath.h`)
 
 ---
 
 ## 1. 轻量表驱动状态机 `TGameStateMachine`
 
-头文件：`#include "FSM/TGameStateMachine.h"`
+头文件：`#include "State/TGameStateMachine.h"`
 
 面向 UI 阶段流转、关卡流程、机关交互、武器装填等无需引入完整 StateTree 重型资产的场景，提供零 UObject 开销的纯 C++ 确定性有限状态机：
 

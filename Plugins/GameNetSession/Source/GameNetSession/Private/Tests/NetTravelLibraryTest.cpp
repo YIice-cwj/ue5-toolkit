@@ -60,17 +60,17 @@ bool FGameNetTravelLibraryTest::RunTest([[maybe_unused]] const FString& Paramete
         UNetTravelLibrary::BuildClientTravelUrl(BadTravelRoom).IsEmpty()
     );
 
-    TestFalse(
-        TEXT("空世界指针调用 ExecuteListenServerTravel 安全返回 false"),
-        UNetTravelLibrary::ExecuteListenServerTravel(nullptr, TEXT("/Game/Maps/Lobby"), 7777)
+    TestTrue(
+        TEXT("空世界指针调用 ExecuteListenServerTravel 安全返回失败态"),
+        UNetTravelLibrary::ExecuteListenServerTravel(nullptr, TEXT("/Game/Maps/Lobby"), 7777).IsFailure()
     );
-    TestFalse(
-        TEXT("空世界指针调用 ExecuteClientRoomTravel 安全返回 false"),
-        UNetTravelLibrary::ExecuteClientRoomTravel(nullptr, TravelRoom)
+    TestTrue(
+        TEXT("空世界指针调用 ExecuteClientRoomTravel 安全返回失败态"),
+        UNetTravelLibrary::ExecuteClientRoomTravel(nullptr, TravelRoom).IsFailure()
     );
-    TestFalse(
-        TEXT("空连接串调用 ExecuteConnectStringTravel 安全返回 false"),
-        UNetTravelLibrary::ExecuteConnectStringTravel(nullptr, TEXT(""))
+    TestTrue(
+        TEXT("空连接串调用 ExecuteConnectStringTravel 安全返回失败态"),
+        UNetTravelLibrary::ExecuteConnectStringTravel(nullptr, TEXT("")).IsFailure()
     );
 
     return true;

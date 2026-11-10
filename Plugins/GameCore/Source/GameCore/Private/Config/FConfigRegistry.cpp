@@ -8,6 +8,8 @@
 #include <type_traits>
 
 #include "Config/GameCompileSwitches.h"
+#include "Engine/Engine.h"
+#include "Engine/World.h"
 #include "Listener/FNotificationDispatcher.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogGameConfig, Log, All);
@@ -71,11 +73,11 @@ public:
     uint64 AddListener(FCallback InListener);
 
     /**
-     * @brief 在监听锁内抓取快照并追加全局 FIFO
-     * @param InValue 本次提交的值变体
+     * @brief 在监听锁内抓取 COW 快照并移动变体追加至全局 FIFO
+     * @param InValue 本次提交的值变体右值
      * @return 当前线程当选为 drainer 返回 true
      */
-    [[nodiscard]] bool Enqueue(const FConfigVariant& InValue) const;
+    [[nodiscard]] bool Enqueue(FConfigVariant&& InValue) const;
 
     /**
      * @brief 按订阅 ID 移除监听
@@ -85,42 +87,71 @@ public:
 
 private:
     mutable FRWLock WatcherLock;
-    TArray<FWatcherEntry> Entries;
+    TSharedPtr<const TArray<FWatcherEntry>> Entries;
     uint64 NextId = 0;
 };
 
+/**
+ * @brief 追加监听并返回唯一订阅 ID（写时复制更新回调表）
+ * @param InListener 类型擦除回调
+ * @return 订阅 ID
+ */
 uint64 FConfigRegistry::FWatcherState::AddListener(FCallback InListener) {
     if (!InListener) {
         return 0;
     }
     FWriteScopeLock WriteLock(WatcherLock);
+    TArray<FWatcherEntry> Updated;
+    if (Entries.IsValid()) {
+        Updated.Reserve(Entries->Num() + 1);
+        Updated.Append(*Entries);
+    } else {
+        Updated.Reserve(1);
+    }
     const uint64 SubscriptionId = ++NextId;
-    Entries.Add(FWatcherEntry{SubscriptionId, MoveTemp(InListener)});
+    Updated.Add(FWatcherEntry{SubscriptionId, MoveTemp(InListener)});
+    Entries = MakeShared<const TArray<FWatcherEntry>>(MoveTemp(Updated));
     return SubscriptionId;
 }
 
-bool FConfigRegistry::FWatcherState::Enqueue(const FConfigVariant& InValue) const {
-    TArray<FWatcherEntry> Snapshot;
+/**
+ * @brief 在监听锁内抓取 COW 回调表指针并移动变体入队全局 FIFO
+ * @param InValue 本次提交的值变体右值
+ * @return 当前线程当选为 drainer 返回 true
+ */
+bool FConfigRegistry::FWatcherState::Enqueue(FConfigVariant&& InValue) const {
+    TSharedPtr<const TArray<FWatcherEntry>> Snapshot;
     {
         FReadScopeLock ReadLock(WatcherLock);
         Snapshot = Entries;
     }
-    if (Snapshot.IsEmpty()) {
+    if (!Snapshot.IsValid() || Snapshot->IsEmpty()) {
         return false;
     }
     return FNotificationDispatcher::Get().Enqueue(
-        [Snapshot = MoveTemp(Snapshot), BroadcastValue = InValue]() {
-            for (const FWatcherEntry& Entry : Snapshot) {
+        [Snapshot = MoveTemp(Snapshot), BroadcastValue = MoveTemp(InValue)]() {
+            for (const FWatcherEntry& Entry : *Snapshot) {
                 Entry.Callback(BroadcastValue);
             }
         });
 }
 
+/**
+ * @brief 按订阅 ID 移除监听（写时复制更新回调表）
+ * @param SubscriptionId 订阅 ID
+ */
 void FConfigRegistry::FWatcherState::RemoveListener(uint64 SubscriptionId) {
     FWriteScopeLock WriteLock(WatcherLock);
-    Entries.RemoveAll([SubscriptionId](const FWatcherEntry& Entry) {
+    if (!Entries.IsValid()) {
+        return;
+    }
+    TArray<FWatcherEntry> Updated = *Entries;
+    const int32 RemovedCount = Updated.RemoveAll([SubscriptionId](const FWatcherEntry& Entry) {
         return Entry.SubscriptionId == SubscriptionId;
     });
+    if (RemovedCount > 0) {
+        Entries = MakeShared<const TArray<FWatcherEntry>>(MoveTemp(Updated));
+    }
 }
 
 /**
@@ -168,13 +199,81 @@ uint32 FConfigRegistry::GetVersion() const noexcept {
     return GlobalVersion;
 }
 
+namespace {
+
+static FRWLock GWorldRegistryLock;
+static TMap<TWeakObjectPtr<const UWorld>, TSharedPtr<FConfigRegistry>> GWorldRegistries;
+static bool bHookedWorldDestroy = false;
+
+}  // namespace
+
 /**
- * @brief 获取全局单例
- * @return 单例引用
+ * @brief 从另一个配置注册表继承已注册条目（用于 PIE 实例继承全局默认配置）
+ * @param Other 源注册表引用
  */
-FConfigRegistry& FConfigRegistry::Get() {
-    static FConfigRegistry Instance;
-    return Instance;
+void FConfigRegistry::InheritFrom(const FConfigRegistry& Other) {
+    FReadScopeLock ReadLock(Other.RwLock);
+    FWriteScopeLock WriteLock(RwLock);
+    Entries = Other.Entries;
+    GlobalVersion = Other.GlobalVersion;
+}
+
+/**
+ * @brief 获取配置注册表（支持 World 上下文路由与 PIE 多实例隔离）
+ * @param WorldContextObject 关联的世界上下文对象（为空时返回全局根注册表）
+ * @return 对应的配置注册表引用
+ */
+FConfigRegistry& FConfigRegistry::Get(const UObject* WorldContextObject) {
+    static FConfigRegistry GlobalInstance;
+    if (WorldContextObject == nullptr) {
+        return GlobalInstance;
+    }
+
+#if WITH_EDITOR
+    const UWorld* World = GEngine ? GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::ReturnNull) : nullptr;
+    if (World == nullptr) {
+        return GlobalInstance;
+    }
+
+    {
+        FReadScopeLock ReadLock(GWorldRegistryLock);
+        if (const TSharedPtr<FConfigRegistry>* Found = GWorldRegistries.Find(World)) {
+            if (Found->IsValid()) {
+                return *Found->Get();
+            }
+        }
+    }
+
+    FWriteScopeLock WriteLock(GWorldRegistryLock);
+    if (const TSharedPtr<FConfigRegistry>* Found = GWorldRegistries.Find(World)) {
+        if (Found->IsValid()) {
+            return *Found->Get();
+        }
+    }
+
+    if (!bHookedWorldDestroy) {
+        FWorldDelegates::OnPreWorldFinishDestroy.AddLambda([](UWorld* DyingWorld) {
+            FWriteScopeLock CleanupLock(GWorldRegistryLock);
+            GWorldRegistries.Remove(DyingWorld);
+        });
+        bHookedWorldDestroy = true;
+    }
+
+    TSharedPtr<FConfigRegistry> NewRegistry = MakeShared<FConfigRegistry>();
+    NewRegistry->InheritFrom(GlobalInstance);
+    GWorldRegistries.Add(World, NewRegistry);
+    return *NewRegistry;
+#else
+    return GlobalInstance;
+#endif
+}
+
+/**
+ * @brief 清空所有已缓存的 World 隔离注册表（供自动化测试清理）
+ */
+void FConfigRegistry::ClearWorldRegistriesForTesting() {
+    FWriteScopeLock WriteLock(GWorldRegistryLock);
+    GWorldRegistries.Empty();
 }
 
 /**
@@ -205,9 +304,10 @@ void FConfigRegistry::ApplyRegister(FName Name, FConfigVariant&& DefaultValue) {
  * @return 写入结果码
  */
 ESetConfigResult FConfigRegistry::ApplySet(FName Name, FConfigVariant&& NewValue) {
-    FConfigVariant BroadcastValue;
+    FString LoggedTypeName;
+    TSharedPtr<FWatcherState> WatcherToNotify;
+    TOptional<FConfigVariant> BroadcastValue;
     bool bRejected = false;
-    bool bShouldDrain = false;
     {
         FWriteScopeLock WriteLock(RwLock);
         FEntry* Entry = Entries.Find(Name);
@@ -220,14 +320,18 @@ ESetConfigResult FConfigRegistry::ApplySet(FName Name, FConfigVariant&& NewValue
             Entry->Value = MoveTemp(NewValue);
             ++Entry->Version;
             ++GlobalVersion;
-            BroadcastValue = Entry->Value;
+            if constexpr (Game::Config::bEnableLog) {
+                LoggedTypeName = VariantTypeName(Entry->Value);
+            }
             if (TSharedPtr<FWatcherState>* Found = Watchers.Find(Name)) {
-                bShouldDrain = (*Found)->Enqueue(BroadcastValue);
+                if (Found->IsValid()) {
+                    WatcherToNotify = *Found;
+                    BroadcastValue.Emplace(Entry->Value);
+                }
             }
         }
     }
     if (bRejected) {
-        ensureAlwaysMsgf(false, TEXT("【配置注册表】SetConfig 拒绝：只读配置键 [%s] 不可覆盖！"), *Name.ToString());
         if constexpr (Game::Config::bEnableLog) {
             UE_LOG(LogGameConfig, Warning, TEXT("【配置注册表】设置配置失败：只读配置键 [%s] 不可覆盖。"), *Name.ToString());
         }
@@ -235,10 +339,12 @@ ESetConfigResult FConfigRegistry::ApplySet(FName Name, FConfigVariant&& NewValue
     }
     if constexpr (Game::Config::bEnableLog) {
         UE_LOG(LogGameConfig, Log, TEXT("【配置注册表】更新配置项: 键=[%s], 类型=[%s]"),
-            *Name.ToString(), *VariantTypeName(BroadcastValue));
+            *Name.ToString(), *LoggedTypeName);
     }
-    if (bShouldDrain) {
-        FNotificationDispatcher::Get().Drain();
+    if (WatcherToNotify.IsValid() && BroadcastValue.IsSet()) {
+        if (WatcherToNotify->Enqueue(MoveTemp(*BroadcastValue))) {
+            FNotificationDispatcher::Get().Drain();
+        }
     }
     return ESetConfigResult::Applied;
 }
@@ -251,6 +357,7 @@ ESetConfigResult FConfigRegistry::ApplySet(FName Name, FConfigVariant&& NewValue
  */
 TSharedRef<FObserverSubscription> FConfigRegistry::AddWatcher(FName Name, TFunction<void(const FConfigVariant&)> InListener) {
     TSharedPtr<FWatcherState> State;
+    uint64 SubscriptionId = 0;
     {
         FWriteScopeLock WriteLock(RwLock);
         TSharedPtr<FWatcherState>& Slot = Watchers.FindOrAdd(Name);
@@ -258,13 +365,15 @@ TSharedRef<FObserverSubscription> FConfigRegistry::AddWatcher(FName Name, TFunct
             Slot = MakeShared<FWatcherState>();
         }
         State = Slot;
+        SubscriptionId = State->AddListener(MoveTemp(InListener));
     }
-    const uint64 SubscriptionId = State->AddListener(MoveTemp(InListener));
     if constexpr (Game::Config::bEnableLog) {
         UE_LOG(LogGameConfig, Verbose, TEXT("【配置注册表】添加配置监听: 键=[%s], 订阅 ID=%llu"), *Name.ToString(), SubscriptionId);
     }
     const TSharedRef<FObserverSubscription> Subscription = MakeShared<FObserverSubscription>();
-    Subscription->Initialize(State.ToSharedRef(), SubscriptionId);
+    if (SubscriptionId != 0) {
+        Subscription->Initialize(State.ToSharedRef(), SubscriptionId);
+    }
     return Subscription;
 }
 

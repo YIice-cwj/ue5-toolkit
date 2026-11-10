@@ -62,9 +62,9 @@ public:
     /**
      * @brief 发起向指定 ws:// 或 wss:// 端点的异步握手连接
      * @param Endpoint WebSocket 目标 URL
-     * @return 成功创建底层实例并发起连接返回 true
+     * @return 成功创建底层实例并发起连接返回成功态，否则返回对应错误
      */
-    bool Connect(const FString& Endpoint) override;
+    TGameStatusResult<void> Connect(const FString& Endpoint) override;
 
     /**
      * @brief 主动关闭当前 WebSocket 连接并使旧代际回调失效
@@ -77,9 +77,9 @@ public:
      * @brief 将报文头与负载编码为 16 字节线格式二进制帧并通过 WebSocket Binary 通道发送
      * @param Header 报文头
      * @param Payload 负载二进制切片
-     * @return 已连接且帧合法时成功写入返回 true
+     * @return 已连接且帧合法时成功写入返回成功态，否则返回对应错误
      */
-    bool Send(const FNetPacketHeader& Header, TConstArrayView<uint8> Payload) override;
+    TGameStatusResult<void> Send(const FNetPacketHeader& Header, TConstArrayView<uint8> Payload) override;
 
     /**
      * @brief 查询当前连接状态

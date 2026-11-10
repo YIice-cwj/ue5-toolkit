@@ -4,7 +4,7 @@
  */
 #include "Generated/Registration/FGameGameRegistration.h"
 
-#include "Registration/FGameCoreRegistration.h"
+#include "Config/FGameCoreRegistration.h"
 
 /**
  * @brief 统一注册

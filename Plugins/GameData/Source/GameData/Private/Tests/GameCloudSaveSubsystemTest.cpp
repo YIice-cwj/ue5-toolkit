@@ -56,21 +56,22 @@ bool FGameCloudSaveSubsystemTest::RunTest([[maybe_unused]] const FString& Parame
             [[maybe_unused]] const FNetPacketHeader& Header,
             TConstArrayView<uint8> ReqBytes
         ) -> TOptional<TArray<uint8>> {
-            const TOptional<FGameCloudSaveUploadReq> Req =
+            const TGameStatusResult<FGameCloudSaveUploadReq> Req =
                 NetService.GetSerializer()->DeserializeStruct<FGameCloudSaveUploadReq>(ReqBytes);
-            if (!Req.IsSet()) {
+            if (Req.IsFailure()) {
                 return NullOpt;
             }
 
-            MockCloudStorage.Add(Req->SlotName, *Req);
+            MockCloudStorage.Add(Req.GetValue().SlotName, Req.GetValue());
 
             FGameCloudSaveUploadRsp Rsp;
             Rsp.bSuccess = true;
-            Rsp.SlotName = Req->SlotName;
+            Rsp.SlotName = Req.GetValue().SlotName;
             Rsp.ErrorCode = 0;
-            Rsp.CloudTimestamp = Req->SaveTimestamp;
+            Rsp.CloudTimestamp = Req.GetValue().SaveTimestamp;
 
-            return NetService.GetSerializer()->SerializeStruct(Rsp);
+            const TGameStatusResult<TArray<uint8>> EncodedRsp = NetService.GetSerializer()->SerializeStruct(Rsp);
+            return EncodedRsp.IsSuccess() ? EncodedRsp.GetValue() : TOptional<TArray<uint8>>{};
         }
     );
 
@@ -81,16 +82,16 @@ bool FGameCloudSaveSubsystemTest::RunTest([[maybe_unused]] const FString& Parame
             [[maybe_unused]] const FNetPacketHeader& Header,
             TConstArrayView<uint8> ReqBytes
         ) -> TOptional<TArray<uint8>> {
-            const TOptional<FGameCloudSaveDownloadReq> Req =
+            const TGameStatusResult<FGameCloudSaveDownloadReq> Req =
                 NetService.GetSerializer()->DeserializeStruct<FGameCloudSaveDownloadReq>(ReqBytes);
-            if (!Req.IsSet()) {
+            if (Req.IsFailure()) {
                 return NullOpt;
             }
 
             FGameCloudSaveDownloadRsp Rsp;
-            Rsp.SlotName = Req->SlotName;
+            Rsp.SlotName = Req.GetValue().SlotName;
 
-            if (const FGameCloudSaveUploadReq* Found = MockCloudStorage.Find(Req->SlotName)) {
+            if (const FGameCloudSaveUploadReq* Found = MockCloudStorage.Find(Req.GetValue().SlotName)) {
                 Rsp.bSuccess = true;
                 Rsp.ErrorCode = 0;
                 Rsp.ArchiveVersion = Found->ArchiveVersion;
@@ -102,7 +103,8 @@ bool FGameCloudSaveSubsystemTest::RunTest([[maybe_unused]] const FString& Parame
                 Rsp.ErrorMessage = TEXT("SlotNotFoundOnCloud");
             }
 
-            return NetService.GetSerializer()->SerializeStruct(Rsp);
+            const TGameStatusResult<TArray<uint8>> EncodedRsp = NetService.GetSerializer()->SerializeStruct(Rsp);
+            return EncodedRsp.IsSuccess() ? EncodedRsp.GetValue() : TOptional<TArray<uint8>>{};
         }
     );
 
@@ -113,16 +115,16 @@ bool FGameCloudSaveSubsystemTest::RunTest([[maybe_unused]] const FString& Parame
             [[maybe_unused]] const FNetPacketHeader& Header,
             TConstArrayView<uint8> ReqBytes
         ) -> TOptional<TArray<uint8>> {
-            const TOptional<FGameCloudSaveQueryReq> Req =
+            const TGameStatusResult<FGameCloudSaveQueryReq> Req =
                 NetService.GetSerializer()->DeserializeStruct<FGameCloudSaveQueryReq>(ReqBytes);
-            if (!Req.IsSet()) {
+            if (Req.IsFailure()) {
                 return NullOpt;
             }
 
             FGameCloudSaveQueryRsp Rsp;
-            Rsp.SlotName = Req->SlotName;
+            Rsp.SlotName = Req.GetValue().SlotName;
 
-            if (const FGameCloudSaveUploadReq* Found = MockCloudStorage.Find(Req->SlotName)) {
+            if (const FGameCloudSaveUploadReq* Found = MockCloudStorage.Find(Req.GetValue().SlotName)) {
                 Rsp.bSuccess = true;
                 Rsp.bExistsOnCloud = true;
                 Rsp.ArchiveVersion = Found->ArchiveVersion;
@@ -133,7 +135,8 @@ bool FGameCloudSaveSubsystemTest::RunTest([[maybe_unused]] const FString& Parame
                 Rsp.bExistsOnCloud = false;
             }
 
-            return NetService.GetSerializer()->SerializeStruct(Rsp);
+            const TGameStatusResult<TArray<uint8>> EncodedRsp = NetService.GetSerializer()->SerializeStruct(Rsp);
+            return EncodedRsp.IsSuccess() ? EncodedRsp.GetValue() : TOptional<TArray<uint8>>{};
         }
     );
 

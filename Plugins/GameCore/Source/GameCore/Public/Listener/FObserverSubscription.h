@@ -62,6 +62,14 @@ public:
     }
 
     /**
+     * @brief 查询订阅守卫是否成功绑定有效订阅（等价于 IsActive）
+     * @return 有效返回 true
+     */
+    [[nodiscard]] bool IsValid() const noexcept {
+        return IsActive();
+    }
+
+    /**
      * @brief 布尔显式类型转换操作符
      * @return 订阅有效返回 true
      */

@@ -24,12 +24,12 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FGameNetTransportFactoryTest::RunTest([[maybe_unused]] const FString& Parameters) {
     const TSharedRef<INetTransport> MockTransport = FNetTransportFactory::CreateMockTransport();
     TestEqual(TEXT("工厂创建的 Mock 驱动初始状态为 Disconnected"), MockTransport->GetState(), ENetConnectionState::Disconnected);
-    TestTrue(TEXT("工厂创建的 Mock 驱动可直接建立虚拟回环连接"), MockTransport->Connect(TEXT("mock://factory")));
+    TestTrue(TEXT("工厂创建的 Mock 驱动可直接建立虚拟回环连接"), MockTransport->Connect(TEXT("mock://factory")).IsSuccess());
     TestEqual(TEXT("Mock 驱动连接后状态为 Connected"), MockTransport->GetState(), ENetConnectionState::Connected);
 
     const TSharedRef<INetTransport> WsTransport = FNetTransportFactory::CreateWebSocketTransport(4096);
     TestEqual(TEXT("工厂创建的 WebSocket 驱动初始状态为 Disconnected"), WsTransport->GetState(), ENetConnectionState::Disconnected);
-    TestFalse(TEXT("工厂创建的 WebSocket 驱动拦截非法空地址"), WsTransport->Connect(TEXT("")));
+    TestTrue(TEXT("工厂创建的 WebSocket 驱动拦截非法空地址返回失败态"), WsTransport->Connect(TEXT("")).IsFailure());
 
     return true;
 }

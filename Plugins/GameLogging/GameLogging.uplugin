@@ -19,6 +19,10 @@
         {
             "Name": "GameCore",
             "Enabled": true
+        },
+        {
+            "Name": "GameMessage",
+            "Enabled": true
         }
     ]
 }

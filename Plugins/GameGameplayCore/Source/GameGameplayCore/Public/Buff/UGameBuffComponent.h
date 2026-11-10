@@ -8,6 +8,7 @@
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "GameplayTagContainer.h"
+#include "Types/TGameResult.h"
 
 #include "Buff/FGameBuffTypes.h"
 #include "Buff/FGameActiveBuffArray.h"
@@ -63,6 +64,30 @@ public:
      */
     void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
+public:
+    /**
+     * @brief Buff 变更动态多播委托（层数或状态变化时广播）
+     */
+    UPROPERTY(BlueprintAssignable, Category = "Game|Buff")
+    FOnGameBuffChanged OnBuffChanged;
+
+    /**
+     * @brief Buff 移除动态多播委托（标签完全移除时广播）
+     */
+    UPROPERTY(BlueprintAssignable, Category = "Game|Buff")
+    FOnGameBuffRemoved OnBuffRemoved;
+
+    /**
+     * @brief Buff 变更原生 C++ 多播委托
+     */
+    FOnGameBuffChangedNative OnBuffChangedNative;
+
+    /**
+     * @brief Buff 移除原生 C++ 多播委托
+     */
+    FOnGameBuffRemovedNative OnBuffRemovedNative;
+
+public:
     /**
      * @brief 显式绑定数值组件，回滚旧组件修正器并将全部活跃 Buff 迁移至新组件
      * @param InStatComponent 目标数值组件指针；为空时仅解绑并回滚
@@ -71,38 +96,68 @@ public:
     void BindStatComponent(UGameStatComponent* InStatComponent);
 
     /**
-     * @brief 施加 Buff（重复施加时依据 Spec 预设的叠层策略自动处理）
+     * @brief 施加 Buff（蓝图轻量门面）
      * @param InSpec Buff 完整描述配置
      * @return 成功生成或刷新的运行实例 ID；若操作被拒绝则返回 0
      */
-    UFUNCTION(BlueprintCallable, Category = "Game|Buff")
-    int32 ApplyBuff(const FGameBuffSpec& InSpec);
+    UFUNCTION(BlueprintCallable, Category = "Game|Buff", meta = (DisplayName = "Apply Buff"))
+    int32 K2_ApplyBuff(const FGameBuffSpec& InSpec);
 
     /**
-     * @brief 按 Buff 身份标签移除实例
+     * @brief 施加 Buff（强类型契约）
+     * @param InSpec Buff 完整描述配置
+     * @return 成功返回实例 ID，非权威返回 Failure(8002)，参数非法/达上限返回 Failure(8003)
+     */
+    TGameStatusResult<int32> ApplyBuff(const FGameBuffSpec& InSpec);
+
+    /**
+     * @brief 按 Buff 身份标签移除实例（蓝图轻量门面）
      * @param InBuffTag 目标 Buff 身份标签
      * @param bRemoveAllInstances 是否移除该标签下的全部实例（若为 false 则仅移除一个实例）
      * @return 成功移除至少一个实例返回 true，未找到匹配实例返回 false
      */
-    UFUNCTION(BlueprintCallable, Category = "Game|Buff")
-    bool RemoveBuff(FGameplayTag InBuffTag, bool bRemoveAllInstances = true);
+    UFUNCTION(BlueprintCallable, Category = "Game|Buff", meta = (DisplayName = "Remove Buff"))
+    bool K2_RemoveBuff(FGameplayTag InBuffTag, bool bRemoveAllInstances = true);
 
     /**
-     * @brief 按 Buff 身份标签扣减指定层数（层数归零时自动移除该实例）
+     * @brief 按 Buff 身份标签移除实例（强类型契约）
+     * @param InBuffTag 目标 Buff 身份标签
+     * @param bRemoveAllInstances 是否移除该标签下的全部实例（若为 false 则仅移除一个实例）
+     * @return 成功移除返回 Success，非权威返回 Failure(8002)，未找到返回 Failure(8004)
+     */
+    TGameStatusResult<void> RemoveBuff(FGameplayTag InBuffTag, bool bRemoveAllInstances = true);
+
+    /**
+     * @brief 按 Buff 身份标签扣减指定层数（蓝图轻量门面）
      * @param InBuffTag 目标 Buff 身份标签
      * @param StacksToRemove 扣减层数（默认 1 层）
      * @return 成功扣减返回 true，实例不存在或扣减失败返回 false
      */
-    UFUNCTION(BlueprintCallable, Category = "Game|Buff")
-    bool RemoveBuffStacks(FGameplayTag InBuffTag, int32 StacksToRemove = 1);
+    UFUNCTION(BlueprintCallable, Category = "Game|Buff", meta = (DisplayName = "Remove Buff Stacks"))
+    bool K2_RemoveBuffStacks(FGameplayTag InBuffTag, int32 StacksToRemove = 1);
 
     /**
-     * @brief 按运行实例 ID 精确移除单个 Buff 实例
+     * @brief 按 Buff 身份标签扣减指定层数（强类型契约）
+     * @param InBuffTag 目标 Buff 身份标签
+     * @param StacksToRemove 扣减层数（默认 1 层）
+     * @return 成功扣减返回 Success，参数非法返回 Failure(8003)，非权威返回 Failure(8002)，未找到返回 Failure(8004)
+     */
+    TGameStatusResult<void> RemoveBuffStacks(FGameplayTag InBuffTag, int32 StacksToRemove = 1);
+
+    /**
+     * @brief 按运行实例 ID 精确移除单个 Buff 实例（蓝图轻量门面）
      * @param InInstanceId 运行实例唯一 ID
      * @return 成功移除返回 true，未找到匹配实例返回 false
      */
-    UFUNCTION(BlueprintCallable, Category = "Game|Buff")
-    bool RemoveBuffInstance(int32 InInstanceId);
+    UFUNCTION(BlueprintCallable, Category = "Game|Buff", meta = (DisplayName = "Remove Buff Instance"))
+    bool K2_RemoveBuffInstance(int32 InInstanceId);
+
+    /**
+     * @brief 按运行实例 ID 精确移除单个 Buff 实例（强类型契约）
+     * @param InInstanceId 运行实例唯一 ID
+     * @return 成功移除返回 Success，非权威返回 Failure(8002)，未找到返回 Failure(8004)
+     */
+    TGameStatusResult<void> RemoveBuffInstance(int32 InInstanceId);
 
     /**
      * @brief 查询当前是否存在指定标签的 Buff 实例
@@ -245,27 +300,4 @@ private:
      * @brief Buff 属性修正器挂接与回滚桥接器
      */
     FGameBuffModifierBridge ModifierBridge;
-
-public:
-    /**
-     * @brief Buff 变更动态多播委托（层数或状态变化时广播）
-     */
-    UPROPERTY(BlueprintAssignable, Category = "Game|Buff")
-    FOnGameBuffChanged OnBuffChanged;
-
-    /**
-     * @brief Buff 移除动态多播委托（标签完全移除时广播）
-     */
-    UPROPERTY(BlueprintAssignable, Category = "Game|Buff")
-    FOnGameBuffRemoved OnBuffRemoved;
-
-    /**
-     * @brief Buff 变更原生 C++ 多播委托
-     */
-    FOnGameBuffChangedNative OnBuffChangedNative;
-
-    /**
-     * @brief Buff 移除原生 C++ 多播委托
-     */
-    FOnGameBuffRemovedNative OnBuffRemovedNative;
 };

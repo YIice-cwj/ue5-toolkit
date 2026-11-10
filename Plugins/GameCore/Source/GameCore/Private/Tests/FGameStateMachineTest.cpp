@@ -3,7 +3,7 @@
  * @brief TGameStateMachine 强类型通用状态机单元测试
  */
 
-#include "FSM/TGameStateMachine.h"
+#include "State/TGameStateMachine.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -148,6 +148,7 @@ bool FGameStateMachineReentrancyAndLoopGuardTest::RunTest([[maybe_unused]] const
     });
 
     ChainFsm.Start(ETestActorState::Idle);
+    TestFalse(TEXT("正常链式跃迁未触发截断熔断"), ChainFsm.WasTransitionChainTruncated());
     TestEqual(TEXT("链式重入最终停靠于 Combat"), ChainFsm.GetCurrentState(), ETestActorState::Combat);
     TestEqual(TEXT("生命周期序列长度精确为 5"), Sequence.Num(), 5);
     if (Sequence.Num() == 5) {
@@ -158,6 +159,60 @@ bool FGameStateMachineReentrancyAndLoopGuardTest::RunTest([[maybe_unused]] const
         TestEqual(TEXT("步骤 4 为 Enter:Combat"), Sequence[4], FString(TEXT("Enter:Combat")));
     }
     TestEqual(TEXT("OnStateChanged 顺序通知 Patrol -> Combat"), NotifiedTargets.Num(), 2);
+
+    TGameStateMachine<ETestActorState> FifoFsm;
+    TArray<ETestActorState> EnteredStates;
+    FifoFsm.RegisterState(ETestActorState::Idle, {
+        [&FifoFsm, &EnteredStates](ETestActorState) {
+            EnteredStates.Add(ETestActorState::Idle);
+            FifoFsm.ChangeState(ETestActorState::Patrol);
+            FifoFsm.ChangeState(ETestActorState::Combat);
+        },
+        nullptr,
+        nullptr
+    });
+    FifoFsm.RegisterState(ETestActorState::Patrol, {
+        [&EnteredStates](ETestActorState) {
+            EnteredStates.Add(ETestActorState::Patrol);
+        },
+        nullptr,
+        nullptr
+    });
+    FifoFsm.RegisterState(ETestActorState::Combat, {
+        [&EnteredStates](ETestActorState) {
+            EnteredStates.Add(ETestActorState::Combat);
+        },
+        nullptr,
+        nullptr
+    });
+    FifoFsm.Start(ETestActorState::Idle);
+    TestEqual(TEXT("同一回调内排队多个状态时按 FIFO 依次经过全部状态"), EnteredStates.Num(), 3);
+    TestFalse(TEXT("未注册 Dead 状态时 ChangeStateIfRegistered 返回 false"), FifoFsm.ChangeStateIfRegistered(ETestActorState::Dead));
+
+    TGameStateMachine<ETestActorState> ReentrantMutationFsm;
+    ReentrantMutationFsm.RegisterState(ETestActorState::Idle, {
+        [&ReentrantMutationFsm](ETestActorState) {
+            for (int32 StateId = 1; StateId <= 64; ++StateId) {
+                const ETestActorState DynamicState = static_cast<ETestActorState>(StateId);
+                ReentrantMutationFsm.RegisterState(DynamicState, {});
+                ReentrantMutationFsm.AddTransition(
+                    ETestActorState::Idle,
+                    DynamicState,
+                    [StateId]() { return StateId == 64; },
+                    StateId
+                );
+            }
+        },
+        nullptr,
+        nullptr
+    });
+    ReentrantMutationFsm.Start(ETestActorState::Idle);
+    ReentrantMutationFsm.Update(0.016f);
+    TestEqual(
+        TEXT("回调内大规模扩容 States 与 Transitions 后安全跃迁至 64"),
+        ReentrantMutationFsm.GetCurrentState(),
+        static_cast<ETestActorState>(64)
+    );
 
     TGameStateMachine<ETestActorState> OscillatingFsm;
     int32 BounceCount = 0;
@@ -180,6 +235,7 @@ bool FGameStateMachineReentrancyAndLoopGuardTest::RunTest([[maybe_unused]] const
 
     OscillatingFsm.Start(ETestActorState::Idle);
     OscillatingFsm.ChangeState(ETestActorState::Patrol);
+    TestTrue(TEXT("双向死循环重入后 WasTransitionChainTruncated 为真"), OscillatingFsm.WasTransitionChainTruncated());
     TestEqual(
         TEXT("双向死循环重入被 MAX_CHAINED_TRANSITIONS 精确熔断而绝不栈溢出"),
         BounceCount,

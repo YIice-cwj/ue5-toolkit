@@ -6,6 +6,7 @@
 
 #include "CoreMinimal.h"
 #include "Misc/ScopeRWLock.h"
+#include "Types/TGameResult.h"
 
 #include <atomic>
 
@@ -43,9 +44,9 @@ public:
 
     /**
      * @brief CAS 抢占重载门闩
-     * @return 抢占成功返回 true，已有重载进行中返回 false
+     * @return 抢占成功返回 Success，已有重载进行中返回 Failure(7001)
      */
-    [[nodiscard]] bool TryBeginReload();
+    [[nodiscard]] TGameStatusResult<void> TryBeginReload();
 
     /**
      * @brief 释放重载门闩

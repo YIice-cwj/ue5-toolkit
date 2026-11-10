@@ -25,7 +25,7 @@ bool FGameNetMessageDispatcherTest::RunTest([[maybe_unused]] const FString& Para
     FNetMessageDispatcher Dispatcher;
 
     TestEqual(TEXT("注册空处理器返回无效句柄 0"), Dispatcher.RegisterHandler(100, nullptr), int64(0));
-    TestFalse(TEXT("注销不存在协议的句柄返回 false"), Dispatcher.UnregisterHandler(100, 99));
+    TestTrue(TEXT("注销不存在协议的句柄返回失败"), Dispatcher.UnregisterHandler(100, 99).IsFailure());
 
     int32 BroadcastHitCount = 0;
     int64 SelfUnregisterHandle = 0;
@@ -46,14 +46,14 @@ bool FGameNetMessageDispatcherTest::RunTest([[maybe_unused]] const FString& Para
 
     FNetPacketHeader PushHeader;
     PushHeader.MessageId = 500;
-    TestTrue(TEXT("派发协议 500 命中常驻处理器"), Dispatcher.DispatchPacket(PushHeader, {}));
+    TestTrue(TEXT("派发协议 500 命中常驻处理器"), Dispatcher.DispatchPacket(PushHeader, {}).IsSuccess());
     TestEqual(TEXT("回调内自注销不破坏快照迭代，两个处理器均被执行"), BroadcastHitCount, 11);
     TestEqual(TEXT("自注销后剩余 1 个处理器"), Dispatcher.GetHandlerCount(500), 1);
 
-    TestFalse(TEXT("重复注销已移除句柄返回 false"), Dispatcher.UnregisterHandler(500, SelfUnregisterHandle));
-    TestTrue(TEXT("注销第二个处理器返回 true"), Dispatcher.UnregisterHandler(500, SecondHandle));
+    TestTrue(TEXT("重复注销已移除句柄返回失败"), Dispatcher.UnregisterHandler(500, SelfUnregisterHandle).IsFailure());
+    TestTrue(TEXT("注销第二个处理器返回成功"), Dispatcher.UnregisterHandler(500, SecondHandle).IsSuccess());
     TestEqual(TEXT("全部移除后处理器计数为 0"), Dispatcher.GetHandlerCount(500), 0);
-    TestFalse(TEXT("无监听器的报文派发返回 false"), Dispatcher.DispatchPacket(PushHeader, {}));
+    TestTrue(TEXT("无监听器的报文派发返回失败"), Dispatcher.DispatchPacket(PushHeader, {}).IsFailure());
 
     const int64 TempHandle = Dispatcher.RegisterHandler(
         600,

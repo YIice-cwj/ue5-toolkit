@@ -205,7 +205,7 @@ bool FGameStatDefensiveBranchesTest::RunTest([[maybe_unused]] const FString& Par
     Comp->RegisterStat(InvalidTag, 100.0f, 100.0f, 0.0f);
     TestFalse(TEXT("无效标签注册被拒绝"), Comp->HasStat(InvalidTag));
 
-    TestFalse(TEXT("无效标签注销返回 false"), Comp->UnregisterStat(InvalidTag));
+    TestTrue(TEXT("无效标签注销返回失败"), Comp->UnregisterStat(InvalidTag).IsFailure());
 
     Comp->RegisterStat(ValidTag, 100.0f, 100.0f, 0.0f);
     TestTrue(TEXT("有效标签注册成功"), Comp->HasStat(ValidTag));
@@ -229,9 +229,9 @@ bool FGameStatDefensiveBranchesTest::RunTest([[maybe_unused]] const FString& Par
     TestEqual(TEXT("未注册属性当前值为 0"), Comp->GetStatCurrent(MissingTag), 0.0f);
     TestEqual(TEXT("未注册属性有效当前值为 0"), Comp->GetStatEffectiveCurrent(MissingTag), 0.0f);
 
-    const uint32 MissingHandle = Comp->AddStatModifier(MissingTag, FGameStatModifier(10.0f, EGameStatModifierOp::Add));
-    TestTrue(TEXT("未注册属性添加修正器分配有效句柄"), MissingHandle > 0);
-    TestTrue(TEXT("移除未注册属性修正器返回 true"), Comp->RemoveStatModifier(MissingTag, MissingHandle));
+    const TGameStatusResult<uint32> MissingHandle = Comp->AddStatModifier(MissingTag, FGameStatModifier(10.0f, EGameStatModifierOp::Add));
+    TestTrue(TEXT("未注册属性添加修正器分配有效句柄"), MissingHandle.IsSuccess() && MissingHandle.GetValue() > 0);
+    TestTrue(TEXT("移除未注册属性修正器返回 true"), Comp->RemoveStatModifier(MissingTag, MissingHandle.GetValue()).IsSuccess());
     TestEqual(TEXT("未注册属性清空修正器返回 0"), Comp->ClearStatModifiers(MissingTag), 0);
 
     UWorld* World = GetStatTestWorld();
@@ -255,7 +255,7 @@ bool FGameStatDefensiveBranchesTest::RunTest([[maybe_unused]] const FString& Par
 
             NonAuthComp->bAllowNonAuthoritativeWrites = false;
             TestFalse(TEXT("关闭非权威写入后拒绝修改"), NonAuthComp->ModifyStat(ValidTag, 10.0f, Delta));
-            TestFalse(TEXT("关闭非权威写入后拒绝注销"), NonAuthComp->UnregisterStat(ValidTag));
+            TestTrue(TEXT("关闭非权威写入后拒绝注销"), NonAuthComp->UnregisterStat(ValidTag).IsFailure());
 
             NonAuthActor->Destroy();
         }
@@ -290,13 +290,13 @@ bool FGameStatFullApiCoverageTest::RunTest([[maybe_unused]] const FString& Param
     TestTrue(TEXT("包含标签 B"), AllTags.Contains(TagB));
 
     FGameStatValue ValueA;
-    TestTrue(TEXT("读取存在的属性成功"), Comp->GetStatValue(TagA, ValueA));
-    TestEqual(TEXT("Current 值为 50"), ValueA.Current, 50.0f);
-    TestEqual(TEXT("Max 值为 100"), ValueA.Max, 100.0f);
+    const TGameStatusResult<FGameStatValue> ValueARes = Comp->GetStatValue(TagA);
+    TestTrue(TEXT("读取存在的属性成功"), ValueARes.IsSuccess());
+    TestEqual(TEXT("Current 值为 50"), ValueARes.GetValue().Current, 50.0f);
+    TestEqual(TEXT("Max 值为 100"), ValueARes.GetValue().Max, 100.0f);
 
-    FGameStatValue MissingValue;
     const FGameplayTag InvalidTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Attribute.Test.Invalid")));
-    TestFalse(TEXT("读取未注册属性返回 false"), Comp->GetStatValue(InvalidTag, MissingValue));
+    TestTrue(TEXT("读取未注册属性返回失败"), Comp->GetStatValue(InvalidTag).IsFailure());
 
     TestNearlyEqual(TEXT("有效百分比应为 0.5"), Comp->GetStatEffectivePercent(TagA), 0.5f, 0.0001f);
     TestNearlyEqual(TEXT("未注册属性有效百分比应为 0.0"), Comp->GetStatEffectivePercent(InvalidTag), 0.0f, 0.0001f);
@@ -304,13 +304,13 @@ bool FGameStatFullApiCoverageTest::RunTest([[maybe_unused]] const FString& Param
     Comp->AddStatModifier(TagA, FGameStatModifier(20.0f, EGameStatModifierOp::Add));
     TestEqual(TEXT("注销前派生当前值包含修正器"), Comp->GetStatEffectiveCurrent(TagA), 70.0f);
 
-    TestTrue(TEXT("注销属性 TagA 成功"), Comp->UnregisterStat(TagA));
+    TestTrue(TEXT("注销属性 TagA 成功"), Comp->UnregisterStat(TagA).IsSuccess());
     TestFalse(TEXT("TagA 不再存在"), Comp->HasStat(TagA));
-    TestFalse(TEXT("重复注销 TagA 返回 false"), Comp->UnregisterStat(TagA));
+    TestTrue(TEXT("重复注销 TagA 返回失败"), Comp->UnregisterStat(TagA).IsFailure());
 
     Comp->RegisterStat(TagA, 50.0f, 100.0f, 0.0f);
     TestEqual(TEXT("重新注册后历史修正器已被注销清理"), Comp->GetStatEffectiveCurrent(TagA), 50.0f);
-    TestTrue(TEXT("再次注销 TagA"), Comp->UnregisterStat(TagA));
+    TestTrue(TEXT("再次注销 TagA"), Comp->UnregisterStat(TagA).IsSuccess());
 
     Comp->GetAllStatTags(AllTags);
     TestEqual(TEXT("注销后标签总数变为 1"), AllTags.Num(), 1);

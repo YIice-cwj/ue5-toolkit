@@ -8,12 +8,26 @@
 FObserverBase::FObserverBase(const FName& InObserverName)
     : ObserverName(InObserverName),
       EnableConfigKey(BuildEnableConfigKey(InObserverName)) {
-    FConfigRegistry::Get().RegisterConfig<bool>(EnableConfigKey, true);
+    FConfigRegistry& Registry = FConfigRegistry::Get();
+    Registry.RegisterConfig<bool>(EnableConfigKey, true);
+    bCachedEnabled.store(Registry.GetConfig<bool>(EnableConfigKey, true), std::memory_order_relaxed);
+    EnableWatchSubscription = Registry.WatchConfig<bool>(
+        EnableConfigKey,
+        [this](const bool& bNewEnabled) {
+            bCachedEnabled.store(bNewEnabled, std::memory_order_relaxed);
+        }
+    );
 }
 
-FObserverBase::~FObserverBase() = default;
+FObserverBase::~FObserverBase() {
+    if (EnableWatchSubscription.IsValid()) {
+        EnableWatchSubscription->Reset();
+        EnableWatchSubscription.Reset();
+    }
+}
 
 void FObserverBase::SetEnabled(bool bInEnabled) {
+    bCachedEnabled.store(bInEnabled, std::memory_order_relaxed);
     FConfigRegistry::Get().SetConfig<bool>(EnableConfigKey, bInEnabled);
 }
 

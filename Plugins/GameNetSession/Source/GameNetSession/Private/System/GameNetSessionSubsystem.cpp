@@ -212,7 +212,7 @@ bool UGameNetSessionSubsystem::TravelToListenServer(
     int32 ListenPort,
     const FString& ExtraOptions
 ) {
-    return UNetTravelLibrary::ExecuteListenServerTravel(GetWorld(), MapPath, ListenPort, ExtraOptions);
+    return UNetTravelLibrary::ExecuteListenServerTravel(GetWorld(), MapPath, ListenPort, ExtraOptions).IsSuccess();
 }
 
 /**
@@ -222,7 +222,7 @@ bool UGameNetSessionSubsystem::TravelToListenServer(
  * @return 本地 PlayerController 有效且发起跳转返回 true
  */
 bool UGameNetSessionSubsystem::TravelToRoom(const FGameNetRoomDescriptor& Room, const FString& ExtraOptions) {
-    if (!UNetTravelLibrary::ExecuteClientRoomTravel(GetWorld(), Room, ExtraOptions)) {
+    if (UNetTravelLibrary::ExecuteClientRoomTravel(GetWorld(), Room, ExtraOptions).IsFailure()) {
         return false;
     }
 

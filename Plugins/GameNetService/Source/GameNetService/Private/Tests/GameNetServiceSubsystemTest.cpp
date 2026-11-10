@@ -77,20 +77,21 @@ bool FGameNetServiceSubsystemEndToEndTest::RunTest([[maybe_unused]] const FStrin
         5001,
         5002,
         [&NetService](const FNetPacketHeader&, TConstArrayView<uint8> ReqBytes) -> TOptional<TArray<uint8>> {
-            const TOptional<FGameNetTestPurchaseReq> Req =
+            const TGameStatusResult<FGameNetTestPurchaseReq> Req =
                 NetService.GetSerializer()->DeserializeStruct<FGameNetTestPurchaseReq>(ReqBytes);
-            if (!Req.IsSet()) {
+            if (Req.IsFailure()) {
                 return NullOpt;
             }
             FGameNetTestPurchaseRsp Rsp;
             Rsp.bSuccess = true;
-            Rsp.RemainingGold = 10000 - Req->BuyCount * 250;
+            Rsp.RemainingGold = 10000 - Req.GetValue().BuyCount * 250;
             Rsp.DiscountRate = 0.9f;
-            Rsp.ReceiptMessage = FString::Printf(TEXT("Item_%d_OK"), Req->ShopItemId);
+            Rsp.ReceiptMessage = FString::Printf(TEXT("Item_%d_OK"), Req.GetValue().ShopItemId);
             Rsp.GrantedSerialNumbers = {701, 702};
             Rsp.BonusItem.ItemCode = FName(TEXT("BonusGem"));
-            Rsp.BonusItem.Quantity = Req->BuyCount;
-            return NetService.GetSerializer()->SerializeStruct(Rsp);
+            Rsp.BonusItem.Quantity = Req.GetValue().BuyCount;
+            const TGameStatusResult<TArray<uint8>> EncodedRsp = NetService.GetSerializer()->SerializeStruct(Rsp);
+            return EncodedRsp.IsSuccess() ? EncodedRsp.GetValue() : TOptional<TArray<uint8>>{};
         }
     );
 
@@ -127,10 +128,10 @@ bool FGameNetServiceSubsystemEndToEndTest::RunTest([[maybe_unused]] const FStrin
             TConstArrayView<uint8> Payload
         ) -> TOptional<TArray<uint8>> {
             ++RemoteLogHits;
-            const TOptional<FGameRemoteLogEntry> Deserialized =
+            const TGameStatusResult<FGameRemoteLogEntry> Deserialized =
                 NetService.GetSerializer()->DeserializeStruct<FGameRemoteLogEntry>(Payload);
-            if (Deserialized.IsSet()) {
-                CapturedRemoteLog = *Deserialized;
+            if (Deserialized.IsSuccess()) {
+                CapturedRemoteLog = Deserialized.GetValue();
             }
             return NullOpt;
         }
@@ -170,7 +171,7 @@ bool FGameNetServiceSubsystemEndToEndTest::RunTest([[maybe_unused]] const FStrin
 
     ENetRequestResult RpcStatus = ENetRequestResult::SendFailed;
     FGameNetTestPurchaseRsp CapturedRsp;
-    const uint32 AssignedSeq = NetService.SendStructRequest<FGameNetTestPurchaseReq, FGameNetTestPurchaseRsp>(
+    const TGameStatusResult<uint32> AssignedSeq = NetService.SendStructRequest<FGameNetTestPurchaseReq, FGameNetTestPurchaseRsp>(
         5001,
         5002,
         PurchaseReq,
@@ -182,7 +183,7 @@ bool FGameNetServiceSubsystemEndToEndTest::RunTest([[maybe_unused]] const FStrin
             }
         }
     );
-    TestTrue(TEXT("成功分配非零异步请求序列号"), AssignedSeq > 0);
+    TestTrue(TEXT("成功分配非零异步请求序列号"), AssignedSeq.IsSuccess() && AssignedSeq.GetValue() > 0);
 
     NetService.Tick(0.05f);
     TestEqual(TEXT("单机无 Socket 下完整跑通异步购买请求"), RpcStatus, ENetRequestResult::Success);
@@ -218,10 +219,10 @@ bool FGameNetServiceSubsystemEndToEndTest::RunTest([[maybe_unused]] const FStrin
     FGameNetTestPurchaseReq BinaryPushPayload;
     BinaryPushPayload.ShopItemId = 888;
     BinaryPushPayload.BuyCount = 1;
-    TestTrue(TEXT("热切换为 UE 二进制 Archive 序列化器后发送成功"), NetService.SendStruct(6200, BinaryPushPayload));
+    TestTrue(TEXT("热切换为 UE 二进制 Archive 序列化器后发送成功"), NetService.SendStruct(6200, BinaryPushPayload).IsSuccess());
     NetService.Tick(0.05f);
     TestEqual(TEXT("强类型常驻监听器成功反解二进制负载"), BinaryPushHits, 1);
-    TestTrue(TEXT("成功注销强类型监听器"), NetService.UnregisterHandler(6200, StructHandlerId));
+    TestTrue(TEXT("成功注销强类型监听器"), NetService.UnregisterHandler(6200, StructHandlerId).IsSuccess());
     MockTransport->SetEchoUnregisteredMessages(false);
 
     NetService.Tick(2.0f);

@@ -8,6 +8,7 @@
 #include "CoreMinimal.h"
 #include "Codec/NetCodecTypes.h"
 #include "Packet/NetPacketTypes.h"
+#include "Types/TGameResult.h"
 
 /**
  * @brief 16 字节小端序网络报文头校验、编码与完整帧拼装无状态编解码器
@@ -57,8 +58,8 @@ public:
     /**
      * @brief 从二进制切片首部反解 16 字节小端序报文头
      * @param WireBytes 原始字节视图
-     * @return 字节数达到 16 时返回解析出的报文头，不足 16 字节时返回空值
+     * @return 字节数达到 16 时返回包含报文头的成功态，不足 16 字节时返回对应失败态
      */
-    [[nodiscard]] static TOptional<FNetPacketHeader> TryDecodeHeader(TConstArrayView<uint8> WireBytes);
+    [[nodiscard]] static TGameStatusResult<FNetPacketHeader> TryDecodeHeader(TConstArrayView<uint8> WireBytes);
 };
 

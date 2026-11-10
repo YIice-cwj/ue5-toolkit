@@ -38,18 +38,19 @@ graph TD
         GameProject["游戏工程源码"]
     end
 
-    subgraph Layer2["服务与协议层"]
+    subgraph Layer2["服务与领域调度层"]
         GameData["GameData (静态数据/存档)"]
         GameGameplay["GameGameplay (GAS集成/属性/打击反馈)"]
+        GameDomain["GameNetCore | GameFlow | GameMessage | GameFeedback"]
     end
 
-    subgraph Layer1["战斗契约层"]
+    subgraph Layer1["通用基础设施与战斗契约层"]
         GameGameplayCore["GameGameplayCore (纯C++伤害/生命状态机)"]
-        GameLogging["GameLogging (全局日志分发)"]
+        GameLogging["GameLogging | GameDebug | GamePool | GameSpatial | GameAssetCore"]
     end
 
-    subgraph Layer0["基础设施核心层"]
-        GameCore["GameCore<br>ConfigRegistry | ListenerHub | ObjectPool<br>TimeDilation | GameplayMessage | VersionedCache"]
+    subgraph Layer0["基础设施核心层 (Level 0)"]
+        GameCore["GameCore<br>Types | Memory | Containers | Math | Random<br>Determinism | State | Config | Cache | Listener | Async"]
     end
 
     GameProject --> GameData

@@ -16,6 +16,7 @@ public class GameFeedback : ModuleRules {
             "Niagara",
             "DeveloperSettings",
             "GameCore",
+            "GameMessage",
             "GameGameplayCore",
             "NetCore",
         });

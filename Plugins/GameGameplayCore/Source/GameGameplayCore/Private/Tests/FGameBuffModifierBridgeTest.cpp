@@ -139,13 +139,13 @@ bool FGameBuffModifierLateBindingTest::RunTest([[maybe_unused]] const FString& P
     ModifierSpec.Modifier = FGameStatModifier(10.0f, EGameStatModifierOp::Add);
     Spec.Modifiers.Add(ModifierSpec);
 
-    TestNotEqual(TEXT("无数值组件时仍可施加 Buff"), BuffComponent->ApplyBuff(Spec), 0);
+    TestTrue(TEXT("无数值组件时仍可施加 Buff"), BuffComponent->ApplyBuff(Spec).IsSuccess());
     TestEqual(TEXT("未绑定时基础值保持不变"), StatComponent->GetStatEffectiveCurrent(AttackTag), 100.0f);
 
     BuffComponent->BindStatComponent(StatComponent);
     TestEqual(TEXT("晚绑定后既有 Buff 修正器生效"), StatComponent->GetStatEffectiveCurrent(AttackTag), 110.0f);
 
-    TestTrue(TEXT("清理测试 Buff"), BuffComponent->RemoveBuff(Spec.BuffTag));
+    TestTrue(TEXT("清理测试 Buff"), BuffComponent->RemoveBuff(Spec.BuffTag).IsSuccess());
     TestEqual(TEXT("移除后修正器回滚"), StatComponent->GetStatEffectiveCurrent(AttackTag), 100.0f);
     return true;
 }
@@ -178,7 +178,7 @@ bool FGameBuffModifierRebindingTest::RunTest([[maybe_unused]] const FString& Par
 
     BuffComponent->BindStatComponent(StatA);
     BuffComponent->ApplyBuff(Spec);
-    const uint32 OtherModifierHandle = StatB->AddStatModifier(AttackTag, FGameStatModifier(5.0f, EGameStatModifierOp::Add));
+    const uint32 OtherModifierHandle = StatB->AddStatModifier(AttackTag, FGameStatModifier(5.0f, EGameStatModifierOp::Add)).GetValue();
     TestEqual(TEXT("重绑前 StatA 生效"), StatA->GetStatEffectiveCurrent(AttackTag), 110.0f);
     TestEqual(TEXT("重绑前 StatB 仅有其他修正器"), StatB->GetStatEffectiveCurrent(AttackTag), 105.0f);
 
@@ -186,10 +186,10 @@ bool FGameBuffModifierRebindingTest::RunTest([[maybe_unused]] const FString& Par
     TestEqual(TEXT("重绑后 StatA 完整回滚"), StatA->GetStatEffectiveCurrent(AttackTag), 100.0f);
     TestEqual(TEXT("重绑后 StatB 叠加 Buff 与其他修正器"), StatB->GetStatEffectiveCurrent(AttackTag), 115.0f);
 
-    TestTrue(TEXT("重绑后移除 Buff 成功"), BuffComponent->RemoveBuff(Spec.BuffTag));
+    TestTrue(TEXT("重绑后移除 Buff 成功"), BuffComponent->RemoveBuff(Spec.BuffTag).IsSuccess());
     TestEqual(TEXT("移除后 StatA 保持基础值"), StatA->GetStatEffectiveCurrent(AttackTag), 100.0f);
     TestEqual(TEXT("移除后 StatB 保留其他修正器"), StatB->GetStatEffectiveCurrent(AttackTag), 105.0f);
-    TestTrue(TEXT("StatB 其他修正器句柄仍有效"), StatB->RemoveStatModifier(AttackTag, OtherModifierHandle));
+    TestTrue(TEXT("StatB 其他修正器句柄仍有效"), StatB->RemoveStatModifier(AttackTag, OtherModifierHandle).IsSuccess());
     return true;
 }
 

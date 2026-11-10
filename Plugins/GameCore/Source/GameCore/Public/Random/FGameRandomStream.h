@@ -118,9 +118,17 @@ public:
     void SerializeState(FArchive& Ar);
 
 private:
+    /**
+     * @brief 执行单步 PCG32 线性同余状态推进
+     */
     void AdvanceState() noexcept;
 
 private:
+    /**
+     * @brief 使用 SplitMix64 双重雪崩散列将任意 64 位种子混合为高熵非零初始状态
+     * @param Seed 原始 64 位种子
+     * @return 混合后的 64 位状态值
+     */
     static uint64 MixSeedSplitMix64(uint64 Seed) noexcept;
 
 private:

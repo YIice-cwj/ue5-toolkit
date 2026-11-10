@@ -49,14 +49,18 @@ void UGameStatComponent::RegisterStat(const FGameplayTag& InStatTag, float InIni
         *GetNameSafe(GetOwner()), *InStatTag.ToString(), ClampedCurrent, InMin, ClampedMax);
 }
 
-bool UGameStatComponent::UnregisterStat(const FGameplayTag& InStatTag) {
+bool UGameStatComponent::K2_UnregisterStat(const FGameplayTag& InStatTag) {
+    return UnregisterStat(InStatTag).IsSuccess();
+}
+
+TGameStatusResult<void> UGameStatComponent::UnregisterStat(const FGameplayTag& InStatTag) {
     if (!InStatTag.IsValid()) {
-        return false;
+        return TGameStatusResult<void>::Failure(Game::CommonErrorCodes::InvalidParameter, TEXT("Invalid StatTag"));
     }
 
     if (!IsAuthoritativeWriteAllowed()) {
         GAME_LOG(Warning, TEXT("【数值组件】非权威端拒绝移除属性: %s"), *InStatTag.ToString());
-        return false;
+        return TGameStatusResult<void>::Failure(8002, TEXT("Not authority"));
     }
 
     const int32 Index = ResolveStatIndex(InStatTag);
@@ -67,10 +71,10 @@ bool UGameStatComponent::UnregisterStat(const FGameplayTag& InStatTag) {
         RebuildStatIndex();
         GAME_LOG(Log, TEXT("【数值组件】宿主 [%s] 成功注销属性 [%s]。"),
             *GetNameSafe(GetOwner()), *InStatTag.ToString());
-        return true;
+        return TGameStatusResult<void>::Success();
     }
 
-    return false;
+    return TGameStatusResult<void>::Failure(8001, TEXT("Stat not found"));
 }
 
 bool UGameStatComponent::HasStat(const FGameplayTag& InStatTag) const {
@@ -104,19 +108,26 @@ float UGameStatComponent::GetStatPercent(const FGameplayTag& InStatTag) const {
     return FGameStatEffectiveEvaluator::EvaluatePercent(GetStatCurrent(InStatTag), GetStatMax(InStatTag), GetStatMin(InStatTag));
 }
 
-bool UGameStatComponent::GetStatValue(const FGameplayTag& InStatTag, FGameStatValue& OutValue) const {
-    const FGameStatValue* FoundStat = FindStat(InStatTag);
-    if (FoundStat == nullptr) {
-        return false;
+bool UGameStatComponent::K2_GetStatValue(const FGameplayTag& InStatTag, FGameStatValue& OutValue) const {
+    const TGameStatusResult<FGameStatValue> Result = GetStatValue(InStatTag);
+    if (Result.IsSuccess()) {
+        OutValue = Result.GetValue();
+        return true;
     }
-
-    OutValue = *FoundStat;
-    return true;
+    return false;
 }
 
-uint32 UGameStatComponent::AddStatModifier(const FGameplayTag& InStatTag, const FGameStatModifier& InModifier) {
+TGameStatusResult<FGameStatValue> UGameStatComponent::GetStatValue(const FGameplayTag& InStatTag) const {
+    const FGameStatValue* FoundStat = FindStat(InStatTag);
+    if (FoundStat == nullptr) {
+        return TGameStatusResult<FGameStatValue>::Failure(8001, TEXT("Stat not found"));
+    }
+    return TGameStatusResult<FGameStatValue>::Success(*FoundStat);
+}
+
+TGameStatusResult<uint32> UGameStatComponent::AddStatModifier(const FGameplayTag& InStatTag, const FGameStatModifier& InModifier) {
     if (!InStatTag.IsValid()) {
-        return 0;
+        return TGameStatusResult<uint32>::Failure(Game::CommonErrorCodes::InvalidParameter, TEXT("Invalid StatTag"));
     }
 
     const bool bStatRegistered = HasStat(InStatTag);
@@ -125,19 +136,20 @@ uint32 UGameStatComponent::AddStatModifier(const FGameplayTag& InStatTag, const 
 
     const uint32 Handle = ModifierContainer.AddModifier(InStatTag, InModifier);
     NotifyIfEffectiveStatChanged(InStatTag, bStatRegistered, OldEffectiveCurrent, OldEffectiveMax);
-    return Handle;
+    return TGameStatusResult<uint32>::Success(Handle);
 }
 
-bool UGameStatComponent::RemoveStatModifier(const FGameplayTag& InStatTag, uint32 InHandle) {
+TGameStatusResult<void> UGameStatComponent::RemoveStatModifier(const FGameplayTag& InStatTag, uint32 InHandle) {
     const bool bStatRegistered = HasStat(InStatTag);
     const float OldEffectiveCurrent = bStatRegistered ? GetStatEffectiveCurrent(InStatTag) : 0.0f;
     const float OldEffectiveMax = bStatRegistered ? GetStatEffectiveMax(InStatTag) : 0.0f;
 
     const bool bRemoved = ModifierContainer.RemoveModifier(InStatTag, InHandle);
-    if (bRemoved) {
-        NotifyIfEffectiveStatChanged(InStatTag, bStatRegistered, OldEffectiveCurrent, OldEffectiveMax);
+    if (!bRemoved) {
+        return TGameStatusResult<void>::Failure(8004, TEXT("Modifier handle not found"));
     }
-    return bRemoved;
+    NotifyIfEffectiveStatChanged(InStatTag, bStatRegistered, OldEffectiveCurrent, OldEffectiveMax);
+    return TGameStatusResult<void>::Success();
 }
 
 int32 UGameStatComponent::ClearStatModifiers(const FGameplayTag& InStatTag) {

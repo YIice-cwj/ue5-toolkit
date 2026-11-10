@@ -77,13 +77,16 @@ bool FGameBuffStackAndExpireTest::RunTest([[maybe_unused]] const FString& Parame
         ++ChangedCount;
     });
 
-    const int32 FirstInstanceId = BuffComponent->ApplyBuff(Spec);
-    TestNotEqual(TEXT("Buff 施加应返回有效实例 Id"), FirstInstanceId, 0);
+    const TGameStatusResult<int32> FirstResult = BuffComponent->ApplyBuff(Spec);
+    TestTrue(TEXT("Buff 施加应返回成功"), FirstResult.IsSuccess());
+    const int32 FirstInstanceId = FirstResult.GetValue();
     TestTrue(TEXT("Buff 已激活"), BuffComponent->HasBuff(Spec.BuffTag));
     TestEqual(TEXT("首层叠层数为 1"), BuffComponent->GetBuffStacks(Spec.BuffTag), 1);
     TestEqual(TEXT("单层修正器派生值正确"), StatComponent->GetStatEffectiveCurrent(AttackTag), 110.0f);
 
-    const int32 SecondInstanceId = BuffComponent->ApplyBuff(Spec);
+    const TGameStatusResult<int32> SecondResult = BuffComponent->ApplyBuff(Spec);
+    TestTrue(TEXT("Buff 二次施加应返回成功"), SecondResult.IsSuccess());
+    const int32 SecondInstanceId = SecondResult.GetValue();
     TestEqual(TEXT("同 Tag 非独立策略复用实例"), SecondInstanceId, FirstInstanceId);
     TestEqual(TEXT("叠层数增至 2"), BuffComponent->GetBuffStacks(Spec.BuffTag), 2);
     TestEqual(TEXT("双层修正器派生值按层数放大"), StatComponent->GetStatEffectiveCurrent(AttackTag), 120.0f);
@@ -128,8 +131,9 @@ bool FGameBuffCooldownStatusTest::RunTest([[maybe_unused]] const FString& Parame
     CooldownSpec.Duration = 1.0f;
     CooldownSpec.GrantedTags.AddTag(CooldownStateTag);
 
-    const int32 InstanceId = BuffComponent->ApplyBuff(CooldownSpec);
-    TestNotEqual(TEXT("冷却 Buff 施加成功"), InstanceId, 0);
+    const TGameStatusResult<int32> InstanceResult = BuffComponent->ApplyBuff(CooldownSpec);
+    TestTrue(TEXT("冷却 Buff 施加成功"), InstanceResult.IsSuccess());
+    const int32 InstanceId = InstanceResult.GetValue();
 
     FGameplayTagContainer GrantedTags;
     BuffComponent->GetGrantedTags(GrantedTags);
@@ -189,8 +193,8 @@ bool FGameBuffIndependentInstancesTest::RunTest([[maybe_unused]] const FString& 
     FGameBuffSpec LongSpec = ShortSpec;
     LongSpec.Duration = 2.5f;
 
-    const int32 FirstId = BuffComponent->ApplyBuff(ShortSpec);
-    const int32 SecondId = BuffComponent->ApplyBuff(LongSpec);
+    const int32 FirstId = BuffComponent->ApplyBuff(ShortSpec).GetValue();
+    const int32 SecondId = BuffComponent->ApplyBuff(LongSpec).GetValue();
     TestNotEqual(TEXT("独立策略应创建不同实例 Id"), FirstId, SecondId);
     TestEqual(TEXT("双独立实例聚合层数为 2"), BuffComponent->GetBuffStacks(PoisonTag), 2);
     TestEqual(TEXT("施加第二层时广播总层数 2"), LastChangedStacks, 2);
@@ -203,7 +207,7 @@ bool FGameBuffIndependentInstancesTest::RunTest([[maybe_unused]] const FString& 
 
     BuffComponent->ApplyBuff(LongSpec);
     TestEqual(TEXT("再次施加独立实例后层数为 2"), BuffComponent->GetBuffStacks(PoisonTag), 2);
-    TestTrue(TEXT("单实例移除成功"), BuffComponent->RemoveBuff(PoisonTag, false));
+    TestTrue(TEXT("单实例移除成功"), BuffComponent->RemoveBuff(PoisonTag, false).IsSuccess());
     TestEqual(TEXT("单实例移除后剩余层数为 1"), BuffComponent->GetBuffStacks(PoisonTag), 1);
     TestEqual(TEXT("单实例移除后未触发 Removed"), RemovedBroadcastCount, 0);
 
@@ -217,9 +221,9 @@ bool FGameBuffIndependentInstancesTest::RunTest([[maybe_unused]] const FString& 
     CappedSpec.StackPolicy = EGameBuffStackPolicy::Independent;
     CappedSpec.MaxStacks = 2;
 
-    TestNotEqual(TEXT("首实例施加成功"), BuffComponent->ApplyBuff(CappedSpec), 0);
-    TestNotEqual(TEXT("第二实例施加成功"), BuffComponent->ApplyBuff(CappedSpec), 0);
-    TestEqual(TEXT("超出 MaxStacks 时第三实例应被拒绝"), BuffComponent->ApplyBuff(CappedSpec), 0);
+    TestTrue(TEXT("首实例施加成功"), BuffComponent->ApplyBuff(CappedSpec).IsSuccess());
+    TestTrue(TEXT("第二实例施加成功"), BuffComponent->ApplyBuff(CappedSpec).IsSuccess());
+    TestTrue(TEXT("超出 MaxStacks 时第三实例应被拒绝"), BuffComponent->ApplyBuff(CappedSpec).IsFailure());
     TestEqual(TEXT("独立实例总层数保持为 2"), BuffComponent->GetBuffStacks(CappedSpec.BuffTag), 2);
 
     HostActor->Destroy();
@@ -252,11 +256,11 @@ bool FGameBuffRemoveStacksTest::RunTest([[maybe_unused]] const FString& Paramete
     BuffComponent->ApplyBuff(Spec);
     TestEqual(TEXT("三层初始生效"), BuffComponent->GetBuffStacks(BleedTag), 3);
 
-    TestTrue(TEXT("削减 1 层成功"), BuffComponent->RemoveBuffStacks(BleedTag, 1));
+    TestTrue(TEXT("削减 1 层成功"), BuffComponent->RemoveBuffStacks(BleedTag, 1).IsSuccess());
     TestEqual(TEXT("削减后剩余 2 层"), BuffComponent->GetBuffStacks(BleedTag), 2);
     TestTrue(TEXT("Buff 仍存活"), BuffComponent->HasBuff(BleedTag));
 
-    TestTrue(TEXT("削减 2 层成功"), BuffComponent->RemoveBuffStacks(BleedTag, 2));
+    TestTrue(TEXT("削减 2 层成功"), BuffComponent->RemoveBuffStacks(BleedTag, 2).IsSuccess());
     TestEqual(TEXT("削减后剩余 0 层"), BuffComponent->GetBuffStacks(BleedTag), 0);
     TestFalse(TEXT("层数归零后 Buff 移除"), BuffComponent->HasBuff(BleedTag));
 
@@ -287,8 +291,8 @@ bool FGameBuffInstanceAndQueryCoverageTest::RunTest([[maybe_unused]] const FStri
     SpecB.BuffTag = TagB;
     SpecB.Duration = 10.0f;
 
-    const int32 InstanceIdA = BuffComponent->ApplyBuff(SpecA);
-    const int32 InstanceIdB = BuffComponent->ApplyBuff(SpecB);
+    const int32 InstanceIdA = BuffComponent->ApplyBuff(SpecA).GetValue();
+    const int32 InstanceIdB = BuffComponent->ApplyBuff(SpecB).GetValue();
     TestNotEqual(TEXT("实例 A 施加成功"), InstanceIdA, 0);
     TestNotEqual(TEXT("实例 B 施加成功"), InstanceIdB, 0);
 
@@ -298,8 +302,8 @@ bool FGameBuffInstanceAndQueryCoverageTest::RunTest([[maybe_unused]] const FStri
     TestTrue(TEXT("包含标签 A"), ActiveTags.Contains(TagA));
     TestTrue(TEXT("包含标签 B"), ActiveTags.Contains(TagB));
 
-    TestTrue(TEXT("根据 InstanceIdA 移除成功"), BuffComponent->RemoveBuffInstance(InstanceIdA));
-    TestFalse(TEXT("根据重复 InstanceIdA 移除应失败"), BuffComponent->RemoveBuffInstance(InstanceIdA));
+    TestTrue(TEXT("根据 InstanceIdA 移除成功"), BuffComponent->RemoveBuffInstance(InstanceIdA).IsSuccess());
+    TestTrue(TEXT("根据重复 InstanceIdA 移除应失败"), BuffComponent->RemoveBuffInstance(InstanceIdA).IsFailure());
 
     BuffComponent->GetActiveBuffTags(ActiveTags);
     TestEqual(TEXT("移除后活跃 Buff 标签数为 1"), ActiveTags.Num(), 1);
@@ -352,12 +356,12 @@ bool FGameBuffDefensiveBranchesTest::RunTest([[maybe_unused]] const FString& Par
     const FGameplayTag ValidTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Buff.Defensive.Valid")));
 
     FGameBuffSpec InvalidSpec;
-    TestEqual(TEXT("非法标签 ApplyBuff 被拒绝返回 0"), BuffComp->ApplyBuff(InvalidSpec), 0);
-    TestFalse(TEXT("非法标签 RemoveBuff 返回 false"), BuffComp->RemoveBuff(InvalidTag));
-    TestFalse(TEXT("非法标签 RemoveBuffStacks 返回 false"), BuffComp->RemoveBuffStacks(InvalidTag, 1));
-    TestFalse(TEXT("扣减 0 层 RemoveBuffStacks 返回 false"), BuffComp->RemoveBuffStacks(ValidTag, 0));
-    TestFalse(TEXT("扣减负层数 RemoveBuffStacks 返回 false"), BuffComp->RemoveBuffStacks(ValidTag, -2));
-    TestFalse(TEXT("移除不存在的实例 ID 返回 false"), BuffComp->RemoveBuffInstance(99999));
+    TestTrue(TEXT("非法标签 ApplyBuff 被拒绝返回失败"), BuffComp->ApplyBuff(InvalidSpec).IsFailure());
+    TestTrue(TEXT("非法标签 RemoveBuff 返回失败"), BuffComp->RemoveBuff(InvalidTag).IsFailure());
+    TestTrue(TEXT("非法标签 RemoveBuffStacks 返回失败"), BuffComp->RemoveBuffStacks(InvalidTag, 1).IsFailure());
+    TestTrue(TEXT("扣减 0 层 RemoveBuffStacks 返回失败"), BuffComp->RemoveBuffStacks(ValidTag, 0).IsFailure());
+    TestTrue(TEXT("扣减负层数 RemoveBuffStacks 返回失败"), BuffComp->RemoveBuffStacks(ValidTag, -2).IsFailure());
+    TestTrue(TEXT("移除不存在的实例 ID 返回失败"), BuffComp->RemoveBuffInstance(99999).IsFailure());
 
     UWorld* World = GetBuffTestWorld();
     TestNotNull(TEXT("测试世界有效"), World);
@@ -375,10 +379,10 @@ bool FGameBuffDefensiveBranchesTest::RunTest([[maybe_unused]] const FString& Par
             ValidSpec.BuffTag = ValidTag;
             ValidSpec.Duration = 2.0f;
 
-            TestEqual(TEXT("非权威端拒绝 ApplyBuff"), NonAuthBuffComp->ApplyBuff(ValidSpec), 0);
-            TestFalse(TEXT("非权威端拒绝 RemoveBuff"), NonAuthBuffComp->RemoveBuff(ValidTag));
-            TestFalse(TEXT("非权威端拒绝 RemoveBuffStacks"), NonAuthBuffComp->RemoveBuffStacks(ValidTag, 1));
-            TestFalse(TEXT("非权威端拒绝 RemoveBuffInstance"), NonAuthBuffComp->RemoveBuffInstance(1));
+            TestTrue(TEXT("非权威端拒绝 ApplyBuff"), NonAuthBuffComp->ApplyBuff(ValidSpec).IsFailure());
+            TestTrue(TEXT("非权威端拒绝 RemoveBuff"), NonAuthBuffComp->RemoveBuff(ValidTag).IsFailure());
+            TestTrue(TEXT("非权威端拒绝 RemoveBuffStacks"), NonAuthBuffComp->RemoveBuffStacks(ValidTag, 1).IsFailure());
+            TestTrue(TEXT("非权威端拒绝 RemoveBuffInstance"), NonAuthBuffComp->RemoveBuffInstance(1).IsFailure());
 
             FGameBuffInstance& Inst = NonAuthBuffComp->ActiveBuffs.Items.AddDefaulted_GetRef();
             Inst.InstanceId = 1;

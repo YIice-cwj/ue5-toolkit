@@ -25,3 +25,13 @@ enum class ENetRequestResult : uint8 {
 using FNetRawMessageHandler = TFunction<void(const FNetPacketHeader&, TConstArrayView<uint8>)>;
 using FNetPendingResponseHandler = TFunction<void(ENetRequestResult, const FNetPacketHeader&, TConstArrayView<uint8>)>;
 
+/**
+ * @brief 业务网络错误码常量定义
+ */
+namespace Game::NetErrorCodes {
+    inline constexpr int32 NotConnected = 2002;
+    inline constexpr int32 InvalidSerializer = 2004;
+    inline constexpr int32 HandlerNotFound = 2005;
+    inline constexpr int32 NoHandlersRegistered = 2006;
+}
+

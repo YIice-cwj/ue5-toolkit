@@ -8,21 +8,22 @@
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
 
+#include "Random/FGameRandomManager.h"
 #include "Random/FGameRandomStream.h"
 
 #include "URandomSubsystem.generated.h"
 
 /**
- * @brief 世界作用域多通道隔离随机数管理子系统
+ * @brief 世界作用域多通道隔离随机数管理子系统（引擎外壳 Thin-Shell，核心算法委托给 FGameRandomManager）
  */
 UCLASS()
 class GAMECORE_API URandomSubsystem : public UWorldSubsystem {
     GENERATED_BODY()
 
 public:
-    static constexpr uint32 ARCHIVE_MAGIC = 0x47524E47u;
-    static constexpr uint32 ARCHIVE_VERSION = 1u;
-    static constexpr int32 MAX_IMPORT_STREAMS = 4096;
+    static constexpr uint32 ARCHIVE_MAGIC = FGameRandomManager::ARCHIVE_MAGIC;
+    static constexpr uint32 ARCHIVE_VERSION = FGameRandomManager::ARCHIVE_VERSION;
+    static constexpr int32 MAX_IMPORT_STREAMS = FGameRandomManager::MAX_IMPORT_STREAMS;
 
 public:
     /**
@@ -69,7 +70,23 @@ public:
      * @return 通道总数
      */
     [[nodiscard]] int32 GetStreamCount() const noexcept {
-        return ChannelStreams.Num();
+        return Manager.GetStreamCount();
+    }
+
+    /**
+     * @brief 获取纯 C++ 随机数管理器核心
+     * @return 管理器引用
+     */
+    [[nodiscard]] FGameRandomManager& GetManager() noexcept {
+        return Manager;
+    }
+
+    /**
+     * @brief 获取纯 C++ 随机数管理器核心（常量版本）
+     * @return 管理器常量引用
+     */
+    [[nodiscard]] const FGameRandomManager& GetManager() const noexcept {
+        return Manager;
     }
 
     /**
@@ -87,7 +104,7 @@ public:
 
 public:
     /**
-     * @brief 获取随机子系统引用（上下文无效时触发断言）
+     * @brief 获取随机子系统引用（要求 WorldContextObject 必须关联有效 UWorld，否则触发 checkf；不确定有效时请用 GetPtr）
      * @param WorldContextObject 世界上下文对象
      * @return 子系统引用
      */
@@ -101,10 +118,5 @@ public:
     static URandomSubsystem* GetPtr(const UObject* WorldContextObject);
 
 private:
-    static FName NormalizeChannelName(const FName& ChannelName) noexcept;
-    static uint64 DeriveChannelDefaultSeed(const FName& NormalizedName);
-
-private:
-    UPROPERTY(Transient)
-    TMap<FName, FGameRandomStream> ChannelStreams;
+    FGameRandomManager Manager;
 };

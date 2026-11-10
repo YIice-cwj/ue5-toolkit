@@ -3,15 +3,20 @@
  * @brief 异步取消令牌与取消源自动化单元测试
  */
 
-#include "Types/FCancellationToken.h"
+#include "Async/FCancellationToken.h"
+#include "Async/FCancellationTokenSource.h"
 
 #if WITH_AUTOMATION_TESTS
 
+#include <atomic>
+
+#include "Async/Async.h"
+#include "HAL/PlatformProcess.h"
 #include "Misc/AutomationTest.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FCancellationTokenBasicLifecycleTest,
-    "Game.Core.Types.CancellationToken.BasicLifecycle",
+    "Game.Core.Async.CancellationToken.BasicLifecycle",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
@@ -43,7 +48,7 @@ bool FCancellationTokenBasicLifecycleTest::RunTest([[maybe_unused]] const FStrin
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FCancellationTokenCallbackDispatchTest,
-    "Game.Core.Types.CancellationToken.CallbackDispatch",
+    "Game.Core.Async.CancellationToken.CallbackDispatch",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
@@ -89,7 +94,7 @@ bool FCancellationTokenCallbackDispatchTest::RunTest([[maybe_unused]] const FStr
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FCancellationTokenLinkedSourceTest,
-    "Game.Core.Types.CancellationToken.LinkedSource",
+    "Game.Core.Async.CancellationToken.LinkedSource",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
@@ -113,6 +118,110 @@ bool FCancellationTokenLinkedSourceTest::RunTest([[maybe_unused]] const FString&
     SourceB.Cancel();
     TestTrue(TEXT("SourceB 取消后级联导致 LinkedToken 处于已取消态"), LinkedToken.IsCancellationRequested());
     TestTrue(TEXT("LinkedSource 本身也处于已取消态"), LinkedSource->IsCancellationRequested());
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCancellationTokenConcurrentStressTest,
+    "Game.Core.Async.CancellationToken.ConcurrentStress",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 真实多线程并发：工作线程高频并发注册、轮询、局部退订与出锁取消对撞压力测试（零 Sleep 盲等）
+ * @param Parameters 自动化测试参数
+ * @return 全部断言通过返回 true
+ */
+bool FCancellationTokenConcurrentStressTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    constexpr int32 NumThreads = 8;
+    constexpr int32 CallbacksPerThread = 200;
+    constexpr int32 TotalDirectCallbacks = NumThreads * CallbacksPerThread;
+
+    FCancellationTokenSource SourceA;
+    const FCancellationToken TokenA = SourceA.GetToken();
+
+    std::atomic<int32> ExecutedCallbackCountA{0};
+    std::atomic<bool> bStartSignalA{false};
+
+    TArray<TFuture<void>> WorkerFuturesA;
+    WorkerFuturesA.Reserve(NumThreads);
+
+    for (int32 ThreadIdx = 0; ThreadIdx < NumThreads; ++ThreadIdx) {
+        WorkerFuturesA.Add(Async(EAsyncExecution::Thread, [TokenA, &ExecutedCallbackCountA, &bStartSignalA, CallbacksPerThread]() {
+            while (!bStartSignalA.load(std::memory_order_acquire)) {
+                FPlatformProcess::Yield();
+            }
+
+            TArray<FCancellationTokenRegistration> RetainedRegistrations;
+            RetainedRegistrations.Reserve(CallbacksPerThread);
+
+            for (int32 Step = 0; Step < CallbacksPerThread; ++Step) {
+                RetainedRegistrations.Add(TokenA.Register([&ExecutedCallbackCountA]() {
+                    ExecutedCallbackCountA.fetch_add(1, std::memory_order_relaxed);
+                }));
+            }
+
+            while (!TokenA.IsCancellationRequested()) {
+                FPlatformProcess::Yield();
+            }
+        }));
+    }
+
+    TFuture<void> CancellerFuture = Async(EAsyncExecution::Thread, [&SourceA, &bStartSignalA]() {
+        while (!bStartSignalA.load(std::memory_order_acquire)) {
+            FPlatformProcess::Yield();
+        }
+        FPlatformProcess::Yield();
+        SourceA.Cancel();
+    });
+
+    bStartSignalA.store(true, std::memory_order_release);
+
+    for (TFuture<void>& Future : WorkerFuturesA) {
+        Future.Wait();
+    }
+    CancellerFuture.Wait();
+
+    TestTrue(TEXT("取消后 TokenA 处于已取消态"), TokenA.IsCancellationRequested());
+    TestEqual(TEXT("高并发注册与取消对撞下所有 1600 个回调精确触发且零丢失零重复"), ExecutedCallbackCountA.load(), TotalDirectCallbacks);
+
+    FCancellationTokenSource SourceB;
+    const FCancellationToken TokenB = SourceB.GetToken();
+    std::atomic<int32> ExecutedCallbackCountB{0};
+    std::atomic<bool> bStartSignalB{false};
+
+    TArray<TFuture<void>> WorkerFuturesB;
+    WorkerFuturesB.Reserve(NumThreads);
+
+    for (int32 ThreadIdx = 0; ThreadIdx < NumThreads; ++ThreadIdx) {
+        WorkerFuturesB.Add(Async(EAsyncExecution::Thread, [TokenB, &ExecutedCallbackCountB, &bStartSignalB, CallbacksPerThread]() {
+            while (!bStartSignalB.load(std::memory_order_acquire)) {
+                FPlatformProcess::Yield();
+            }
+
+            TArray<FCancellationTokenRegistration> LocalRegistrations;
+            LocalRegistrations.Reserve(CallbacksPerThread);
+
+            for (int32 Step = 0; Step < CallbacksPerThread; ++Step) {
+                LocalRegistrations.Add(TokenB.Register([&ExecutedCallbackCountB]() {
+                    ExecutedCallbackCountB.fetch_add(1, std::memory_order_relaxed);
+                }));
+            }
+
+            for (FCancellationTokenRegistration& Reg : LocalRegistrations) {
+                Reg.Unregister();
+            }
+        }));
+    }
+
+    bStartSignalB.store(true, std::memory_order_release);
+    for (TFuture<void>& Future : WorkerFuturesB) {
+        Future.Wait();
+    }
+
+    SourceB.Cancel();
+    TestEqual(TEXT("全部退订的回调在 Cancel 后触发计数严格为 0"), ExecutedCallbackCountB.load(), 0);
 
     return true;
 }

@@ -35,45 +35,45 @@ bool FGameNetMemoryArchiveSerializerTest::RunTest([[maybe_unused]] const FString
     const UScriptStruct* StructMeta = FGameNetTestPurchaseRsp::StaticStruct();
     const FMemoryArchiveNetSerializer BinarySerializer;
 
-    TestFalse(TEXT("二进制序列化空数据指针返回空值"), BinarySerializer.Serialize(nullptr, StructMeta).IsSet());
-    TestFalse(TEXT("二进制序列化空类型指针返回空值"), BinarySerializer.Serialize(&Expected, nullptr).IsSet());
+    TestTrue(TEXT("二进制序列化空数据指针返回失败态"), BinarySerializer.Serialize(nullptr, StructMeta).IsFailure());
+    TestTrue(TEXT("二进制序列化空类型指针返回失败态"), BinarySerializer.Serialize(&Expected, nullptr).IsFailure());
 
-    const TOptional<TArray<uint8>> BinaryBytes = BinarySerializer.SerializeStruct(Expected);
-    TestTrue(TEXT("UE 二进制 Archive 序列化成功"), BinaryBytes.IsSet() && !BinaryBytes->IsEmpty());
-    if (!BinaryBytes.IsSet()) {
+    const TGameStatusResult<TArray<uint8>> BinaryBytes = BinarySerializer.SerializeStruct(Expected);
+    TestTrue(TEXT("UE 二进制 Archive 序列化成功"), BinaryBytes.IsSuccess() && !BinaryBytes.GetValue().IsEmpty());
+    if (BinaryBytes.IsFailure()) {
         return false;
     }
 
-    const TOptional<FGameNetTestPurchaseRsp> BinaryDecoded =
-        BinarySerializer.DeserializeStruct<FGameNetTestPurchaseRsp>(*BinaryBytes);
-    TestTrue(TEXT("UE 二进制 Archive 反序列化成功"), BinaryDecoded.IsSet());
-    if (!BinaryDecoded.IsSet()) {
+    const TGameStatusResult<FGameNetTestPurchaseRsp> BinaryDecoded =
+        BinarySerializer.DeserializeStruct<FGameNetTestPurchaseRsp>(BinaryBytes.GetValue());
+    TestTrue(TEXT("UE 二进制 Archive 反序列化成功"), BinaryDecoded.IsSuccess());
+    if (BinaryDecoded.IsFailure()) {
         return false;
     }
 
-    TestEqual(TEXT("bSuccess 字段一致"), BinaryDecoded->bSuccess, Expected.bSuccess);
-    TestEqual(TEXT("RemainingGold 字段一致"), BinaryDecoded->RemainingGold, Expected.RemainingGold);
-    TestTrue(TEXT("DiscountRate 浮点近似一致"), FMath::IsNearlyEqual(BinaryDecoded->DiscountRate, Expected.DiscountRate));
-    TestEqual(TEXT("ReceiptMessage 字符串一致"), BinaryDecoded->ReceiptMessage, Expected.ReceiptMessage);
-    TestEqual(TEXT("GrantedSerialNumbers 数组一致"), BinaryDecoded->GrantedSerialNumbers, Expected.GrantedSerialNumbers);
-    TestTrue(TEXT("BonusItem 嵌套结构一致"), BinaryDecoded->BonusItem == Expected.BonusItem);
+    TestEqual(TEXT("bSuccess 字段一致"), BinaryDecoded.GetValue().bSuccess, Expected.bSuccess);
+    TestEqual(TEXT("RemainingGold 字段一致"), BinaryDecoded.GetValue().RemainingGold, Expected.RemainingGold);
+    TestTrue(TEXT("DiscountRate 浮点近似一致"), FMath::IsNearlyEqual(BinaryDecoded.GetValue().DiscountRate, Expected.DiscountRate));
+    TestEqual(TEXT("ReceiptMessage 字符串一致"), BinaryDecoded.GetValue().ReceiptMessage, Expected.ReceiptMessage);
+    TestEqual(TEXT("GrantedSerialNumbers 数组一致"), BinaryDecoded.GetValue().GrantedSerialNumbers, Expected.GrantedSerialNumbers);
+    TestTrue(TEXT("BonusItem 嵌套结构一致"), BinaryDecoded.GetValue().BonusItem == Expected.BonusItem);
 
     FGameNetTestPurchaseRsp TempOut;
-    TestFalse(TEXT("二进制反序列化空类型指针返回 false"), BinarySerializer.Deserialize(*BinaryBytes, nullptr, &TempOut));
-    TestFalse(TEXT("二进制反序列化空目标指针返回 false"), BinarySerializer.Deserialize(*BinaryBytes, StructMeta, nullptr));
-    TestFalse(TEXT("二进制反序列化空切片对非空结构返回 false"), BinarySerializer.Deserialize({}, StructMeta, &TempOut));
+    TestTrue(TEXT("二进制反序列化空类型指针返回失败态"), BinarySerializer.Deserialize(BinaryBytes.GetValue(), nullptr, &TempOut).IsFailure());
+    TestTrue(TEXT("二进制反序列化空目标指针返回失败态"), BinarySerializer.Deserialize(BinaryBytes.GetValue(), StructMeta, nullptr).IsFailure());
+    TestTrue(TEXT("二进制反序列化空切片对非空结构返回失败态"), BinarySerializer.Deserialize({}, StructMeta, &TempOut).IsFailure());
 
-    const TConstArrayView<uint8> TruncatedSlice(BinaryBytes->GetData(), BinaryBytes->Num() / 2);
-    TestFalse(
+    const TConstArrayView<uint8> TruncatedSlice(BinaryBytes.GetValue().GetData(), BinaryBytes.GetValue().Num() / 2);
+    TestTrue(
         TEXT("截断半包的二进制切片被安全拒绝"),
-        BinarySerializer.DeserializeStruct<FGameNetTestPurchaseRsp>(TruncatedSlice).IsSet()
+        BinarySerializer.DeserializeStruct<FGameNetTestPurchaseRsp>(TruncatedSlice).IsFailure()
     );
 
-    TArray<uint8> TrailingGarbage = *BinaryBytes;
+    TArray<uint8> TrailingGarbage = BinaryBytes.GetValue();
     TrailingGarbage.Add(0xFF);
-    TestFalse(
+    TestTrue(
         TEXT("尾部夹带多余脏字节的二进制切片因 !AtEnd 被拒绝"),
-        BinarySerializer.DeserializeStruct<FGameNetTestPurchaseRsp>(TrailingGarbage).IsSet()
+        BinarySerializer.DeserializeStruct<FGameNetTestPurchaseRsp>(TrailingGarbage).IsFailure()
     );
 
     return true;

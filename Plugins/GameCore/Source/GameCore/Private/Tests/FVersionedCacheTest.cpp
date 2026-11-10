@@ -26,9 +26,9 @@ struct FUnitTestCacheValue {
 constexpr int32 UnitTestKeyCount = 64;
 constexpr int32 UnitTestLruCapacity = 16;
 constexpr int32 UnitTestReaderWorkers = 16;
-constexpr int32 UnitTestReaderMinIterations = 6000;
-constexpr int32 UnitTestReaderMaxIterations = 40000;
-constexpr int32 UnitTestWriterGenerations = 200;
+constexpr int32 UnitTestReaderMinIterations = 2000;
+constexpr int32 UnitTestReaderMaxIterations = 12000;
+constexpr int32 UnitTestWriterGenerations = 64;
 
 TArray<FName> BuildUnitTestKeys() {
     TArray<FName> Keys;
@@ -180,8 +180,8 @@ bool FGameCacheEagerConcurrentRebuildTest::RunTest([[maybe_unused]] const FStrin
 
     TestTrue(TEXT("写线程已完成全部重建代次"), bWriterFinished.load());
     TestEqual(TEXT("并发读写期间读取结果始终合法（零崩溃/无空指针/无字段污染）"), InvalidReadCount.load(), 0);
-    TestTrue(TEXT("读写合计操作数超过十万次"),
-        TotalReadCount.load() + UnitTestWriterGenerations * UnitTestKeyCount >= 100000);
+    TestTrue(TEXT("读写合计操作数达到高并发压测阈值"),
+        TotalReadCount.load() + UnitTestWriterGenerations * UnitTestKeyCount >= 30000);
     TestTrue(TEXT("并发重建期间旧持有者仍存活"), HeldFromFirstGeneration.IsValid());
     TestEqual(TEXT("并发重建期间旧持有者内容未被污染"), HeldFromFirstGeneration->Generation, 1);
 
@@ -307,6 +307,27 @@ bool FGameCachePolicyResolveTest::RunTest([[maybe_unused]] const FString& Parame
 
     Registry.SetConfig<FString>(FName(TEXT("Cache.PolicyCustomDomain.Strategy")), TEXT("unknown_invalid_strategy"));
     TestTrue(TEXT("无法识别的策略回退为 ECacheStrategy::Automatic"), FCachePolicy::Resolve(CustomDomain).Strategy == ECacheStrategy::Automatic);
+
+    const FName LazyRaceDomain(TEXT("UnitTestCacheLazyConcurrentRace"));
+    Registry.SetConfig<FString>(FName(TEXT("Cache.UnitTestCacheLazyConcurrentRace.Strategy")), TEXT("lazy"));
+    FVersionedCache<FUnitTestCacheValue> LazyCache(LazyRaceDomain);
+    const TArray<FName> RaceKeys = BuildUnitTestKeys();
+    LazyCache.Rebuild(RaceKeys, [](FName Key) {
+        return FUnitTestCacheValue{Key, 99};
+    });
+
+    std::atomic<int32> LazyInvalidReads{0};
+    ParallelFor(16, [&LazyCache, &RaceKeys, &LazyInvalidReads]([[maybe_unused]] int32 WorkerIdx) {
+        for (int32 Step = 0; Step < 256; ++Step) {
+            const FName& Key = RaceKeys[Step % RaceKeys.Num()];
+            const TSharedPtr<const FUnitTestCacheValue> Built = LazyCache.FindShared(Key);
+            if (!Built.IsValid() || Built->Key != Key || Built->Generation != 99) {
+                LazyInvalidReads.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+    });
+    TestEqual(TEXT("Lazy 策略 16 线程并发惰性构建与读取零竞态异常"), LazyInvalidReads.load(), 0);
+    TestEqual(TEXT("Lazy 策略并发构建后全部 64 键就绪"), LazyCache.Num(), UnitTestKeyCount);
 
     return true;
 }

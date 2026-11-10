@@ -14,6 +14,7 @@ public class GameNetService : ModuleRules {
             "Engine",
             "GameplayTags",
             "GameCore",
+            "GameMessage",
             "GameNetCore",
         });
 

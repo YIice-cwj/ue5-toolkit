@@ -14,6 +14,7 @@
 #include "CoreMinimal.h"
 #include "UObject/Class.h"
 #include "StaticData/FStaticDataRepositoryTypes.h"
+#include "Types/TGameResult.h"
 
 class FMemoryReader;
 
@@ -57,6 +58,23 @@ public:
      */
     template <typename TRowType>
     [[nodiscard]] bool ExtractTable(TMap<FName, TRowType>& OutRows) const;
+
+    /**
+     * @brief 写入一表（强类型契约版本）
+     * @tparam TRowType 行结构体类型
+     * @param InRows 待写入行表
+     * @return 成功返回 Success，失败返回 Failure
+     */
+    template <typename TRowType>
+    [[nodiscard]] TGameStatusResult<void> TryAddTable(const TMap<FName, TRowType>& InRows);
+
+    /**
+     * @brief 提取一表（强类型契约版本）
+     * @tparam TRowType 行结构体类型
+     * @return 成功返回包含行表的 Result，失败返回错误枚举
+     */
+    template <typename TRowType>
+    [[nodiscard]] TGameResult<TMap<FName, TRowType>, EStaticDataBinError> TryExtractTable() const;
 
     /**
      * @brief 查询当前装载表数
@@ -159,4 +177,21 @@ bool FStaticDataRepository::ExtractTable(TMap<FName, TRowType>& OutRows) const {
     OutRows = MoveTemp(Built);
     LastError = EStaticDataBinError::None;
     return true;
+}
+
+template <typename TRowType>
+TGameStatusResult<void> FStaticDataRepository::TryAddTable(const TMap<FName, TRowType>& InRows) {
+    if (AddTable(InRows)) {
+        return TGameStatusResult<void>::Success();
+    }
+    return TGameStatusResult<void>::Failure(static_cast<int32>(GetLastError()), TEXT("Failed to add table"));
+}
+
+template <typename TRowType>
+TGameResult<TMap<FName, TRowType>, EStaticDataBinError> FStaticDataRepository::TryExtractTable() const {
+    TMap<FName, TRowType> OutRows;
+    if (ExtractTable(OutRows)) {
+        return TGameResult<TMap<FName, TRowType>, EStaticDataBinError>::Success(MoveTemp(OutRows));
+    }
+    return TGameResult<TMap<FName, TRowType>, EStaticDataBinError>::Failure(GetLastError());
 }

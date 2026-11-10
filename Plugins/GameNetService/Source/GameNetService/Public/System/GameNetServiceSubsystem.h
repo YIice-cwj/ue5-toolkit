@@ -13,6 +13,7 @@
 #include "Dispatch/NetPendingRequestTracker.h"
 #include "Policy/NetHeartbeatKeeper.h"
 #include "Policy/NetReconnectPolicy.h"
+#include "Types/TGameResult.h"
 #include "Serializer/INetSerializer.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "Transport/INetTransport.h"
@@ -134,9 +135,9 @@ public:
      * @param MessageId 业务协议 ID
      * @param Payload 负载二进制切片
      * @param SequenceId 序列号（默认 0）
-     * @return 写入发送通道成功返回 true
+     * @return 写入发送通道成功返回 Success，未连接或驱动失败返回 Failure
      */
-    bool SendRaw(uint32 MessageId, TConstArrayView<uint8> Payload, uint32 SequenceId = 0);
+    TGameStatusResult<void> SendRaw(uint32 MessageId, TConstArrayView<uint8> Payload, uint32 SequenceId = 0);
 
     /**
      * @brief 发送带超时与序列号自动关联的异步原始 Request-Response 请求
@@ -145,9 +146,9 @@ public:
      * @param Payload 请求负载切片
      * @param TimeoutSeconds 超时秒数
      * @param Callback 请求完成、断线或超时回调
-     * @return 分配的非零请求 SequenceId；发送失败时立即回调 SendFailed 并返回 0
+     * @return 分配的非零请求 SequenceId；发送失败时立即回调 SendFailed 并返回 Failure
      */
-    uint32 SendRawRequest(
+    TGameStatusResult<uint32> SendRawRequest(
         uint32 RequestMessageId,
         uint32 ExpectedResponseMessageId,
         TConstArrayView<uint8> Payload,
@@ -167,9 +168,9 @@ public:
      * @brief 注销指定协议 ID 的消息处理器
      * @param MessageId 协议 ID
      * @param HandlerId 注册时返回的句柄 ID
-     * @return 成功移除返回 true
+     * @return 成功移除返回 Success，失败返回 Failure
      */
-    bool UnregisterHandler(uint32 MessageId, int64 HandlerId);
+    TGameStatusResult<void> UnregisterHandler(uint32 MessageId, int64 HandlerId);
 
     /**
      * @brief 驱动网络队列派发、请求超时扫描、心跳探针与退避重连状态机
@@ -182,10 +183,10 @@ public:
      * @tparam TStruct 反射结构体类型
      * @param MessageId 业务协议 ID
      * @param StructPayload 结构体实例
-     * @return 序列化且发送成功返回 true
+     * @return 序列化且发送成功返回 Success，失败返回 Failure
      */
     template <typename TStruct>
-    bool SendStruct(uint32 MessageId, const TStruct& StructPayload);
+    TGameStatusResult<void> SendStruct(uint32 MessageId, const TStruct& StructPayload);
 
     /**
      * @brief 泛型便捷订阅：自动使用当前活跃序列化器反解下行负载并触发强类型回调
@@ -209,10 +210,10 @@ public:
      * @param RequestPayload 请求结构体实例
      * @param TimeoutSeconds 超时秒数上限
      * @param Callback 结果回调（Success 时保证指针非空，失败/超时时指针为空）
-     * @return 分配的非零请求 SequenceId；失败返回 0
+     * @return 成功返回分配的 SequenceId，失败返回 Failure
      */
     template <typename TReqStruct, typename TRspStruct>
-    uint32 SendStructRequest(
+    TGameStatusResult<uint32> SendStructRequest(
         uint32 RequestMessageId,
         uint32 ExpectedResponseMessageId,
         const TReqStruct& RequestPayload,
@@ -305,17 +306,17 @@ private:
 };
 
 template <typename TStruct>
-bool UGameNetServiceSubsystem::SendStruct(uint32 MessageId, const TStruct& StructPayload) {
+TGameStatusResult<void> UGameNetServiceSubsystem::SendStruct(uint32 MessageId, const TStruct& StructPayload) {
     if (!ActiveSerializer.IsValid()) {
-        return false;
+        return TGameStatusResult<void>::Failure(Game::NetErrorCodes::InvalidSerializer, TEXT("Serializer is invalid"));
     }
 
-    const TOptional<TArray<uint8>> Encoded = ActiveSerializer->SerializeStruct(StructPayload);
-    if (!Encoded.IsSet()) {
-        return false;
+    const TGameStatusResult<TArray<uint8>> Encoded = ActiveSerializer->SerializeStruct(StructPayload);
+    if (Encoded.IsFailure()) {
+        return TGameStatusResult<void>::Failure(Encoded.GetError().ErrorCode, Encoded.GetError().Message);
     }
 
-    return SendRaw(MessageId, *Encoded, 0);
+    return SendRaw(MessageId, Encoded.GetValue(), 0);
 }
 
 template <typename TStruct>
@@ -335,16 +336,16 @@ int64 UGameNetServiceSubsystem::RegisterStructHandler(
             if (Self == nullptr || !Self->ActiveSerializer.IsValid()) {
                 return;
             }
-            const TOptional<TStruct> Decoded = Self->ActiveSerializer->DeserializeStruct<TStruct>(Payload);
-            if (Decoded.IsSet()) {
-                Callback(Header, *Decoded);
+            const TGameStatusResult<TStruct> Decoded = Self->ActiveSerializer->DeserializeStruct<TStruct>(Payload);
+            if (Decoded.IsSuccess()) {
+                Callback(Header, Decoded.GetValue());
             }
         }
     );
 }
 
 template <typename TReqStruct, typename TRspStruct>
-uint32 UGameNetServiceSubsystem::SendStructRequest(
+TGameStatusResult<uint32> UGameNetServiceSubsystem::SendStructRequest(
     uint32 RequestMessageId,
     uint32 ExpectedResponseMessageId,
     const TReqStruct& RequestPayload,
@@ -352,24 +353,24 @@ uint32 UGameNetServiceSubsystem::SendStructRequest(
     TFunction<void(ENetRequestResult, const TRspStruct*)> Callback
 ) {
     if (!Callback) {
-        return 0;
+        return TGameStatusResult<uint32>::Failure(Game::CommonErrorCodes::InvalidParameter, TEXT("Invalid callback"));
     }
     if (!ActiveSerializer.IsValid()) {
         Callback(ENetRequestResult::SendFailed, nullptr);
-        return 0;
+        return TGameStatusResult<uint32>::Failure(Game::NetErrorCodes::InvalidSerializer, TEXT("Serializer is invalid"));
     }
 
-    const TOptional<TArray<uint8>> EncodedReq = ActiveSerializer->SerializeStruct(RequestPayload);
-    if (!EncodedReq.IsSet()) {
+    const TGameStatusResult<TArray<uint8>> EncodedReq = ActiveSerializer->SerializeStruct(RequestPayload);
+    if (EncodedReq.IsFailure()) {
         Callback(ENetRequestResult::SendFailed, nullptr);
-        return 0;
+        return TGameStatusResult<uint32>::Failure(EncodedReq.GetError().ErrorCode, EncodedReq.GetError().Message);
     }
 
     TWeakObjectPtr<UGameNetServiceSubsystem> WeakThis(this);
     return SendRawRequest(
         RequestMessageId,
         ExpectedResponseMessageId,
-        *EncodedReq,
+        EncodedReq.GetValue(),
         TimeoutSeconds,
         [WeakThis, Callback = MoveTemp(Callback)](
             ENetRequestResult Result,
@@ -385,12 +386,13 @@ uint32 UGameNetServiceSubsystem::SendStructRequest(
                 Callback(ENetRequestResult::ConnectionClosed, nullptr);
                 return;
             }
-            const TOptional<TRspStruct> DecodedRsp = Self->ActiveSerializer->DeserializeStruct<TRspStruct>(RspPayload);
-            if (!DecodedRsp.IsSet()) {
+            const TGameStatusResult<TRspStruct> DecodedRsp = Self->ActiveSerializer->DeserializeStruct<TRspStruct>(RspPayload);
+            if (DecodedRsp.IsFailure()) {
                 Callback(ENetRequestResult::DeserializeFailed, nullptr);
                 return;
             }
-            Callback(ENetRequestResult::Success, &(*DecodedRsp));
+            const TRspStruct Value = DecodedRsp.GetValue();
+            Callback(ENetRequestResult::Success, &Value);
         }
     );
 }

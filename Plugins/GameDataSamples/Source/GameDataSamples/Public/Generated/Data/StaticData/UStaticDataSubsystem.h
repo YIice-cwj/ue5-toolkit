@@ -39,12 +39,12 @@ public:
     /**
      * @brief 加载所有域的静态数据容器（走统一提交流程）
      * @param bAsync 是否异步执行（冷启动默认为 false 确保就绪，热重载为 true）
-     * @return 暂存数据是否加载成功并已就绪/进入后台预热
+     * @return 暂存数据加载并进入提交流程返回 Success，失败返回 Failure
      *
      * 实现思路：冷启动优先读 .bin 通道，magic/版本/CRC 任一不符或表缺失即整体回落 JSON 通道；
      * 命令行 -GameStaticDataChannel=json 可强制 JSON 通道（Cold-Start 基准与双通道对拍用）
      */
-    bool LoadAllStaticData(bool bAsync = false);
+    TGameStatusResult<void> LoadAllStaticData(bool bAsync = false);
 
     /**
      * @brief 查询静态数据是否已全部加载成功
@@ -55,11 +55,11 @@ public:
 
     /**
      * @brief 重新加载全部静态数据（恒走后台异步预热，在线数据零触碰；成功后版本号自增并广播）
-     * @return 暂存数据是否加载成功并已进入后台预热
+     * @return 暂存数据加载并进入后台预热返回 Success，失败返回 Failure
      *
      * 实现思路：热更的数据源即磁盘 JSON，故直接走 JSON 通道，不经 .bin（避免读到落后于 JSON 的旧档）
      */
-    bool ReloadAllStaticData();
+    TGameStatusResult<void> ReloadAllStaticData();
 
     /**
      * @brief 获取当前数据版本号
@@ -120,9 +120,9 @@ private:
      * @brief 启动一次数据提交流程（支持同步冷启动与异步热更）
      * @param bPreferBin 是否优先走 .bin 通道
      * @param bAsync 是否异步执行（冷启动为 false 消除竞态；热更恒为 true）
-     * @return 暂存数据是否加载成功并已就绪/派发
+     * @return 成功返回 Success，失败返回 Failure
      */
-    bool BeginReloadFlow(bool bPreferBin, bool bAsync);
+    TGameStatusResult<void> BeginReloadFlow(bool bPreferBin, bool bAsync);
 
     /**
      * @brief 原子提交新快照（发布 + 广播 + 释放门闩，零主线程深拷贝）

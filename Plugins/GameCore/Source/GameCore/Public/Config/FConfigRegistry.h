@@ -26,7 +26,7 @@
  *
  * 功能：注册默认值（仅未注册时生效）、运行时覆盖（版本号自增并广播订阅）、
  * 强类型按值取值（未注册返回 Fallback）与响应式订阅（WatchConfig）。
- * 作用域边界：工程级单例，不做 World/PIE 实例隔离；世界相关数据严禁塞入本表。
+ * 作用域边界：支持基于 World 上下文的 PIE 多实例隔离（WITH_EDITOR 下自动按 UWorld 分离并继承全局默认项，脱离 World 时回退全局根单例）。
  */
 class GAMECORE_API FConfigRegistry {
 public:
@@ -127,10 +127,22 @@ public:
     [[nodiscard]] uint32 GetVersion() const noexcept;
 
     /**
-     * @brief 获取全局单例
-     * @return 单例引用
+     * @brief 从另一个配置注册表继承已注册条目（用于 PIE 实例继承全局默认配置）
+     * @param Other 源注册表引用
      */
-    static FConfigRegistry& Get();
+    void InheritFrom(const FConfigRegistry& Other);
+
+    /**
+     * @brief 获取配置注册表（支持 World 上下文路由与 PIE 多实例隔离）
+     * @param WorldContextObject 关联的世界上下文对象（为空时返回全局根注册表）
+     * @return 对应的配置注册表引用
+     */
+    static FConfigRegistry& Get(const UObject* WorldContextObject = nullptr);
+
+    /**
+     * @brief 清空所有已缓存的 World 隔离注册表（供自动化测试清理）
+     */
+    static void ClearWorldRegistriesForTesting();
 
 private:
     /**
@@ -211,9 +223,23 @@ TOptional<T> FConfigRegistry::GetConfigOptional(FName Name) const {
 
 template<typename T>
 TSharedRef<FObserverSubscription> FConfigRegistry::WatchConfig(FName Name, TFunction<void(const T&)> OnChanged) {
-    return AddWatcher(Name, [Callback = MoveTemp(OnChanged)](const FConfigVariant& InValue) {
+    if (!OnChanged) {
+        return MakeShared<FObserverSubscription>();
+    }
+    {
+        FReadScopeLock ReadLock(RwLock);
+        if (const FEntry* Entry = Entries.Find(Name)) {
+            if (Game::Config::FindVariantValue<T>(Entry->Value) == nullptr) {
+                ensureAlwaysMsgf(false, TEXT("%s"), *DescribeMismatch<T>(Name, Entry->Value));
+                return MakeShared<FObserverSubscription>();
+            }
+        }
+    }
+    return AddWatcher(Name, [this, Name, Callback = MoveTemp(OnChanged)](const FConfigVariant& InValue) {
         if (const T* Value = Game::Config::FindVariantValue<T>(InValue)) {
             Callback(*Value);
+        } else {
+            ensureAlwaysMsgf(false, TEXT("%s"), *DescribeMismatch<T>(Name, InValue));
         }
     });
 }

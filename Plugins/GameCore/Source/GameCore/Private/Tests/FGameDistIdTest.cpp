@@ -4,6 +4,7 @@
  */
 
 #include "Types/FGameDistId.h"
+#include "Types/FGameDistIdGenerator.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -15,7 +16,7 @@
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameDistIdBitfieldsAndSerializationTest,
-    "Game.Core.Types.DistId.BitfieldsAndSerialization",
+    "Game.Core.Id.DistId.BitfieldsAndSerialization",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
@@ -46,6 +47,18 @@ bool FGameDistIdBitfieldsAndSerializationTest::RunTest([[maybe_unused]] const FS
         CustomEpoch + TimestampDelta
     );
 
+    const FGameDistId NegativeTimestampId = FGameDistId::FromParts(-500LL, 3, 9);
+    TestFalse(TEXT("负时间戳偏移被安全拦截返回无效 ID"), NegativeTimestampId.IsValid());
+
+    const int64 MaxTimestamp = static_cast<int64>(FGameDistId::MAX_TIMESTAMP_DELTA);
+    const FGameDistId MaxTimestampId = FGameDistId::FromParts(MaxTimestamp, 3, 9);
+    TestTrue(TEXT("41 位上限时间戳偏移合法有效"), MaxTimestampId.IsValid());
+    TestEqual(TEXT("41 位上限时间戳偏移精确还原"), MaxTimestampId.GetTimestampDelta(), MaxTimestamp);
+
+    const int64 OverflowTimestamp = MaxTimestamp + 12345LL;
+    const FGameDistId OverflowTimestampId = FGameDistId::FromParts(OverflowTimestamp, 3, 9);
+    TestFalse(TEXT("超 41 位时间戳偏移被安全拦截返回无效 ID"), OverflowTimestampId.IsValid());
+
     FBufferArchive SaveArchive;
     FGameDistId SaveTarget = SyntheticId;
     SaveArchive << SaveTarget;
@@ -63,7 +76,7 @@ bool FGameDistIdBitfieldsAndSerializationTest::RunTest([[maybe_unused]] const FS
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameDistIdGeneratorMonotonicAndConcurrencyTest,
-    "Game.Core.Types.DistId.MonotonicAndConcurrency",
+    "Game.Core.Id.DistId.MonotonicAndConcurrency",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
@@ -102,6 +115,28 @@ bool FGameDistIdGeneratorMonotonicAndConcurrencyTest::RunTest([[maybe_unused]] c
     }
 
     TestEqual(TEXT("高并发批量生成 10000 个 ID 零碰撞"), UniqueSet.Num(), TOTAL_IDS);
+
+    int64 MockClockMs = FGameDistIdGenerator::DEFAULT_CUSTOM_EPOCH + 5000LL;
+    FGameDistIdGenerator DeterministicGen(3);
+    DeterministicGen.SetClockSource([&MockClockMs]() {
+        return MockClockMs;
+    });
+
+    FGameDistId LastDeterministicId;
+    for (int32 Idx = 0; Idx < 4097; ++Idx) {
+        const FGameDistId Next = DeterministicGen.NextId();
+        TestTrue(TEXT("停滞时钟下连续 4097 次生成（跨 4096 序列号溢出）严格单调递增且不死循环"), LastDeterministicId < Next);
+        LastDeterministicId = Next;
+    }
+    TestEqual(TEXT("同毫秒 4096 溢出后逻辑时间戳自动推进 1ms"), LastDeterministicId.GetTimestampDelta(), 5001LL);
+
+    MockClockMs = FGameDistIdGenerator::DEFAULT_CUSTOM_EPOCH + 4998LL;
+    const FGameDistId SmallRollbackId = DeterministicGen.NextId();
+    TestTrue(TEXT("小幅时钟回拨 (<=5ms) 有界恢复后保持严格单调递增"), LastDeterministicId < SmallRollbackId);
+
+    MockClockMs = FGameDistIdGenerator::DEFAULT_CUSTOM_EPOCH + 1000LL;
+    const FGameDistId LargeRollbackId = DeterministicGen.NextId();
+    TestTrue(TEXT("大幅时钟回拨 (>5ms) 逻辑时钟兜底保持严格单调递增"), SmallRollbackId < LargeRollbackId);
 
     return true;
 }

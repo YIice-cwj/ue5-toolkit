@@ -3,7 +3,7 @@
  * @brief UThrottledTickerSubsystem 分级节流心跳子系统单元测试
  */
 
-#include "Tasks/UThrottledTickerSubsystem.h"
+#include "Async/UThrottledTickerSubsystem.h"
 
 #if WITH_AUTOMATION_TESTS
 

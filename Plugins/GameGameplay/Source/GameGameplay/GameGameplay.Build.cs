@@ -15,6 +15,7 @@ public class GameGameplay : ModuleRules {
             "GameplayAbilities",
             "GameplayTags",
             "GameCore",
+            "GameMessage",
             "GameGameplayCore",
         });
 

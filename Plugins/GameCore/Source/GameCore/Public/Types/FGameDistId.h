@@ -1,13 +1,11 @@
 /**
  * @file FGameDistId.h
- * @brief 64 位分布式单调递增雪花唯一 ID 原语与线程安全生成器
+ * @brief 64 位分布式单调递增雪花唯一 ID 值类型原语
  */
 
 #pragma once
 
 #include "CoreMinimal.h"
-#include "HAL/CriticalSection.h"
-#include "Misc/DateTime.h"
 
 /**
  * @brief 64 位紧凑分布式全局唯一标识符（雪花算法原语）
@@ -21,6 +19,7 @@ public:
 
     static constexpr uint16 MAX_SEQUENCE = (1U << SEQUENCE_BITS) - 1U;
     static constexpr uint16 MAX_NODE_ID = (1U << NODE_ID_BITS) - 1U;
+    static constexpr uint64 MAX_TIMESTAMP_DELTA = (1ULL << TIMESTAMP_BITS) - 1ULL;
 
     static constexpr uint8 NODE_ID_SHIFT = SEQUENCE_BITS;
     static constexpr uint8 TIMESTAMP_SHIFT = SEQUENCE_BITS + NODE_ID_BITS;
@@ -71,11 +70,11 @@ public:
     }
 
     /**
-     * @brief 提取相对于纪元的相对毫秒偏移量
+     * @brief 提取相对于纪元的相对毫秒偏移量（严格掩码 41 位，忽略最高保留位）
      * @return 41 位相对毫秒数
      */
     [[nodiscard]] constexpr int64 GetTimestampDelta() const noexcept {
-        return static_cast<int64>(RawValue >> TIMESTAMP_SHIFT);
+        return static_cast<int64>((RawValue >> TIMESTAMP_SHIFT) & MAX_TIMESTAMP_DELTA);
     }
 
     /**
@@ -96,14 +95,17 @@ public:
     }
 
     /**
-     * @brief 从各组成位段合成标识符
-     * @param TimestampDelta 相对纪元的毫秒数
+     * @brief 从各组成位段合成标识符（若 TimestampDelta 为负或超出 41 位上限则返回无效 ID）
+     * @param TimestampDelta 相对纪元的毫秒数 [0, 2^41 - 1]
      * @param NodeId 节点编号
      * @param Sequence 毫秒内序号
      * @return 构造出的分布式标识符
      */
     [[nodiscard]] static constexpr FGameDistId FromParts(int64 TimestampDelta, uint16 NodeId, uint16 Sequence) noexcept {
-        const uint64 T = static_cast<uint64>(TimestampDelta) << TIMESTAMP_SHIFT;
+        if (TimestampDelta < 0 || static_cast<uint64>(TimestampDelta) > MAX_TIMESTAMP_DELTA) {
+            return FGameDistId(0ULL);
+        }
+        const uint64 T = (static_cast<uint64>(TimestampDelta) & MAX_TIMESTAMP_DELTA) << TIMESTAMP_SHIFT;
         const uint64 N = static_cast<uint64>(NodeId & MAX_NODE_ID) << NODE_ID_SHIFT;
         const uint64 S = static_cast<uint64>(Sequence & MAX_SEQUENCE);
         return FGameDistId(T | N | S);
@@ -141,64 +143,4 @@ public:
         Ar << InId.RawValue;
         return Ar;
     }
-};
-
-/**
- * @brief 线程安全的 64 位分布式单调递增雪花唯一 ID 生成器
- */
-class GAMECORE_API FGameDistIdGenerator {
-public:
-    static constexpr int64 DEFAULT_CUSTOM_EPOCH = 1735689600000LL;
-
-public:
-    FGameDistIdGenerator() = default;
-
-    /**
-     * @brief 构造并初始化生成器节点与自定义纪元
-     * @param InNodeId 节点编号 [0, 1023]
-     * @param InCustomEpoch 自定义基准纪元 Unix 毫秒时间戳
-     */
-    explicit FGameDistIdGenerator(uint16 InNodeId, int64 InCustomEpoch = DEFAULT_CUSTOM_EPOCH) noexcept;
-
-    /**
-     * @brief 初始化或重新配置生成器节点与基准纪元
-     * @param InNodeId 节点编号 [0, 1023]
-     * @param InCustomEpoch 自定义基准纪元 Unix 毫秒时间戳
-     */
-    void Initialize(uint16 InNodeId, int64 InCustomEpoch = DEFAULT_CUSTOM_EPOCH) noexcept;
-
-    /**
-     * @brief 线程安全生成下一个全局单调递增唯一 ID
-     * @return 分布式唯一 ID（若发生无法恢复的时钟错误返回无效 ID）
-     */
-    [[nodiscard]] FGameDistId NextId();
-
-    /**
-     * @brief 查询当前分配的节点编号
-     * @return 节点编号
-     */
-    [[nodiscard]] uint16 GetNodeId() const noexcept;
-
-    /**
-     * @brief 查询当前采用的基准纪元
-     * @return 基准纪元毫秒数
-     */
-    [[nodiscard]] int64 GetCustomEpoch() const noexcept;
-
-    /**
-     * @brief 获取全局默认单例生成器引用
-     * @return 全局单例引用
-     */
-    [[nodiscard]] static FGameDistIdGenerator& Get();
-
-private:
-    [[nodiscard]] int64 GetCurrentTimeMs() const;
-    [[nodiscard]] int64 WaitUntilNextMillis(int64 InLastTimestamp) const;
-
-private:
-    mutable FCriticalSection GeneratorLock;
-    int64 CustomEpoch = DEFAULT_CUSTOM_EPOCH;
-    int64 LastTimestampDelta = -1;
-    uint16 NodeId = 0;
-    uint16 Sequence = 0;
 };

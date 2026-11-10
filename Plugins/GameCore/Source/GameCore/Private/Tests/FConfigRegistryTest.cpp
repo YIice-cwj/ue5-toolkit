@@ -5,7 +5,7 @@
 
 #include "Config/FConfigRegistry.h"
 #include "Config/GameCompileSwitches.h"
-#include "Registration/FGameCoreRegistration.h"
+#include "Config/FGameCoreRegistration.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -29,6 +29,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameConfigConcurrencyTest, "Game.Core.Config.C
  * 未注册键回退值；断言读取值始终合法（无撕裂、无类型错配、无死锁），验证读写分离正确性
  */
 bool FGameConfigConcurrencyTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    FConfigRegistry::ClearWorldRegistriesForTesting();
     FConfigRegistry& Registry = FConfigRegistry::Get();
     static const FName ReadKey(TEXT("UnitTest.Config.Concurrency.Int"));
     static const FName FlagKey(TEXT("UnitTest.Config.Concurrency.Flag"));
@@ -174,7 +175,7 @@ bool FGameConfigReadOnlyRejectionTest::RunTest([[maybe_unused]] const FString& P
     }
 
     TestTrue(TEXT("只读键写入返回 RejectedReadOnly"), WriteResult == ESetConfigResult::RejectedReadOnly);
-    TestEqual(TEXT("只读键拒绝触发一次 ensure 拦截"), CapturedEnsureCount, 1);
+    TestEqual(TEXT("只读键拒绝通过返回码受控通知，不触发 ensure 崩溃上报"), CapturedEnsureCount, 0);
     TestTrue(TEXT("只读键取值保持原状"), Registry.GetConfig<bool>(EditorKey, true) == OriginalValue);
     return true;
 }
@@ -253,7 +254,7 @@ bool FGameConfigNotificationOrderTest::RunTest([[maybe_unused]] const FString& P
         [FirstEntered, ReleaseFirst, &ReceivedMutex, &Received](const int32& Value) {
             if (Value == 1) {
                 FirstEntered->Trigger();
-                ReleaseFirst->Wait();
+                ReleaseFirst->Wait(1000);
             }
             FScopeLock Lock(&ReceivedMutex);
             Received.Add(Value);
@@ -262,7 +263,7 @@ bool FGameConfigNotificationOrderTest::RunTest([[maybe_unused]] const FString& P
     TFuture<void> Writer = Async(EAsyncExecution::Thread, [&Registry, Key]() {
         Registry.SetConfig<int32>(Key, 1);
     });
-    TestTrue(TEXT("首个通知已进入回调"), FirstEntered->Wait(5000));
+    TestTrue(TEXT("首个通知已进入回调"), FirstEntered->Wait(1000));
     Registry.SetConfig<int32>(Key, 2);
     ReleaseFirst->Trigger();
     Writer.Wait();

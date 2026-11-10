@@ -54,15 +54,19 @@ FWebSocketNetTransport::~FWebSocketNetTransport() {
 /**
  * @brief 发起向指定 ws:// 或 wss:// 端点的异步握手连接
  * @param Endpoint WebSocket 目标 URL
- * @return 成功创建底层实例并发起连接返回 true
+ * @return 成功创建底层实例并发起连接返回成功态，否则返回对应错误
  */
-bool FWebSocketNetTransport::Connect(const FString& Endpoint) {
+TGameStatusResult<void> FWebSocketNetTransport::Connect(const FString& Endpoint) {
     if (Endpoint.IsEmpty()) {
         TransportErrorEvent.Broadcast(TEXT("WebSocketNetTransport rejected empty endpoint."));
-        return false;
+        return TGameStatusResult<void>::Failure(
+            FGameError::Make(Game::ModuleId::Net, 2001, TEXT("WebSocketNetTransport rejected empty endpoint"))
+        );
     }
     if (CurrentState == ENetConnectionState::Connected || CurrentState == ENetConnectionState::Connecting) {
-        return false;
+        return TGameStatusResult<void>::Failure(
+            FGameError::Make(Game::ModuleId::Net, 2002, TEXT("Connection already established or connecting"))
+        );
     }
 
     ++ActiveGeneration;
@@ -73,14 +77,16 @@ bool FWebSocketNetTransport::Connect(const FString& Endpoint) {
     const TSharedPtr<IWebSocket> CreatedSocket = SocketFactory(Endpoint, SubProtocol, UpgradeHeaders);
     if (!CreatedSocket.IsValid()) {
         TransportErrorEvent.Broadcast(TEXT("Failed to instantiate underlying IWebSocket instance."));
-        return false;
+        return TGameStatusResult<void>::Failure(
+            FGameError::Make(Game::ModuleId::Net, 2001, TEXT("Failed to instantiate underlying IWebSocket instance"))
+        );
     }
 
     ActiveSocket = CreatedSocket;
     BindSocketCallbacks(CreatedSocket.ToSharedRef(), ActiveGeneration);
     TransitionState(ENetConnectionState::Connecting);
     CreatedSocket->Connect();
-    return true;
+    return TGameStatusResult<void>::Success();
 }
 
 /**
@@ -106,22 +112,26 @@ void FWebSocketNetTransport::Disconnect(int32 ReasonCode, const FString& ReasonD
  * @brief 将报文头与负载编码为 16 字节线格式二进制帧并通过 WebSocket Binary 通道发送
  * @param Header 报文头
  * @param Payload 负载二进制切片
- * @return 已连接且帧合法时成功写入返回 true
+ * @return 已连接且帧合法时成功写入返回成功态，否则返回对应错误
  */
-bool FWebSocketNetTransport::Send(const FNetPacketHeader& Header, TConstArrayView<uint8> Payload) {
+TGameStatusResult<void> FWebSocketNetTransport::Send(const FNetPacketHeader& Header, TConstArrayView<uint8> Payload) {
     if (CurrentState != ENetConnectionState::Connected || !ActiveSocket.IsValid()) {
-        return false;
+        return TGameStatusResult<void>::Failure(
+            FGameError::Make(Game::ModuleId::Net, 2002, TEXT("WebSocket is not connected"))
+        );
     }
 
     FNetPacketHeader OutboundHeader = Header;
     OutboundHeader.PayloadLength = static_cast<uint32>(Payload.Num());
     if (!FNetPacketCodec::IsValidHeader(OutboundHeader, ReceiveRingBuffer.GetMaxPayloadBytes())) {
-        return false;
+        return TGameStatusResult<void>::Failure(
+            FGameError::Make(Game::ModuleId::Net, 2003, TEXT("Invalid packet header or payload exceeds max allowed limit"))
+        );
     }
 
     const TArray<uint8> WireFrame = FNetPacketCodec::EncodeFrame(OutboundHeader, Payload);
     ActiveSocket->Send(WireFrame.GetData(), static_cast<SIZE_T>(WireFrame.Num()), true);
-    return true;
+    return TGameStatusResult<void>::Success();
 }
 
 /**

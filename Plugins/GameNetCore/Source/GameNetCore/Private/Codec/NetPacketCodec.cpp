@@ -129,11 +129,13 @@ TArray<uint8> FNetPacketCodec::EncodeFrame(const FNetPacketHeader& Header, TCons
 /**
  * @brief 从二进制切片首部反解 16 字节小端序报文头
  * @param WireBytes 原始字节视图
- * @return 字节数达到 16 时返回解析出的报文头，不足 16 字节时返回空值
+ * @return 字节数达到 16 时返回包含报文头的成功态，不足 16 字节时返回对应失败态
  */
-TOptional<FNetPacketHeader> FNetPacketCodec::TryDecodeHeader(TConstArrayView<uint8> WireBytes) {
+TGameStatusResult<FNetPacketHeader> FNetPacketCodec::TryDecodeHeader(TConstArrayView<uint8> WireBytes) {
     if (WireBytes.Num() < FNetPacketHeader::WIRE_HEADER_BYTES) {
-        return NullOpt;
+        return TGameStatusResult<FNetPacketHeader>::Failure(
+            FGameError::Make(Game::ModuleId::Net, 2003, TEXT("Buffer too small for 16-byte packet header"))
+        );
     }
 
     const uint8* Cursor = WireBytes.GetData();
@@ -143,6 +145,6 @@ TOptional<FNetPacketHeader> FNetPacketCodec::TryDecodeHeader(TConstArrayView<uin
     Decoded.PayloadLength = ReadLittleEndianUint32(Cursor + 4);
     Decoded.MessageId = ReadLittleEndianUint32(Cursor + 8);
     Decoded.SequenceId = ReadLittleEndianUint32(Cursor + 12);
-    return Decoded;
+    return TGameStatusResult<FNetPacketHeader>::Success(Decoded);
 }
 

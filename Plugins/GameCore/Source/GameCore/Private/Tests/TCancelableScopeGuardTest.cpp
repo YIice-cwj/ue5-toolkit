@@ -11,7 +11,7 @@
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FCancelableScopeGuardExecutionAndDismissTest,
-    "Game.Core.Types.CancelableScopeGuard.ExecutionAndDismiss",
+    "Game.Core.Async.CancelableScopeGuard.ExecutionAndDismiss",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
@@ -46,7 +46,7 @@ bool FCancelableScopeGuardExecutionAndDismissTest::RunTest([[maybe_unused]] cons
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FCancelableScopeGuardMoveSemanticsTest,
-    "Game.Core.Types.CancelableScopeGuard.MoveSemantics",
+    "Game.Core.Async.CancelableScopeGuard.MoveSemantics",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
@@ -95,7 +95,7 @@ bool FCancelableScopeGuardMoveSemanticsTest::RunTest([[maybe_unused]] const FStr
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FCancelableScopeGuardTransactionalSimulationTest,
-    "Game.Core.Types.CancelableScopeGuard.TransactionalSimulation",
+    "Game.Core.Async.CancelableScopeGuard.TransactionalSimulation",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 

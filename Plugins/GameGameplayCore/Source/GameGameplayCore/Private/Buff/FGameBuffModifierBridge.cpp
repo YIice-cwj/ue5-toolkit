@@ -27,7 +27,8 @@ void FGameBuffModifierBridge::Register(int32 InInstanceId, const FGameBuffInstan
 
         FGameBuffAppliedModifier Applied;
         Applied.StatTag = ModifierSpec.StatTag;
-        Applied.Handle = InStatComponent.AddStatModifier(ModifierSpec.StatTag, ScaledModifier);
+        const TGameStatusResult<uint32> AddResult = InStatComponent.AddStatModifier(ModifierSpec.StatTag, ScaledModifier);
+        Applied.Handle = AddResult.IsSuccess() ? AddResult.GetValue() : 0;
         Handles.Add(Applied);
     }
 }

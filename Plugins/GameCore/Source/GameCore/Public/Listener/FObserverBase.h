@@ -5,6 +5,11 @@
  * 设计思路：承载与值类型无关的通用监听设施；子类（如 FValueObserver<T>）只实现
  * 类型化状态存储与通知分发。构造时按 Listener.{Name}.Enabled 经 FConfigRegistry
  * 注册默认开关，所有启用状态读取均以 Config 为唯一真源。
+ *
+ * 生命周期契约：ObserverName 应对应具名业务观察域（而非高频临时生成的随机 UUID），
+ * 对应的配置键 Listener.{Name}.Enabled 在 FConfigRegistry 中跨观察者实例生命周期保留，
+ * 以便热重载或重新实例化同名观察者时延续外部注入的启停覆盖状态；而 EnableWatchSubscription
+ * 随 FObserverBase 析构自动注销，零回调泄漏。
  */
 
 #pragma once
@@ -50,11 +55,11 @@ public:
     void SetEnabled(bool bInEnabled);
 
     /**
-     * @brief 查询 Config 中的当前启用状态
+     * @brief 查询当前启用状态（由本地原子镜像提供零锁热路径读取，通过 WatchConfig 与 FConfigRegistry 实时同步）
      * @return 启用返回 true，禁用返回 false
      */
     [[nodiscard]] bool IsEnabled() const noexcept {
-        return FConfigRegistry::Get().GetConfig<bool>(EnableConfigKey, true);
+        return bCachedEnabled.load(std::memory_order_relaxed);
     }
 
     /**
@@ -90,6 +95,16 @@ private:
      * @brief 启停开关键（Listener.{Name}.Enabled）
      */
     FName EnableConfigKey;
+
+    /**
+     * @brief 配置中心启停开关响应式订阅守卫
+     */
+    TSharedPtr<FObserverSubscription> EnableWatchSubscription;
+
+    /**
+     * @brief 本地原子启停镜像（消除每次 Set/广播时的全局读写锁与哈希查询开销）
+     */
+    std::atomic<bool> bCachedEnabled{true};
 
     /**
      * @brief 版本号（每次启用状态下的值提交自增）

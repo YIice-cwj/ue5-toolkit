@@ -117,8 +117,8 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Game|Stat")
     [[nodiscard]] float GetStatPercent(const FGameplayTag& InStatTag) const;
 
-    UFUNCTION(BlueprintCallable, Category = "Game|Stat")
-    bool GetStatValue(const FGameplayTag& InStatTag, FGameStatValue& OutValue) const;
+    [[nodiscard]] TGameStatusResult<FGameStatValue> GetStatValue(const FGameplayTag& InStatTag) const;
+    bool K2_GetStatValue(const FGameplayTag& InStatTag, FGameStatValue& OutValue) const;
 
     // --- 修正器与派生数值 ---
     uint32 AddStatModifier(const FGameplayTag& InStatTag, const FGameStatModifier& InModifier);

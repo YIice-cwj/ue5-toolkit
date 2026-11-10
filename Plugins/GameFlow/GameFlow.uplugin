@@ -1,0 +1,24 @@
+{
+    "FileVersion": 3,
+    "Version": 1,
+    "VersionName": "1.0.0",
+    "FriendlyName": "Game Flow",
+    "Description": "Level streaming, loading screen state machine, and asynchronous barrier synchronization.",
+    "Category": "Game",
+    "CreatedBy": "Taoist Decree Team",
+    "CanContainContent": false,
+    "Installed": false,
+    "Modules": [
+        {
+            "Name": "GameFlow",
+            "Type": "Runtime",
+            "LoadingPhase": "Default"
+        }
+    ],
+    "Plugins": [
+        {
+            "Name": "GameCore",
+            "Enabled": true
+        }
+    ]
+}

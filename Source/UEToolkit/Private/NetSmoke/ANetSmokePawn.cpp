@@ -31,7 +31,7 @@ void ANetSmokePawn::BeginPlay() {
     Spec.BuffTag = GetSmokeBuffTag();
     Spec.GrantedTags.AddTag(GetSmokeStateTag());
 
-    const int32 InstanceId = BuffComponent->ApplyBuff(Spec);
-    NetSmokeResult::Write(TEXT("ServerResult.txt"), InstanceId != 0 ? TEXT("APPLIED") : TEXT("APPLY_FAILED"));
+    const TGameStatusResult<int32> ApplyResult = BuffComponent->ApplyBuff(Spec);
+    NetSmokeResult::Write(TEXT("ServerResult.txt"), ApplyResult.IsSuccess() ? TEXT("APPLIED") : TEXT("APPLY_FAILED"));
 }
 

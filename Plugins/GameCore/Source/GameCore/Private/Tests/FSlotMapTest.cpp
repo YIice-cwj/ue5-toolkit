@@ -3,7 +3,7 @@
  * @brief TGameHandle 与 TSlotMap 紧凑代际槽位容器单元测试
  */
 
-#include "Types/TSlotMap.h"
+#include "Containers/TSlotMap.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -17,7 +17,7 @@ struct FTestEntityTag {};
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameHandlePackingAndHashTest,
-    "Game.Core.Types.SlotMap.HandlePackingAndHash",
+    "Game.Core.Memory.SlotMap.HandlePackingAndHash",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
@@ -62,7 +62,7 @@ bool FGameHandlePackingAndHashTest::RunTest([[maybe_unused]] const FString& Para
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FSlotMapLifecycleAndGenerationSafetyTest,
-    "Game.Core.Types.SlotMap.LifecycleAndGenerationSafety",
+    "Game.Core.Memory.SlotMap.LifecycleAndGenerationSafety",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 

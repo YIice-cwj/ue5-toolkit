@@ -29,14 +29,20 @@ public:
     void Reserve(SizeType Capacity);
 
     /**
-     * @brief 向袋内放入指定份数的元素并重置洗牌游标
+     * @brief 向袋内追加指定份数的元素（追加项立即纳入当前轮可抽取池，不回退本轮已抽出的元素）
      * @param Item 待放入元素
      * @param Count 放入份数（<=0 时忽略）
      */
     void Add(const ValueType& Item, SizeType Count = 1);
 
     /**
-     * @brief 从当前轮次剩余元素中抽取一项（若当前轮已抽空则自动开启新一轮）
+     * @brief 向袋内移动追加单个元素（追加项立即纳入当前轮可抽取池，不回退本轮已抽出的元素）
+     * @param Item 待移动放入元素
+     */
+    void Add(ValueType&& Item);
+
+    /**
+     * @brief 从当前轮次剩余元素中抽取一项（若当前轮已抽空则自动开启新一轮；空袋时触发断言，不确定非空请用 TryDraw）
      * @param Stream 驱动抽取的隔离随机流
      * @return 抽中元素的常量引用（调用前袋不可为空）
      */
@@ -104,9 +110,21 @@ void TShuffleBag<TValue>::Add(const ValueType& Item, SizeType Count) {
     }
     Items.Reserve(Items.Num() + Count);
     for (SizeType Index = 0; Index < Count; ++Index) {
-        Items.Add(Item);
+        const SizeType AddedIndex = Items.Add(Item);
+        if (RemainingCount < AddedIndex) {
+            Items.Swap(RemainingCount, AddedIndex);
+        }
+        ++RemainingCount;
     }
-    RemainingCount = Items.Num();
+}
+
+template <typename TValue>
+void TShuffleBag<TValue>::Add(ValueType&& Item) {
+    const SizeType AddedIndex = Items.Add(MoveTemp(Item));
+    if (RemainingCount < AddedIndex) {
+        Items.Swap(RemainingCount, AddedIndex);
+    }
+    ++RemainingCount;
 }
 
 template <typename TValue>

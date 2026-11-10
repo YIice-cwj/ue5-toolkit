@@ -50,7 +50,7 @@ public:
     TSharedRef<FObserverSubscription> Subscribe(FListener InListener);
 
     /**
-     * @brief 注册监听回调并绑定 Owner 生命周期（Owner 销毁后回调自动跳过）
+     * @brief 注册监听回调并绑定 Owner 生命周期（Owner 销毁后回调自动跳过；传入非空 Owner 时必须在 GameThread 调用以避免与 GC 竞态）
      * @param Owner 归属的 UObject 对象指针（弱引用追踪，失效后自动跳过回调）
      * @param InListener 接收到新值时的回调闭包
      * @return RAII 订阅守卫共享引用
@@ -65,7 +65,7 @@ public:
     TSharedRef<FObserverSubscription> SubscribeWithReplay(FListener InListener);
 
     /**
-     * @brief 注册监听回调并通过全局 FIFO 回放当前值（绑定 Owner 生命周期）
+     * @brief 注册监听回调并通过全局 FIFO 回放当前值（绑定 Owner 生命周期；传入非空 Owner 时必须在 GameThread 调用以避免与 GC 竞态）
      * @param Owner 归属的 UObject 对象指针
      * @param InListener 接收到新值时的回调闭包
      * @return RAII 订阅守卫共享引用
@@ -107,6 +107,10 @@ TSharedRef<FObserverSubscription> FValueObserver<T>::Subscribe(FListener InListe
 
 template<typename T>
 TSharedRef<FObserverSubscription> FValueObserver<T>::Subscribe(UObject* Owner, FListener InListener) {
+    ensureMsgf(
+        Owner == nullptr || IsInGameThread(),
+        TEXT("FValueObserver::Subscribe with non-null UObject* Owner must be called on GameThread.")
+    );
     const TSharedRef<FObserverSubscription> Subscription = MakeShared<FObserverSubscription>();
     Subscription->Initialize(State, State->AddListener(MoveTemp(InListener), TWeakObjectPtr<UObject>(Owner)));
     return Subscription;
@@ -119,6 +123,10 @@ TSharedRef<FObserverSubscription> FValueObserver<T>::SubscribeWithReplay(FListen
 
 template<typename T>
 TSharedRef<FObserverSubscription> FValueObserver<T>::SubscribeWithReplay(UObject* Owner, FListener InListener) {
+    ensureMsgf(
+        Owner == nullptr || IsInGameThread(),
+        TEXT("FValueObserver::SubscribeWithReplay with non-null UObject* Owner must be called on GameThread.")
+    );
     const TWeakObjectPtr<UObject> WeakOwner(Owner);
     const typename FObserverState<ValueType>::FSubscribeSnapshot Snapshot =
         State->AddListenerWithReplay(MoveTemp(InListener), WeakOwner);

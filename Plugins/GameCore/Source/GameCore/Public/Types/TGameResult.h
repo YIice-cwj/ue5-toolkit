@@ -1,12 +1,32 @@
 /**
  * @file TGameResult.h
- * @brief 无异常强类型结果容器模板（成功值或错误载荷二选一，零堆分配）
+ * @brief 无异常强类型结果容器模板（成功值或错误载荷内联二选一，支持相同成功/错误类型实例化）
  */
 
 #pragma once
 
 #include "CoreMinimal.h"
+#include <type_traits>
+#include "Misc/Optional.h"
 #include "Misc/TVariant.h"
+#include "Types/FGameError.h"
+
+/**
+ * @brief 跨成功类型链式错误传播转发器（供 GAME_TRY / GAME_TRY_CTX 隐式转换为外层函数的 TGameResult<AnySuccess, TError>）
+ * @tparam TError 错误载荷类型
+ */
+template <typename TError>
+struct TGameErrorForwarder {
+    TError Error;
+
+    /**
+     * @brief 移动构造错误转发器
+     * @param InError 错误载荷
+     */
+    explicit TGameErrorForwarder(TError InError)
+        : Error(MoveTemp(InError)) {
+    }
+};
 
 /**
  * @brief 无异常强类型结果模型（支持相同成功/错误类型实例化）
@@ -69,11 +89,18 @@ public:
     [[nodiscard]] SuccessType& GetMutableValue();
 
     /**
-     * @brief 获取成功载荷副本，若处于失败态则返回回退值
-     * @param FallbackValue 失败时的回退值
+     * @brief 获取成功载荷副本，若处于失败态则返回常量引用回退值副本
+     * @param FallbackValue 失败时的回退值常量引用
      * @return 成功载荷或回退值
      */
-    [[nodiscard]] SuccessType GetValueOr(SuccessType FallbackValue) const;
+    [[nodiscard]] SuccessType GetValueOr(const SuccessType& FallbackValue) const;
+
+    /**
+     * @brief 获取成功载荷副本，若处于失败态则移动返回右值回退值
+     * @param FallbackValue 失败时的回退值右值引用
+     * @return 成功载荷或回退值
+     */
+    [[nodiscard]] SuccessType GetValueOr(SuccessType&& FallbackValue) const;
 
     /**
      * @brief 移动提取成功载荷（调用前须处于成功态，提取后原载荷处于被移走状态）
@@ -99,6 +126,14 @@ private:
 
 public:
     /**
+     * @brief 从链式错误转发器隐式构造失败结果（支持 GAME_TRY 跨不同成功载荷类型传播错误）
+     * @param ForwardedError 错误转发器右值
+     */
+    TGameResult(TGameErrorForwarder<ErrorType>&& ForwardedError)
+        : TGameResult(EErrorTag::Tag, MoveTemp(ForwardedError.Error)) {
+    }
+
+    /**
      * @brief 构造携带成功值的结果对象
      * @param InValue 成功载荷
      * @return 成功态结果实例
@@ -111,6 +146,50 @@ public:
      * @return 失败态结果实例
      */
     [[nodiscard]] static TGameResult Failure(ErrorType InError);
+
+    /**
+     * @brief 快速构造结构化 FGameError 失败结果（错误码 + 语义描述）
+     * @tparam E 错误类型推导占位
+     * @param InErrorCode 模块内错误码
+     * @param InMessage 语义错误说明
+     * @return 失败态结果实例
+     */
+    template <typename E = TError, typename = std::enable_if_t<std::is_same_v<E, FGameError>>>
+    [[nodiscard]] static TGameResult Failure(int32 InErrorCode, FString InMessage) {
+        return Failure(FGameError(Game::ModuleId::Core, InErrorCode, EGameErrorSeverity::Error, MoveTemp(InMessage)));
+    }
+
+    /**
+     * @brief 快速构造结构化 FGameError 失败结果（模块 ID + 错误码 + 语义描述）
+     * @tparam E 错误类型推导占位
+     * @param InModuleId 系统模块 ID
+     * @param InErrorCode 模块内错误码
+     * @param InMessage 语义错误说明
+     * @return 失败态结果实例
+     */
+    template <typename E = TError, typename = std::enable_if_t<std::is_same_v<E, FGameError>>>
+    [[nodiscard]] static TGameResult Failure(int32 InModuleId, int32 InErrorCode, FString InMessage) {
+        return Failure(FGameError(InModuleId, InErrorCode, EGameErrorSeverity::Error, MoveTemp(InMessage)));
+    }
+
+    /**
+     * @brief 快速构造结构化 FGameError 失败结果（模块 ID + 错误码 + 严重级别 + 语义描述）
+     * @tparam E 错误类型推导占位
+     * @param InModuleId 系统模块 ID
+     * @param InErrorCode 模块内错误码
+     * @param InSeverity 错误严重级别
+     * @param InMessage 语义错误说明
+     * @return 失败态结果实例
+     */
+    template <typename E = TError, typename = std::enable_if_t<std::is_same_v<E, FGameError>>>
+    [[nodiscard]] static TGameResult Failure(
+        int32 InModuleId,
+        int32 InErrorCode,
+        EGameErrorSeverity InSeverity,
+        FString InMessage
+    ) {
+        return Failure(FGameError(InModuleId, InErrorCode, InSeverity, MoveTemp(InMessage)));
+    }
 
 private:
     TVariant<FSuccessStorage, FErrorStorage> Storage;
@@ -139,11 +218,23 @@ typename TGameResult<TSuccess, TError>::SuccessType& TGameResult<TSuccess, TErro
 }
 
 template <typename TSuccess, typename TError>
-typename TGameResult<TSuccess, TError>::SuccessType TGameResult<TSuccess, TError>::GetValueOr(SuccessType FallbackValue) const {
+typename TGameResult<TSuccess, TError>::SuccessType TGameResult<TSuccess, TError>::GetValueOr(
+    const SuccessType& FallbackValue
+) const {
     if (IsSuccess()) {
         return Storage.template Get<FSuccessStorage>().Value;
     }
     return FallbackValue;
+}
+
+template <typename TSuccess, typename TError>
+typename TGameResult<TSuccess, TError>::SuccessType TGameResult<TSuccess, TError>::GetValueOr(
+    SuccessType&& FallbackValue
+) const {
+    if (IsSuccess()) {
+        return Storage.template Get<FSuccessStorage>().Value;
+    }
+    return MoveTemp(FallbackValue);
 }
 
 template <typename TSuccess, typename TError>
@@ -173,3 +264,169 @@ template <typename TSuccess, typename TError>
 TGameResult<TSuccess, TError> TGameResult<TSuccess, TError>::Failure(ErrorType InError) {
     return TGameResult(EErrorTag::Tag, MoveTemp(InError));
 }
+
+/**
+ * @brief 无返回值 (void) 强类型结果特化（使用 TOptional<ErrorType> 避免成功态默认构造错误对象）
+ * @tparam TError 错误载荷类型
+ */
+template <typename TError>
+class [[nodiscard]] TGameResult<void, TError> {
+public:
+    using SuccessType = void;
+    using ErrorType = TError;
+
+public:
+    /**
+     * @brief 从链式错误转发器隐式构造无返回值失败结果（支持 GAME_TRY 跨不同成功载荷类型传播错误）
+     * @param ForwardedError 错误转发器右值
+     */
+    TGameResult(TGameErrorForwarder<ErrorType>&& ForwardedError)
+        : Error(MoveTemp(ForwardedError.Error)) {
+    }
+
+    /**
+     * @brief 判定当前结果是否处于成功态
+     * @return 成功态返回 true
+     */
+    [[nodiscard]] bool IsSuccess() const noexcept {
+        return !Error.IsSet();
+    }
+
+    /**
+     * @brief 判定当前结果是否处于失败态
+     * @return 失败态返回 true
+     */
+    [[nodiscard]] bool IsFailure() const noexcept {
+        return Error.IsSet();
+    }
+
+    /**
+     * @brief 布尔显式转换操作符
+     * @return 成功态返回 true
+     */
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return IsSuccess();
+    }
+
+    /**
+     * @brief 获取错误载荷只读引用（调用前须处于失败态）
+     * @return 错误载荷常量引用
+     */
+    [[nodiscard]] const ErrorType& GetError() const {
+        checkf(IsFailure(), TEXT("Attempted GetError() on a successful TGameResult<void>"));
+        return Error.GetValue();
+    }
+
+    /**
+     * @brief 移动提取错误载荷（调用前须处于失败态）
+     * @return 移动出的错误载荷
+     */
+    [[nodiscard]] ErrorType ExtractError() {
+        checkf(IsFailure(), TEXT("Attempted ExtractError() on a successful TGameResult<void>"));
+        return MoveTemp(Error.GetValue());
+    }
+
+    /**
+     * @brief 构造无返回值的成功结果实例（零错误对象构造开销）
+     * @return 成功态结果实例
+     */
+    [[nodiscard]] static TGameResult Success() noexcept {
+        return TGameResult();
+    }
+
+    /**
+     * @brief 构造携带错误信息的失败结果实例
+     * @param InError 错误载荷
+     * @return 失败态结果实例
+     */
+    [[nodiscard]] static TGameResult Failure(ErrorType InError) {
+        return TGameResult(MoveTemp(InError));
+    }
+
+    /**
+     * @brief 快速构造结构化 FGameError 失败结果（错误码 + 语义描述）
+     * @tparam E 错误类型推导占位
+     * @param InErrorCode 模块内错误码
+     * @param InMessage 语义错误说明
+     * @return 失败态结果实例
+     */
+    template <typename E = TError, typename = std::enable_if_t<std::is_same_v<E, FGameError>>>
+    [[nodiscard]] static TGameResult Failure(int32 InErrorCode, FString InMessage) {
+        return Failure(FGameError(Game::ModuleId::Core, InErrorCode, EGameErrorSeverity::Error, MoveTemp(InMessage)));
+    }
+
+    /**
+     * @brief 快速构造结构化 FGameError 失败结果（模块 ID + 错误码 + 语义描述）
+     * @tparam E 错误类型推导占位
+     * @param InModuleId 系统模块 ID
+     * @param InErrorCode 模块内错误码
+     * @param InMessage 语义错误说明
+     * @return 失败态结果实例
+     */
+    template <typename E = TError, typename = std::enable_if_t<std::is_same_v<E, FGameError>>>
+    [[nodiscard]] static TGameResult Failure(int32 InModuleId, int32 InErrorCode, FString InMessage) {
+        return Failure(FGameError(InModuleId, InErrorCode, EGameErrorSeverity::Error, MoveTemp(InMessage)));
+    }
+
+    /**
+     * @brief 快速构造结构化 FGameError 失败结果（模块 ID + 错误码 + 严重级别 + 语义描述）
+     * @tparam E 错误类型推导占位
+     * @param InModuleId 系统模块 ID
+     * @param InErrorCode 模块内错误码
+     * @param InSeverity 错误严重级别
+     * @param InMessage 语义错误说明
+     * @return 失败态结果实例
+     */
+    template <typename E = TError, typename = std::enable_if_t<std::is_same_v<E, FGameError>>>
+    [[nodiscard]] static TGameResult Failure(
+        int32 InModuleId,
+        int32 InErrorCode,
+        EGameErrorSeverity InSeverity,
+        FString InMessage
+    ) {
+        return Failure(FGameError(InModuleId, InErrorCode, InSeverity, MoveTemp(InMessage)));
+    }
+
+private:
+    TGameResult() noexcept = default;
+
+    explicit TGameResult(ErrorType InError)
+        : Error(MoveTemp(InError)) {
+    }
+
+private:
+    TOptional<ErrorType> Error;
+};
+
+/**
+ * @brief 基于标准化 FGameError 契约的状态结果类型别名
+ * @tparam TSuccess 成功载荷类型
+ */
+template <typename TSuccess>
+using TGameStatusResult = TGameResult<TSuccess, FGameError>;
+
+/**
+ * @brief 链式错误向上传播宏（支持左值/右值结果表达式以及跨不同 TSuccess 返回类型的函数间自动错误传播）
+ */
+#define GAME_TRY(ResultExpr) \
+    do { \
+        auto&& _GameTryResult = (ResultExpr); \
+        if (_GameTryResult.IsFailure()) { \
+            using _GameTryErrorType = typename std::remove_cvref_t<decltype(_GameTryResult)>::ErrorType; \
+            return TGameErrorForwarder<_GameTryErrorType>(_GameTryResult.ExtractError()); \
+        } \
+    } while (false)
+
+/**
+ * @brief 带调用栈上下文追加的链式错误向上传播宏（针对 FGameError 自动调用 WithContext 后向上返回）
+ */
+#define GAME_TRY_CTX(ResultExpr, ContextText) \
+    do { \
+        auto&& _GameTryResult = (ResultExpr); \
+        if (_GameTryResult.IsFailure()) { \
+            using _GameTryErrorType = typename std::remove_cvref_t<decltype(_GameTryResult)>::ErrorType; \
+            return TGameErrorForwarder<_GameTryErrorType>(_GameTryResult.ExtractError().WithContext(ContextText)); \
+        } \
+    } while (false)
+
+

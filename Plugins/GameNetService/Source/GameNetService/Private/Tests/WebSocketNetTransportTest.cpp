@@ -239,11 +239,11 @@ bool FGameNetWebSocketTransportTest::RunTest([[maybe_unused]] const FString& Par
         Errors.Add(Err);
     });
 
-    TestFalse(TEXT("空 URL 连接被拒绝"), Transport.Connect(TEXT("")));
+    TestTrue(TEXT("空 URL 连接被拒绝返回失败态"), Transport.Connect(TEXT("")).IsFailure());
     TestEqual(TEXT("空 URL 触发错误回调"), Errors.Num(), 1);
 
     bReturnNullSocket = true;
-    TestFalse(TEXT("底层实例创建失败时 Connect 返回 false"), Transport.Connect(TEXT("wss://gate.example.com/ws")));
+    TestTrue(TEXT("底层实例创建失败时 Connect 返回失败态"), Transport.Connect(TEXT("wss://gate.example.com/ws")).IsFailure());
     TestEqual(TEXT("底层创建失败触发错误回调"), Errors.Num(), 2);
     bReturnNullSocket = false;
 
@@ -252,8 +252,8 @@ bool FGameNetWebSocketTransportTest::RunTest([[maybe_unused]] const FString& Par
     CustomHeaders.Add(TEXT("X-Client-Region"), TEXT("CN"));
     Transport.SetUpgradeHeaders(CustomHeaders);
 
-    TestTrue(TEXT("正常发起 WebSocket 异步握手"), Transport.Connect(TEXT("wss://gate.example.com/ws")));
-    TestFalse(TEXT("握手进行中重复调用 Connect 被拒绝"), Transport.Connect(TEXT("wss://other")));
+    TestTrue(TEXT("正常发起 WebSocket 异步握手"), Transport.Connect(TEXT("wss://gate.example.com/ws")).IsSuccess());
+    TestTrue(TEXT("握手进行中重复调用 Connect 被拒绝返回失败态"), Transport.Connect(TEXT("wss://other")).IsFailure());
     TestEqual(TEXT("当前状态为 Connecting"), Transport.GetState(), ENetConnectionState::Connecting);
     TestEqual(TEXT("工厂收到完整 URL"), CapturedUrl, FString(TEXT("wss://gate.example.com/ws")));
     TestEqual(TEXT("工厂收到子协议"), CapturedSubProtocol, FString(TEXT("uetoolkit-v1")));
@@ -269,7 +269,7 @@ bool FGameNetWebSocketTransportTest::RunTest([[maybe_unused]] const FString& Par
     OutHeader.MessageId = 7001;
     OutHeader.SequenceId = 9;
     const uint8 OutBytes[] = {11, 22, 33};
-    TestTrue(TEXT("已连接状态下二进制发包成功"), Transport.Send(OutHeader, OutBytes));
+    TestTrue(TEXT("已连接状态下二进制发包成功"), Transport.Send(OutHeader, OutBytes).IsSuccess());
     TestTrue(TEXT("底层以 Binary 模式发送帧"), LatestFakeSocket->bLastSendWasBinary);
     TestEqual(TEXT("发送的线格式总长度为 19 字节"), LatestFakeSocket->LastSentFrame.Num(), 19);
 
@@ -277,7 +277,7 @@ bool FGameNetWebSocketTransportTest::RunTest([[maybe_unused]] const FString& Par
     OversizedOutHeader.MessageId = 7002;
     TArray<uint8> OversizedPayload;
     OversizedPayload.SetNumZeroed(200);
-    TestFalse(TEXT("超出单包 128B 阈值的发送请求在本地边界被拦截"), Transport.Send(OversizedOutHeader, OversizedPayload));
+    TestTrue(TEXT("超出单包 128B 阈值的发送请求在本地边界被拦截返回失败态"), Transport.Send(OversizedOutHeader, OversizedPayload).IsFailure());
 
     FNetPacketHeader InHeader1;
     InHeader1.MessageId = 8001;
@@ -309,18 +309,18 @@ bool FGameNetWebSocketTransportTest::RunTest([[maybe_unused]] const FString& Par
     TestEqual(TEXT("畸形帧立即触发熔断回到 Disconnected"), Transport.GetState(), ENetConnectionState::Disconnected);
     TestEqual(TEXT("底层 Socket 收到协议错误关闭码 1002"), LatestFakeSocket->LastCloseCode, 1002);
 
-    TestTrue(TEXT("熔断后重新发起连接"), Transport.Connect(TEXT("wss://gate.example.com/ws")));
+    TestTrue(TEXT("熔断后重新发起连接"), Transport.Connect(TEXT("wss://gate.example.com/ws")).IsSuccess());
     LatestFakeSocket->TriggerError(TEXT("HandshakeRefused"));
     Transport.Tick(0.016f);
     TestEqual(TEXT("握手失败后状态迁移回 Disconnected"), Transport.GetState(), ENetConnectionState::Disconnected);
 
-    TestTrue(TEXT("再次连接验证远端异常关闭"), Transport.Connect(TEXT("wss://gate.example.com/ws")));
+    TestTrue(TEXT("再次连接验证远端异常关闭"), Transport.Connect(TEXT("wss://gate.example.com/ws")).IsSuccess());
     LatestFakeSocket->TriggerConnected();
     LatestFakeSocket->TriggerClosed(1006, TEXT("AbnormalDrop"), false);
     Transport.Tick(0.016f);
     TestEqual(TEXT("异常关闭后回到 Disconnected"), Transport.GetState(), ENetConnectionState::Disconnected);
 
-    TestTrue(TEXT("再次连接验证主动 Disconnect"), Transport.Connect(TEXT("wss://gate.example.com/ws")));
+    TestTrue(TEXT("再次连接验证主动 Disconnect"), Transport.Connect(TEXT("wss://gate.example.com/ws")).IsSuccess());
     LatestFakeSocket->TriggerConnected();
     Transport.Tick(0.016f);
     Transport.Disconnect(1000, TEXT("Shutdown"));

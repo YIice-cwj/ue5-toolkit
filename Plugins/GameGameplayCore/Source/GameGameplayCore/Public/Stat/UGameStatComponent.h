@@ -14,6 +14,7 @@
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "GameplayTagContainer.h"
+#include "Types/TGameResult.h"
 
 #include "Stat/FGameStatTypes.h"
 #include "Stat/FGameStatAcknowledgedDiff.h"
@@ -44,6 +45,19 @@ public:
      */
     void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
+public:
+    /**
+     * @brief 属性变动动态多播委托
+     */
+    UPROPERTY(BlueprintAssignable, Category = "Game|Stat")
+    FOnGameStatChanged OnStatChanged;
+
+    /**
+     * @brief 属性变动原生 C++ 多播委托
+     */
+    FOnGameStatChangedNative OnStatChangedNative;
+
+public:
     /**
      * @brief 注册（或重设）属性，并立即向既有订阅者广播初始派生值
      * @param InStatTag 属性标签
@@ -55,12 +69,19 @@ public:
     void RegisterStat(const FGameplayTag& InStatTag, float InInitialCurrent, float InMax = 100.0f, float InMin = 0.0f);
 
     /**
-     * @brief 注销属性并清理索引与已确认值
+     * @brief 注销属性并清理索引与已确认值（蓝图轻量门面）
      * @param InStatTag 属性标签
      * @return 属性存在且已成功移除返回 true
      */
-    UFUNCTION(BlueprintCallable, Category = "Game|Stat")
-    bool UnregisterStat(const FGameplayTag& InStatTag);
+    UFUNCTION(BlueprintCallable, Category = "Game|Stat", meta = (DisplayName = "Unregister Stat"))
+    bool K2_UnregisterStat(const FGameplayTag& InStatTag);
+
+    /**
+     * @brief 注销属性并清理索引与已确认值（强类型契约）
+     * @param InStatTag 属性标签
+     * @return 属性存在且已成功移除返回 Success，未找到返回 Failure(8001)，非权威端返回 Failure(8002)
+     */
+    TGameStatusResult<void> UnregisterStat(const FGameplayTag& InStatTag);
 
     /**
      * @brief 检查属性是否已在组件中注册
@@ -110,29 +131,36 @@ public:
     [[nodiscard]] float GetStatPercent(const FGameplayTag& InStatTag) const;
 
     /**
-     * @brief 读取属性的完整基础数值结构体
+     * @brief 读取属性的完整基础数值结构体（蓝图轻量门面）
      * @param InStatTag 属性标签
      * @param OutValue 输出的数值结构体
      * @return 属性已注册返回 true，未注册返回 false
      */
-    UFUNCTION(BlueprintCallable, Category = "Game|Stat")
-    bool GetStatValue(const FGameplayTag& InStatTag, FGameStatValue& OutValue) const;
+    UFUNCTION(BlueprintCallable, Category = "Game|Stat", meta = (DisplayName = "Get Stat Value"))
+    bool K2_GetStatValue(const FGameplayTag& InStatTag, FGameStatValue& OutValue) const;
+
+    /**
+     * @brief 读取属性的完整基础数值结构体（强类型契约）
+     * @param InStatTag 属性标签
+     * @return 成功返回数值结构体，未注册返回 Failure(8001)
+     */
+    [[nodiscard]] TGameStatusResult<FGameStatValue> GetStatValue(const FGameplayTag& InStatTag) const;
 
     /**
      * @brief 注册一条属性修正器（委托至内部 ModifierContainer）
      * @param InStatTag 目标属性标签
      * @param InModifier 修正器规则数据
-     * @return 分配的唯一修正器句柄；注册失败返回 0
+     * @return 成功返回分配的唯一句柄，失败返回 Failure
      */
-    uint32 AddStatModifier(const FGameplayTag& InStatTag, const FGameStatModifier& InModifier);
+    TGameStatusResult<uint32> AddStatModifier(const FGameplayTag& InStatTag, const FGameStatModifier& InModifier);
 
     /**
      * @brief 按句柄注销一条属性修正器
      * @param InStatTag 目标属性标签
      * @param InHandle 修正器句柄
-     * @return 成功注销返回 true，未找到句柄返回 false
+     * @return 成功注销返回 Success，未找到句柄返回 Failure(8004)
      */
-    bool RemoveStatModifier(const FGameplayTag& InStatTag, uint32 InHandle);
+    TGameStatusResult<void> RemoveStatModifier(const FGameplayTag& InStatTag, uint32 InHandle);
 
     /**
      * @brief 清空指定属性下的全部修正器
@@ -328,16 +356,4 @@ private:
      * @brief 客户端网络复制到达时的有效数值差分计算器
      */
     FGameStatAcknowledgedDiff AcknowledgedDiff;
-
-public:
-    /**
-     * @brief 属性变动动态多播委托
-     */
-    UPROPERTY(BlueprintAssignable, Category = "Game|Stat")
-    FOnGameStatChanged OnStatChanged;
-
-    /**
-     * @brief 属性变动原生 C++ 多播委托
-     */
-    FOnGameStatChangedNative OnStatChangedNative;
 };

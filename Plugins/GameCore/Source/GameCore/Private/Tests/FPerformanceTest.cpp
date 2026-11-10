@@ -25,6 +25,12 @@ struct FPerfCacheValue {
     int32 Payload = 0;
 };
 
+/**
+ * @brief 测量目标操作循环迭代多次的单次平均执行耗时（单位：纳秒）
+ * @param Iterations 循环迭代执行次数
+ * @param Body 待测量的目标操作闭包
+ * @return 单次操作纳秒数 (ns/op)
+ */
 double MeasureNsPerOp(const int32 Iterations, const TFunction<void()>& Body) {
     const double StartSeconds = FPlatformTime::Seconds();
     for (int32 Index = 0; Index < Iterations; ++Index) {

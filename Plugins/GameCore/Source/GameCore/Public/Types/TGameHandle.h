@@ -33,11 +33,19 @@ public:
     }
 
     /**
-     * @brief 检查句柄格式是否有效（索引有效且代际号非零）
-     * @return 格式有效返回 true
+     * @brief 检查句柄自身位域格式是否合法（索引有效且代际号非零；槽位实际存活判定请调 TSlotMap::IsValidHandle）
+     * @return 格式合法返回 true
      */
     [[nodiscard]] constexpr bool IsValid() const noexcept {
         return Index != INVALID_INDEX && Generation != 0u;
+    }
+
+    /**
+     * @brief 检查句柄位域格式是否合法（等价于 IsValid，语义显式区分于容器槽位存活校验）
+     * @return 格式合法返回 true
+     */
+    [[nodiscard]] constexpr bool IsWellFormed() const noexcept {
+        return IsValid();
     }
 
     /**

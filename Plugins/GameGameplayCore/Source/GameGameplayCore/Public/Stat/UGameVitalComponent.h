@@ -67,6 +67,19 @@ public:
      */
     void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
+public:
+    /**
+     * @brief 存活状态变动动态多播委托
+     */
+    UPROPERTY(BlueprintAssignable, Category = "Game|Vital")
+    FOnGameVitalStateChanged OnVitalStateChanged;
+
+    /**
+     * @brief 存活状态变动原生 C++ 多播委托
+     */
+    FOnGameVitalStateChangedNative OnVitalStateChangedNative;
+
+public:
     /**
      * @brief 显式绑定关联的数值组件
      * @param InStatComponent 目标数值组件指针
@@ -155,16 +168,4 @@ private:
 
     TWeakObjectPtr<UGameStatComponent> BoundStatComponent;
     FDelegateHandle StatChangedSubscriptionHandle;
-
-public:
-    /**
-     * @brief 存活状态变动动态多播委托
-     */
-    UPROPERTY(BlueprintAssignable, Category = "Game|Vital")
-    FOnGameVitalStateChanged OnVitalStateChanged;
-
-    /**
-     * @brief 存活状态变动原生 C++ 多播委托
-     */
-    FOnGameVitalStateChangedNative OnVitalStateChangedNative;
 };

@@ -113,22 +113,27 @@ void UGameBuffComponent::BindStatComponent(UGameStatComponent* InStatComponent) 
     }
 }
 
-int32 UGameBuffComponent::ApplyBuff(const FGameBuffSpec& InSpec) {
+int32 UGameBuffComponent::K2_ApplyBuff(const FGameBuffSpec& InSpec) {
+    const TGameStatusResult<int32> Result = ApplyBuff(InSpec);
+    return Result.IsSuccess() ? Result.GetValue() : 0;
+}
+
+TGameStatusResult<int32> UGameBuffComponent::ApplyBuff(const FGameBuffSpec& InSpec) {
     if (!InSpec.BuffTag.IsValid()) {
         GAME_LOG(Warning, TEXT("【Buff 组件】拒绝施加无身份标签的 Buff。"));
-        return 0;
+        return TGameStatusResult<int32>::Failure(8003, TEXT("Invalid BuffTag"));
     }
 
     if (!IsApplyAllowed()) {
         GAME_LOG(Warning, TEXT("【Buff 组件】非权威端拒绝施加 Buff: %s"), *InSpec.BuffTag.ToString());
-        return 0;
+        return TGameStatusResult<int32>::Failure(8002, TEXT("Not authority"));
     }
 
     if (InSpec.StackPolicy == EGameBuffStackPolicy::Independent && InSpec.MaxStacks > 0) {
         if (GetBuffStacks(InSpec.BuffTag) >= InSpec.MaxStacks) {
             GAME_LOG(Warning, TEXT("【Buff 组件】宿主 [%s] 施加 Buff [%s] 失败：已达最大层数 %d。"),
                 *GetNameSafe(GetOwner()), *InSpec.BuffTag.ToString(), InSpec.MaxStacks);
-            return 0;
+            return TGameStatusResult<int32>::Failure(8003, TEXT("Max buff stacks reached"));
         }
     }
 
@@ -161,7 +166,7 @@ int32 UGameBuffComponent::ApplyBuff(const FGameBuffSpec& InSpec) {
         BroadcastBuffChanged(Existing.Spec.BuffTag, Existing.Stacks);
         GAME_LOG(Log, TEXT("【Buff 组件】宿主 [%s] 叠加 Buff [%s] 成功: 实例 ID=%d, 新层数=%d, 剩余时长=%.2f 秒。"),
             *GetNameSafe(GetOwner()), *Existing.Spec.BuffTag.ToString(), Existing.InstanceId, Existing.Stacks, Existing.RemainingSeconds);
-        return Existing.InstanceId;
+        return TGameStatusResult<int32>::Success(Existing.InstanceId);
     }
 
     FGameBuffInstance& Added = ActiveBuffs.Items.AddDefaulted_GetRef();
@@ -176,17 +181,21 @@ int32 UGameBuffComponent::ApplyBuff(const FGameBuffSpec& InSpec) {
     BroadcastBuffChanged(Added.Spec.BuffTag, GetBuffStacks(Added.Spec.BuffTag));
     GAME_LOG(Log, TEXT("【Buff 组件】宿主 [%s] 施加 Buff [%s] 成功: 实例 ID=%d, 层数=%d, 持续时间=%.2f 秒。"),
         *GetNameSafe(GetOwner()), *Added.Spec.BuffTag.ToString(), Added.InstanceId, Added.Stacks, Added.RemainingSeconds);
-    return Added.InstanceId;
+    return TGameStatusResult<int32>::Success(Added.InstanceId);
 }
 
-bool UGameBuffComponent::RemoveBuff(FGameplayTag InBuffTag, bool bRemoveAllInstances) {
+bool UGameBuffComponent::K2_RemoveBuff(FGameplayTag InBuffTag, bool bRemoveAllInstances) {
+    return RemoveBuff(InBuffTag, bRemoveAllInstances).IsSuccess();
+}
+
+TGameStatusResult<void> UGameBuffComponent::RemoveBuff(FGameplayTag InBuffTag, bool bRemoveAllInstances) {
     if (!InBuffTag.IsValid()) {
-        return false;
+        return TGameStatusResult<void>::Failure(8003, TEXT("Invalid BuffTag"));
     }
 
     if (!IsApplyAllowed()) {
         GAME_LOG(Warning, TEXT("【Buff 组件】非权威端拒绝移除 Buff: %s"), *InBuffTag.ToString());
-        return false;
+        return TGameStatusResult<void>::Failure(8002, TEXT("Not authority"));
     }
 
     bool bRemoved = false;
@@ -209,18 +218,23 @@ bool UGameBuffComponent::RemoveBuff(FGameplayTag InBuffTag, bool bRemoveAllInsta
         BroadcastTagStateAfterRemoval(InBuffTag);
         GAME_LOG(Log, TEXT("【Buff 组件】宿主 [%s] 移除 Buff [%s] 成功 (全实例移除=%s)。"),
             *GetNameSafe(GetOwner()), *InBuffTag.ToString(), bRemoveAllInstances ? TEXT("True") : TEXT("False"));
+        return TGameStatusResult<void>::Success();
     }
-    return bRemoved;
+    return TGameStatusResult<void>::Failure(8004, TEXT("Buff not found"));
 }
 
-bool UGameBuffComponent::RemoveBuffStacks(FGameplayTag InBuffTag, int32 StacksToRemove) {
+bool UGameBuffComponent::K2_RemoveBuffStacks(FGameplayTag InBuffTag, int32 StacksToRemove) {
+    return RemoveBuffStacks(InBuffTag, StacksToRemove).IsSuccess();
+}
+
+TGameStatusResult<void> UGameBuffComponent::RemoveBuffStacks(FGameplayTag InBuffTag, int32 StacksToRemove) {
     if (!InBuffTag.IsValid() || StacksToRemove <= 0) {
-        return false;
+        return TGameStatusResult<void>::Failure(8003, TEXT("Invalid parameter"));
     }
 
     if (!IsApplyAllowed()) {
         GAME_LOG(Warning, TEXT("【Buff 组件】非权威端拒绝扣减 Buff 层数: %s"), *InBuffTag.ToString());
-        return false;
+        return TGameStatusResult<void>::Failure(8002, TEXT("Not authority"));
     }
 
     int32 RemainingToRemove = StacksToRemove;
@@ -252,15 +266,20 @@ bool UGameBuffComponent::RemoveBuffStacks(FGameplayTag InBuffTag, int32 StacksTo
         BroadcastTagStateAfterRemoval(InBuffTag);
         GAME_LOG(Log, TEXT("【Buff 组件】宿主 [%s] 扣减 Buff [%s] 层数成功 (请求扣减: %d)。"),
             *GetNameSafe(GetOwner()), *InBuffTag.ToString(), StacksToRemove);
+        return TGameStatusResult<void>::Success();
     }
 
-    return bChanged;
+    return TGameStatusResult<void>::Failure(8004, TEXT("Buff not found"));
 }
 
-bool UGameBuffComponent::RemoveBuffInstance(int32 InInstanceId) {
+bool UGameBuffComponent::K2_RemoveBuffInstance(int32 InInstanceId) {
+    return RemoveBuffInstance(InInstanceId).IsSuccess();
+}
+
+TGameStatusResult<void> UGameBuffComponent::RemoveBuffInstance(int32 InInstanceId) {
     if (!IsApplyAllowed()) {
         GAME_LOG(Warning, TEXT("【Buff 组件】非权威端拒绝移除 Buff 实例: %d"), InInstanceId);
-        return false;
+        return TGameStatusResult<void>::Failure(8002, TEXT("Not authority"));
     }
 
     for (int32 Index = 0; Index < ActiveBuffs.Items.Num(); ++Index) {
@@ -276,9 +295,9 @@ bool UGameBuffComponent::RemoveBuffInstance(int32 InInstanceId) {
         BroadcastTagStateAfterRemoval(RemovedTag);
         GAME_LOG(Log, TEXT("【Buff 组件】宿主 [%s] 移除 Buff 实例成功: ID=%d, 标签=[%s]。"),
             *GetNameSafe(GetOwner()), InInstanceId, *RemovedTag.ToString());
-        return true;
+        return TGameStatusResult<void>::Success();
     }
-    return false;
+    return TGameStatusResult<void>::Failure(8004, TEXT("Buff instance not found"));
 }
 
 bool UGameBuffComponent::HasBuff(FGameplayTag InBuffTag) const {

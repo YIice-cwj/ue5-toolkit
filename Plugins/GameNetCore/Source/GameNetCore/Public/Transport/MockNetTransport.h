@@ -34,9 +34,9 @@ public:
     /**
      * @brief 建立内存虚拟回环连接（受 SetAcceptConnections 开关控制）
      * @param Endpoint 非空虚拟端点标识（如 "mock://standalone"）
-     * @return 连接成功返回 true，端点为空或拒绝连接时返回 false
+     * @return 连接成功返回成功态，端点为空或拒绝连接时返回对应错误
      */
-    bool Connect(const FString& Endpoint) override;
+    TGameStatusResult<void> Connect(const FString& Endpoint) override;
 
     /**
      * @brief 断开内存虚拟连接并清空待派发回环队列
@@ -49,9 +49,9 @@ public:
      * @brief 向内存虚拟路由投递请求包；命中模拟处理器或开启回声时入队响应，在下一轮 Tick 主线程派发
      * @param Header 报文头（自动对齐 PayloadLength）
      * @param Payload 负载字节切片
-     * @return 已连接且报文头合法时返回 true，否则返回 false
+     * @return 已连接且报文头合法时返回成功态，否则返回对应错误
      */
-    bool Send(const FNetPacketHeader& Header, TConstArrayView<uint8> Payload) override;
+    TGameStatusResult<void> Send(const FNetPacketHeader& Header, TConstArrayView<uint8> Payload) override;
 
     /**
      * @brief 查询当前内存虚拟连接状态

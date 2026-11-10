@@ -120,8 +120,8 @@ bool FLanBeaconBroadcaster::BroadcastAnnouncement(const FGameNetLanEndpoint& Tar
         return false;
     }
 
-    const TOptional<TArray<uint8>> EncodedRoom = JsonSerializer.SerializeStruct(HostedRoom);
-    if (!EncodedRoom.IsSet() || static_cast<uint32>(EncodedRoom->Num()) > MAX_BEACON_PAYLOAD_BYTES) {
+    const TGameStatusResult<TArray<uint8>> EncodedRoom = JsonSerializer.SerializeStruct(HostedRoom);
+    if (EncodedRoom.IsFailure() || static_cast<uint32>(EncodedRoom.GetValue().Num()) > MAX_BEACON_PAYLOAD_BYTES) {
         return false;
     }
 
@@ -129,7 +129,7 @@ bool FLanBeaconBroadcaster::BroadcastAnnouncement(const FGameNetLanEndpoint& Tar
     Header.MessageId = LAN_ROOM_ANNOUNCE_MSG_ID;
     Header.SequenceId = 0;
 
-    const TArray<uint8> WireFrame = FNetPacketCodec::EncodeFrame(Header, *EncodedRoom);
+    const TArray<uint8> WireFrame = FNetPacketCodec::EncodeFrame(Header, EncodedRoom.GetValue());
     return SocketChannel.SendTo(WireFrame, TargetEndpoint.IpAddress, TargetEndpoint.Port);
 }
 
@@ -175,25 +175,25 @@ void FLanBeaconBroadcaster::PumpIncomingDatagrams() {
             break;
         }
 
-        const TOptional<FNetPacketHeader> DecodedHeader = FNetPacketCodec::TryDecodeHeader(Datagram->Bytes);
-        if (!DecodedHeader.IsSet() || !FNetPacketCodec::IsValidHeader(*DecodedHeader, MAX_BEACON_PAYLOAD_BYTES)) {
+        const TGameStatusResult<FNetPacketHeader> DecodedHeader = FNetPacketCodec::TryDecodeHeader(Datagram->Bytes);
+        if (DecodedHeader.IsFailure() || !FNetPacketCodec::IsValidHeader(DecodedHeader.GetValue(), MAX_BEACON_PAYLOAD_BYTES)) {
             continue;
         }
 
         const uint32 ExpectedWireBytes =
-            static_cast<uint32>(FNetPacketHeader::WIRE_HEADER_BYTES) + DecodedHeader->PayloadLength;
+            static_cast<uint32>(FNetPacketHeader::WIRE_HEADER_BYTES) + DecodedHeader.GetValue().PayloadLength;
         if (static_cast<uint32>(Datagram->Bytes.Num()) != ExpectedWireBytes) {
             continue;
         }
 
-        if (Role == EGameNetLanRole::Hosting && DecodedHeader->MessageId == LAN_DISCOVERY_PROBE_MSG_ID) {
-            ReplyToProbe(*DecodedHeader, Datagram->SenderIp, Datagram->SenderPort);
-        } else if (Role == EGameNetLanRole::Discovering && DecodedHeader->MessageId == LAN_ROOM_ANNOUNCE_MSG_ID) {
+        if (Role == EGameNetLanRole::Hosting && DecodedHeader.GetValue().MessageId == LAN_DISCOVERY_PROBE_MSG_ID) {
+            ReplyToProbe(DecodedHeader.GetValue(), Datagram->SenderIp, Datagram->SenderPort);
+        } else if (Role == EGameNetLanRole::Discovering && DecodedHeader.GetValue().MessageId == LAN_ROOM_ANNOUNCE_MSG_ID) {
             const TConstArrayView<uint8> PayloadView(
                 Datagram->Bytes.GetData() + FNetPacketHeader::WIRE_HEADER_BYTES,
-                static_cast<int32>(DecodedHeader->PayloadLength)
+                static_cast<int32>(DecodedHeader.GetValue().PayloadLength)
             );
-            HandleAnnouncementPayload(*DecodedHeader, PayloadView, Datagram->SenderIp);
+            HandleAnnouncementPayload(DecodedHeader.GetValue(), PayloadView, Datagram->SenderIp);
         }
     }
 }
@@ -209,8 +209,8 @@ void FLanBeaconBroadcaster::ReplyToProbe(
     const FString& SenderIp,
     int32 SenderPort
 ) {
-    const TOptional<TArray<uint8>> EncodedRoom = JsonSerializer.SerializeStruct(HostedRoom);
-    if (!EncodedRoom.IsSet() || static_cast<uint32>(EncodedRoom->Num()) > MAX_BEACON_PAYLOAD_BYTES) {
+    const TGameStatusResult<TArray<uint8>> EncodedRoom = JsonSerializer.SerializeStruct(HostedRoom);
+    if (EncodedRoom.IsFailure() || static_cast<uint32>(EncodedRoom.GetValue().Num()) > MAX_BEACON_PAYLOAD_BYTES) {
         return;
     }
 
@@ -218,7 +218,7 @@ void FLanBeaconBroadcaster::ReplyToProbe(
     ReplyHeader.MessageId = LAN_ROOM_ANNOUNCE_MSG_ID;
     ReplyHeader.SequenceId = ProbeHeader.SequenceId;
 
-    const TArray<uint8> WireFrame = FNetPacketCodec::EncodeFrame(ReplyHeader, *EncodedRoom);
+    const TArray<uint8> WireFrame = FNetPacketCodec::EncodeFrame(ReplyHeader, EncodedRoom.GetValue());
     SocketChannel.SendTo(WireFrame, SenderIp, SenderPort);
 }
 
@@ -233,14 +233,14 @@ void FLanBeaconBroadcaster::HandleAnnouncementPayload(
     TConstArrayView<uint8> Payload,
     const FString& SenderIp
 ) {
-    const TOptional<FGameNetRoomDescriptor> DecodedRoom =
+    const TGameStatusResult<FGameNetRoomDescriptor> DecodedRoom =
         JsonSerializer.DeserializeStruct<FGameNetRoomDescriptor>(Payload);
-    if (!DecodedRoom.IsSet()) {
+    if (DecodedRoom.IsFailure()) {
         return;
     }
 
     const TOptional<FGameNetRoomDescriptor> UpsertedRoom = DiscoveryTable.UpsertDiscoveredRoom(
-        *DecodedRoom,
+        DecodedRoom.GetValue(),
         SenderIp,
         AnnounceHeader.SequenceId,
         MonotonicClockSeconds

@@ -29,7 +29,7 @@ private:
      * @brief 待析构旧状态（在锁内转移所有权，出锁后离开作用域自然析构，消除锁内析构延迟）
      */
     struct FRetiredStorage {
-        TSharedPtr<const ValueMap> EagerMap;
+        TSharedPtr<ValueMap> EagerMap;
         TSet<FName> ValidKeys;
         ValueMap Entries;
     };
@@ -83,10 +83,10 @@ private:
     ECacheStrategy EffectiveStrategy = ECacheStrategy::Eager;
     TFunction<ValueType(FName Key)> BuildFn;
 
-    uint32 Generation = 0;
+    uint64 Generation = 0;
 
     mutable FRWLock CacheLock;
-    TSharedPtr<const ValueMap> EagerMap;
+    TSharedPtr<ValueMap> EagerMap;
 
     mutable TSet<FName> ValidKeys;
     mutable ValueMap Entries;
@@ -101,10 +101,12 @@ FVersionedCache<T>::FVersionedCache(const FName& Domain)
 
 template<typename T>
 void FVersionedCache<T>::Rebuild(const TArray<FName>& AllKeys, TFunction<ValueType(FName Key)> InBuildFn) {
-    const FCachePolicy NewPolicy = FCachePolicy::Resolve(Domain);
+    FCachePolicy NewPolicy = FCachePolicy::Resolve(Domain);
+    const int32 ClampedCapacity = NewPolicy.GetClampedLruCapacity();
+    NewPolicy.LruCapacity = ClampedCapacity;
     const ECacheStrategy NewStrategy = ResolveEffectiveStrategy(NewPolicy, AllKeys.Num());
 
-    TSharedPtr<const ValueMap> BuiltSnapshot;
+    TSharedPtr<ValueMap> BuiltSnapshot;
     TSet<FName> BuiltValidKeys;
     if (NewStrategy == ECacheStrategy::Eager) {
         ValueMap PlainMap;
@@ -112,7 +114,7 @@ void FVersionedCache<T>::Rebuild(const TArray<FName>& AllKeys, TFunction<ValueTy
         for (const FName& Key : AllKeys) {
             PlainMap.Add(Key, MakeShared<const ValueType>(InBuildFn(Key)));
         }
-        BuiltSnapshot = MakeShared<const ValueMap>(MoveTemp(PlainMap));
+        BuiltSnapshot = MakeShared<ValueMap>(MoveTemp(PlainMap));
     } else {
         BuiltValidKeys.Reserve(AllKeys.Num());
         for (const FName& Key : AllKeys) {
@@ -132,9 +134,9 @@ void FVersionedCache<T>::Rebuild(const TArray<FName>& AllKeys, TFunction<ValueTy
             EagerMap = BuiltSnapshot;
         } else {
             ValidKeys = MoveTemp(BuiltValidKeys);
-            Entries.Reserve(FMath::Min(AllKeys.Num(), static_cast<int32>(NewPolicy.LruCapacity)));
+            Entries.Reserve(FMath::Min(AllKeys.Num(), ClampedCapacity));
             if (NewStrategy == ECacheStrategy::Lru) {
-                LruPool.Reserve(static_cast<int32>(NewPolicy.LruCapacity));
+                LruPool.Reserve(ClampedCapacity);
             }
         }
     }
@@ -144,7 +146,7 @@ template<typename T>
 typename FVersionedCache<T>::ValueTypePtr FVersionedCache<T>::FindShared(FName Key) const {
     for (int32 Attempt = 0; Attempt < 2; ++Attempt) {
         TFunction<ValueType(FName Key)> LocalBuildFn;
-        uint32 ObservedGeneration = 0;
+        uint64 ObservedGeneration = 0;
         {
             FReadScopeLock ReadLock(CacheLock);
             ObservedGeneration = Generation;
@@ -155,11 +157,13 @@ typename FVersionedCache<T>::ValueTypePtr FVersionedCache<T>::FindShared(FName K
             if (EffectiveStrategy != ECacheStrategy::Eager && !ValidKeys.Contains(Key)) {
                 return ValueTypePtr();
             }
-            const bool bCanReadUnlocked = (EffectiveStrategy == ECacheStrategy::Lazy) ||
-                                          (EffectiveStrategy == ECacheStrategy::Lru && LruPool.IsHead(Key));
-            if (bCanReadUnlocked) {
-                const ValueTypePtr* Found = Entries.Find(Key);
-                if (Found != nullptr) {
+            if (EffectiveStrategy == ECacheStrategy::Lazy) {
+                if (const ValueTypePtr* Found = Entries.Find(Key)) {
+                    return *Found;
+                }
+            } else if (EffectiveStrategy == ECacheStrategy::Lru) {
+                if (const ValueTypePtr* Found = Entries.Find(Key)) {
+                    LruPool.MarkReferenced(Key);
                     return *Found;
                 }
             }
@@ -210,9 +214,10 @@ typename FVersionedCache<T>::ValueTypePtr FVersionedCache<T>::FindShared(FName K
         }
         Entries.Add(Key, Built);
         if (EffectiveStrategy == ECacheStrategy::Lru) {
+            const int32 SafeCapacity = Policy.GetClampedLruCapacity();
             const int32 NodeIndex = LruPool.AllocateNode(Key);
             LruPool.InsertAtHead(NodeIndex);
-            while (static_cast<int64>(Entries.Num()) > Policy.LruCapacity) {
+            while (Entries.Num() > SafeCapacity) {
                 const FName VictimKey = LruPool.EvictTail();
                 if (VictimKey.IsNone()) {
                     break;
@@ -238,26 +243,25 @@ void FVersionedCache<T>::Reset() {
 
 template<typename T>
 bool FVersionedCache<T>::Invalidate(FName Key) {
-    FWriteScopeLock WriteLock(CacheLock);
+    ValueTypePtr RetiredValue;
     bool bRemoved = false;
+    {
+        FWriteScopeLock WriteLock(CacheLock);
+        if (EffectiveStrategy == ECacheStrategy::Eager) {
+            if (EagerMap.IsValid() && EagerMap->RemoveAndCopyValue(Key, RetiredValue)) {
+                bRemoved = true;
+            }
+        } else {
+            if (ValidKeys.Remove(Key) > 0) {
+                bRemoved = true;
+            }
+            if (Entries.RemoveAndCopyValue(Key, RetiredValue)) {
+                bRemoved = true;
+            }
 
-    if (EffectiveStrategy == ECacheStrategy::Eager) {
-        if (EagerMap.IsValid() && EagerMap->Contains(Key)) {
-            ValueMap UpdatedMap = *EagerMap;
-            UpdatedMap.Remove(Key);
-            EagerMap = MakeShared<const ValueMap>(MoveTemp(UpdatedMap));
-            bRemoved = true;
-        }
-    } else {
-        if (ValidKeys.Remove(Key) > 0) {
-            bRemoved = true;
-        }
-        if (Entries.Remove(Key) > 0) {
-            bRemoved = true;
-        }
-
-        if (EffectiveStrategy == ECacheStrategy::Lru) {
-            LruPool.Remove(Key);
+            if (EffectiveStrategy == ECacheStrategy::Lru) {
+                LruPool.Remove(Key);
+            }
         }
     }
 

@@ -7,6 +7,7 @@
 
 #include "CoreMinimal.h"
 #include "Packet/NetPacketTypes.h"
+#include "Types/TGameResult.h"
 #include "Types/NetConnectionTypes.h"
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnNetConnectionStateChanged, ENetConnectionState);
@@ -23,9 +24,9 @@ public:
     /**
      * @brief 启动向目标端点（或本地虚拟回环地址）的连接流程
      * @param Endpoint 目标地址（例如 "wss://gate.example.com/ws" 或 "mock://local"）
-     * @return 成功发起连接流程返回 true，端点非法或状态不允许时返回 false
+     * @return 成功发起连接流程返回成功态，端点非法或状态不允许时返回对应错误
      */
-    virtual bool Connect(const FString& Endpoint) = 0;
+    virtual TGameStatusResult<void> Connect(const FString& Endpoint) = 0;
 
     /**
      * @brief 主动关闭当前传输连接并清理会话状态
@@ -38,9 +39,9 @@ public:
      * @brief 发送一帧完整数据包
      * @param Header 待发送的报文头（PayloadLength 自动对齐实际负载字节数）
      * @param Payload 待发送的负载字节视图
-     * @return 成功写入底层发送通道返回 true，未连接或报文头不合法时返回 false
+     * @return 成功写入底层发送通道返回成功态，未连接或报文头不合法时返回对应错误
      */
-    virtual bool Send(const FNetPacketHeader& Header, TConstArrayView<uint8> Payload) = 0;
+    virtual TGameStatusResult<void> Send(const FNetPacketHeader& Header, TConstArrayView<uint8> Payload) = 0;
 
     /**
      * @brief 查询当前传输驱动状态机枚举值

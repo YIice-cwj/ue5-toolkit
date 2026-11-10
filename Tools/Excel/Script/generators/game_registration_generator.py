@@ -22,7 +22,7 @@ HEADER_SUFFIX = "GameRegistration.h"
 SOURCE_SUFFIX = "GameRegistration.cpp"
 
 FCONFIG_REGISTRY_INCLUDE = "Config/FConfigRegistry.h"
-CORE_REGISTRATION_INCLUDE = "Registration/FGameCoreRegistration.h"
+CORE_REGISTRATION_INCLUDE = "Config/FGameCoreRegistration.h"
 
 
 def domains_of(category_tables: dict) -> list:

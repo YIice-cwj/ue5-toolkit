@@ -326,6 +326,21 @@ bool FRepositorySemanticsTest::RunTest([[maybe_unused]] const FString& Parameter
     TestEqual(TEXT("Reset 后表数归零"), Repository.TableCount(), 0);
     TestEqual(TEXT("Reset 后错误码 None"), Repository.GetLastError(), EStaticDataBinError::None);
     TestTrue(TEXT("Reset 不影响已登记读写器"), Repository.AddTable(Initial));
+
+    FStaticDataRepository ResultRepo;
+    RegisterTestRowSerializers(ResultRepo);
+    const TGameStatusResult<void> TryAddRes = ResultRepo.TryAddTable(Initial);
+    TestTrue(TEXT("TryAddTable 返回 Success"), TryAddRes.IsSuccess());
+
+    const TGameResult<TMap<FName, FRepositoryTestRowA>, EStaticDataBinError> TryExtractRes = ResultRepo.TryExtractTable<FRepositoryTestRowA>();
+    TestTrue(TEXT("TryExtractTable 返回 Success"), TryExtractRes.IsSuccess());
+    TestEqual(TEXT("TryExtractTable 提取行数一致"), TryExtractRes.GetValue().Num(), 1);
+    TestTrue(TEXT("TryExtractTable 包含预期行键"), TryExtractRes.GetValue().Contains(FName(TEXT("Only"))));
+
+    const TGameResult<TMap<FName, FRepositoryTestRowB>, EStaticDataBinError> MissingRes = ResultRepo.TryExtractTable<FRepositoryTestRowB>();
+    TestTrue(TEXT("TryExtractTable 未注册表返回 Failure"), MissingRes.IsFailure());
+    TestEqual(TEXT("错误码为 TableNotFound"), MissingRes.GetError(), EStaticDataBinError::TableNotFound);
+
     return true;
 }
 

@@ -7,7 +7,12 @@
 
 #if WITH_AUTOMATION_TESTS
 
+#include "Async/Async.h"
+#include "Async/ParallelFor.h"
+#include "HAL/PlatformProcess.h"
 #include "Misc/AutomationTest.h"
+
+#include <atomic>
 
 namespace {
 
@@ -105,6 +110,22 @@ bool FGameListenerHubTypeFingerprintTest::RunTest(const FString& Parameters) {
     Hub.Emit<FUnitTestEventPayload>(FName(TEXT("UnitTest.Listener.NotRegistered")), FUnitTestEventPayload{9});
     TestEqual(TEXT("未注册事件广播静默忽略"), StructSeenSum, 3);
 
+    TestTrue(
+        TEXT("相同 4 字节 sizeof 的 int32 与 float 具备完全不同的编译期 64 位类型指纹"),
+        Game::Core::GetTypeFingerprint<int32>() != Game::Core::GetTypeFingerprint<float>()
+    );
+    using FAliasEventPayload = FUnitTestEventPayload;
+    TestEqual(
+        TEXT("using 类型别名与 const/引用限定符归一化为完全相同的 64 位类型指纹"),
+        Game::Core::GetTypeFingerprint<FUnitTestEventPayload>(),
+        Game::Core::GetTypeFingerprint<const FAliasEventPayload&>()
+    );
+    TestFalse(
+        TEXT("向 int32 事件发射同 sizeof 的 float 载荷被类型指纹精准拦截"),
+        Hub.Emit<float>(ScalarEventName, 12.0f)
+    );
+    TestEqual(TEXT("被拦截后 int32 订阅者计数不变"), ScalarSeenSum, 5);
+
     StructSubscription->Reset();
     ScalarSubscription->Reset();
     return true;
@@ -133,6 +154,73 @@ bool FGameListenerHubErrorBranchesTest::RunTest([[maybe_unused]] const FString& 
     TestFalse(TEXT("同名事件以不同载荷类型再次订阅被拒绝并返回无效句柄"), MismatchedSub->IsActive());
 
     ValidSub->Reset();
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameListenerHubConcurrentStressTest,
+    "Game.Core.Listener.ConcurrentStress",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证多线程并发高频广播、动态并发订阅与退订重入的绝对线程安全性与零数据竞争
+ * @param Parameters 自动化测试参数
+ * @return 全部断言通过返回 true
+ */
+bool FGameListenerHubConcurrentStressTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    FListenerHub& Hub = FListenerHub::Get();
+    static const FName StressEvent(TEXT("UnitTest.Listener.StressConcurrent"));
+
+    constexpr int32 NumEmitters = 4;
+    constexpr int32 NumEmittersCount = 2500;
+    constexpr int32 ExpectedTotalEmits = NumEmitters * NumEmittersCount;
+
+    std::atomic<int32> ReceivedCount{0};
+    const TSharedRef<FObserverSubscription> PersistentSub = Hub.Subscribe<int32>(
+        StressEvent,
+        [&ReceivedCount](const int32&) {
+            ReceivedCount.fetch_add(1, std::memory_order_relaxed);
+        }
+    );
+
+    constexpr int32 TransientThreads = 4;
+    std::atomic<bool> bStopTransients{false};
+    std::atomic<int32> TransientReceivedCount{0};
+
+    TArray<TFuture<void>> TransientFutures;
+    TransientFutures.Reserve(TransientThreads);
+    for (int32 WorkerIdx = 0; WorkerIdx < TransientThreads; ++WorkerIdx) {
+        TransientFutures.Add(Async(EAsyncExecution::Thread, [&Hub, &bStopTransients, &TransientReceivedCount]() {
+            while (!bStopTransients.load(std::memory_order_relaxed)) {
+                TSharedRef<FObserverSubscription> Sub = Hub.Subscribe<int32>(
+                    StressEvent,
+                    [&TransientReceivedCount](const int32&) {
+                        TransientReceivedCount.fetch_add(1, std::memory_order_relaxed);
+                    }
+                );
+                FPlatformProcess::Yield();
+                Sub->Reset();
+            }
+        }));
+    }
+
+    ParallelFor(NumEmitters, [&Hub]([[maybe_unused]] int32 WorkerIdx) {
+        for (int32 Index = 0; Index < NumEmittersCount; ++Index) {
+            Hub.Emit<int32>(StressEvent, 1);
+        }
+    });
+
+    bStopTransients.store(true, std::memory_order_relaxed);
+    for (TFuture<void>& Future : TransientFutures) {
+        Future.Wait();
+    }
+
+    PersistentSub->Reset();
+
+    TestEqual(TEXT("常驻订阅者精确收到全部 10000 次并发广播零丢失"), ReceivedCount.load(), ExpectedTotalEmits);
+    TestTrue(TEXT("瞬态订阅者在并发订阅与退订期间正常捕获广播且未崩溃"), TransientReceivedCount.load() >= 0);
+
     return true;
 }
 

@@ -19,6 +19,9 @@ struct GAMECORE_API FPseudoRandomDistribution {
     GENERATED_BODY()
 
 public:
+    static constexpr int32 MAX_FAILURE_STREAK = 1000000;
+
+public:
     FPseudoRandomDistribution() = default;
 
     /**
@@ -79,13 +82,25 @@ public:
 
 public:
     /**
-     * @brief 通过双精度二分逼近求解给定标称概率对应的 PRD 步长常数 C
+     * @brief 通过双精度二分逼近求解给定标称概率对应的 PRD 步长常数 C（单精度接口）
      * @param Probability 标称概率 [0.0f, 1.0f]
      * @return 精确匹配的步长常数 C
      */
     [[nodiscard]] static float CalculateConstantForProbability(float Probability) noexcept;
 
+    /**
+     * @brief 通过双精度二分逼近求解给定标称概率对应的全精度 PRD 步长常数 C（消除极小概率下的单精度截断误差）
+     * @param Probability 标称概率 [0.0, 1.0]
+     * @return 双精度步长常数 C
+     */
+    [[nodiscard]] static double CalculatePreciseConstantForProbability(double Probability) noexcept;
+
 private:
+    /**
+     * @brief 精确计算给定 PRD 递增步长常数 C 对应的长期宏观期望概率
+     * @param ConstantC 递增步长常数 C
+     * @return 对应的宏观期望成功概率
+     */
     static double EvaluateEffectiveProbability(double ConstantC) noexcept;
 
 private:
@@ -97,4 +112,6 @@ private:
 
     UPROPERTY(SaveGame, VisibleAnywhere, BlueprintReadOnly, Category = "GameCore|Random", meta = (AllowPrivateAccess = "true"))
     int32 FailureStreak = 0;
+
+    double PreciseIncrementConstant = 0.0;
 };

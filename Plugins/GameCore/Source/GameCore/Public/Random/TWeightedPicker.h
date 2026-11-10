@@ -55,7 +55,7 @@ public:
     [[nodiscard]] const ValueType* TryPick(FGameRandomStream& Stream) const;
 
     /**
-     * @brief 以 O(1) 复杂度按权重抽取一个元素引用（调用前表不可为空）
+     * @brief 以 O(1) 复杂度按权重抽取一个元素引用（空表时触发断言，不确定非空请用 TryPick）
      * @param Stream 驱动抽取的隔离随机流
      * @return 命中元素的常量引用
      */
@@ -93,7 +93,7 @@ public:
 private:
     TArray<FWeightedEntry> Entries;
     double TotalWeight = 0.0;
-    mutable TArray<float> ProbabilityTable;
+    mutable TArray<double> ProbabilityTable;
     mutable TArray<int32> AliasTable;
     mutable bool bAliasBuilt = false;
 };
@@ -107,7 +107,7 @@ void TWeightedPicker<TValue>::Reserve(SizeType Capacity) {
 
 template <typename TValue>
 bool TWeightedPicker<TValue>::AddEntry(ValueType Item, double Weight) {
-    if (!FMath::IsFinite(Weight) || Weight <= 0.0) {
+    if (!FMath::IsFinite(Weight) || Weight <= 0.0 || !FMath::IsFinite(TotalWeight + Weight)) {
         return false;
     }
     Entries.Add(FWeightedEntry{MoveTemp(Item), Weight});
@@ -154,7 +154,7 @@ void TWeightedPicker<TValue>::Build() const {
         const int32 SmallIdx = SmallIndices.Pop(EAllowShrinking::No);
         const int32 LargeIdx = LargeIndices.Pop(EAllowShrinking::No);
 
-        ProbabilityTable[SmallIdx] = static_cast<float>(ScaledProbabilities[SmallIdx]);
+        ProbabilityTable[SmallIdx] = ScaledProbabilities[SmallIdx];
         AliasTable[SmallIdx] = LargeIdx;
 
         ScaledProbabilities[LargeIdx] = (ScaledProbabilities[LargeIdx] + ScaledProbabilities[SmallIdx]) - 1.0;
@@ -167,13 +167,13 @@ void TWeightedPicker<TValue>::Build() const {
 
     while (!LargeIndices.IsEmpty()) {
         const int32 LargeIdx = LargeIndices.Pop(EAllowShrinking::No);
-        ProbabilityTable[LargeIdx] = 1.0f;
+        ProbabilityTable[LargeIdx] = 1.0;
         AliasTable[LargeIdx] = LargeIdx;
     }
 
     while (!SmallIndices.IsEmpty()) {
         const int32 SmallIdx = SmallIndices.Pop(EAllowShrinking::No);
-        ProbabilityTable[SmallIdx] = 1.0f;
+        ProbabilityTable[SmallIdx] = 1.0;
         AliasTable[SmallIdx] = SmallIdx;
     }
 
@@ -190,7 +190,7 @@ const typename TWeightedPicker<TValue>::ValueType* TWeightedPicker<TValue>::TryP
     }
 
     const int32 Column = Stream.RandRange(0, Entries.Num() - 1);
-    const float CoinToss = Stream.FRand();
+    const double CoinToss = static_cast<double>(Stream.FRand());
     const int32 ChosenIndex = (CoinToss < ProbabilityTable[Column]) ? Column : AliasTable[Column];
     return &Entries[ChosenIndex].Value;
 }

@@ -7,27 +7,33 @@
 /**
  * @brief 建立内存虚拟回环连接（受 SetAcceptConnections 开关控制）
  * @param Endpoint 非空虚拟端点标识
- * @return 连接成功返回 true，端点为空或拒绝连接时返回 false
+ * @return 连接成功返回成功态，端点为空或拒绝连接时返回对应错误
  */
-bool FMockNetTransport::Connect(const FString& Endpoint) {
+TGameStatusResult<void> FMockNetTransport::Connect(const FString& Endpoint) {
     if (Endpoint.IsEmpty()) {
         TransportErrorEvent.Broadcast(TEXT("MockNetTransport rejected empty endpoint."));
-        return false;
+        return TGameStatusResult<void>::Failure(
+            FGameError::Make(Game::ModuleId::Net, 2001, TEXT("MockNetTransport rejected empty endpoint"))
+        );
     }
     if (CurrentState == ENetConnectionState::Connected || CurrentState == ENetConnectionState::Connecting) {
-        return false;
+        return TGameStatusResult<void>::Failure(
+            FGameError::Make(Game::ModuleId::Net, 2002, TEXT("Connection already established or in progress"))
+        );
     }
 
     TransitionState(ENetConnectionState::Connecting);
     if (!bAcceptConnections) {
         TransitionState(ENetConnectionState::Disconnected);
         TransportErrorEvent.Broadcast(FString::Printf(TEXT("MockNetTransport refused connection to '%s'."), *Endpoint));
-        return false;
+        return TGameStatusResult<void>::Failure(
+            FGameError::Make(Game::ModuleId::Net, 2001, FString::Printf(TEXT("MockNetTransport refused connection to '%s'"), *Endpoint))
+        );
     }
 
     ConnectedEndpoint = Endpoint;
     TransitionState(ENetConnectionState::Connected);
-    return true;
+    return TGameStatusResult<void>::Success();
 }
 
 /**
@@ -50,17 +56,21 @@ void FMockNetTransport::Disconnect([[maybe_unused]] int32 ReasonCode, [[maybe_un
  * @brief 向内存虚拟路由投递请求包；命中模拟处理器或开启回声时入队响应，在下一轮 Tick 主线程派发
  * @param Header 报文头（自动对齐 PayloadLength）
  * @param Payload 负载字节切片
- * @return 已连接且报文头合法时返回 true，否则返回 false
+ * @return 已连接且报文头合法时返回成功态，否则返回对应错误
  */
-bool FMockNetTransport::Send(const FNetPacketHeader& Header, TConstArrayView<uint8> Payload) {
+TGameStatusResult<void> FMockNetTransport::Send(const FNetPacketHeader& Header, TConstArrayView<uint8> Payload) {
     if (CurrentState != ENetConnectionState::Connected) {
-        return false;
+        return TGameStatusResult<void>::Failure(
+            FGameError::Make(Game::ModuleId::Net, 2002, TEXT("Transport is not connected"))
+        );
     }
 
     FNetPacketHeader OutboundHeader = Header;
     OutboundHeader.PayloadLength = static_cast<uint32>(Payload.Num());
     if (!FNetPacketCodec::IsValidHeader(OutboundHeader)) {
-        return false;
+        return TGameStatusResult<void>::Failure(
+            FGameError::Make(Game::ModuleId::Net, 2003, TEXT("Invalid packet header"))
+        );
     }
 
     ++SentPacketCount;
@@ -79,7 +89,7 @@ bool FMockNetTransport::Send(const FNetPacketHeader& Header, TConstArrayView<uin
                 PendingInboundQueue.Enqueue(MoveTemp(InboundPacket));
             }
         }
-        return true;
+        return TGameStatusResult<void>::Success();
     }
 
     if (bEchoUnregistered) {
@@ -88,7 +98,7 @@ bool FMockNetTransport::Send(const FNetPacketHeader& Header, TConstArrayView<uin
         EchoPacket.Payload.Append(Payload.GetData(), Payload.Num());
         PendingInboundQueue.Enqueue(MoveTemp(EchoPacket));
     }
-    return true;
+    return TGameStatusResult<void>::Success();
 }
 
 /**

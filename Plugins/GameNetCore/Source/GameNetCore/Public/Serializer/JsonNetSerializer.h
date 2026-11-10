@@ -27,9 +27,9 @@ public:
      * @brief 将反射结构体编码为无缩进紧凑 UTF-8 JSON 字节流
      * @param StructData 待序列化的结构体实例首地址
      * @param StructType 结构体反射元数据指针
-     * @return 编码成功返回 UTF-8 字节数组，失败返回空值
+     * @return 编码成功返回包含 UTF-8 字节数组的成功态，失败返回对应错误
      */
-    [[nodiscard]] TOptional<TArray<uint8>> Serialize(
+    [[nodiscard]] TGameStatusResult<TArray<uint8>> Serialize(
         const void* StructData,
         const UStruct* StructType
     ) const override;
@@ -39,9 +39,9 @@ public:
      * @param InBytes UTF-8 JSON 字节切片
      * @param StructType 目标结构体反射元数据指针
      * @param OutStructData 已初始化的目标结构体内存首地址
-     * @return JSON 语法合法且字段转换成功返回 true
+     * @return JSON 语法合法且字段转换成功返回成功态，否则返回对应错误
      */
-    bool Deserialize(TConstArrayView<uint8> InBytes, const UStruct* StructType, void* OutStructData) const override;
+    TGameStatusResult<void> Deserialize(TConstArrayView<uint8> InBytes, const UStruct* StructType, void* OutStructData) const override;
 
     /**
      * @brief 查询当前是否启用严格字段匹配模式

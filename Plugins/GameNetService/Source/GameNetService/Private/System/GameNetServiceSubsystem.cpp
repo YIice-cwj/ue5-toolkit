@@ -150,7 +150,7 @@ bool UGameNetServiceSubsystem::Connect(const FString& Endpoint) {
     TargetEndpoint = Endpoint;
     ReconnectPolicy.Reset();
     HeartbeatKeeper.Reset();
-    return ActiveTransport->Connect(Endpoint);
+    return ActiveTransport->Connect(Endpoint).IsSuccess();
 }
 
 /**
@@ -199,11 +199,11 @@ bool UGameNetServiceSubsystem::IsConnected() const noexcept {
  * @param MessageId 业务协议 ID
  * @param Payload 负载二进制切片
  * @param SequenceId 序列号
- * @return 写入发送通道成功返回 true
+ * @return 写入发送通道成功返回 Success，失败返回 Failure
  */
-bool UGameNetServiceSubsystem::SendRaw(uint32 MessageId, TConstArrayView<uint8> Payload, uint32 SequenceId) {
+TGameStatusResult<void> UGameNetServiceSubsystem::SendRaw(uint32 MessageId, TConstArrayView<uint8> Payload, uint32 SequenceId) {
     if (!IsConnected()) {
-        return false;
+        return TGameStatusResult<void>::Failure(Game::NetErrorCodes::NotConnected, TEXT("Not connected"));
     }
 
     FNetPacketHeader Header;
@@ -220,9 +220,9 @@ bool UGameNetServiceSubsystem::SendRaw(uint32 MessageId, TConstArrayView<uint8> 
  * @param Payload 请求负载切片
  * @param TimeoutSeconds 超时秒数
  * @param Callback 请求完成、断线或超时回调
- * @return 分配的非零请求 SequenceId；发送失败时立即回调 SendFailed 并返回 0
+ * @return 成功返回分配的 SequenceId，失败返回 Failure
  */
-uint32 UGameNetServiceSubsystem::SendRawRequest(
+TGameStatusResult<uint32> UGameNetServiceSubsystem::SendRawRequest(
     uint32 RequestMessageId,
     uint32 ExpectedResponseMessageId,
     TConstArrayView<uint8> Payload,
@@ -230,19 +230,20 @@ uint32 UGameNetServiceSubsystem::SendRawRequest(
     FNetPendingResponseHandler Callback
 ) {
     if (!Callback) {
-        return 0;
+        return TGameStatusResult<uint32>::Failure(Game::CommonErrorCodes::InvalidParameter, TEXT("Invalid callback"));
     }
 
     const FNetPacketHeader EmptyHeader;
     if (!IsConnected()) {
         Callback(ENetRequestResult::SendFailed, EmptyHeader, {});
-        return 0;
+        return TGameStatusResult<uint32>::Failure(Game::NetErrorCodes::NotConnected, TEXT("Not connected"));
     }
 
     const uint32 SequenceId = PendingRequestTracker.AllocateSequenceId();
-    if (!SendRaw(RequestMessageId, Payload, SequenceId)) {
+    const TGameStatusResult<void> SendResult = SendRaw(RequestMessageId, Payload, SequenceId);
+    if (SendResult.IsFailure()) {
         Callback(ENetRequestResult::SendFailed, EmptyHeader, {});
-        return 0;
+        return TGameStatusResult<uint32>::Failure(SendResult.GetError().ErrorCode, SendResult.GetError().Message);
     }
 
     PendingRequestTracker.RegisterPendingRequest(
@@ -251,7 +252,7 @@ uint32 UGameNetServiceSubsystem::SendRawRequest(
         TimeoutSeconds,
         MoveTemp(Callback)
     );
-    return SequenceId;
+    return TGameStatusResult<uint32>::Success(SequenceId);
 }
 
 /**
@@ -268,9 +269,9 @@ int64 UGameNetServiceSubsystem::RegisterRawHandler(uint32 MessageId, FNetRawMess
  * @brief 注销指定协议 ID 的消息处理器
  * @param MessageId 协议 ID
  * @param HandlerId 注册时返回的句柄 ID
- * @return 成功移除返回 true
+ * @return 成功移除返回 Success，失败返回 Failure
  */
-bool UGameNetServiceSubsystem::UnregisterHandler(uint32 MessageId, int64 HandlerId) {
+TGameStatusResult<void> UGameNetServiceSubsystem::UnregisterHandler(uint32 MessageId, int64 HandlerId) {
     return MessageDispatcher.UnregisterHandler(MessageId, HandlerId);
 }
 
@@ -293,7 +294,7 @@ void UGameNetServiceSubsystem::Tick(float DeltaTimeSeconds) {
         const ENetHeartbeatAction Action = HeartbeatKeeper.Tick(DeltaTimeSeconds);
         if (Action == ENetHeartbeatAction::SendPing) {
             const uint32 PingSeq = PendingRequestTracker.AllocateSequenceId();
-            if (SendRaw(HeartbeatKeeper.GetConfig().PingMessageId, {}, PingSeq)) {
+            if (SendRaw(HeartbeatKeeper.GetConfig().PingMessageId, {}, PingSeq).IsSuccess()) {
                 HeartbeatKeeper.RecordPingSent(PingSeq, MonotonicClockSeconds);
             }
         } else if (Action == ENetHeartbeatAction::TimeoutDisconnect) {
@@ -305,7 +306,7 @@ void UGameNetServiceSubsystem::Tick(float DeltaTimeSeconds) {
 
     if (bInReconnectCycle && ReconnectPolicy.IsWaitingForRetry() && ActiveTransport.IsValid()) {
         if (ReconnectPolicy.AdvanceTimer(DeltaTimeSeconds)) {
-            const bool bStarted = ActiveTransport->Connect(TargetEndpoint);
+            const bool bStarted = ActiveTransport->Connect(TargetEndpoint).IsSuccess();
             if (!bStarted && !ReconnectPolicy.IsWaitingForRetry() && !ReconnectPolicy.IsExhausted()) {
                 TryEnterReconnectCycle();
             }

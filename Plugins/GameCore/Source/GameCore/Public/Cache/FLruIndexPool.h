@@ -6,9 +6,10 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "HAL/PlatformAtomics.h"
 
 /**
- * @brief 基于连续数组的高性能 LRU 索引链管理器
+ * @brief 基于连续数组的高性能 LRU 索引链管理器（融合 Clock 二次机会原子热度标记，支持并发读锁下零写锁竞争记录访问热度）
  */
 struct FLruIndexPool {
 public:
@@ -30,6 +31,11 @@ public:
          * @brief 后继节点在 Pool 数组中的索引（INDEX_NONE 表示链表尾）
          */
         int32 Next = INDEX_NONE;
+
+        /**
+         * @brief 并发读命中原子二次机会热度位（1 表示近期被读命中，淘汰扫描时晋升至链表头并清零）
+         */
+        mutable volatile int8 HotBit = 0;
     };
 
     /**
@@ -99,7 +105,20 @@ public:
     }
 
     /**
-     * @brief 刷新指定键的访问热度（将其移至双向链表头部）
+     * @brief 在并发读锁内原子标记指定键被命中访问（零写锁竞争，供淘汰时执行 Clock 二次机会晋升）
+     * @param Key 被命中的缓存键
+     * @return 键存在于池中并完成标记返回 true
+     */
+    bool MarkReferenced(FName Key) const {
+        if (const int32* FoundIdx = KeyToNode.Find(Key)) {
+            FPlatformAtomics::InterlockedExchange(&Pool[*FoundIdx].HotBit, 1);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * @brief 刷新指定键的访问热度（将其移至双向链表头部并标记热度位）
      * @param Key 被访问的缓存键
      */
     void Touch(FName Key) {
@@ -108,6 +127,7 @@ public:
             return;
         }
         const int32 NodeIdx = *FoundIdx;
+        FPlatformAtomics::InterlockedExchange(&Pool[NodeIdx].HotBit, 1);
         if (Head == NodeIdx) {
             return;
         }
@@ -128,6 +148,7 @@ public:
             KeyToNode.Remove(Key);
             Pool[NodeIdx].Key = NAME_None;
             Pool[NodeIdx].Next = FreeHead;
+            FPlatformAtomics::InterlockedExchange(&Pool[NodeIdx].HotBit, 0);
             FreeHead = NodeIdx;
             return true;
         }
@@ -185,22 +206,35 @@ public:
         if (FreeHead != INDEX_NONE) {
             NodeIdx = FreeHead;
             FreeHead = Pool[FreeHead].Next;
-            Pool[NodeIdx] = FLruNode{Key, INDEX_NONE, INDEX_NONE};
+            Pool[NodeIdx] = FLruNode{Key, INDEX_NONE, INDEX_NONE, 0};
         } else {
             NodeIdx = Pool.Num();
-            Pool.Emplace(FLruNode{Key, INDEX_NONE, INDEX_NONE});
+            Pool.Emplace(FLruNode{Key, INDEX_NONE, INDEX_NONE, 0});
         }
         KeyToNode.Add(Key, NodeIdx);
         return NodeIdx;
     }
 
     /**
-     * @brief 淘汰并回收尾部最久未访问的节点
+     * @brief 淘汰并回收尾部最久未访问的节点（若尾部节点持有并发读命中的二次机会热度位，则清零热度位并晋升至链表头继续扫描）
      * @return 被淘汰节点的键名；若链表为空则返回 NAME_None
      */
     FName EvictTail() {
         if (Tail == INDEX_NONE) {
             return NAME_None;
+        }
+
+        const int32 MaxScanSteps = KeyToNode.Num();
+        for (int32 Step = 0; Step < MaxScanSteps && Tail != INDEX_NONE; ++Step) {
+            const int32 CandidateIdx = Tail;
+            if (FPlatformAtomics::InterlockedExchange(&Pool[CandidateIdx].HotBit, 0) != 0) {
+                if (Head != CandidateIdx) {
+                    RemoveFromChain(CandidateIdx);
+                    InsertAtHead(CandidateIdx);
+                }
+            } else {
+                break;
+            }
         }
 
         const int32 EvictedIdx = Tail;
@@ -211,6 +245,7 @@ public:
 
         Pool[EvictedIdx].Key = NAME_None;
         Pool[EvictedIdx].Next = FreeHead;
+        FPlatformAtomics::InterlockedExchange(&Pool[EvictedIdx].HotBit, 0);
         FreeHead = EvictedIdx;
 
         return EvictedKey;

@@ -21,6 +21,10 @@
             "Enabled": true
         },
         {
+            "Name": "GameMessage",
+            "Enabled": true
+        },
+        {
             "Name": "GameGameplayCore",
             "Enabled": true
         },

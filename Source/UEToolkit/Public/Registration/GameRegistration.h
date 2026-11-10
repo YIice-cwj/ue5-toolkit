@@ -12,7 +12,7 @@
 
 class UGameInstance;
 
-#include "Registration/FGameCoreRegistration.h"
+#include "Config/FGameCoreRegistration.h"
 #include "Generated/Registration/FGameGameRegistration.h"
 #include "Generated/Registration/FStaticDataRegistration.h"
 

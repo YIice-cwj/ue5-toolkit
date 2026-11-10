@@ -78,7 +78,7 @@ public:
      * @param OffsetToTarget 从视点指向目标点的位移向量（Target - Eye）
      * @param ConeForward 视锥中心轴朝向向量
      * @param MaxDistance 视锥最大有效半径（<=0 时恒返回 false）
-     * @param HalfAngleDegrees 视锥半张角（度，钳制到 [0, 180]）
+     * @param HalfAngleDegrees 视锥半张角（度，<0 时恒返回 false，[0, 180] 内按夹角判定，>=180 时覆盖全向球体）
      * @return 目标位于视锥距离与夹角范围内返回 true
      */
     [[nodiscard]] static bool IsInVisionCone(

@@ -37,12 +37,25 @@ enum class ECacheStrategy : uint8 {
  */
 struct GAMECORE_API FCachePolicy {
 public:
+    static constexpr int64 MIN_LRU_CAPACITY = 1;
+    static constexpr int64 MAX_LRU_CAPACITY = 1000000;
+    static constexpr int64 DEFAULT_LRU_CAPACITY = 10000;
+
+public:
     /**
-     * @brief 从 FConfigRegistry 按命名约定键解析指定域的缓存策略
+     * @brief 从 FConfigRegistry 按命名约定键解析指定域的缓存策略（自动将 LruCapacity 钳制到 [1, 1000000] 安全区间）
      * @param Domain 缓存业务域名称（对应配置键前缀 Cache.{Domain}.）
      * @return 解析后的域策略配置实例；若对应配置键未注册则回退为默认配置
      */
     static FCachePolicy Resolve(const FName& Domain);
+
+    /**
+     * @brief 获取经安全区间 [MIN_LRU_CAPACITY, MAX_LRU_CAPACITY] 钳制后的 32 位 LRU 容量
+     * @return 安全的 32 位正整数容量
+     */
+    [[nodiscard]] int32 GetClampedLruCapacity() const noexcept {
+        return static_cast<int32>(FMath::Clamp(LruCapacity, MIN_LRU_CAPACITY, MAX_LRU_CAPACITY));
+    }
 
 public:
     /**
@@ -63,5 +76,5 @@ public:
     /**
      * @brief LRU 策略的缓存条目容量上限（条目数超过此值时自动触发淘汰最久未访问节点）
      */
-    int64 LruCapacity = 10000;
+    int64 LruCapacity = DEFAULT_LRU_CAPACITY;
 };

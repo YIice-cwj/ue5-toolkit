@@ -253,7 +253,7 @@ def _subsystem_cpp_preamble(cfg: Any) -> list:
         '#include "Misc/FileHelper.h"',
         '#include "Misc/Parse.h"',
         '#include "Misc/Paths.h"',
-        '#include "Tasks/FGameThreadTaskRunner.h"',
+        '#include "Async/FGameThreadTaskRunner.h"',
         "",
         '#include "Config/GameCompileSwitches.h"',
         '#include "StaticData/FStaticDataRepository.h"',

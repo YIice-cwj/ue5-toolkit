@@ -7,6 +7,7 @@
 
 #include "CoreMinimal.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
+#include "Types/TGameResult.h"
 #include "Types/GameNetSessionTypes.h"
 
 #include "NetTravelLibrary.generated.h"
@@ -53,9 +54,9 @@ public:
      * @param MapPath 目标地图路径
      * @param ListenPort 监听游戏端口
      * @param ExtraOptions 可选附加查询选项
-     * @return URL 合法且触发 ServerTravel 成功返回 true
+     * @return URL 合法且触发 ServerTravel 成功返回成功态，否则返回对应错误
      */
-    static bool ExecuteListenServerTravel(
+    static TGameStatusResult<void> ExecuteListenServerTravel(
         UWorld* World,
         const FString& MapPath,
         int32 ListenPort = 7777,
@@ -67,9 +68,9 @@ public:
      * @param World 目标世界指针
      * @param Room 目标房间描述符
      * @param ExtraOptions 可选附加连接参数
-     * @return URL 合法且本地 PlayerController 发起跳转返回 true
+     * @return URL 合法且本地 PlayerController 发起跳转返回成功态，否则返回对应错误
      */
-    static bool ExecuteClientRoomTravel(
+    static TGameStatusResult<void> ExecuteClientRoomTravel(
         UWorld* World,
         const FGameNetRoomDescriptor& Room,
         const FString& ExtraOptions = TEXT("")
@@ -79,9 +80,9 @@ public:
      * @brief 使用平台会话解析出的连接地址串驱动首个本地 PlayerController 发起绝对地址 ClientTravel
      * @param World 目标世界指针
      * @param ConnectString 平台解析出的连接地址字符串
-     * @return 地址合法且本地 PlayerController 发起跳转返回 true
+     * @return 地址合法且本地 PlayerController 发起跳转返回成功态，否则返回对应错误
      */
-    static bool ExecuteConnectStringTravel(UWorld* World, const FString& ConnectString);
+    static TGameStatusResult<void> ExecuteConnectStringTravel(UWorld* World, const FString& ConnectString);
 
 private:
     /**

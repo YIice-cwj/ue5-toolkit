@@ -11,6 +11,10 @@
  *   （TFunction 无可靠 ==，退订只能按 ID 匹配）；
  * - 铁律：**永不在任何锁内调用用户代码**——快照拷贝点一律
  *   "瞬态读锁拷贝指针、立即出锁"；
+ * - 派发模型边界（与 FNotificationDispatcher 区分）：
+ *   FListenerHub::Emit 采用**调用线程同步直派（COW 快照遍历）**，适用于无状态锁持有的瞬态领域事件广播；
+ *   而 FValueObserver / FConfigRegistry 因内部持有状态写锁，采用 FNotificationDispatcher **全局 FIFO 队列延后排空**，
+ *   确保状态提交顺序严格一致且绝不持锁回调；
  * - 未注册事件：Subscribe 自动创建；Emit 静默忽略。
  */
 
@@ -36,44 +40,62 @@ public:
     static FListenerHub& Get();
 
     /**
-     * @brief 注册事件监听（事件不存在则自动创建）
+     * @brief 注册事件监听（事件不存在则自动创建；若同名事件已注册为不同载荷类型则记录 Error 日志并返回 IsActive()==false 的空守卫）
      * @tparam T 载荷类型
      * @param EventName 事件名
-     * @param InListener 回调（收到载荷）
+     * @param InListener 回调（收到载荷；回调内新增或退订自下一轮 Emit 起生效）
      * @return RAII 订阅守卫，业务方必须持有；析构守卫即注销
      */
     template<typename T>
     TSharedRef<FObserverSubscription> Subscribe(const FName& EventName, TFunction<void(const T&)> InListener);
 
     /**
-     * @brief 触发事件广播（事件不存在或载荷双指纹不匹配时静默忽略）
+     * @brief 触发事件广播（基于 COW 快照遍历；事件不存在或载荷双指纹不匹配时返回 false）
      * @tparam T 载荷类型
      * @param EventName 事件名
      * @param Payload 载荷
+     * @return 事件存在且载荷类型匹配完成广播返回 true，否则返回 false
      */
     template<typename T>
-    void Emit(const FName& EventName, const T& Payload);
+    bool Emit(const FName& EventName, const T& Payload);
 
 private:
     /**
-     * @brief 类型擦除事件基类（继承观察者状态基类以复用 RAII 订阅守卫）
+     * @brief 类型擦除事件基类（继承观察者状态基类以复用 RAII 订阅守卫，构造期固化双指纹消除虚调用开销）
      */
     class FEventBase : public FObserverStateBase {
     public:
-        FEventBase() = default;
-        virtual ~FEventBase() = default;
+        /**
+         * @brief 构造类型擦除事件基类并固化载荷类型指纹与字节大小
+         * @param InPayloadTypeId 载荷类型 64 位指纹
+         * @param InPayloadSize 载荷字节大小
+         */
+        constexpr FEventBase(uint64 InPayloadTypeId, uint32 InPayloadSize) noexcept
+            : PayloadTypeId(InPayloadTypeId)
+            , PayloadSize(InPayloadSize) {
+        }
+
+        ~FEventBase() override = default;
 
         /**
-         * @brief 获取载荷类型指纹（Emit 类型匹配校验，防类型不匹配强转）
+         * @brief 获取载荷类型指纹（Emit 类型匹配校验，零虚函数开销）
          * @return 跨动态库一致的 64 位类型哈希
          */
-        [[nodiscard]] virtual uint64 GetPayloadTypeId() const noexcept = 0;
+        [[nodiscard]] constexpr uint64 GetPayloadTypeId() const noexcept {
+            return PayloadTypeId;
+        }
 
         /**
-         * @brief 获取载荷字节数（与类型指纹叠加的双指纹兜底）
+         * @brief 获取载荷字节数（与类型指纹叠加的双指纹兜底，零虚函数开销）
          * @return 载荷 sizeof
          */
-        [[nodiscard]] virtual uint32 GetPayloadSize() const noexcept = 0;
+        [[nodiscard]] constexpr uint32 GetPayloadSize() const noexcept {
+            return PayloadSize;
+        }
+
+    private:
+        uint64 PayloadTypeId = 0;
+        uint32 PayloadSize = 0;
     };
 
     /**
@@ -93,7 +115,12 @@ private:
             FListener Callback;
         };
 
-        FEvent() = default;
+        /**
+         * @brief 默认构造函数：向基类注入当前载荷类型 T 的编译期双指纹
+         */
+        FEvent() noexcept
+            : FEventBase(Game::Core::GetTypeFingerprint<T>(), static_cast<uint32>(sizeof(T))) {
+        }
 
         /**
          * @brief 追加监听（写路径：拷贝快照 → 增删 → 原子替换）
@@ -110,10 +137,6 @@ private:
 
     private:
         void RemoveListener(uint64 SubscriptionId) override;
-
-        [[nodiscard]] uint64 GetPayloadTypeId() const noexcept override;
-
-        [[nodiscard]] uint32 GetPayloadSize() const noexcept override;
 
     private:
         mutable FRWLock HandlersLock;
@@ -144,7 +167,10 @@ uint64 FListenerHub::FEvent<T>::AddListener(FListener InListener) {
     FWriteScopeLock WriteLock(HandlersLock);
     TArray<FHandlerEntry> Updated;
     if (Handlers.IsValid()) {
-        Updated = *Handlers;
+        Updated.Reserve(Handlers->Num() + 1);
+        Updated.Append(*Handlers);
+    } else {
+        Updated.Reserve(1);
     }
     const uint64 SubscriptionId = ++NextId;
     Updated.Add(FHandlerEntry{SubscriptionId, MoveTemp(InListener)});
@@ -183,16 +209,6 @@ void FListenerHub::FEvent<T>::RemoveListener(uint64 SubscriptionId) {
 }
 
 template<typename T>
-uint64 FListenerHub::FEvent<T>::GetPayloadTypeId() const noexcept {
-    return Game::Core::GetTypeFingerprint<T>();
-}
-
-template<typename T>
-uint32 FListenerHub::FEvent<T>::GetPayloadSize() const noexcept {
-    return static_cast<uint32>(sizeof(T));
-}
-
-template<typename T>
 TSharedRef<FObserverSubscription> FListenerHub::Subscribe(const FName& EventName, TFunction<void(const T&)> InListener) {
     const TSharedRef<FObserverSubscription> Subscription = MakeShared<FObserverSubscription>();
     const TSharedPtr<FEvent<T>> Event = GetOrCreateEvent<T>(EventName);
@@ -203,7 +219,7 @@ TSharedRef<FObserverSubscription> FListenerHub::Subscribe(const FName& EventName
 }
 
 template<typename T>
-void FListenerHub::Emit(const FName& EventName, const T& Payload) {
+bool FListenerHub::Emit(const FName& EventName, const T& Payload) {
     TSharedPtr<FEventBase> Event;
     {
         FReadScopeLock ReadLock(EventsLock);
@@ -214,9 +230,10 @@ void FListenerHub::Emit(const FName& EventName, const T& Payload) {
     if (!Event.IsValid()
         || Event->GetPayloadTypeId() != Game::Core::GetTypeFingerprint<T>()
         || Event->GetPayloadSize() != static_cast<uint32>(sizeof(T))) {
-        return;
+        return false;
     }
     static_cast<const FEvent<T>*>(Event.Get())->Broadcast(Payload);
+    return true;
 }
 
 template<typename T>

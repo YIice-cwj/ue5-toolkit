@@ -52,12 +52,12 @@ bool FStaticDataSubsystemColdStartTest::RunTest([[maybe_unused]] const FString& 
     TestTrue(TEXT("GameInstance 初始化后快照必须有效"), Subsystem->GetSnapshot().IsValid());
     const uint32 VersionBefore = Subsystem->GetDataVersion();
 
-    const bool bFirstLoaded = Subsystem->LoadAllStaticData(false);
-    TestTrue(TEXT("首次显式同步加载必须成功"), bFirstLoaded);
+    const TGameStatusResult<void> FirstLoadResult = Subsystem->LoadAllStaticData(false);
+    TestTrue(TEXT("首次显式同步加载必须成功"), FirstLoadResult.IsSuccess());
     TestEqual(TEXT("首次显式加载后版本号必须递增 1"), Subsystem->GetDataVersion(), VersionBefore + 1);
     TestTrue(TEXT("加载成功后必须标记为已加载"), Subsystem->IsAllDataLoaded());
     TestTrue(TEXT("加载成功后快照必须有效"), Subsystem->GetSnapshot().IsValid());
-    if (!bFirstLoaded || !Subsystem->GetSnapshot().IsValid()) {
+    if (FirstLoadResult.IsFailure() || !Subsystem->GetSnapshot().IsValid()) {
         GameInstance->Shutdown();
         return false;
     }
@@ -68,8 +68,8 @@ bool FStaticDataSubsystemColdStartTest::RunTest([[maybe_unused]] const FString& 
     const TSharedPtr<const FStaticDataSnapshot> FirstSnapshot = Subsystem->GetSnapshot();
     const uint32 FirstSnapshotVersion = FirstSnapshot->DataVersion;
 
-    const bool bSecondLoaded = Subsystem->LoadAllStaticData(false);
-    TestTrue(TEXT("第二次同步加载必须成功"), bSecondLoaded);
+    const TGameStatusResult<void> SecondLoadResult = Subsystem->LoadAllStaticData(false);
+    TestTrue(TEXT("第二次同步加载必须成功"), SecondLoadResult.IsSuccess());
     TestEqual(TEXT("第二次加载后版本号必须再递增 1"), Subsystem->GetDataVersion(), VersionBefore + 2);
     TestEqual(TEXT("已发布的旧快照版本号不得被改写"), FirstSnapshot->DataVersion, FirstSnapshotVersion);
 

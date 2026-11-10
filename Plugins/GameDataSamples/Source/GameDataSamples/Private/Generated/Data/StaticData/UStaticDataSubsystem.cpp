@@ -15,7 +15,7 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
-#include "Tasks/FGameThreadTaskRunner.h"
+#include "Async/FGameThreadTaskRunner.h"
 
 #include "Config/GameCompileSwitches.h"
 #include "StaticData/FStaticDataRepository.h"
@@ -148,9 +148,9 @@ void UStaticDataSubsystem::Deinitialize() {
 /**
  * @brief 加载所有域的静态数据容器（走统一提交流程）
  * @param bAsync 是否异步执行（冷启动默认为 false 确保就绪，热重载为 true）
- * @return 暂存数据是否加载成功并已就绪/进入后台预热
+ * @return 暂存数据加载并进入提交流程返回 Success，失败返回 Failure
  */
-bool UStaticDataSubsystem::LoadAllStaticData(bool bAsync) {
+TGameStatusResult<void> UStaticDataSubsystem::LoadAllStaticData(bool bAsync) {
     return BeginReloadFlow(ResolvePreferBinChannel(), bAsync);
 }
 
@@ -164,9 +164,9 @@ bool UStaticDataSubsystem::IsAllDataLoaded() const {
 
 /**
  * @brief 重新加载全部静态数据（恒走后台异步预热，在线数据零触碰；成功后版本号自增并广播）
- * @return 暂存数据是否加载成功并已进入后台预热
+ * @return 暂存数据加载并进入后台预热返回 Success，失败返回 Failure
  */
-bool UStaticDataSubsystem::ReloadAllStaticData() {
+TGameStatusResult<void> UStaticDataSubsystem::ReloadAllStaticData() {
     return BeginReloadFlow(false, true);
 }
 
@@ -321,12 +321,13 @@ bool UStaticDataSubsystem::ExportStaticDataBin() {
  * @brief 启动一次数据提交流程（支持同步冷启动与异步热更）
  * @param bPreferBin 是否优先走 .bin 通道
  * @param bAsync 是否异步执行（冷启动为 false 消除竞态；热更恒为 true）
- * @return 暂存数据是否加载成功并已就绪/派发
+ * @return 成功返回 Success，失败返回 Failure
  */
-bool UStaticDataSubsystem::BeginReloadFlow(bool bPreferBin, bool bAsync) {
-    if (!SnapshotStore.TryBeginReload()) {
+TGameStatusResult<void> UStaticDataSubsystem::BeginReloadFlow(bool bPreferBin, bool bAsync) {
+    const TGameStatusResult<void> GateResult = SnapshotStore.TryBeginReload();
+    if (GateResult.IsFailure()) {
         GAME_LOG(Warning, TEXT("【静态数据子系统】已有重载进行中，本次请求已忽略。"));
-        return false;
+        return GateResult;
     }
 
     const uint32 NextVersion = SnapshotStore.GetVersion() + 1;
@@ -342,14 +343,14 @@ bool UStaticDataSubsystem::BeginReloadFlow(bool bPreferBin, bool bAsync) {
     if (!bStagingLoaded) {
         GAME_LOG(Warning, TEXT("【静态数据子系统】静态数据加载失败，在线数据保持原状。"));
         SnapshotStore.EndReload();
-        return false;
+        return TGameStatusResult<void>::Failure(7003, TEXT("Failed to load static data staging from both bin and json"));
     }
 
     if (!bAsync) {
         FItemStaticDataInterface::WarmUpCompositeCache(NewSnapshot->Cache, NewSnapshot->ItemData);
         FShopStaticDataInterface::WarmUpCompositeCache(NewSnapshot->Cache, NewSnapshot->ShopData);
         CommitSnapshot(NewSnapshot);
-        return true;
+        return TGameStatusResult<void>::Success();
     }
 
     FGameThreadTaskRunner::Run(WeakThis, [WeakThis, NewSnapshot]() {
@@ -362,7 +363,7 @@ bool UStaticDataSubsystem::BeginReloadFlow(bool bPreferBin, bool bAsync) {
             }
         });
     });
-    return true;
+    return TGameStatusResult<void>::Success();
 }
 
 /**
