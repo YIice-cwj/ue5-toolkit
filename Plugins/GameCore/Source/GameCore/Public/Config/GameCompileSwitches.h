@@ -31,12 +31,17 @@
     #define GAME_ENABLE_LOG ((NO_LOGGING) == 0)
 #endif
 
+#ifndef GAME_ENABLE_CPU_PROFILER
+    #define GAME_ENABLE_CPU_PROFILER (UE_BUILD_SHIPPING == 0)
+#endif
+
 namespace Game::Config {
 
-inline constexpr bool bIsEditor         = (WITH_EDITOR != 0);
-inline constexpr bool bEnableTest       = (GAME_ENABLE_TEST != 0);
-inline constexpr bool bEnableGM         = (GAME_ENABLE_GM != 0);
-inline constexpr bool bEnableDebugDraw  = (GAME_ENABLE_DEBUG_DRAW != 0);
-inline constexpr bool bEnableLog        = (GAME_ENABLE_LOG != 0);
+inline constexpr bool bIsEditor            = (WITH_EDITOR != 0);
+inline constexpr bool bEnableTest          = (GAME_ENABLE_TEST != 0);
+inline constexpr bool bEnableGM            = (GAME_ENABLE_GM != 0);
+inline constexpr bool bEnableDebugDraw     = (GAME_ENABLE_DEBUG_DRAW != 0);
+inline constexpr bool bEnableLog           = (GAME_ENABLE_LOG != 0);
+inline constexpr bool bEnableCpuProfiler   = (GAME_ENABLE_CPU_PROFILER != 0);
 
 }  // namespace Game::Config

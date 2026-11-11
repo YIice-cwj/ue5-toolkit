@@ -8,6 +8,8 @@
 
 #if WITH_AUTOMATION_TESTS
 
+#include "Async/FGameCoroAwaiters.h"
+#include "Async/TGameCoroTask.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Message/GameNetworkMessageTypes.h"
@@ -17,6 +19,78 @@
 #include "System/GameNetServiceSubsystem.h"
 #include "Tests/GameNetCoreTestTypes.h"
 #include "Transport/MockNetTransport.h"
+
+namespace {
+
+/**
+ * @brief 验证 RequestStructAsync 协程门面的购买测试协程
+ * @param NetService 网络服务门面子系统引用
+ * @param ShopItemId 购买商品 ID
+ * @param BuyCount 购买数量
+ * @param OutResult 输出网络请求结果枚举
+ * @param OutRemainingGold 输出购买后剩余金币
+ * @return 异步协程任务句柄
+ */
+TGameCoroTask<int32> RunCoroPurchaseRpc(
+    UGameNetServiceSubsystem& NetService,
+    int32 ShopItemId,
+    int32 BuyCount,
+    ENetRequestResult& OutResult,
+    int32& OutRemainingGold
+) {
+    FGameNetTestPurchaseReq Req;
+    Req.ShopItemId = ShopItemId;
+    Req.BuyCount = BuyCount;
+    Req.CouponToken = TEXT("CORO");
+
+    const TGameResult<FGameNetTestPurchaseRsp, ENetRequestResult> Result =
+        co_await NetService.RequestStructAsync<FGameNetTestPurchaseReq, FGameNetTestPurchaseRsp>(
+            5001,
+            5002,
+            Req,
+            5.0f
+        );
+
+    if (Result.IsSuccess()) {
+        OutResult = ENetRequestResult::Success;
+        OutRemainingGold = Result.GetValue().RemainingGold;
+    } else {
+        OutResult = Result.GetError();
+        OutRemainingGold = -1;
+    }
+    co_return OutRemainingGold;
+}
+
+/**
+ * @brief 验证协程绑定宿主销毁后自动熔断自毁的测试协程
+ * @param NetService 网络服务门面子系统引用
+ * @param ContextObject 绑定宿主对象指针
+ * @param OutPostAwaitExecuted 是否执行了挂起点之后的逻辑
+ * @return 异步协程任务句柄
+ */
+TGameCoroTask<void> RunCoroGuardedPurchaseRpc(
+    UGameNetServiceSubsystem& NetService,
+    UObject* ContextObject,
+    bool& OutPostAwaitExecuted
+) {
+    co_await Game::Coro::BindContext(ContextObject);
+    FGameNetTestPurchaseReq Req;
+    Req.ShopItemId = 77;
+    Req.BuyCount = 1;
+    Req.CouponToken = TEXT("GUARD");
+
+    co_await NetService.RequestStructAsync<FGameNetTestPurchaseReq, FGameNetTestPurchaseRsp>(
+        5001,
+        5002,
+        Req,
+        5.0f
+    );
+
+    OutPostAwaitExecuted = true;
+    co_return;
+}
+
+} // namespace
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameNetServiceSubsystemEndToEndTest,
@@ -251,6 +325,83 @@ bool FGameNetServiceSubsystemEndToEndTest::RunTest([[maybe_unused]] const FStrin
 
     StateBusHandle.Unregister();
     InboundBusHandle.Unregister();
+    GameInstance->Shutdown();
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameNetServiceSubsystemCoroTest,
+    "Game.Net.Service.SubsystemCoro",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证 RequestStructAsync C++20 协程门面、挂起等待、回包唤醒与宿主生命周期自毁熔断
+ * @param Parameters 自动化测试参数
+ * @return 测试是否全部通过
+ */
+bool FGameNetServiceSubsystemCoroTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UGameInstance* GameInstance = NewObject<UGameInstance>(GEngine);
+    GameInstance->InitializeStandalone(FName(TEXT("GameNetServiceCoroTestWorld")));
+
+    UGameNetServiceSubsystem& NetService = UGameNetServiceSubsystem::Get(GameInstance);
+    const TSharedRef<FMockNetTransport> MockTransport = MakeShared<FMockNetTransport>();
+    NetService.SetTransport(MockTransport);
+
+    MockTransport->RegisterMockHandler(
+        5001,
+        5002,
+        [&NetService](const FNetPacketHeader&, TConstArrayView<uint8> ReqBytes) -> TOptional<TArray<uint8>> {
+            const TGameStatusResult<FGameNetTestPurchaseReq> Req =
+                NetService.GetSerializer()->DeserializeStruct<FGameNetTestPurchaseReq>(ReqBytes);
+            if (Req.IsFailure()) {
+                return NullOpt;
+            }
+            FGameNetTestPurchaseRsp Rsp;
+            Rsp.bSuccess = true;
+            Rsp.RemainingGold = 10000 - Req.GetValue().BuyCount * 250;
+            Rsp.DiscountRate = 0.9f;
+            Rsp.ReceiptMessage = FString::Printf(TEXT("Item_%d_OK"), Req.GetValue().ShopItemId);
+            Rsp.GrantedSerialNumbers = {701, 702};
+            Rsp.BonusItem.ItemCode = FName(TEXT("BonusGem"));
+            Rsp.BonusItem.Quantity = Req.GetValue().BuyCount;
+            const TGameStatusResult<TArray<uint8>> EncodedRsp = NetService.GetSerializer()->SerializeStruct(Rsp);
+            return EncodedRsp.IsSuccess() ? EncodedRsp.GetValue() : TOptional<TArray<uint8>>{};
+        }
+    );
+
+    TestTrue(TEXT("连接 Mock 端点"), NetService.Connect(TEXT("mock://coro_test")));
+
+    ENetRequestResult CoroRpcStatus = ENetRequestResult::SendFailed;
+    int32 CoroRemainingGold = 0;
+    TGameCoroTask<int32> CoroTask = RunCoroPurchaseRpc(
+        NetService,
+        101,
+        3,
+        CoroRpcStatus,
+        CoroRemainingGold
+    );
+    TestFalse(TEXT("协程挂起等待网络回包未就绪"), CoroTask.IsDone());
+    NetService.Tick(0.05f);
+    TestTrue(TEXT("网络回包后协程正常恢复并完成"), CoroTask.IsDone());
+    TestTrue(TEXT("协程执行状态为成功"), CoroTask.GetResult().IsSuccess());
+    TestEqual(TEXT("协程返回值正确"), CoroTask.GetResult().GetValue(), 9250);
+    TestEqual(TEXT("协程提取回包状态成功"), CoroRpcStatus, ENetRequestResult::Success);
+    TestEqual(TEXT("协程赋值剩余金币正确"), CoroRemainingGold, 9250);
+
+    bool bCoroPostAwaitRan = false;
+    UGameInstance* TempCoroOwner = NewObject<UGameInstance>();
+    TGameCoroTask<void> GuardedTask = RunCoroGuardedPurchaseRpc(
+        NetService,
+        TempCoroOwner,
+        bCoroPostAwaitRan
+    );
+    TestFalse(TEXT("守卫协程处于挂起状态"), GuardedTask.IsDone());
+    TempCoroOwner->MarkAsGarbage();
+    NetService.Tick(0.05f);
+    TestFalse(TEXT("宿主销毁后挂起点后的代码绝不执行"), bCoroPostAwaitRan);
+    TestTrue(TEXT("宿主销毁后协程处于已取消终态"), GuardedTask.IsCancelled());
+
     GameInstance->Shutdown();
     return true;
 }

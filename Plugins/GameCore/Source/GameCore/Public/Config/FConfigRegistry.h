@@ -133,9 +133,17 @@ public:
     void InheritFrom(const FConfigRegistry& Other);
 
     /**
-     * @brief 获取配置注册表（支持 World 上下文路由与 PIE 多实例隔离）
+     * @brief 获取配置注册表的共享指针（推荐跨帧或持久持有使用，完全杜绝 World 销毁导致的悬垂崩溃）
+     * @param WorldContextObject 关联的世界上下文对象（为空时返回全局根注册表）
+     * @return 对应的配置注册表强引用共享指针
+     */
+    static TSharedPtr<FConfigRegistry> GetShared(const UObject* WorldContextObject = nullptr);
+
+    /**
+     * @brief 获取配置注册表（支持 World 上下文路由与多实例隔离）
      * @param WorldContextObject 关联的世界上下文对象（为空时返回全局根注册表）
      * @return 对应的配置注册表引用
+     * @warning 返回的裸引用生命周期与对应 UWorld 绑定，随 World 销毁可能失效，仅限当前调用栈或单帧内临时使用，严禁跨帧持久缓存！需要持久持有请使用 GetShared()。
      */
     static FConfigRegistry& Get(const UObject* WorldContextObject = nullptr);
 

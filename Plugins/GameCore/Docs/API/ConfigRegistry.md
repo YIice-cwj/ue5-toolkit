@@ -47,7 +47,7 @@ class GAMECORE_API FConfigRegistry {
 public:
     using FConfigVariant = Game::Config::FConfigVariant;
 
-    static FConfigRegistry& Get();
+    static FConfigRegistry& Get(const UObject* WorldContextObject = nullptr);
 
     template<typename T>
     void RegisterConfig(FName Name, T DefaultValue);
@@ -65,7 +65,10 @@ public:
     TSharedRef<FObserverSubscription> WatchConfig(FName Name, TFunction<void(const T&)> OnChanged);
 
     [[nodiscard]] bool IsRegistered(FName Name) const;
+    [[nodiscard]] bool IsReadOnly(FName Name) const;
+    [[nodiscard]] TOptional<FConfigVariant> GetRawConfigOptional(FName Name) const;
     [[nodiscard]] uint32 GetVersion() const noexcept;
+    void InheritFrom(const FConfigRegistry& Other);
 };
 ```
 
@@ -73,9 +76,9 @@ public:
 
 #### `Get`
 ```cpp
-static FConfigRegistry& Get();
+static FConfigRegistry& Get(const UObject* WorldContextObject = nullptr);
 ```
-- 获取注册中心全局单例（函数局部静态单例，C++11 保证线程安全初始化）。
+- 获取配置注册中心实例；支持基于 World 上下文的 PIE 多实例隔离（WITH_EDITOR 下自动按 UWorld 分离并继承全局默认项，脱离 World 或传 nullptr 时返回全局根单例）。
 
 #### `RegisterConfig<T>`
 ```cpp
@@ -132,9 +135,57 @@ TSharedRef<FObserverSubscription> WatchConfig(FName Name, TFunction<void(const T
 ```
 - **职责**：获取全局版本号（每次注册或覆盖写入时自增）。
 
+#### `GetRawConfigOptional`
+```cpp
+[[nodiscard]] TOptional<FConfigVariant> GetRawConfigOptional(FName Name) const;
+```
+- **职责**：按类型擦除变体快照读取已注册配置值。
+- **使用场景**：供外部配置源桥接器（`FConfigSourceBridge`）等基础设施在无需预先知道具体类型的情况下，反查已注册配置项的实际类型并进行自动推导。若键未注册则返回未设置的 `TOptional`。
+
 ---
 
-## 3. 蓝图函数库 `UConfigBPLibrary`
+## 3. 零哈希高性能响应式句柄 `TCachedConfigHandle<T>`
+
+头文件：`#include "Config/TCachedConfigHandle.h"`
+
+### 痛点与设计目标
+在每秒执行成千上万次的高频热点链路（如物理更新、移动计算、战斗数值计算）中，传统的 `FConfigRegistry::GetConfig(FName)` 每次都需要进行 `FName` 哈希查找、遍历散列表以及争用全局 `FRWLock` 读写锁。  
+`TCachedConfigHandle<T>` 专为高频读取设计：
+- **$O(1)$ 局部缓存读取**：消灭哈希计算与字典查找开销，读取直接解指针/读取本地缓存，极致轻量；
+- **响应式自同步**：内部持有弱引用订阅 `FObserverSubscription`。当外部通过 `RegisterConfig` 或 `SetConfig` 热重载配置时，句柄自动同步最新值，无需调用方写轮询或样板监听代码；
+- **线程安全与自然语法**：支持按值读取 `Get()` / `GetValue()`、隐式类型转换 `operator T()` 与解引用操作符 `*Handle`；
+- **PIE 多实例感知**：支持指定 `WorldContextObject` 绑定对应 PIE 独立配置，并提供 `Rebind()` 支持切关动态重定向。
+
+### 接口与使用示例
+```cpp
+// 1. 在高频系统类或结构体中定义句柄成员（提供键名与默认回退值）
+class UCombatComponent : public UActorComponent {
+private:
+    TCachedConfigHandle<float> DamageScaleHandle{FName(TEXT("Combat.DamageScale")), 1.0f};
+    TCachedConfigHandle<FVector> KnockbackDirHandle{FName(TEXT("Combat.KnockbackDir")), FVector::UpVector};
+
+public:
+    void TickComponent(...) override {
+        // 零哈希极速读取，支持隐式类型转换
+        const float DamageScale = DamageScaleHandle; 
+        const FVector Knockback = *KnockbackDirHandle;
+    }
+};
+
+// 2. 注册热更新监听（可选）
+DamageScaleHandle.SetOnChanged([](float NewScale) {
+    UE_LOG(LogTemp, Log, TEXT("伤害系数热更生效: %f"), NewScale);
+});
+
+// 3. 状态查询与生命周期
+if (DamageScaleHandle.IsBound()) {
+    // 已从配置中心成功绑定已注册值
+}
+```
+
+---
+
+## 4. 蓝图函数库 `UConfigBPLibrary`
 
 为蓝图提供便捷读写与判断接口：
 
@@ -166,7 +217,7 @@ TSharedRef<FObserverSubscription> WatchConfig(FName Name, TFunction<void(const T
 
 ---
 
-## 4. 外部配置源桥接器 `FConfigSourceBridge`
+## 5. 外部配置源桥接器 `FConfigSourceBridge`
 
 头文件：`#include "Config/FConfigSourceBridge.h"`
 
@@ -180,13 +231,12 @@ TSharedRef<FObserverSubscription> WatchConfig(FName Name, TFunction<void(const T
 
 ---
 
-## 5. 模块化 GM / 调试指令注册中心 `FGameCheatRegistry`
+## 6. 调试指令迁移指引 (FGameCheatRegistry)
 
-头文件：`#include "Debug/FGameCheatRegistry.h"`
+> [!NOTE]
+> **组件解耦与迁移提示**：
+> 模块化 GM / 作弊调试指令注册中心（`FGameCheatRegistry`）已在多插件解耦架构中剥离至专职调试插件 **`Plugins/GameDebug`**（头文件 `#include "GameDebugCheatRegistry.h"`）。
+> `GameCore` 专注于纯底层配置生命周期管理；若需在开发期注册控制台 GM 命令，请直接依赖并引入 `GameDebug` 模块。
 
-面向各业务模块注册开发期调试/作弊命令，自动联动 `IConsoleManager`（标记 `ECVF_Cheat`）并在 Shipping 构建（`Game::Config::bEnableGM == false`）下于编译期零开销剥离：
-- `RegisterCheat(CommandName, HelpText, Handler)` / `UnregisterCheat(CommandName)`
-- `ExecuteCheat(CommandLine)`：支持引号参数切分并在锁外安全执行回调（支持回调内重入查询或自注销）
-- 模块卸载时由 `FGameCoreModule::ShutdownModule` 自动调用 `ClearAll()` 卸载控制台命令，杜绝悬垂句柄。
 
 

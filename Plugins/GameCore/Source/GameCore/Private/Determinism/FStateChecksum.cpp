@@ -54,6 +54,10 @@ void FStateChecksumBuilder::AddUInt64(uint64 Value) noexcept {
  * @param Precision 量化精度
  */
 void FStateChecksumBuilder::AddFloatQuantized(float Value, float Precision) noexcept {
+    if (!FMath::IsFinite(Value)) {
+        AddUInt64(0ULL);
+        return;
+    }
     const float SafePrecision = Precision > 1e-7f ? Precision : 0.001f;
     const int64 Quantized = FMath::RoundToInt64(Value / SafePrecision);
     AddUInt64(static_cast<uint64>(Quantized));

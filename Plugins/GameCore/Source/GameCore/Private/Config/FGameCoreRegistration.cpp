@@ -10,6 +10,8 @@
 #include "Config/GameCompileSwitches.h"
 #include "Engine/GameInstance.h"
 
+DEFINE_LOG_CATEGORY_STATIC(LogGameCoreRegistration, Log, All);
+
 namespace {
 
 /**
@@ -21,6 +23,7 @@ void RegisterCompileSwitches(FConfigRegistry& Registry) {
     Registry.RegisterConfig<bool>(FName(TEXT("Feature.Test")), Game::Config::bEnableTest);
     Registry.RegisterConfig<bool>(FName(TEXT("Feature.GM")), Game::Config::bEnableGM);
     Registry.RegisterConfig<bool>(FName(TEXT("Dev.DebugDraw")), Game::Config::bEnableDebugDraw);
+    Registry.RegisterConfig<bool>(FName(TEXT("Dev.CpuProfiler")), Game::Config::bEnableCpuProfiler);
 }
 
 /**
@@ -30,7 +33,7 @@ void RegisterCompileSwitches(FConfigRegistry& Registry) {
  */
 void RegisterCacheDomainDefaults(FConfigRegistry& Registry, const FName& Domain) {
     if (Domain.IsNone()) {
-        UE_LOG(LogTemp, Warning, TEXT("FGameCoreRegistration::RegisterCacheDomain ignored: Domain is None."));
+        UE_LOG(LogGameCoreRegistration, Warning, TEXT("FGameCoreRegistration::RegisterCacheDomain ignored: Domain is None."));
         return;
     }
     const FString KeyPrefix = FString::Printf(TEXT("Cache.%s."), *Domain.ToString());
@@ -51,13 +54,6 @@ void FGameCoreRegistration::RegisterAll(UGameInstance* InGameInstance) {
     if (InGameInstance != nullptr) {
         RegisterCompileSwitches(FConfigRegistry::Get(InGameInstance));
     }
-}
-
-/**
- * @brief 注销统一入口（对称接口）
- * @param InGameInstance 当前 GameInstance
- */
-void FGameCoreRegistration::UnregisterAll([[maybe_unused]] UGameInstance* InGameInstance) {
 }
 
 /**

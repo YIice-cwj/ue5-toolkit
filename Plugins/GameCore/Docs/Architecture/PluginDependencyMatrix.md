@@ -12,9 +12,9 @@
 ```
 Level 0: GameCore (基石底座)
    │
-   ├── Level 1: 基础设施通用插件 (GameLogging, GameDebug, GameDataCore, GameAssetCore, GameSpatial, GamePool)
+   ├── Level 1: 基础设施通用插件 (GameLogging, GameDebug, GameData, GameAssetCore, GameSpatial, GamePool)
    │      │
-   │      └── Level 2: 领域与调度级插件 (GameNetCore, GameFlow, GameMessage, GameFeedback)
+   │      └── Level 2: 领域与调度级插件 (GameNetCore, GameNetService, GameNetSession, GameFlow, GameMessage, GameFeedback)
    │             │
    │             └── Level 3: Gameplay 与上层业务插件 (GameGameplay, GameGameplayCore, 游戏具体逻辑)
 ```
@@ -25,9 +25,9 @@ Level 0: GameCore (基石底座)
 
 | 层级 | 包含插件 | 允许依赖的下层模块 | 严禁事项 (一票否决) |
 |---|---|---|---|
-| **Level 0 (基石底座)** | **`GameCore`** | 仅允许依赖 UE 原生模块：`Core`, `CoreUObject`, `Engine` | **严禁依赖任何其他插件！**<br>保持 100% 纯粹原语与微核心状态。 |
-| **Level 1 (基础设施)** | **`GameLogging`**<br>**`GameDebug`**<br>**`GameDataCore`**<br>**`GameAssetCore`**<br>**`GameSpatial`**<br>**`GamePool`** | 仅允许依赖 **Level 0 (`GameCore`)** 以及 UE 原生基础模块 | **严禁 Level 1 内部横向互相依赖！**<br>例如：`GameSpatial` 绝不能依赖 `GamePool`；`GamePool` 绝不能依赖 `GameAssetCore`。若需协作，通过底层原语实现或事件解耦。 |
-| **Level 2 (领域调度)** | **`GameNetCore`**<br>**`GameNetService`**<br>**`GameFlow`**<br>**`GameMessage`**<br>**`GameFeedback`** | 允许依赖 **Level 0** 与 **Level 1** 插件 | 严禁依赖 Level 3 具体业务插件。 |
+| **Level 0 (基石底座)** | **`GameCore`** | 仅允许依赖 UE 原生模块：`Core`, `CoreUObject`, `Engine`, `GameplayTags` | **严禁依赖任何其他插件！**<br>保持 100% 纯粹原语与微核心状态。 |
+| **Level 1 (基础设施)** | **`GameLogging`**<br>**`GameDebug`**<br>**`GameData`**<br>**`GameAssetCore`**<br>**`GameSpatial`**<br>**`GamePool`** | 仅允许依赖 **Level 0 (`GameCore`)** 以及 UE 原生基础模块 | **严禁 Level 1 内部横向互相依赖！**<br>例如：`GameSpatial` 绝不能依赖 `GamePool`；`GamePool` 绝不能依赖 `GameAssetCore`。若需协作，通过底层原语实现或事件解耦。 |
+| **Level 2 (领域调度)** | **`GameNetCore`**<br>**`GameNetService`**<br>**`GameNetSession`**<br>**`GameFlow`**<br>**`GameMessage`**<br>**`GameFeedback`** | 允许依赖 **Level 0** 与 **Level 1** 插件 | 严禁依赖 Level 3 具体业务插件。 |
 | **Level 3 (业务实现)** | **`GameGameplay`**<br>**`GameGameplayCore`**<br>各玩法功能模块 | 允许依赖 **Level 0, Level 1, Level 2** 全部插件 | 严禁被 Level 0 / 1 / 2 反向依赖。 |
 
 ---

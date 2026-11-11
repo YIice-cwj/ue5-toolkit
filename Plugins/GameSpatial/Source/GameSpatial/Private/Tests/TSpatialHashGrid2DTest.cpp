@@ -45,11 +45,6 @@ bool FSpatialHashGridLifecycleAndBucketsTest::RunTest([[maybe_unused]] const FSt
     TestTrue(TEXT("查询不存在元素返回失败态"), NonExistLoc.IsFailure());
     TestEqual(TEXT("不存在元素错误码为 6001"), NonExistLoc.GetError().ErrorCode, 6001);
 
-    FVector2D StoredLoc;
-    TestTrue(TEXT("兼容重载成功获取元素坐标"), Grid.GetLocation(1, StoredLoc));
-    TestEqual(TEXT("坐标 X 精确匹配"), StoredLoc.X, 100.0);
-    TestEqual(TEXT("坐标 Y 精确匹配"), StoredLoc.Y, 100.0);
-
     TestTrue(TEXT("同单元格内坐标微移更新成功"), Grid.Update(1, FVector2D(150.0f, 150.0f)).IsSuccess());
     TestEqual(TEXT("同单元格更新不增加新桶"), Grid.GetBucketCount(), 1);
 

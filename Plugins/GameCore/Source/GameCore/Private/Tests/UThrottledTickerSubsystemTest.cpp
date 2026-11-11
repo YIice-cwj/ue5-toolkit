@@ -12,7 +12,7 @@
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FThrottledTickerSubsystemLifecycleAndRatesTest,
-    "Game.Core.Tasks.ThrottledTicker.LifecycleAndRates",
+    "Game.Core.Async.Tasks.ThrottledTicker.LifecycleAndRates",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
@@ -71,8 +71,8 @@ bool FThrottledTickerSubsystemLifecycleAndRatesTest::RunTest([[maybe_unused]] co
     TestEqual(TEXT("累积 0.07s 未达 0.1s 阈值不触发"), ThrottledCount, 0);
 
     Subsystem->Tick(0.05f);
-    TestEqual(TEXT("累积 0.12s 超过 0.1s 阈值触发 1 次"), ThrottledCount, 1);
-    TestEqual(TEXT("触发时传递累计 DeltaTime"), LastThrottledDelta, 0.12f);
+    TestEqual(TEXT("交错散布结合帧流逝超过 0.1s 阈值触发 1 次"), ThrottledCount, 1);
+    TestEqual(TEXT("触发时传递累计 DeltaTime（含初始交错相位与帧累积流逝）"), LastThrottledDelta, 0.145f);
 
     ThrottledHandle.SetInterval(0.05f);
     Subsystem->Tick(0.06f);
@@ -95,7 +95,7 @@ bool FThrottledTickerSubsystemLifecycleAndRatesTest::RunTest([[maybe_unused]] co
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FThrottledTickerSubsystemOwnerGuardTest,
-    "Game.Core.Tasks.ThrottledTicker.OwnerGuard",
+    "Game.Core.Async.Tasks.ThrottledTicker.OwnerGuard",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 

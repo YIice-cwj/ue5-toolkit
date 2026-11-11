@@ -133,4 +133,31 @@ bool FCancelableScopeGuardTransactionalSimulationTest::RunTest([[maybe_unused]] 
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCancelableScopeGuardNullCallableTest,
+    "Game.Core.Async.CancelableScopeGuard.NullCallable",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证空可调用对象（如未绑定的 TFunction 或空函数指针）在析构时被安全拦截而不发生崩溃
+ * @param Parameters 自动化测试参数
+ * @return 全部断言通过返回 true
+ */
+bool FCancelableScopeGuardNullCallableTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    {
+        TFunction<void()> EmptyFunc;
+        auto Guard = MakeCancelableScopeGuard(EmptyFunc);
+        TestTrue(TEXT("守卫处于激活状态"), Guard.IsActive());
+    }
+
+    {
+        void (*NullPtr)() = nullptr;
+        auto Guard = MakeCancelableScopeGuard(NullPtr);
+        TestTrue(TEXT("空函数指针守卫处于激活状态"), Guard.IsActive());
+    }
+
+    return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

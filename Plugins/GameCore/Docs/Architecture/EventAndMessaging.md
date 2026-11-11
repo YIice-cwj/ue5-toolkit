@@ -1,31 +1,32 @@
 # GameCore 事件与消息通信体系架构
 
-在大型游戏项目中，跨模块、跨对象的通信需求极其多样。`GameCore` 针对不同维度的通信场景，提供了三种职责清晰、定位互补的通信设施：
+在大型游戏项目中，跨模块、跨对象的通信需求极其多样。`GameCore` 针对不同维度的通信场景，提供了职责清晰、定位互补的三层通信设施：
 
 ```mermaid
 graph TD
     A["通信需求产生"] --> B{"通信特点与场景"}
 
     B -- "纯 C++ 零 UObject 依赖<br>纳秒级极速单例总线" --> C["FListenerHub<br>(中央监听总线)"]
-    B -- "蓝图/C++ 强类型解耦<br>GameplayTag 树形寻址/跨线程安全入队" --> D["UGameplayMessageSubsystem<br>(Gameplay 消息总线)"]
-    B -- "单值变更感知<br>响应式容器/初始回放" --> E["FValueObserver<T><br>(值观察者)"]
+    B -- "单值变更感知<br>响应式容器/初始回放" --> D["FValueObserver<T><br>(值观察者)"]
+    B -- "异步解耦/消除递归调用栈<br>严格 FIFO 单消费 Drainer" --> E["FNotificationDispatcher<br>(单向事件排空器)"]
+    B -- "蓝图/C++ 强类型解耦<br>GameplayTag 树形寻址/跨线程安全入队" --> F["UGameplayMessageSubsystem<br>(业务层 Gameplay 消息总线)"]
 ```
 
 ---
 
-## 1. 三种通信机制详细对比与技术选型
+## 1. 通信机制详细对比与技术选型
 
-| 特性 | `FListenerHub` | `UGameplayMessageSubsystem` [全项目统一推荐] | `FValueObserver<T>` |
-| :--- | :--- | :--- | :--- |
-| **存在形态** | 纯 C++ 静态单例 (函数局部静态) | `UGameInstanceSubsystem` (伴随游戏生命周期) | 独立 C++ 实例 (可内嵌到任意类中) |
-| **推荐定位** | **引擎/系统底层纯 C++ 高频内部通信** | **业务层/跨插件 Gameplay 解耦通信骨干** | **实体/组件内部响应式属性** |
-| **寻址方式** | `FName` 事件名 | `FGameplayTag` 标签 (支持层级匹配与通配) | 变量直接持有绑定 |
-| **载荷类型** | 任意 C++ 结构体/类 (支持非 UObject) | `UScriptStruct` 反射结构体 (支持动态多态) | 单一泛型类型 `T` |
-| **类型安全机制** | `GAME_TYPE_FINGERPRINT` 64 位编译期哈希 + `sizeof` 双指纹校验 | `UScriptStruct` 强类型 RTTI 校验 | C++ 模板静态类型检查 |
-| **当前值回放** | 否（事件无状态） | 否 | `SubscribeWithReplay` |
-| **蓝图支持** | 否 (专为高性能 C++ 设计) | 是 (`UAsyncAction_ListenForGameplayMessage` 异步动作监听与 `HasListener` 判定) | 否 |
-| **并发保证** | Copy-on-Write 瞬态读锁快照，出锁派发 | 主线程派发 + `EnqueueMessage` 跨线程安全入队 | 内部锁保护，出锁通知 |
-| **退订管理** | `FObserverSubscription` (RAII 守卫) | `FGameplayMessageListenerHandle` | `FObserverSubscription` (RAII 守卫) |
+| 特性 | `FListenerHub` | `FValueObserver<T>` | `FNotificationDispatcher` | `UGameplayMessageSubsystem` (Tier 1) |
+| :--- | :--- | :--- | :--- | :--- |
+| **存在形态** | 纯 C++ 静态单例 | 独立 C++ 实例 (可内嵌到任意类) | 纯 C++ 实例 / 单例 | `UGameInstanceSubsystem` (伴随游戏生命周期) |
+| **推荐定位** | **引擎底层纯 C++ 高频内部通信** | **实体/组件内部响应式属性** | **异步解耦、削平调用栈深度** | **业务层/跨插件 Gameplay 解耦通信骨干** |
+| **寻址方式** | `FName` 事件名 | 变量直接持有绑定 | `FName` 消息通道标识 | `FGameplayTag` 标签 (支持层级匹配与通配) |
+| **载荷类型** | 任意 C++ 结构体/类 (非 UObject) | 单一泛型类型 `T` | 任意 C++ 结构体 | `UScriptStruct` 反射结构体 (支持动态多态) |
+| **类型安全机制** | 64 位编译期指纹 + `sizeof` 校验 | 模板静态强类型 | 64 位编译期指纹校验 | `UScriptStruct` 强类型 RTTI 校验 |
+| **当前值回放** | 否（事件无状态） | 支持 `SubscribeWithReplay` | 否（队列消费） | 否 |
+| **蓝图支持** | 否 (专为高性能 C++ 设计) | 否 | 否 | 是 (`UAsyncAction_ListenForGameplayMessage`) |
+| **并发保证** | Copy-on-Write 瞬态读锁快照，出锁派发 | 内部锁保护，出锁通知 | 互斥锁队列保护，单 Drainer 消费 | 主线程派发 + `EnqueueMessage` 跨线程安全入队 |
+| **退订管理** | `FObserverSubscription` (RAII) | `FObserverSubscription` (RAII) | `FObserverSubscription` (RAII) | `FGameplayMessageListenerHandle` |
 
 ---
 
@@ -65,14 +66,11 @@ sequenceDiagram
 
 ---
 
-## 3. UGameplayMessageSubsystem 架构
+## 3. FNotificationDispatcher 防重入与单 Drainer 机制
 
-### 3.1 基于 GameplayTag 的分层匹配
-`UGameplayMessageSubsystem` 采用标签树进行消息寻址。支持两种匹配策略：
-- `ExactMatch`：只有完全匹配该 Tag（如 `Event.Item.Obtain.Gold`）才收到通知。
-- `PartialMatch`：支持父标签广播与子标签监听（基于 `FGameplayTag::MatchesTag`）。例如监听 `Event.Item` 的系统，可以捕获 `Event.Item.Obtain`、`Event.Item.Use` 等全部子级事件。
-
-### 3.2 强类型结构体验证
-派发载荷必须派生自 `UScriptStruct`（通过 `USTRUCT()` 宏声明）。注册监听器时，监听器声明期望的 `UScriptStruct`；派发时，系统校验实际传入的结构体类型是否与期望类型匹配，若不匹配则拒绝派发并打印错误，确保类型绝对安全。
-
-
+在深度嵌套的业务逻辑中，如果在回调过程中又触发新的事件派发，调用栈会急剧膨胀，极易引发爆栈或状态不同步。
+`FNotificationDispatcher` 引入了 **FIFO 消息队列 + 原子单 Drainer** 消费机制：
+- 任意线程调用 `EnqueueNotification` 将通知推入内部队列；
+- 当前正在执行 `DrainQueue()` 的线程成为唯一 Drainer；
+- 回调中新产生的入队操作仅向队尾追加，不会打断当前消费循环，杜绝递归重入；
+- 消费完全按先进先出（FIFO）顺序展开，彻底抹平调用栈。

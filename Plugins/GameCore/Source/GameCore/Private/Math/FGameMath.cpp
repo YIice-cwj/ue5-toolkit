@@ -134,3 +134,108 @@ bool FGameMath::IsInVisionCone(
     const double CosThreshold = FMath::Cos(FMath::DegreesToRadians(static_cast<double>(ClampedHalfAngle)));
     return CosAngle >= (CosThreshold - 1e-6);
 }
+
+namespace {
+
+constexpr double EXP_DECAY_LN2 = 0.693147180559945309417;
+
+inline float ComputeExpDecayFactor(float HalfLifeSeconds, float DeltaSeconds) noexcept {
+    if (DeltaSeconds <= 0.0f) {
+        return 0.0f;
+    }
+    if (HalfLifeSeconds <= 0.00001f) {
+        return 1.0f;
+    }
+    const double Lambda = EXP_DECAY_LN2 / static_cast<double>(HalfLifeSeconds);
+    const double Decay = FMath::Exp(-Lambda * static_cast<double>(DeltaSeconds));
+    return static_cast<float>(FMath::Clamp(1.0 - Decay, 0.0, 1.0));
+}
+
+} // namespace
+
+/**
+ * @brief 基于半衰期参数化的一维标量精确帧率无关指数衰减平滑
+ * @param CurrentValue 当前标量值
+ * @param TargetValue 目标标量值
+ * @param HalfLifeSeconds 误差衰减至一半所需的半衰期时长（秒）
+ * @param DeltaSeconds 帧流逝时间（秒）
+ * @return 更新后的平滑标量值
+ */
+float FGameMath::ExpDecayFloat(
+    float CurrentValue,
+    float TargetValue,
+    float HalfLifeSeconds,
+    float DeltaSeconds
+) noexcept {
+    if (!FMath::IsFinite(CurrentValue) || !FMath::IsFinite(TargetValue)) {
+        return TargetValue;
+    }
+    const float Factor = ComputeExpDecayFactor(HalfLifeSeconds, DeltaSeconds);
+    if (Factor <= 0.0f) {
+        return CurrentValue;
+    }
+    if (Factor >= 1.0f) {
+        return TargetValue;
+    }
+    return CurrentValue + (TargetValue - CurrentValue) * Factor;
+}
+
+/**
+ * @brief 基于半衰期参数化的三维向量精确帧率无关指数衰减平滑
+ * @param CurrentValue 当前三维向量
+ * @param TargetValue 目标三维向量
+ * @param HalfLifeSeconds 误差衰减至一半所需的半衰期时长（秒）
+ * @param DeltaSeconds 帧流逝时间（秒）
+ * @return 更新后的平滑三维向量
+ */
+FVector FGameMath::ExpDecayVector(
+    const FVector& CurrentValue,
+    const FVector& TargetValue,
+    float HalfLifeSeconds,
+    float DeltaSeconds
+) noexcept {
+    if (CurrentValue.ContainsNaN() || TargetValue.ContainsNaN()) {
+        return TargetValue;
+    }
+    const float Factor = ComputeExpDecayFactor(HalfLifeSeconds, DeltaSeconds);
+    if (Factor <= 0.0f) {
+        return CurrentValue;
+    }
+    if (Factor >= 1.0f) {
+        return TargetValue;
+    }
+    return CurrentValue + (TargetValue - CurrentValue) * Factor;
+}
+
+/**
+ * @brief 基于半衰期参数化的四元数精确帧率无关球面指数衰减平滑
+ * @param CurrentValue 当前旋转四元数
+ * @param TargetValue 目标旋转四元数
+ * @param HalfLifeSeconds 误差衰减至一半所需的半衰期时长（秒）
+ * @param DeltaSeconds 帧流逝时间（秒）
+ * @return 更新后的归一化旋转四元数
+ */
+FQuat FGameMath::ExpDecayQuat(
+    const FQuat& CurrentValue,
+    const FQuat& TargetValue,
+    float HalfLifeSeconds,
+    float DeltaSeconds
+) noexcept {
+    if (CurrentValue.ContainsNaN() || TargetValue.ContainsNaN()) {
+        return TargetValue;
+    }
+    const float Factor = ComputeExpDecayFactor(HalfLifeSeconds, DeltaSeconds);
+    if (Factor <= 0.0f) {
+        return CurrentValue;
+    }
+    if (Factor >= 1.0f) {
+        return TargetValue;
+    }
+
+    FQuat TargetAdjusted = TargetValue;
+    const double Dot = CurrentValue | TargetValue;
+    if (Dot < 0.0) {
+        TargetAdjusted = -TargetValue;
+    }
+    return FQuat::Slerp(CurrentValue, TargetAdjusted, Factor).GetNormalized();
+}

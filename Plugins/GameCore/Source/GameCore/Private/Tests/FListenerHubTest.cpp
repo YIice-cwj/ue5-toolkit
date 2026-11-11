@@ -224,4 +224,40 @@ bool FGameListenerHubConcurrentStressTest::RunTest([[maybe_unused]] const FStrin
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameListenerHubResetTest,
+    "Game.Core.Listener.HubReset",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证 FListenerHub 的 Reset 清理与通道计数能力
+ * @param Parameters 自动化测试参数
+ * @return 全部断言通过返回 true
+ */
+bool FGameListenerHubResetTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    FListenerHub& Hub = FListenerHub::Get();
+    Hub.Reset();
+    TestEqual(TEXT("初始重置后通道数为 0"), Hub.Num(), 0);
+
+    const FName Evt1(TEXT("ResetTest.Event1"));
+    const FName Evt2(TEXT("ResetTest.Event2"));
+
+    int32 Count1 = 0;
+    int32 Count2 = 0;
+    auto Sub1 = Hub.Subscribe<int32>(Evt1, [&Count1](const int32& Val) { Count1 += Val; });
+    auto Sub2 = Hub.Subscribe<float>(Evt2, [&Count2](const float& Val) { Count2 += static_cast<int32>(Val); });
+
+    TestEqual(TEXT("注册 2 个事件后通道数为 2"), Hub.Num(), 2);
+    TestTrue(TEXT("广播 Event1 成功"), Hub.Emit<int32>(Evt1, 10));
+    TestEqual(TEXT("Count1 收到 10"), Count1, 10);
+
+    Hub.Reset();
+    TestEqual(TEXT("Reset 后通道数清零"), Hub.Num(), 0);
+    TestFalse(TEXT("Reset 后广播已不存在的事件返回 false"), Hub.Emit<int32>(Evt1, 20));
+    TestEqual(TEXT("Count1 不再增加"), Count1, 10);
+
+    return true;
+}
+
 #endif  // WITH_AUTOMATION_TESTS

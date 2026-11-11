@@ -59,6 +59,17 @@ public:
     template<typename T>
     bool Emit(const FName& EventName, const T& Payload);
 
+    /**
+     * @brief 清空重置所有已注册事件与监听器（专供单元测试、PIE 会话重置与模块生命周期清理）
+     */
+    void Reset();
+
+    /**
+     * @brief 获取当前已注册的事件通道总数
+     * @return 活跃事件通道数量
+     */
+    [[nodiscard]] int32 Num() const;
+
 private:
     /**
      * @brief 类型擦除事件基类（继承观察者状态基类以复用 RAII 订阅守卫，构造期固化双指纹消除虚调用开销）

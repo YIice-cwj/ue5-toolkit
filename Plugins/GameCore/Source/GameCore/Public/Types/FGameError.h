@@ -25,6 +25,7 @@ namespace Game::ModuleId {
     inline constexpr int32 Logging   = 9;
     inline constexpr int32 Data      = 10;
     inline constexpr int32 Gameplay  = 11;
+    inline constexpr int32 Debug     = 12;
 }  // namespace Game::ModuleId
 
 /**
@@ -85,6 +86,28 @@ struct GAMECORE_API FGameError {
     FString Message;
 
     FGameError() = default;
+
+    /**
+     * @brief 包含详细说明的便捷构造函数（模块 ID 默认为 Core，错误码为 OperationFailed，级别为 Error）
+     * @param InMessage 详细描述文案
+     */
+    explicit FGameError(FString InMessage)
+        : ModuleId(Game::ModuleId::Core)
+        , ErrorCode(Game::CommonErrorCodes::OperationFailed)
+        , Severity(EGameErrorSeverity::Error)
+        , Message(MoveTemp(InMessage)) {
+    }
+
+    /**
+     * @brief 包含字符串字面量的便捷构造函数
+     * @param InMessage 描述字符串字面量
+     */
+    explicit FGameError(const TCHAR* InMessage)
+        : ModuleId(Game::ModuleId::Core)
+        , ErrorCode(Game::CommonErrorCodes::OperationFailed)
+        , Severity(EGameErrorSeverity::Error)
+        , Message(InMessage) {
+    }
 
     /**
      * @brief 完整参数构造函数

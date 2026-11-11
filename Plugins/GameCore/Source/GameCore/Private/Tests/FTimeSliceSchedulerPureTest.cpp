@@ -12,7 +12,7 @@
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FTimeSliceSchedulerPureTest,
-    "Game.Core.Tasks.TimeSliceScheduler.PureCppExecution",
+    "Game.Core.Async.Tasks.TimeSliceScheduler.PureCppExecution",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
@@ -51,12 +51,30 @@ bool FTimeSliceSchedulerPureTest::RunTest([[maybe_unused]] const FString& Parame
     TestFalse(TEXT("任务完成后不再活跃"), Scheduler.IsTaskActive(TaskId));
     TestTrue(TEXT("队列恢复为空"), Scheduler.IsEmpty());
 
+    int32 BatchSum = 0;
+    bool bBatchCompleted = false;
+    const uint64 BatchId = Scheduler.EnqueueBatch(
+        5,
+        [&BatchSum](int32 ItemIndex) {
+            BatchSum += ItemIndex;
+        },
+        [&bBatchCompleted]() {
+            bBatchCompleted = true;
+        }
+    );
+    TestTrue(TEXT("无 Owner 纯 C++ 批处理成功入队"), BatchId > 0ULL);
+    while (Scheduler.IsTaskActive(BatchId)) {
+        Scheduler.Step(0.01);
+    }
+    TestTrue(TEXT("纯 C++ 批处理完成回调触发"), bBatchCompleted);
+    TestEqual(TEXT("纯 C++ 批处理元素聚合结果正确 (0+1+2+3+4=10)"), BatchSum, 10);
+
     return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FThrottledTickSchedulerPureTest,
-    "Game.Core.Tasks.ThrottledTickScheduler.PureCppExecution",
+    "Game.Core.Async.Tasks.ThrottledTickScheduler.PureCppExecution",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
@@ -94,6 +112,43 @@ bool FThrottledTickSchedulerPureTest::RunTest([[maybe_unused]] const FString& Pa
     TestTrue(TEXT("注销心跳成功"), Scheduler.UnregisterTick(HandleId));
     TestFalse(TEXT("注销后非活跃"), Scheduler.IsTickActive(HandleId));
     TestEqual(TEXT("注销后注册数归零"), Scheduler.GetRegisteredCount(), 0);
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FThrottledTickSchedulerSetIntervalTest,
+    "Game.Core.Async.Tasks.ThrottledTickScheduler.SetIntervalPhasePreservation",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证 SetTickInterval 传入相同间隔时保留相位、修改间隔时生效
+ * @param Parameters 自动化测试参数
+ * @return 全部断言通过返回 true
+ */
+bool FThrottledTickSchedulerSetIntervalTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    FThrottledTickScheduler Scheduler;
+    int32 TickCount = 0;
+    const uint64 HandleId = Scheduler.RegisterIntervalTick(
+        0.1f,
+        [&TickCount](float) {
+            ++TickCount;
+        }
+    );
+    TestTrue(TEXT("注册成功"), HandleId > 0ULL);
+
+    Scheduler.Tick(0.08f);
+    TestEqual(TEXT("尚未达到 0.1s，TickCount 应为 0"), TickCount, 0);
+
+    TestTrue(TEXT("设置相同间隔成功"), Scheduler.SetTickInterval(HandleId, 0.1f));
+
+    Scheduler.Tick(0.03f);
+    TestEqual(TEXT("保持相位后推进达到间隔，TickCount 应为 1"), TickCount, 1);
+
+    TestTrue(TEXT("设置缩短间隔成功"), Scheduler.SetTickInterval(HandleId, 0.05f));
+    Scheduler.Tick(0.06f);
+    TestEqual(TEXT("缩短间隔后推进达到新间隔，TickCount 应为 2"), TickCount, 2);
 
     return true;
 }

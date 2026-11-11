@@ -334,7 +334,8 @@ bool FGameCoroCrossThreadAndSliceTest::RunTest([[maybe_unused]] const FString& P
 
     TGameCoroTask<int32> ThreadTask = RunCrossThreadCoro(bRanInBackground, bResumedOnGameThread);
 
-    for (int32 Iter = 0; Iter < 1000 && !ThreadTask.IsDone(); ++Iter) {
+    const double TimeoutDeadline = FPlatformTime::Seconds() + 2.0;
+    while (!ThreadTask.IsDone() && FPlatformTime::Seconds() < TimeoutDeadline) {
         FPlatformProcess::Yield();
         FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);
     }
@@ -378,6 +379,111 @@ bool FGameCoroCrossThreadAndSliceTest::RunTest([[maybe_unused]] const FString& P
     SliceScheduler.Step();
     TestTrue(TEXT("第 3 次帧切片 Step 后协程全部完成"), SliceTask.IsCompleted());
     TestEqual(TEXT("切片协程最终返回值为 30"), SliceTask.GetResult().GetValueOr(0), 30);
+
+    return true;
+}
+
+namespace {
+
+TGameCoroTask<int32> RunNextFrameTestCoro(FThrottledTickScheduler& Scheduler, int32& OutStep) {
+    OutStep = 1;
+    co_await Game::Coro::NextFrame(Scheduler);
+    OutStep = 2;
+    co_await Game::Coro::NextFrame(Scheduler);
+    OutStep = 3;
+    co_return 42;
+}
+
+} // namespace
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameCoroNextFrameTest,
+    "Game.Core.Async.Coro.NextFrame",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证 C++20 协程通过 NextFrame 跨帧挂起与下一次心跳精确恢复
+ * @param Parameters 自动化测试参数
+ * @return 全部断言通过返回 true
+ */
+bool FGameCoroNextFrameTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    FThrottledTickScheduler TickScheduler;
+    int32 StepValue = 0;
+
+    TGameCoroTask<int32> CoroTask = RunNextFrameTestCoro(TickScheduler, StepValue);
+    TestEqual(TEXT("初始执行至首个 NextFrame 挂起点，Step 为 1"), StepValue, 1);
+    TestFalse(TEXT("协程尚未完成"), CoroTask.IsCompleted());
+
+    TickScheduler.Tick(0.016f);
+    TestEqual(TEXT("单帧 Tick 后推进至第 2 步并再次挂起"), StepValue, 2);
+    TestFalse(TEXT("协程尚未完成"), CoroTask.IsCompleted());
+
+    TickScheduler.Tick(0.016f);
+    TestEqual(TEXT("第二次 Tick 后推进至第 3 步"), StepValue, 3);
+    TestTrue(TEXT("两次 NextFrame 后协程全部完成"), CoroTask.IsCompleted());
+    TestEqual(TEXT("协程最终返回值一致"), CoroTask.GetResult().GetValueOr(0), 42);
+
+    return true;
+}
+
+namespace {
+
+TGameCoroTask<int32> RunLongSuspendCoro(
+    FThrottledTickScheduler& Scheduler,
+    int32& OutRaiiDestructCount,
+    int32& OutPostAwaitExecutedCount
+) {
+    FCoroFrameRaiiTracker LocalRaii(&OutRaiiDestructCount);
+    co_await Game::Coro::WaitSeconds(Scheduler, 100.0f);
+    ++OutPostAwaitExecutedCount;
+    co_return 100;
+}
+
+} // namespace
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameCoroImmediateCancelTest,
+    "Game.Core.Async.Coro.ImmediateCancelAndCallback",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证 Task.Cancel() 立即唤醒挂起守卫自毁协程帧并立即派发 WhenCompleted
+ * @param Parameters 自动化测试参数
+ * @return 全部断言通过返回 true
+ */
+bool FGameCoroImmediateCancelTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    FThrottledTickScheduler Scheduler;
+    int32 RaiiDestructCount = 0;
+    int32 PostAwaitExecutedCount = 0;
+
+    TGameCoroTask<int32> Task = RunLongSuspendCoro(
+        Scheduler,
+        RaiiDestructCount,
+        PostAwaitExecutedCount
+    );
+
+    TestFalse(TEXT("协程正在挂起 100s"), Task.IsDone());
+    TestEqual(TEXT("RAII 尚未析构"), RaiiDestructCount, 0);
+
+    bool bCallbackInvoked = false;
+    Task.WhenCompleted([&bCallbackInvoked](TGameStatusResult<int32> Result) {
+        if (Result.IsFailure() && Result.GetError().ErrorCode == Game::CommonErrorCodes::Cancelled) {
+            bCallbackInvoked = true;
+        }
+    });
+
+    const bool bCancelled = Task.Cancel();
+    TestTrue(TEXT("Cancel() 首次返回 true"), bCancelled);
+    TestTrue(TEXT("Cancel() 后协程立即转为 Cancelled"), Task.IsCancelled());
+    TestTrue(TEXT("WhenCompleted 回调立即被触发"), bCallbackInvoked);
+    TestEqual(TEXT("挂起中的协程帧立即被自毁，RAII 析构 1 次"), RaiiDestructCount, 1);
+    TestEqual(TEXT("挂起点后代码 0 次执行"), PostAwaitExecutedCount, 0);
+
+    Scheduler.Tick(200.0f);
+    TestEqual(TEXT("后续 Tick 绝不会重复执行业务"), PostAwaitExecutedCount, 0);
+    TestEqual(TEXT("RAII 对象绝不重复析构"), RaiiDestructCount, 1);
 
     return true;
 }

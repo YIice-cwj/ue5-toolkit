@@ -118,6 +118,7 @@ public:
         , ElementCapacity(FMath::Max(1, InInitialCapacity))
         , ElementCount(0) {
         Elements = static_cast<T*>(Scratchpad.Allocate(sizeof(T) * ElementCapacity, alignof(T)));
+        checkf(Elements != nullptr, TEXT("TScratchArray: Failed to allocate initial scratch memory."));
     }
 
     /**
@@ -131,6 +132,30 @@ public:
     TScratchArray& operator=(const TScratchArray&) = delete;
     TScratchArray(TScratchArray&&) = delete;
     TScratchArray& operator=(TScratchArray&&) = delete;
+
+    /**
+     * @brief 预分配指定容量的连续刮擦内存
+     * @param InCapacity 期望最小容量
+     */
+    void Reserve(int32 InCapacity) {
+        if (InCapacity > ElementCapacity) {
+            EnsureCapacity(InCapacity);
+        }
+    }
+
+    /**
+     * @brief 原地构造并追加元素到数组末尾
+     * @tparam ArgsType 构造实参类型包
+     * @param Args 构造实参
+     * @return 新构造元素的引用
+     */
+    template <typename... ArgsType>
+    T& Emplace(ArgsType&&... Args) {
+        EnsureCapacity(ElementCount + 1);
+        T* NewItem = new (&Elements[ElementCount]) T(Forward<ArgsType>(Args)...);
+        ++ElementCount;
+        return *NewItem;
+    }
 
     /**
      * @brief 追加常量左值元素
@@ -288,16 +313,25 @@ private:
      * @param MinDesiredCapacity 期望最小容量
      */
     void EnsureCapacity(int32 MinDesiredCapacity) {
+        checkf(MinDesiredCapacity > 0, TEXT("TScratchArray: MinDesiredCapacity must be greater than 0."));
         if (MinDesiredCapacity <= ElementCapacity) {
             return;
         }
 
-        int32 NewCapacity = FMath::Max(ElementCapacity * 2, MinDesiredCapacity);
+        const int32 DoubledCapacity = (ElementCapacity <= MAX_int32 / 2) ? (ElementCapacity * 2) : MAX_int32;
+        const int32 NewCapacity = FMath::Max(DoubledCapacity, MinDesiredCapacity);
         T* NewElements = static_cast<T*>(Scratchpad.Allocate(sizeof(T) * NewCapacity, alignof(T)));
+        checkf(NewElements != nullptr, TEXT("TScratchArray: Failed to allocate scratch memory during capacity expansion."));
 
-        for (int32 Index = 0; Index < ElementCount; ++Index) {
-            new (&NewElements[Index]) T(MoveTemp(Elements[Index]));
-            Elements[Index].~T();
+        if constexpr (std::is_trivially_copyable_v<T>) {
+            if (ElementCount > 0) {
+                FMemory::Memcpy(NewElements, Elements, sizeof(T) * ElementCount);
+            }
+        } else {
+            for (int32 Index = 0; Index < ElementCount; ++Index) {
+                new (&NewElements[Index]) T(MoveTemp(Elements[Index]));
+                Elements[Index].~T();
+            }
         }
 
         Elements = NewElements;

@@ -13,6 +13,16 @@
 
 /**
  * @brief 固定容量泛型无锁环形缓冲区模板
+ *
+ * 采用 Dmitry Vyukov 的多生产者多消费者 (MPMC) 序列号算法：
+ * 1. 生产者与消费者通过原子自增获取操作槽位，不同槽位并发无冲突；
+ * 2. 槽位序列号协调生产与消费阶段，杜绝 ABA 问题；
+ * 3. 头部与尾部独立排布。
+ *
+ * @note 本类内部持有定长内联数组 `FSlot Slots[Capacity]`。默认容量（1024）或载荷类型 `T` 较大时，
+ *       占用内存可达数十 KB 以上。严禁在局部调用栈上直接分配大容量实例（易引发栈溢出），
+ *       强烈推荐将其作为类成员变量、单例或通过 `MakeUnique` 在堆上分配持有。
+ *
  * @tparam T 元素类型
  * @tparam Capacity 缓冲区固定容量（必须为大于 1 的 2 的整次幂）
  */
@@ -25,8 +35,9 @@ public:
 
 private:
     static constexpr uint32 INDEX_MASK = Capacity - 1;
+    static constexpr size_t SLOT_ALIGNMENT = (alignof(T) > PLATFORM_CACHE_LINE_SIZE) ? alignof(T) : PLATFORM_CACHE_LINE_SIZE;
 
-    struct FSlot {
+    struct alignas(SLOT_ALIGNMENT) FSlot {
         alignas(alignof(T)) TTypeCompatibleBytes<T> Storage;
         std::atomic<uint32> Sequence{0};
     };

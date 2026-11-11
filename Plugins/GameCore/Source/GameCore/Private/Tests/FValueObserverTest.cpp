@@ -10,7 +10,7 @@
 #include "Async/Async.h"
 #include "Misc/AutomationTest.h"
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameValueObserverReplayTest, "Game.Core.Observer.ReplayAndToggle",
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameValueObserverReplayTest, "Game.Core.Listener.Observer.ReplayAndToggle",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 /**
@@ -53,7 +53,7 @@ bool FGameValueObserverReplayTest::RunTest([[maybe_unused]] const FString& Param
     return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameValueObserverCommitOrderTest, "Game.Core.Observer.NotificationCommitOrder",
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameValueObserverCommitOrderTest, "Game.Core.Listener.Observer.NotificationCommitOrder",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 /**
@@ -96,7 +96,7 @@ bool FGameValueObserverCommitOrderTest::RunTest([[maybe_unused]] const FString& 
     return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameValueObserverReentrantReplayOrderTest, "Game.Core.Observer.ReentrantReplayOrder",
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameValueObserverReentrantReplayOrderTest, "Game.Core.Listener.Observer.ReentrantReplayOrder",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 /**

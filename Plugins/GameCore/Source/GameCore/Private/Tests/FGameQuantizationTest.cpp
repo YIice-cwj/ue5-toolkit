@@ -145,6 +145,15 @@ bool FGameQuantizationVectorAndBitMaskTest::RunTest([[maybe_unused]] const FStri
     SafeBoundsMask.Set(OutOfBoundsBit);
     TestFalse(TEXT("越界枚举位 Has 查询安全返回 false"), SafeBoundsMask.Has(OutOfBoundsBit));
 
+    TMap<TBitMask<ETestChannelBits>, FString> MaskMap;
+    MaskMap.Add(MaskA, TEXT("CollisionAndAudio"));
+    MaskMap.Add(MaskB, TEXT("AudioAndEffects"));
+    const FString* FoundA = MaskMap.Find(MaskA);
+    TestNotNull(TEXT("TBitMask 作为 TMap 键可精确命中"), FoundA);
+    if (FoundA != nullptr) {
+        TestEqual(TEXT("命中值正确"), *FoundA, FString(TEXT("CollisionAndAudio")));
+    }
+
     return true;
 }
 

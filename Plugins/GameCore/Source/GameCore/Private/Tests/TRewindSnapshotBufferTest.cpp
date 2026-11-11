@@ -29,7 +29,7 @@ struct FSimpleMotionState {
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     TRewindSnapshotBufferBasicAndInterpolationTest,
-    "Game.Core.Containers.RewindSnapshotBuffer.BasicAndInterpolation",
+    "Game.Core.Determinism.RewindSnapshotBuffer.BasicAndInterpolation",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 

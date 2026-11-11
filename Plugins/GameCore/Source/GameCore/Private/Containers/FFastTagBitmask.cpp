@@ -5,6 +5,8 @@
 
 #include "Containers/FFastTagBitmask.h"
 
+DEFINE_LOG_CATEGORY_STATIC(LogGameFastTag, Log, All);
+
 /**
  * @brief 获取全局单例字典实例
  * @return 字典单例引用
@@ -32,7 +34,7 @@ int32 FFastTagDictionary::RegisterOrFindTag(FName TagName) {
 
     if (RegisteredTagNames.Num() >= MaxTagCount) {
         UE_LOG(
-            LogTemp,
+            LogGameFastTag,
             Warning,
             TEXT("FFastTagDictionary::RegisterOrFindTag failed: Tag limit (%d) reached when registering '%s'."),
             MaxTagCount,

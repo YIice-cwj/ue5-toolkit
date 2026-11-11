@@ -78,6 +78,18 @@ bool FGameRandomStreamDeterminismAndSamplingTest::RunTest([[maybe_unused]] const
         TestEqual(TEXT("SerializeState 恢复后后续输出与原流完全一致"), RestoredStream.NextUInt32(), StreamA.NextUInt32());
     }
 
+    TArray<uint8> StreamOpBytes;
+    {
+        FMemoryWriter OpWriter(StreamOpBytes);
+        OpWriter << StreamA;
+    }
+    FGameRandomStream RestoredStreamViaOp2(888ULL);
+    {
+        FMemoryReader OpReader(StreamOpBytes);
+        OpReader << RestoredStreamViaOp2;
+    }
+    TestEqual(TEXT("operator<< 流式反序列化状态一致"), RestoredStreamViaOp2.GetState(), StreamA.GetState());
+
     TestEqual(TEXT("NextBoundedUInt32(0) 返回 0"), StreamA.NextBoundedUInt32(0u), 0u);
     TestEqual(TEXT("NextBoundedUInt32(1) 返回 0"), StreamA.NextBoundedUInt32(1u), 0u);
     TestEqual(TEXT("单点闭区间 RandRange(7, 7) 返回 7"), StreamA.RandRange(7, 7), 7);
@@ -186,6 +198,13 @@ bool FPseudoRandomDistributionTest::RunTest([[maybe_unused]] const FString& Para
     CritPrd.Reset();
     TestEqual(TEXT("Reset 清零连续失败计数"), CritPrd.GetFailureStreak(), 0);
 
+    FPseudoRandomDistribution RawPrd;
+    if (FProperty* Prop = FPseudoRandomDistribution::StaticStruct()->FindPropertyByName(TEXT("NominalProbability"))) {
+        const float Val = 0.20f;
+        Prop->SetValue_InContainer(&RawPrd, &Val);
+    }
+    TestTrue(TEXT("未初始化常数的 PRD 具备自动求解保底能力"), RawPrd.GetNextRollProbability() > 0.0f);
+
     return true;
 }
 
@@ -214,7 +233,7 @@ bool FShuffleBagAndWeightedPickerTest::RunTest([[maybe_unused]] const FString& P
 
     Bag.Add(TEXT("Common"), 3);
     Bag.Add(TEXT("Rare"), 2);
-    Bag.Add(TEXT("Epic"), 1);
+    Bag.Emplace(TEXT("Epic"));
     TestEqual(TEXT("袋总容量为 6"), Bag.Num(), 6);
     TestEqual(TEXT("初始剩余可抽数为 6"), Bag.Remaining(), 6);
 
@@ -230,7 +249,8 @@ bool FShuffleBagAndWeightedPickerTest::RunTest([[maybe_unused]] const FString& P
         TestEqual(TEXT("每轮周期 Epic 精确出现 1 次"), CycleCounts.FindRef(TEXT("Epic")), 1);
     }
 
-    [[maybe_unused]] const FName DrawnOnce = Bag.Draw(Stream);
+    [[maybe_unused]] const FName DrawnOnce = Bag.DrawValue(Stream);
+    TestFalse(TEXT("DrawValue 抽取得到有效项"), DrawnOnce.IsNone());
     TestEqual(TEXT("自动重洗抽取 1 次后剩余 5"), Bag.Remaining(), 5);
     Bag.Reshuffle();
     TestEqual(TEXT("手动 Reshuffle 恢复剩余 6"), Bag.Remaining(), 6);

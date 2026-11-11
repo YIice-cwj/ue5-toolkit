@@ -70,6 +70,16 @@ bool FStateChecksumBuilderDeterminismTest::RunTest([[maybe_unused]] const FStrin
     FStateChecksumBuilder EmptyBuilder;
     TestEqual(TEXT("Reset 后恢复初始哈希"), BuilderA.Finalize(), EmptyBuilder.Finalize());
 
+    FStateChecksumBuilder BuilderNaN1;
+    BuilderNaN1.AddFloatQuantized(NAN, 0.001f);
+    BuilderNaN1.AddVectorQuantized(FVector(NAN, INFINITY, -INFINITY), 0.01f);
+
+    FStateChecksumBuilder BuilderNaN2;
+    BuilderNaN2.AddFloatQuantized(NAN, 0.001f);
+    BuilderNaN2.AddVectorQuantized(FVector(NAN, INFINITY, -INFINITY), 0.01f);
+
+    TestEqual(TEXT("非法浮点（NAN/INF）输入具备一致的哈希结果且不崩溃"), BuilderNaN1.Finalize(), BuilderNaN2.Finalize());
+
     return true;
 }
 

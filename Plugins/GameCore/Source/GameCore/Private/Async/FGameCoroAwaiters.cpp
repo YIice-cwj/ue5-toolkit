@@ -256,4 +256,54 @@ FYieldTimeSliceAwaiter YieldTimeSlice(const UObject* WorldContextObject) noexcep
     return FYieldTimeSliceAwaiter(Subsystem ? &Subsystem->GetScheduler() : nullptr);
 }
 
+/**
+ * @brief 挂起协程并在下一次 Tick 到达时单次唤醒
+ * @param InGuard 挂起点协程帧安全守卫
+ */
+void FNextFrameAwaiter::SuspendWithGuard(
+    TSharedRef<FGameCoroSuspensionGuard, ESPMode::ThreadSafe> InGuard
+) {
+    if (Scheduler == nullptr) {
+        InGuard->AbortAndDestroyFrame();
+        return;
+    }
+
+    FThrottledTickScheduler* SchedulerPtr = Scheduler;
+    TSharedRef<uint64, ESPMode::ThreadSafe> HandleSlot = MakeShared<uint64, ESPMode::ThreadSafe>(0ULL);
+
+    const uint64 RegisteredHandle = SchedulerPtr->RegisterIntervalTick(
+        [InGuard]() {
+            return !InGuard->GetState()->ShouldAbort();
+        },
+        0.0f,
+        [SchedulerPtr, HandleSlot, InGuard](float) {
+            if (*HandleSlot != 0ULL) {
+                SchedulerPtr->UnregisterTick(*HandleSlot);
+                *HandleSlot = 0ULL;
+            }
+            if (InGuard->GetState()->ShouldAbort()) {
+                InGuard->AbortAndDestroyFrame();
+                return;
+            }
+            InGuard->ResumeOrAbort();
+        }
+    );
+
+    if (RegisteredHandle == 0ULL) {
+        InGuard->AbortAndDestroyFrame();
+        return;
+    }
+    *HandleSlot = RegisteredHandle;
+}
+
+/**
+ * @brief 基于世界上下文绑定的 UThrottledTickerSubsystem 挂起并等待至下一帧恢复
+ * @param WorldContextObject 世界上下文对象
+ * @return 下一帧等待 Awaiter
+ */
+FNextFrameAwaiter NextFrame(const UObject* WorldContextObject) noexcept {
+    UThrottledTickerSubsystem* Subsystem = UThrottledTickerSubsystem::GetPtr(WorldContextObject);
+    return FNextFrameAwaiter(Subsystem ? &Subsystem->GetScheduler() : nullptr);
+}
+
 } // namespace Game::Coro

@@ -13,6 +13,8 @@
  * @param CustomBudgetSeconds 可选自定义预算秒数（<= 0 时采用内部设置的 FrameBudgetSeconds）
  */
 void FTimeSliceScheduler::Step(double CustomBudgetSeconds) {
+    checkf(IsInGameThread(), TEXT("FTimeSliceScheduler::Step must be called on GameThread"));
+
     if (bIsStepping || QueueHeadIndex >= TaskQueue.Num()) {
         return;
     }
@@ -61,6 +63,8 @@ void FTimeSliceScheduler::Step(double CustomBudgetSeconds) {
  * @param BudgetMilliseconds 单帧毫秒预算
  */
 void FTimeSliceScheduler::SetFrameBudgetMilliseconds(double BudgetMilliseconds) noexcept {
+    checkf(IsInGameThread(), TEXT("FTimeSliceScheduler::SetFrameBudgetMilliseconds must be called on GameThread"));
+
     const double ClampedMs = FMath::Max(MIN_FRAME_BUDGET_MS, BudgetMilliseconds);
     FrameBudgetSeconds = ClampedMs * 0.001;
 }
@@ -70,6 +74,8 @@ void FTimeSliceScheduler::SetFrameBudgetMilliseconds(double BudgetMilliseconds) 
  * @param InClockSource 返回当前秒数的时钟函数
  */
 void FTimeSliceScheduler::SetClockSource(FClockSource InClockSource) {
+    checkf(IsInGameThread(), TEXT("FTimeSliceScheduler::SetClockSource must be called on GameThread"));
+
     CustomClock = MoveTemp(InClockSource);
 }
 
@@ -80,6 +86,8 @@ void FTimeSliceScheduler::SetClockSource(FClockSource InClockSource) {
  * @return 分配的任务 ID
  */
 uint64 FTimeSliceScheduler::EnqueueTask(FOwnerValidator InValidator, FStepTaskCallback StepWork) {
+    checkf(IsInGameThread(), TEXT("FTimeSliceScheduler::EnqueueTask must be called on GameThread"));
+
     if (!InValidator || !InValidator() || !StepWork) {
         return 0ULL;
     }
@@ -95,6 +103,8 @@ uint64 FTimeSliceScheduler::EnqueueTask(FOwnerValidator InValidator, FStepTaskCa
  * @return 分配的任务 ID
  */
 uint64 FTimeSliceScheduler::EnqueueTask(TWeakObjectPtr<UObject> Owner, FStepTaskCallback StepWork) {
+    checkf(IsInGameThread(), TEXT("FTimeSliceScheduler::EnqueueTask must be called on GameThread"));
+
     if (!Owner.IsValid() || !StepWork) {
         return 0ULL;
     }
@@ -112,6 +122,8 @@ uint64 FTimeSliceScheduler::EnqueueTask(TWeakObjectPtr<UObject> Owner, FStepTask
  * @return 分配的任务 ID
  */
 uint64 FTimeSliceScheduler::EnqueueTask(FStepTaskCallback StepWork) {
+    checkf(IsInGameThread(), TEXT("FTimeSliceScheduler::EnqueueTask must be called on GameThread"));
+
     if (!StepWork) {
         return 0ULL;
     }
@@ -133,6 +145,8 @@ uint64 FTimeSliceScheduler::EnqueueBatch(
     int32 TotalCount,
     FBatchIterationCallback PerItemWork,
     FBatchCompleteCallback OnComplete) {
+    checkf(IsInGameThread(), TEXT("FTimeSliceScheduler::EnqueueBatch must be called on GameThread"));
+
     if (!Owner.IsValid() || !PerItemWork) {
         return 0ULL;
     }
@@ -161,11 +175,52 @@ uint64 FTimeSliceScheduler::EnqueueBatch(
 }
 
 /**
+ * @brief 注册定长批量迭代切片任务（无宿主绑定的纯 C++ 全局任务）
+ * @param TotalCount 迭代总项数
+ * @param PerItemWork 单项处理闭包
+ * @param OnComplete 全部完成回调
+ * @return 分配的任务 ID
+ */
+uint64 FTimeSliceScheduler::EnqueueBatch(
+    int32 TotalCount,
+    FBatchIterationCallback PerItemWork,
+    FBatchCompleteCallback OnComplete) {
+    checkf(IsInGameThread(), TEXT("FTimeSliceScheduler::EnqueueBatch must be called on GameThread"));
+
+    if (!PerItemWork) {
+        return 0ULL;
+    }
+    if (TotalCount <= 0) {
+        if (OnComplete) {
+            OnComplete();
+        }
+        return 0ULL;
+    }
+
+    int32 CurrentIndex = 0;
+    return EnqueueTask(
+        [CurrentIndex, TotalCount, ItemFn = MoveTemp(PerItemWork), CompleteFn = MoveTemp(OnComplete)]() mutable -> bool {
+            ItemFn(CurrentIndex);
+            ++CurrentIndex;
+            if (CurrentIndex < TotalCount) {
+                return true;
+            }
+            if (CompleteFn) {
+                CompleteFn();
+            }
+            return false;
+        }
+    );
+}
+
+/**
  * @brief 按任务 ID 取消任务
  * @param TaskId 目标任务 ID
  * @return 找到并成功取消返回 true
  */
 bool FTimeSliceScheduler::CancelTask(uint64 TaskId) {
+    checkf(IsInGameThread(), TEXT("FTimeSliceScheduler::CancelTask must be called on GameThread"));
+
     if (TaskId == 0ULL) {
         return false;
     }
@@ -195,6 +250,8 @@ bool FTimeSliceScheduler::CancelTask(uint64 TaskId) {
  * @return 活跃态返回 true
  */
 bool FTimeSliceScheduler::IsTaskActive(uint64 TaskId) const {
+    checkf(IsInGameThread(), TEXT("FTimeSliceScheduler::IsTaskActive must be called on GameThread"));
+
     if (TaskId == 0ULL) {
         return false;
     }
@@ -213,6 +270,8 @@ bool FTimeSliceScheduler::IsTaskActive(uint64 TaskId) const {
  * @brief 清空全部待执行任务并标记当前运行中任务取消
  */
 void FTimeSliceScheduler::ClearAllTasks() {
+    checkf(IsInGameThread(), TEXT("FTimeSliceScheduler::ClearAllTasks must be called on GameThread"));
+
     TaskQueue.Empty();
     QueueHeadIndex = 0;
     if (ExecutingTaskId != 0ULL) {
@@ -225,6 +284,8 @@ void FTimeSliceScheduler::ClearAllTasks() {
  * @return 任务数
  */
 int32 FTimeSliceScheduler::GetPendingTaskCount() const noexcept {
+    checkf(IsInGameThread(), TEXT("FTimeSliceScheduler::GetPendingTaskCount must be called on GameThread"));
+
     const int32 ActiveRunning = (ExecutingTaskId != 0ULL && !bExecutingTaskCancelled) ? 1 : 0;
     const int32 QueuedCount = FMath::Max(0, TaskQueue.Num() - QueueHeadIndex);
     return QueuedCount + ActiveRunning;

@@ -90,4 +90,57 @@ bool FGameMathSpatialGeometryTest::RunTest([[maybe_unused]] const FString& Param
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameMathExpDecayTest,
+    "Game.Core.Math.ExpDecay",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证指数衰减阻尼的半衰期理论值准确性、多帧率步进一致性与极值守卫
+ * @param Parameters 自动化测试参数
+ * @return 全部断言通过返回 true
+ */
+bool FGameMathExpDecayTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    const float HalfLife = 0.5f;
+    const float Initial = 0.0f;
+    const float Target = 100.0f;
+
+    const float OneHalfLifeVal = FGameMath::ExpDecayFloat(Initial, Target, HalfLife, HalfLife);
+    TestTrue(TEXT("经过恰好 1 个半衰期时误差恰好缩小 50%（到达 50）"), FMath::IsNearlyEqual(OneHalfLifeVal, 50.0f, 0.01f));
+
+    const float TwoHalfLifeVal = FGameMath::ExpDecayFloat(Initial, Target, HalfLife, HalfLife * 2.0f);
+    TestTrue(TEXT("经过 2 个半衰期时到达 75"), FMath::IsNearlyEqual(TwoHalfLifeVal, 75.0f, 0.01f));
+
+    float FastTickVal = Initial;
+    for (int32 Step = 0; Step < 120; ++Step) {
+        FastTickVal = FGameMath::ExpDecayFloat(FastTickVal, Target, HalfLife, 1.0f / 120.0f);
+    }
+
+    float SlowTickVal = Initial;
+    for (int32 Step = 0; Step < 30; ++Step) {
+        SlowTickVal = FGameMath::ExpDecayFloat(SlowTickVal, Target, HalfLife, 1.0f / 30.0f);
+    }
+    TestTrue(TEXT("120Hz 与 30Hz 累计 1 秒后结果在数学上精确一致"), FMath::IsNearlyEqual(FastTickVal, SlowTickVal, 0.01f));
+
+    const float ZeroDtVal = FGameMath::ExpDecayFloat(42.0f, 100.0f, HalfLife, 0.0f);
+    TestEqual(TEXT("DeltaTime 为 0 时保持原值不变"), ZeroDtVal, 42.0f);
+
+    const float InstantVal = FGameMath::ExpDecayFloat(10.0f, 100.0f, 0.0f, 0.016f);
+    TestEqual(TEXT("HalfLife 为 0 时瞬时收敛至目标值"), InstantVal, 100.0f);
+
+    const FVector VecInitial(0.0, 0.0, 0.0);
+    const FVector VecTarget(100.0, 200.0, 300.0);
+    const FVector VecHalf = FGameMath::ExpDecayVector(VecInitial, VecTarget, HalfLife, HalfLife);
+    TestTrue(TEXT("向量各分量在 1 个半衰期精准到达中点"), VecHalf.Equals(FVector(50.0, 100.0, 150.0), 0.1));
+
+    const FQuat QuatA = FQuat::Identity;
+    const FQuat QuatB = FQuat(FVector::UpVector, FMath::DegreesToRadians(90.0f));
+    const FQuat QuatHalf = FGameMath::ExpDecayQuat(QuatA, QuatB, HalfLife, HalfLife);
+    const FQuat QuatExpected = FQuat(FVector::UpVector, FMath::DegreesToRadians(45.0f));
+    TestTrue(TEXT("四元数在 1 个半衰期平滑旋转 45 度"), QuatHalf.Equals(QuatExpected, 0.02f));
+
+    return true;
+}
+
 #endif

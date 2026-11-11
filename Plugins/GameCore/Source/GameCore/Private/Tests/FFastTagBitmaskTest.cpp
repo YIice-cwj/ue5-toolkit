@@ -11,6 +11,8 @@
 
 #include "Async/ParallelFor.h"
 #include "Misc/AutomationTest.h"
+#include "Serialization/MemoryReader.h"
+#include "Serialization/MemoryWriter.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FFastTagBitmaskBasicOpsTest,
@@ -74,17 +76,72 @@ bool FFastTagBitmaskBasicOpsTest::RunTest([[maybe_unused]] const FString& Parame
     FFastTagBitmask Intersected = MaskA & MaskB;
     TestEqual(TEXT("位与交集结果正确"), Intersected.Value, 0b0100ULL);
 
+    FFastTagBitmask AssignOrMask(0b0101ULL);
+    AssignOrMask |= FFastTagBitmask(0b0010ULL);
+    TestEqual(TEXT("复合位或赋值生效"), AssignOrMask.Value, 0b0111ULL);
+
+    AssignOrMask &= FFastTagBitmask(0b0011ULL);
+    TestEqual(TEXT("复合位与赋值生效"), AssignOrMask.Value, 0b0011ULL);
+
     FFastTagBitmask Inverted = ~FFastTagBitmask(0ULL);
     TestEqual(TEXT("全位翻转计数值为 64"), Inverted.CountBits(), 64);
 
-    MaskA.Combine(MaskB);
-    TestEqual(TEXT("Combine 操作生效"), MaskA.Value, 0b0111ULL);
+    MaskA |= MaskB;
+    TestEqual(TEXT("掩码或运算生效"), MaskA.Value, 0b0111ULL);
 
-    MaskA.Remove(MaskB);
-    TestEqual(TEXT("Remove 操作生效"), MaskA.Value, 0b0001ULL);
+    MaskA -= MaskB;
+    TestEqual(TEXT("掩码复合差集赋值生效"), MaskA.Value, 0b0001ULL);
+
+    const FFastTagBitmask Diff = FFastTagBitmask(0b0111ULL) - MaskB;
+    TestEqual(TEXT("掩码差集运算符生效"), Diff.Value, 0b0001ULL);
+
+    const FFastTagBitmask XorMask = FFastTagBitmask(0b0101ULL) ^ MaskB;
+    TestEqual(TEXT("掩码异或运算符生效"), XorMask.Value, 0b0011ULL);
+
+    FFastTagBitmask AssignXorMask(0b0101ULL);
+    AssignXorMask ^= MaskB;
+    TestEqual(TEXT("掩码复合异或赋值生效"), AssignXorMask.Value, 0b0011ULL);
+
+    constexpr FFastTagBitmask ConstexprMask = []() consteval {
+        FFastTagBitmask M(0b0001ULL);
+        M.AddTag(1);
+        M.RemoveTag(0);
+        M.ToggleTag(3);
+        return M;
+    }();
+    static_assert(ConstexprMask.Value == 0b1010ULL);
+    static_assert(ConstexprMask.HasTag(1));
+    static_assert(!ConstexprMask.HasTag(0));
+    static_assert(!ConstexprMask.IsEmpty());
+    static_assert(ConstexprMask.HasAny(FFastTagBitmask(0b0010ULL)));
+    static_assert(ConstexprMask.HasAll(FFastTagBitmask(0b1010ULL)));
+    static_assert(ConstexprMask.HasNone(FFastTagBitmask(0b0101ULL)));
 
     MaskA.Clear();
     TestTrue(TEXT("Clear 后恢复为空"), MaskA.IsEmpty());
+
+    TMap<FFastTagBitmask, FString> BitmaskMap;
+    const FFastTagBitmask KeyMaskA(0b10101ULL);
+    const FFastTagBitmask KeyMaskB(0b01010ULL);
+    BitmaskMap.Add(KeyMaskA, TEXT("StateA"));
+    BitmaskMap.Add(KeyMaskB, TEXT("StateB"));
+    const FString* FoundState = BitmaskMap.Find(KeyMaskA);
+    TestNotNull(TEXT("FFastTagBitmask 作为 TMap 键可精确命中"), FoundState);
+    if (FoundState != nullptr) {
+        TestEqual(TEXT("命中值正确"), *FoundState, FString(TEXT("StateA")));
+    }
+
+    TArray<uint8> ArchiveBuffer;
+    FMemoryWriter Writer(ArchiveBuffer);
+    FFastTagBitmask SaveMask(0xDEADBEEFCAFEULL);
+    Writer << SaveMask;
+    TestTrue(TEXT("归档写入数据非空"), ArchiveBuffer.Num() > 0);
+
+    FMemoryReader Reader(ArchiveBuffer);
+    FFastTagBitmask LoadedMask;
+    Reader << LoadedMask;
+    TestEqual(TEXT("归档序列化往返无损一致"), LoadedMask.Value, 0xDEADBEEFCAFEULL);
+    TestTrue(TEXT("往返还原掩码与源掩码相等"), LoadedMask == SaveMask);
 
     return true;
 }

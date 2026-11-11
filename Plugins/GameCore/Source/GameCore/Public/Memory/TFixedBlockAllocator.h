@@ -97,10 +97,14 @@ public:
             return;
         }
 
+        checkf(AllocatedCount > 0, TEXT("TFixedBlockAllocator: Deallocate called when AllocatedCount is 0 (potential double-free)."));
+
         FNode* Node = static_cast<FNode*>(Ptr);
         Node->Next = FreeList;
         FreeList = Node;
-        --AllocatedCount;
+        if (AllocatedCount > 0) {
+            --AllocatedCount;
+        }
     }
 
     /**

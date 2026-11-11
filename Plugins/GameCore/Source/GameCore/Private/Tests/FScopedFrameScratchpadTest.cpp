@@ -182,9 +182,15 @@ bool TScratchArrayTest::RunTest([[maybe_unused]] const FString& Parameters) {
         TestTrue(TEXT("Reset 后为空"), Numbers.IsEmpty());
         TestEqual(TEXT("Reset 后数量为 0"), Numbers.Num(), 0);
 
+        Numbers.Reserve(64);
+        TestTrue(TEXT("Reserve 后容量至少为 64"), Numbers.Capacity() >= 64);
+        Numbers.Emplace(99);
+        TestEqual(TEXT("Emplace 成功写入元素"), Numbers[0], 99);
+        TestEqual(TEXT("Emplace 后数量为 1"), Numbers.Num(), 1);
+
         TScratchArray<FDestructorCounter> ComplexItems(Scratch, 4);
         ComplexItems.Add(FDestructorCounter(&DestructionCount, 1));
-        ComplexItems.Add(FDestructorCounter(&DestructionCount, 2));
+        ComplexItems.Emplace(&DestructionCount, 2);
         TestEqual(TEXT("元素添加过程不发生外部对象析构漏记"), ComplexItems.Num(), 2);
 
         FDestructorCounter PoppedComplex = ComplexItems.Pop();

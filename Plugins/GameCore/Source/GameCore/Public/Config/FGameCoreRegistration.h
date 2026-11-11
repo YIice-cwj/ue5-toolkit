@@ -25,15 +25,7 @@ public:
      * @brief 注册编译开关桥接键（幂等；当传入非空 InGameInstance 时同时向该 PIE 实例对应的世界隔离配置表注册）
      * @param InGameInstance 当前 GameInstance（可空，模块启动阶段传 nullptr 注册全局根表）
      */
-    static void RegisterAll(UGameInstance* InGameInstance);
-
-    /**
-     * @brief 注销统一入口（对称接口）
-     * @param InGameInstance 当前 GameInstance
-     *
-     * 实现思路：全局编译开关桥接键在进程周期内保持常驻，与 RegisterAll 保持对称调用契约。
-     */
-    static void UnregisterAll(UGameInstance* InGameInstance);
+    static void RegisterAll(UGameInstance* InGameInstance = nullptr);
 
     /**
      * @brief 注册某业务域的缓存策略默认键（Cache.{Domain}.*，幂等；Domain 为 None 时记录 Warning 并忽略）

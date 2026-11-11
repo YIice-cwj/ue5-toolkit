@@ -87,4 +87,49 @@ public:
         float MaxDistance,
         float HalfAngleDegrees
     ) noexcept;
+
+    /**
+     * @brief 基于半衰期参数化的一维标量精确帧率无关指数衰减平滑
+     * @param CurrentValue 当前标量值
+     * @param TargetValue 目标标量值
+     * @param HalfLifeSeconds 误差衰减至一半所需的半衰期时长（秒，<=0 时瞬时收敛）
+     * @param DeltaSeconds 帧流逝时间（秒，<=0 时原样返回当前值）
+     * @return 更新后的平滑标量值
+     */
+    [[nodiscard]] static float ExpDecayFloat(
+        float CurrentValue,
+        float TargetValue,
+        float HalfLifeSeconds,
+        float DeltaSeconds
+    ) noexcept;
+
+    /**
+     * @brief 基于半衰期参数化的三维向量精确帧率无关指数衰减平滑
+     * @param CurrentValue 当前三维向量
+     * @param TargetValue 目标三维向量
+     * @param HalfLifeSeconds 误差衰减至一半所需的半衰期时长（秒，<=0 时瞬时收敛）
+     * @param DeltaSeconds 帧流逝时间（秒，<=0 时原样返回当前值）
+     * @return 更新后的平滑三维向量
+     */
+    [[nodiscard]] static FVector ExpDecayVector(
+        const FVector& CurrentValue,
+        const FVector& TargetValue,
+        float HalfLifeSeconds,
+        float DeltaSeconds
+    ) noexcept;
+
+    /**
+     * @brief 基于半衰期参数化的四元数精确帧率无关球面指数衰减平滑（自适应双向最短路径）
+     * @param CurrentValue 当前旋转四元数
+     * @param TargetValue 目标旋转四元数
+     * @param HalfLifeSeconds 误差衰减至一半所需的半衰期时长（秒，<=0 时瞬时收敛）
+     * @param DeltaSeconds 帧流逝时间（秒，<=0 时原样返回当前值）
+     * @return 更新后的归一化旋转四元数
+     */
+    [[nodiscard]] static FQuat ExpDecayQuat(
+        const FQuat& CurrentValue,
+        const FQuat& TargetValue,
+        float HalfLifeSeconds,
+        float DeltaSeconds
+    ) noexcept;
 };

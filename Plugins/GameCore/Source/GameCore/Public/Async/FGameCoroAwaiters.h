@@ -251,6 +251,43 @@ private:
 };
 
 /**
+ * @brief 基于 FThrottledTickScheduler 的下一帧 Tick 唤醒等待 Awaiter
+ */
+class GAMECORE_API FNextFrameAwaiter {
+public:
+    /**
+     * @brief 构造下一帧等待器
+     * @param InScheduler 节流调度器指针
+     */
+    explicit FNextFrameAwaiter(FThrottledTickScheduler* InScheduler) noexcept
+        : Scheduler(InScheduler) {
+    }
+
+    /**
+     * @brief 始终挂起以确保至少让出执行权至下一帧
+     * @return 恒返回 false
+     */
+    [[nodiscard]] constexpr bool await_ready() const noexcept {
+        return false;
+    }
+
+    /**
+     * @brief 挂起协程并在下一次 Tick 到达时单次唤醒
+     * @param InGuard 挂起点协程帧安全守卫
+     */
+    void SuspendWithGuard(TSharedRef<FGameCoroSuspensionGuard, ESPMode::ThreadSafe> InGuard);
+
+    /**
+     * @brief 恢复执行空操作
+     */
+    constexpr void await_resume() const noexcept {
+    }
+
+private:
+    FThrottledTickScheduler* Scheduler = nullptr;
+};
+
+/**
  * @brief 在协程内绑定宿主 UObject 弱引用与可选协同取消令牌（宿主为空或已销毁时在挂起点立即自毁协程帧）
  * @param InOwner 宿主 UObject 指针
  * @param InToken 可选外部协同取消令牌
@@ -373,5 +410,21 @@ template <typename TResult>
  * @return 时间切片让出 Awaiter
  */
 [[nodiscard]] GAMECORE_API FYieldTimeSliceAwaiter YieldTimeSlice(const UObject* WorldContextObject) noexcept;
+
+/**
+ * @brief 基于纯 C++ 节流调度器挂起并等待至下一帧恢复
+ * @param InScheduler 节流调度器引用
+ * @return 下一帧等待 Awaiter
+ */
+[[nodiscard]] inline FNextFrameAwaiter NextFrame(FThrottledTickScheduler& InScheduler) noexcept {
+    return FNextFrameAwaiter(&InScheduler);
+}
+
+/**
+ * @brief 基于世界上下文绑定的 UThrottledTickerSubsystem 挂起并等待至下一帧恢复
+ * @param WorldContextObject 世界上下文对象
+ * @return 下一帧等待 Awaiter
+ */
+[[nodiscard]] GAMECORE_API FNextFrameAwaiter NextFrame(const UObject* WorldContextObject) noexcept;
 
 } // namespace Game::Coro

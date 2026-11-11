@@ -120,21 +120,6 @@ public:
     }
 
     /**
-     * @brief 获取目标元素的当前三维坐标（输出参数兼容重载）
-     * @param Element 待查询的元素标识
-     * @param OutLocation 输出三维空间坐标
-     * @return 找到有效元素返回 true，否则返回 false
-     */
-    bool GetLocation(const TElement& Element, FVector& OutLocation) const {
-        const TGameStatusResult<FVector> Result = GetLocation(Element);
-        if (Result.IsSuccess()) {
-            OutLocation = Result.GetValue();
-            return true;
-        }
-        return false;
-    }
-
-    /**
      * @brief 清空网格中所有已注册元素与单元格桶
      */
     void Clear() {

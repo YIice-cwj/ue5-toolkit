@@ -45,8 +45,8 @@ DEFAULT_CASES = (
     "Game.GameplayCore.Stat.AcknowledgedDiff",
     "Game.GameplayCore.Buff.ModifierBridge",
     "Game.Data.Repository.Codec",
-    "Game.Core.Time.HitStopTable",
-    "Game.Core.Time.DilationMixer",
+    "Game.Feedback.Time.HitStopTable",
+    "Game.Feedback.Time.DilationMixer",
     "Game.Gameplay.Bootstrap.RetryGate",
 )
 
@@ -58,6 +58,12 @@ REGRESSION_PREFIXES = (
     "Game.Data",
     "Game.Feedback",
     "Game.Net",
+    "Game.Asset",
+    "Game.Debug",
+    "Game.Flow",
+    "Game.Message",
+    "Game.Pool",
+    "Game.Spatial",
 )
 
 COMPLETED_LINE = "Test Completed."

@@ -10,6 +10,7 @@
 #include "GameFramework/MovementComponent.h"
 #include "Particles/ParticleSystemComponent.h"
 #include "Pool/IGamePoolable.h"
+#include "Async/FGameCoroAwaiters.h"
 #include "Async/UTimeSlicedTaskSubsystem.h"
 #include "TimerManager.h"
 
@@ -186,6 +187,38 @@ FTimeSlicedTaskHandle UObjectPoolSubsystem::PrewarmTimeSliced(
         }
         return *RemainingCount > 0;
     });
+}
+
+/**
+ * @brief C++20 协程分帧渐进预热 Actor 对象池（按帧预算让出，支持直接 co_await 与生命周期自毁熔断）
+ * @param ActorClass 目标 Actor 类
+ * @param PrewarmCount 预热生成的空闲实例总数量
+ * @param MaxSpawnsPerStep 单步最大生成实例数（默认每步 1 个）
+ * @return 实际成功预热生成的实例总数异步协程任务
+ */
+TGameCoroTask<int32> UObjectPoolSubsystem::PrewarmAsync(
+    TSubclassOf<AActor> ActorClass,
+    int32 PrewarmCount,
+    int32 MaxSpawnsPerStep
+) {
+    co_await Game::Coro::BindContext(this);
+    if (!ActorClass || ActorClass->HasAnyClassFlags(CLASS_Abstract) || PrewarmCount <= 0) {
+        co_return 0;
+    }
+
+    int32 Total = 0;
+    int32 Active = 0;
+    int32 InitialIdle = 0;
+    GetPoolStats(ActorClass, Total, Active, InitialIdle);
+
+    FTimeSlicedTaskHandle Handle = PrewarmTimeSliced(ActorClass, PrewarmCount, MaxSpawnsPerStep);
+    while (Handle.IsActive()) {
+        co_await Game::Coro::YieldTimeSlice(this);
+    }
+
+    int32 FinalIdle = 0;
+    GetPoolStats(ActorClass, Total, Active, FinalIdle);
+    co_return FinalIdle - InitialIdle;
 }
 
 void UObjectPoolSubsystem::SetMaxPoolCapacity(TSubclassOf<AActor> ActorClass, int32 InMaxIdleCount) {

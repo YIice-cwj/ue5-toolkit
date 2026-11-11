@@ -9,6 +9,7 @@
 #include "Types/TGameResult.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "Async/FTimeSlicedTaskHandle.h"
+#include "Async/TGameCoroTask.h"
 #include "Templates/SubclassOf.h"
 
 #include "ObjectPoolSubsystem.generated.h"
@@ -59,6 +60,19 @@ public:
         TSubclassOf<AActor> ActorClass,
         int32 PrewarmCount,
         int32 MaxSpawnsPerStep = 1);
+
+    /**
+     * @brief C++20 协程分帧渐进预热 Actor 对象池（按帧预算让出，支持直接 co_await 与生命周期自毁熔断）
+     * @param ActorClass 目标 Actor 类
+     * @param PrewarmCount 预热生成的空闲实例总数量
+     * @param MaxSpawnsPerStep 单步最大生成实例数（默认每步 1 个）
+     * @return 实际成功预热生成的实例总数异步协程任务
+     */
+    TGameCoroTask<int32> PrewarmAsync(
+        TSubclassOf<AActor> ActorClass,
+        int32 PrewarmCount,
+        int32 MaxSpawnsPerStep = 1
+    );
 
     /**
      * @brief 设置指定 Actor 类别的最大空闲实例缓存容量（防长期闲置内存膨胀）

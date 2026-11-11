@@ -8,7 +8,7 @@
 #include "CoreMinimal.h"
 
 /**
- * @brief 帧预算时间切片调度器核心（零 UWorld 依赖，可在任何后台线程、离线 CLI 或纯 C++ 单测中独立运行）
+ * @brief 帧预算时间切片调度器核心（零 UWorld 依赖，可在任何 GameThread 环境或主线程纯 C++ 单测中运行，非线程安全，调用方必须处于 GameThread）
  */
 class GAMECORE_API FTimeSliceScheduler {
 public:
@@ -98,6 +98,19 @@ public:
      */
     uint64 EnqueueBatch(
         TWeakObjectPtr<UObject> Owner,
+        int32 TotalCount,
+        FBatchIterationCallback PerItemWork,
+        FBatchCompleteCallback OnComplete = nullptr
+    );
+
+    /**
+     * @brief 注册定长批量迭代切片任务（无宿主绑定的纯 C++ 全局任务）
+     * @param TotalCount 迭代总项数
+     * @param PerItemWork 单项处理闭包
+     * @param OnComplete 全部完成回调
+     * @return 分配的任务 ID
+     */
+    uint64 EnqueueBatch(
         int32 TotalCount,
         FBatchIterationCallback PerItemWork,
         FBatchCompleteCallback OnComplete = nullptr

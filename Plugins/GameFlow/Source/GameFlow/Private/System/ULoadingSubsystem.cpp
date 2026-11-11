@@ -41,6 +41,10 @@ void ULoadingSubsystem::Deinitialize() {
     FCoreUObjectDelegates::PostLoadMapWithWorld.RemoveAll(this);
     ActiveBarriers.Reset();
     bMapLoadCompletedPendingBarriers = false;
+    bIsLoading = false;
+    TargetLevelName = NAME_None;
+    OnLoadingStateChangedNative.Broadcast(false, NAME_None);
+    OnLoadingStateChangedNative.Clear();
     if constexpr (Game::Config::bEnableLog) {
         UE_LOG(LogGameLoading, Log, TEXT("【加载子系统】已注销引擎地图加载生命周期委托。"));
     }
@@ -73,6 +77,7 @@ void ULoadingSubsystem::OpenLevelWithLoading(const FName& LevelName) {
     bMapLoadCompletedPendingBarriers = false;
     TargetLevelName = LevelName;
     OnLoadingStateChanged.Broadcast(true, TargetLevelName);
+    OnLoadingStateChangedNative.Broadcast(true, TargetLevelName);
 
     UGameplayStatics::OpenLevel(GameInstance, LevelName);
 }
@@ -115,6 +120,7 @@ void ULoadingSubsystem::OnPreLoadMap(const FString& MapName) {
         bIsLoading = true;
         TargetLevelName = FName(*MapName);
         OnLoadingStateChanged.Broadcast(true, TargetLevelName);
+        OnLoadingStateChangedNative.Broadcast(true, TargetLevelName);
         if constexpr (Game::Config::bEnableLog) {
             UE_LOG(LogGameLoading, Log, TEXT("【加载子系统】引擎触发 PreLoadMap，即将开始载入地图: %s"), *MapName);
         }
@@ -148,6 +154,7 @@ void ULoadingSubsystem::FinishLoadingTransition() {
     const FName CompletedLevelName = TargetLevelName;
     TargetLevelName = NAME_None;
     OnLoadingStateChanged.Broadcast(false, CompletedLevelName);
+    OnLoadingStateChangedNative.Broadcast(false, CompletedLevelName);
     if constexpr (Game::Config::bEnableLog) {
         UE_LOG(LogGameLoading, Log, TEXT("【加载子系统】目标关卡 [%s] 及全部就绪屏障已完成，退出加载态。"),
             *CompletedLevelName.ToString());

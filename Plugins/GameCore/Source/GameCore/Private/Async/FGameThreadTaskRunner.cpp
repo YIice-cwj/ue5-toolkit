@@ -6,6 +6,7 @@
 #include "Async/FGameThreadTaskRunner.h"
 
 #include "Async/Async.h"
+#include "Async/TaskGraphInterfaces.h"
 #include "HAL/CriticalSection.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTime.h"
@@ -254,7 +255,7 @@ int32 FGameThreadTaskRunner::GetInFlightTaskCount() noexcept {
 }
 
 /**
- * @brief 等待所有已派发的后台在飞任务执行完毕（优先通过 UE::Tasks::FTask::Wait 协同等待，供模块关停或单元测试排空使用）
+ * @brief 等待所有已派发的后台在飞任务执行完毕（主线程安全等待并泵送续体队列，消除自旋死锁，供模块关停或单元测试排空使用）
  * @param TimeoutSeconds 最大等待超时秒数
  * @return 超时前全部在飞任务排空返回 true
  */
@@ -279,7 +280,10 @@ bool FGameThreadTaskRunner::FlushInFlightTasks(double TimeoutSeconds) {
         if (FPlatformTime::Seconds() >= Deadline) {
             return GInFlightBackgroundTasks.load(std::memory_order_acquire) == 0;
         }
-        FPlatformProcess::Yield();
+        if (IsInGameThread()) {
+            FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);
+        }
+        FPlatformProcess::Sleep(0.001f);
     }
 
     {

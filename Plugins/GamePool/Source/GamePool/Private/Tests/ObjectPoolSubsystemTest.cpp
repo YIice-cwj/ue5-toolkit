@@ -414,6 +414,24 @@ bool FGameObjectPoolResetFlagsAndTimeSliceTest::RunTest([[maybe_unused]] const F
     Pool->GetPoolStats(ActorClass, Total, Active, Idle);
     TestEqual(TEXT("取消分帧预热后不再新增实例"), Idle, 7);
 
+    Pool->ClearPool(ActorClass);
+    TGameCoroTask<int32> InvalidAsyncPrewarm = Pool->PrewarmAsync(nullptr, 5, 2);
+    TestTrue(TEXT("无效类参数协程预热立即完成"), InvalidAsyncPrewarm.IsDone());
+    TestTrue(TEXT("无效类参数协程结果状态正常"), InvalidAsyncPrewarm.GetResult().IsSuccess());
+    TestEqual(TEXT("无效类参数协程预热返回 0"), InvalidAsyncPrewarm.GetResult().GetValue(), 0);
+
+    TGameCoroTask<int32> AsyncPrewarmTask = Pool->PrewarmAsync(ActorClass, 6, 2);
+    SafetyTicks = 0;
+    while (!AsyncPrewarmTask.IsDone() && SafetyTicks < 20) {
+        TaskSubsystem->Tick(0.016f);
+        ++SafetyTicks;
+    }
+    TestTrue(TEXT("分帧渐进预热协程在多帧步进后完成"), AsyncPrewarmTask.IsDone());
+    TestTrue(TEXT("分帧渐进预热协程结果状态成功"), AsyncPrewarmTask.GetResult().IsSuccess());
+    TestEqual(TEXT("分帧渐进预热协程返回成功生成实例数 6"), AsyncPrewarmTask.GetResult().GetValue(), 6);
+    Pool->GetPoolStats(ActorClass, Total, Active, Idle);
+    TestEqual(TEXT("对象池内实际包含 6 个空闲实例"), Idle, 6);
+
     TaskSubsystem->SetFrameBudgetMilliseconds(FTimeSliceScheduler::DEFAULT_FRAME_BUDGET_MS);
     Pool->ClearPool(ActorClass);
     return true;

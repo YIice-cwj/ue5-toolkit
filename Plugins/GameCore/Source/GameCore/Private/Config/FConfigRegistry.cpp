@@ -205,10 +205,15 @@ static FRWLock GWorldRegistryLock;
 static TMap<TWeakObjectPtr<const UWorld>, TSharedPtr<FConfigRegistry>> GWorldRegistries;
 static bool bHookedWorldDestroy = false;
 
+static TSharedPtr<FConfigRegistry> GetGlobalShared() {
+    static TSharedPtr<FConfigRegistry> GlobalInstance = MakeShared<FConfigRegistry>();
+    return GlobalInstance;
+}
+
 }  // namespace
 
 /**
- * @brief 从另一个配置注册表继承已注册条目（用于 PIE 实例继承全局默认配置）
+ * @brief 从另一个配置注册表继承已注册条目（用于多 World 实例继承全局默认配置）
  * @param Other 源注册表引用
  */
 void FConfigRegistry::InheritFrom(const FConfigRegistry& Other) {
@@ -219,27 +224,25 @@ void FConfigRegistry::InheritFrom(const FConfigRegistry& Other) {
 }
 
 /**
- * @brief 获取配置注册表（支持 World 上下文路由与 PIE 多实例隔离）
+ * @brief 获取配置注册表的共享指针（推荐跨帧或持久持有使用，完全杜绝 World 销毁导致的悬垂崩溃）
  * @param WorldContextObject 关联的世界上下文对象（为空时返回全局根注册表）
- * @return 对应的配置注册表引用
+ * @return 对应的配置注册表强引用共享指针
  */
-FConfigRegistry& FConfigRegistry::Get(const UObject* WorldContextObject) {
-    static FConfigRegistry GlobalInstance;
+TSharedPtr<FConfigRegistry> FConfigRegistry::GetShared(const UObject* WorldContextObject) {
     if (WorldContextObject == nullptr) {
-        return GlobalInstance;
+        return GetGlobalShared();
     }
 
-#if WITH_EDITOR
     const UWorld* World = GEngine ? GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::ReturnNull) : nullptr;
     if (World == nullptr) {
-        return GlobalInstance;
+        return GetGlobalShared();
     }
 
     {
         FReadScopeLock ReadLock(GWorldRegistryLock);
         if (const TSharedPtr<FConfigRegistry>* Found = GWorldRegistries.Find(World)) {
             if (Found->IsValid()) {
-                return *Found->Get();
+                return *Found;
             }
         }
     }
@@ -247,7 +250,7 @@ FConfigRegistry& FConfigRegistry::Get(const UObject* WorldContextObject) {
     FWriteScopeLock WriteLock(GWorldRegistryLock);
     if (const TSharedPtr<FConfigRegistry>* Found = GWorldRegistries.Find(World)) {
         if (Found->IsValid()) {
-            return *Found->Get();
+            return *Found;
         }
     }
 
@@ -260,12 +263,20 @@ FConfigRegistry& FConfigRegistry::Get(const UObject* WorldContextObject) {
     }
 
     TSharedPtr<FConfigRegistry> NewRegistry = MakeShared<FConfigRegistry>();
-    NewRegistry->InheritFrom(GlobalInstance);
+    NewRegistry->InheritFrom(*GetGlobalShared());
     GWorldRegistries.Add(World, NewRegistry);
-    return *NewRegistry;
-#else
-    return GlobalInstance;
-#endif
+    return NewRegistry;
+}
+
+/**
+ * @brief 获取配置注册表（支持 World 上下文路由与多实例隔离）
+ * @param WorldContextObject 关联的世界上下文对象（为空时返回全局根注册表）
+ * @return 对应的配置注册表引用
+ */
+FConfigRegistry& FConfigRegistry::Get(const UObject* WorldContextObject) {
+    TSharedPtr<FConfigRegistry> RegistryPtr = GetShared(WorldContextObject);
+    check(RegistryPtr.IsValid());
+    return *RegistryPtr;
 }
 
 /**
@@ -282,18 +293,33 @@ void FConfigRegistry::ClearWorldRegistriesForTesting() {
  * @param DefaultValue 默认值变体
  */
 void FConfigRegistry::ApplyRegister(FName Name, FConfigVariant&& DefaultValue) {
-    FWriteScopeLock WriteLock(RwLock);
-    if (Entries.Contains(Name)) {
-        return;
+    TSharedPtr<FWatcherState> WatcherToNotify;
+    TOptional<FConfigVariant> BroadcastValue;
+    {
+        FWriteScopeLock WriteLock(RwLock);
+        if (Entries.Contains(Name)) {
+            return;
+        }
+        FEntry& Entry = Entries.Emplace(Name);
+        Entry.Value = MoveTemp(DefaultValue);
+        Entry.bReadOnly = IsReadOnlyKeyName(Name);
+        ++Entry.Version;
+        ++GlobalVersion;
+        if constexpr (Game::Config::bEnableLog) {
+            UE_LOG(LogGameConfig, Log, TEXT("【配置注册表】注册配置项: 键=[%s], 类型=[%s], 只读=%s"),
+                *Name.ToString(), *VariantTypeName(Entry.Value), Entry.bReadOnly ? TEXT("True") : TEXT("False"));
+        }
+        if (TSharedPtr<FWatcherState>* Found = Watchers.Find(Name)) {
+            if (Found->IsValid()) {
+                WatcherToNotify = *Found;
+                BroadcastValue.Emplace(Entry.Value);
+            }
+        }
     }
-    FEntry& Entry = Entries.Emplace(Name);
-    Entry.Value = MoveTemp(DefaultValue);
-    Entry.bReadOnly = IsReadOnlyKeyName(Name);
-    ++Entry.Version;
-    ++GlobalVersion;
-    if constexpr (Game::Config::bEnableLog) {
-        UE_LOG(LogGameConfig, Log, TEXT("【配置注册表】注册配置项: 键=[%s], 类型=[%s], 只读=%s"),
-            *Name.ToString(), *VariantTypeName(Entry.Value), Entry.bReadOnly ? TEXT("True") : TEXT("False"));
+    if (WatcherToNotify.IsValid() && BroadcastValue.IsSet()) {
+        if (WatcherToNotify->Enqueue(MoveTemp(*BroadcastValue))) {
+            FNotificationDispatcher::Get().Drain();
+        }
     }
 }
 

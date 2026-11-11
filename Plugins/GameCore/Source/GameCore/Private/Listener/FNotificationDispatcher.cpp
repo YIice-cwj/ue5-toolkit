@@ -21,12 +21,25 @@ bool FNotificationDispatcher::Enqueue(TFunction<void()> InNotification) {
 }
 
 void FNotificationDispatcher::Drain() {
+    struct FDrainGuard {
+        FNotificationDispatcher* Self = nullptr;
+        bool bCleanExit = false;
+
+        ~FDrainGuard() {
+            if (!bCleanExit && Self != nullptr) {
+                FScopeLock Lock(&Self->QueueMutex);
+                Self->bDispatching = false;
+            }
+        }
+    } Guard{this};
+
     for (;;) {
         TFunction<void()> Notification;
         {
             FScopeLock Lock(&QueueMutex);
             if (!Notifications.Dequeue(Notification)) {
                 bDispatching = false;
+                Guard.bCleanExit = true;
                 return;
             }
         }

@@ -9,7 +9,7 @@
 #include "Async/FThrottledTickTypes.h"
 
 /**
- * @brief 分级心跳节流调度器核心（零 UWorld 依赖，可在任何多线程、独立离线工具或纯 C++ 单测中独立运行）
+ * @brief 分级心跳节流调度器核心（零 UWorld 依赖，可在任何 GameThread 环境或主线程纯 C++ 单测中运行，非线程安全，调用方必须处于 GameThread）
  */
 class GAMECORE_API FThrottledTickScheduler {
 public:

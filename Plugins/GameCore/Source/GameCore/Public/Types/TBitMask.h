@@ -198,3 +198,14 @@ private:
 private:
     FUnderlying RawMask;
 };
+
+/**
+ * @brief 计算强类型位掩码哈希值（支持直接作为 TMap / TSet 键）
+ * @tparam TEnum 关联强类型枚举
+ * @param Mask 目标位掩码
+ * @return 32 位哈希值
+ */
+template <typename TEnum>
+[[nodiscard]] uint32 GetTypeHash(const TBitMask<TEnum>& Mask) noexcept {
+    return GetTypeHash(Mask.GetRawMask());
+}

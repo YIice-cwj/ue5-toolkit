@@ -37,7 +37,7 @@ void BurnCpuSeconds(double DurationSeconds) {
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FTimeSlicedSubsystemBudgetAndBatchTest,
-    "Game.Core.Tasks.TimeSliced.BudgetAndBatch",
+    "Game.Core.Async.Tasks.TimeSliced.BudgetAndBatch",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
@@ -125,7 +125,7 @@ bool FTimeSlicedSubsystemBudgetAndBatchTest::RunTest([[maybe_unused]] const FStr
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FTimeSlicedSubsystemWeakOwnerAndCancelTest,
-    "Game.Core.Tasks.TimeSliced.WeakOwnerAndCancel",
+    "Game.Core.Async.Tasks.TimeSliced.WeakOwnerAndCancel",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 

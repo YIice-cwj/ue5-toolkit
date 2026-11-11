@@ -117,6 +117,17 @@ public:
      */
     void SerializeState(FArchive& Ar);
 
+    /**
+     * @brief 序列化随机流状态至归档流（支持 UE 存档与网络流）
+     * @param Ar 归档流
+     * @param Stream 待序列化或反序列化的随机流
+     * @return 归档流引用
+     */
+    friend FArchive& operator<<(FArchive& Ar, FGameRandomStream& Stream) {
+        Stream.SerializeState(Ar);
+        return Ar;
+    }
+
 private:
     /**
      * @brief 执行单步 PCG32 线性同余状态推进

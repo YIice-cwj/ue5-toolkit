@@ -8,6 +8,7 @@
 #include "CoreMinimal.h"
 #include "Misc/ScopeRWLock.h"
 #include "UObject/WeakObjectPtrTemplates.h"
+#include "Async/FGameThreadTaskRunner.h"
 #include "Listener/FNotificationDispatcher.h"
 #include "Listener/FObserverSubscription.h"
 
@@ -154,7 +155,20 @@ typename FObserverState<T>::FSubscribeSnapshot FObserverState<T>::AddListenerWit
     Listeners = MakeShared<const TArray<FListenerEntry>>(MoveTemp(Updated));
     Result.bShouldDrain = FNotificationDispatcher::Get().Enqueue(
         [ReplayListener = MoveTemp(ReplayListener), WeakOwner = InOwner, CurrentValue = Value]() {
-            if (WeakOwner.IsExplicitlyNull() || WeakOwner.IsValid()) {
+            if (!WeakOwner.IsExplicitlyNull()) {
+                if (IsInGameThread()) {
+                    if (WeakOwner.IsValid()) {
+                        ReplayListener(CurrentValue);
+                    }
+                } else {
+                    FGameThreadTaskRunner::RunOnGameThread(
+                        WeakOwner,
+                        [ReplayListener, CurrentValue]() {
+                            ReplayListener(CurrentValue);
+                        }
+                    );
+                }
+            } else {
                 ReplayListener(CurrentValue);
             }
         });
@@ -164,7 +178,7 @@ typename FObserverState<T>::FSubscribeSnapshot FObserverState<T>::AddListenerWit
 template<typename T>
 bool FObserverState<T>::SetValueAndPurge(ConstReference InValue, bool bBroadcast) {
     FWriteScopeLock WriteLock(ListenersLock);
-    if (Listeners.IsValid()) {
+    if (Listeners.IsValid() && IsInGameThread()) {
         bool bHasExpired = false;
         for (const FListenerEntry& Entry : *Listeners) {
             if (Entry.IsOwnerExpired()) {
@@ -185,7 +199,20 @@ bool FObserverState<T>::SetValueAndPurge(ConstReference InValue, bool bBroadcast
     return FNotificationDispatcher::Get().Enqueue(
         [Snapshot = Listeners, ValueSnapshot = Value]() {
             for (const FListenerEntry& Entry : *Snapshot) {
-                if (!Entry.IsOwnerExpired()) {
+                if (!Entry.Owner.IsExplicitlyNull()) {
+                    if (IsInGameThread()) {
+                        if (Entry.Owner.IsValid()) {
+                            Entry.Callback(ValueSnapshot);
+                        }
+                    } else {
+                        FGameThreadTaskRunner::RunOnGameThread(
+                            Entry.Owner,
+                            [Callback = Entry.Callback, ValueSnapshot]() {
+                                Callback(ValueSnapshot);
+                            }
+                        );
+                    }
+                } else {
                     Entry.Callback(ValueSnapshot);
                 }
             }
@@ -215,6 +242,9 @@ void FObserverState<T>::RemoveListener(uint64 SubscriptionId) {
 
 template<typename T>
 void FObserverState<T>::PurgeInvalidListeners() {
+    if (!IsInGameThread()) {
+        return;
+    }
     FWriteScopeLock WriteLock(ListenersLock);
     if (!Listeners.IsValid()) {
         return;
@@ -227,7 +257,9 @@ void FObserverState<T>::PurgeInvalidListeners() {
 
 template<typename T>
 int32 FObserverState<T>::NumListeners() {
-    PurgeInvalidListeners();
+    if (IsInGameThread()) {
+        PurgeInvalidListeners();
+    }
     FReadScopeLock ReadLock(ListenersLock);
     return Listeners.IsValid() ? Listeners->Num() : 0;
 }

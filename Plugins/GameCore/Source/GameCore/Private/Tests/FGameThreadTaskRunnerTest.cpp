@@ -12,7 +12,7 @@
 #include "Engine/GameInstance.h"
 #include "Misc/AutomationTest.h"
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameTaskRunnerBasicContinuationTest, "Game.Core.Tasks.TaskRunner.BasicContinuation",
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameTaskRunnerBasicContinuationTest, "Game.Core.Async.Tasks.TaskRunner.BasicContinuation",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 /**
@@ -65,7 +65,7 @@ bool FGameTaskRunnerBasicContinuationTest::RunTest([[maybe_unused]] const FStrin
     return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameTaskRunnerVoidContinuationTest, "Game.Core.Tasks.TaskRunner.VoidContinuation",
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameTaskRunnerVoidContinuationTest, "Game.Core.Async.Tasks.TaskRunner.VoidContinuation",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 /**
@@ -114,7 +114,7 @@ bool FGameTaskRunnerVoidContinuationTest::RunTest([[maybe_unused]] const FString
     return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameTaskRunnerInvalidOwnerTest, "Game.Core.Tasks.TaskRunner.InvalidOwner",
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameTaskRunnerInvalidOwnerTest, "Game.Core.Async.Tasks.TaskRunner.InvalidOwner",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 /**
@@ -155,6 +155,33 @@ bool FGameTaskRunnerInvalidOwnerTest::RunTest([[maybe_unused]] const FString& Pa
     TestTrue(TEXT("Stop 协同取消并等待完成返回 true"), StopHandle.Stop(FTimespan::FromSeconds(2.0)));
     ActiveOwner->MarkAsGarbage();
 
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameTaskRunnerFlushTest, "Game.Core.Async.Tasks.TaskRunner.FlushInFlightTasks",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+/**
+ * @brief 验证主线程安全排空在飞任务并消除自旋死锁
+ * @param Parameters 自动化框架参数（未使用）
+ * @return 断言全部通过返回 true
+ */
+bool FGameTaskRunnerFlushTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    std::atomic<int32> CompletedCount{0};
+    for (int32 Index = 0; Index < 5; ++Index) {
+        FGameThreadTaskRunner::Run(
+            FCancellationToken::None(),
+            [&CompletedCount]() {
+                FPlatformProcess::Sleep(0.01f);
+                CompletedCount.fetch_add(1, std::memory_order_relaxed);
+            }
+        );
+    }
+
+    const bool bFlushed = FGameThreadTaskRunner::FlushInFlightTasks(5.0);
+    TestTrue(TEXT("FlushInFlightTasks 超时前排空成功"), bFlushed);
+    TestEqual(TEXT("全部 5 个任务均已完成"), CompletedCount.load(std::memory_order_relaxed), 5);
+    TestEqual(TEXT("排空后在飞任务数为 0"), FGameThreadTaskRunner::GetInFlightTaskCount(), 0);
     return true;
 }
 

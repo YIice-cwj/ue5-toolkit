@@ -24,17 +24,32 @@ TSharedRef<FCancellationTokenSource> FCancellationTokenSource::CreateLinkedToken
     const FCancellationToken& TokenA,
     const FCancellationToken& TokenB
 ) {
-    TSharedRef<FCancellationTokenSource> Linked = MakeShared<FCancellationTokenSource>();
-    TWeakPtr<FCancellationState> WeakState = Linked->State;
+    const FCancellationToken TokenArray[2] = { TokenA, TokenB };
+    return CreateLinkedTokenSource(MakeArrayView(TokenArray));
+}
 
+TSharedRef<FCancellationTokenSource> FCancellationTokenSource::CreateLinkedTokenSource(
+    TConstArrayView<FCancellationToken> Tokens
+) {
+    TSharedRef<FCancellationTokenSource> Linked = MakeShared<FCancellationTokenSource>();
+    for (const FCancellationToken& Token : Tokens) {
+        if (Token.IsCancellationRequested()) {
+            Linked->Cancel();
+            return Linked;
+        }
+    }
+
+    TWeakPtr<FCancellationState> WeakState = Linked->State;
     auto OnAnyCancelled = [WeakState]() {
         if (TSharedPtr<FCancellationState> Pinned = WeakState.Pin()) {
             Pinned->RequestCancel();
         }
     };
 
-    Linked->LinkedRegistrations.Add(TokenA.Register(OnAnyCancelled));
-    Linked->LinkedRegistrations.Add(TokenB.Register(OnAnyCancelled));
+    Linked->LinkedRegistrations.Reserve(Tokens.Num());
+    for (const FCancellationToken& Token : Tokens) {
+        Linked->LinkedRegistrations.Add(Token.Register(OnAnyCancelled));
+    }
 
     return Linked;
 }

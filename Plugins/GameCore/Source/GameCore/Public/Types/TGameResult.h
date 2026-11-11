@@ -31,9 +31,9 @@ struct TGameErrorForwarder {
 /**
  * @brief 无异常强类型结果模型（支持相同成功/错误类型实例化）
  * @tparam TSuccess 成功载荷类型
- * @tparam TError 错误载荷类型（默认 FText）
+ * @tparam TError 错误载荷类型（默认统一为标准化 FGameError 契约）
  */
-template <typename TSuccess, typename TError = FText>
+template <typename TSuccess, typename TError = FGameError>
 class [[nodiscard]] TGameResult {
 public:
     using SuccessType = TSuccess;
@@ -119,6 +119,144 @@ public:
      * @return 移动出的错误载荷
      */
     [[nodiscard]] ErrorType ExtractError();
+
+    /**
+     * @brief 链式绑定算子（左值版本）：成功时调用返回新 TGameResult 的闭包，失败时短路透传错误
+     * @tparam F 接收 const SuccessType& 并返回 TGameResult<NewSuccess, ErrorType> 的闭包
+     * @param Func 变换闭包
+     * @return 链式变换后的结果实例
+     */
+    template <typename F>
+    auto AndThen(F&& Func) const & {
+        using ReturnResultType = std::invoke_result_t<F, const SuccessType&>;
+        if (IsSuccess()) {
+            return Func(GetValue());
+        }
+        return ReturnResultType::Failure(GetError());
+    }
+
+    /**
+     * @brief 链式绑定算子（右值移动版本）：成功时移动载荷并调用返回新 TGameResult 的闭包，失败时移动透传错误
+     * @tparam F 接收 SuccessType&& 并返回 TGameResult<NewSuccess, ErrorType> 的闭包
+     * @param Func 变换闭包
+     * @return 链式变换后的结果实例
+     */
+    template <typename F>
+    auto AndThen(F&& Func) && {
+        using ReturnResultType = std::invoke_result_t<F, SuccessType>;
+        if (IsSuccess()) {
+            return Func(ExtractValue());
+        }
+        return ReturnResultType::Failure(ExtractError());
+    }
+
+    /**
+     * @brief 纯值映射算子（左值版本）：成功时将成功载荷映射为新值，失败时短路透传错误
+     * @tparam F 接收 const SuccessType& 并返回普通值的闭包
+     * @param Func 映射闭包
+     * @return 包含映射后新值的结果实例
+     */
+    template <typename F>
+    auto Map(F&& Func) const & {
+        using NewSuccessType = std::invoke_result_t<F, const SuccessType&>;
+        if constexpr (std::is_void_v<NewSuccessType>) {
+            if (IsSuccess()) {
+                Func(GetValue());
+                return TGameResult<void, ErrorType>::Success();
+            }
+            return TGameResult<void, ErrorType>::Failure(GetError());
+        } else {
+            using ReturnResultType = TGameResult<NewSuccessType, ErrorType>;
+            if (IsSuccess()) {
+                return ReturnResultType::Success(Func(GetValue()));
+            }
+            return ReturnResultType::Failure(GetError());
+        }
+    }
+
+    /**
+     * @brief 纯值映射算子（右值移动版本）：成功时移动载荷并映射为新值，失败时移动透传错误
+     * @tparam F 接收 SuccessType&& 并返回普通值的闭包
+     * @param Func 映射闭包
+     * @return 包含映射后新值的结果实例
+     */
+    template <typename F>
+    auto Map(F&& Func) && {
+        using NewSuccessType = std::invoke_result_t<F, SuccessType>;
+        if constexpr (std::is_void_v<NewSuccessType>) {
+            if (IsSuccess()) {
+                Func(ExtractValue());
+                return TGameResult<void, ErrorType>::Success();
+            }
+            return TGameResult<void, ErrorType>::Failure(ExtractError());
+        } else {
+            using ReturnResultType = TGameResult<NewSuccessType, ErrorType>;
+            if (IsSuccess()) {
+                return ReturnResultType::Success(Func(ExtractValue()));
+            }
+            return ReturnResultType::Failure(ExtractError());
+        }
+    }
+
+    /**
+     * @brief 错误映射算子（左值版本）：失败时将错误载荷转换为新错误类型，成功时原样透传
+     * @tparam F 接收 const ErrorType& 并返回新错误对象的闭包
+     * @param Func 错误转换闭包
+     * @return 携带转换后错误的结果实例
+     */
+    template <typename F>
+    auto MapError(F&& Func) const & {
+        using NewErrorType = std::invoke_result_t<F, const ErrorType&>;
+        using ReturnResultType = TGameResult<SuccessType, NewErrorType>;
+        if (IsSuccess()) {
+            return ReturnResultType::Success(GetValue());
+        }
+        return ReturnResultType::Failure(Func(GetError()));
+    }
+
+    /**
+     * @brief 错误映射算子（右值移动版本）：失败时移动错误载荷并转换为新错误类型，成功时移动透传
+     * @tparam F 接收 ErrorType&& 并返回新错误对象的闭包
+     * @param Func 错误转换闭包
+     * @return 携带转换后错误的结果实例
+     */
+    template <typename F>
+    auto MapError(F&& Func) && {
+        using NewErrorType = std::invoke_result_t<F, ErrorType>;
+        using ReturnResultType = TGameResult<SuccessType, NewErrorType>;
+        if (IsSuccess()) {
+            return ReturnResultType::Success(ExtractValue());
+        }
+        return ReturnResultType::Failure(Func(ExtractError()));
+    }
+
+    /**
+     * @brief 错误恢复算子（左值版本）：失败时调用闭包进行降级或兜底恢复，成功时原样返回
+     * @tparam F 接收 const ErrorType& 并返回 TGameResult<SuccessType, ErrorType> 的闭包
+     * @param RecoveryFunc 错误恢复闭包
+     * @return 恢复或原样结果实例
+     */
+    template <typename F>
+    TGameResult OrElse(F&& RecoveryFunc) const & {
+        if (IsSuccess()) {
+            return *this;
+        }
+        return RecoveryFunc(GetError());
+    }
+
+    /**
+     * @brief 错误恢复算子（右值移动版本）：失败时移动错误载荷并调用闭包进行降级或兜底恢复，成功时移动返回
+     * @tparam F 接收 ErrorType&& 并返回 TGameResult<SuccessType, ErrorType> 的闭包
+     * @param RecoveryFunc 错误恢复闭包
+     * @return 恢复或原样结果实例
+     */
+    template <typename F>
+    TGameResult OrElse(F&& RecoveryFunc) && {
+        if (IsSuccess()) {
+            return MoveTemp(*this);
+        }
+        return RecoveryFunc(ExtractError());
+    }
 
 private:
     TGameResult(ESuccessTag, SuccessType InValue);
@@ -324,6 +462,144 @@ public:
     [[nodiscard]] ErrorType ExtractError() {
         checkf(IsFailure(), TEXT("Attempted ExtractError() on a successful TGameResult<void>"));
         return MoveTemp(Error.GetValue());
+    }
+
+    /**
+     * @brief 链式绑定算子（左值版本）：成功时调用返回新 TGameResult 的无参闭包，失败时短路透传错误
+     * @tparam F 返回 TGameResult<NewSuccess, ErrorType> 的无参闭包
+     * @param Func 变换闭包
+     * @return 链式变换后的结果实例
+     */
+    template <typename F>
+    auto AndThen(F&& Func) const & {
+        using ReturnResultType = std::invoke_result_t<F>;
+        if (IsSuccess()) {
+            return Func();
+        }
+        return ReturnResultType::Failure(GetError());
+    }
+
+    /**
+     * @brief 链式绑定算子（右值移动版本）：成功时调用返回新 TGameResult 的无参闭包，失败时移动透传错误
+     * @tparam F 返回 TGameResult<NewSuccess, ErrorType> 的无参闭包
+     * @param Func 变换闭包
+     * @return 链式变换后的结果实例
+     */
+    template <typename F>
+    auto AndThen(F&& Func) && {
+        using ReturnResultType = std::invoke_result_t<F>;
+        if (IsSuccess()) {
+            return Func();
+        }
+        return ReturnResultType::Failure(ExtractError());
+    }
+
+    /**
+     * @brief 纯值映射算子（左值版本）：成功时执行无参闭包并映射为新结果，失败时短路透传错误
+     * @tparam F 返回普通值的无参闭包
+     * @param Func 映射闭包
+     * @return 包含映射后新值的结果实例
+     */
+    template <typename F>
+    auto Map(F&& Func) const & {
+        using NewSuccessType = std::invoke_result_t<F>;
+        if constexpr (std::is_void_v<NewSuccessType>) {
+            if (IsSuccess()) {
+                Func();
+                return TGameResult<void, ErrorType>::Success();
+            }
+            return TGameResult<void, ErrorType>::Failure(GetError());
+        } else {
+            using ReturnResultType = TGameResult<NewSuccessType, ErrorType>;
+            if (IsSuccess()) {
+                return ReturnResultType::Success(Func());
+            }
+            return ReturnResultType::Failure(GetError());
+        }
+    }
+
+    /**
+     * @brief 纯值映射算子（右值移动版本）：成功时执行无参闭包并映射为新结果，失败时移动透传错误
+     * @tparam F 返回普通值的无参闭包
+     * @param Func 映射闭包
+     * @return 包含映射后新值的结果实例
+     */
+    template <typename F>
+    auto Map(F&& Func) && {
+        using NewSuccessType = std::invoke_result_t<F>;
+        if constexpr (std::is_void_v<NewSuccessType>) {
+            if (IsSuccess()) {
+                Func();
+                return TGameResult<void, ErrorType>::Success();
+            }
+            return TGameResult<void, ErrorType>::Failure(ExtractError());
+        } else {
+            using ReturnResultType = TGameResult<NewSuccessType, ErrorType>;
+            if (IsSuccess()) {
+                return ReturnResultType::Success(Func());
+            }
+            return ReturnResultType::Failure(ExtractError());
+        }
+    }
+
+    /**
+     * @brief 错误映射算子（左值版本）：失败时将错误载荷转换为新错误类型，成功时原样透传
+     * @tparam F 接收 const ErrorType& 并返回新错误对象的闭包
+     * @param Func 错误转换闭包
+     * @return 携带转换后错误的结果实例
+     */
+    template <typename F>
+    auto MapError(F&& Func) const & {
+        using NewErrorType = std::invoke_result_t<F, const ErrorType&>;
+        using ReturnResultType = TGameResult<void, NewErrorType>;
+        if (IsSuccess()) {
+            return ReturnResultType::Success();
+        }
+        return ReturnResultType::Failure(Func(GetError()));
+    }
+
+    /**
+     * @brief 错误映射算子（右值移动版本）：失败时移动错误载荷并转换为新错误类型，成功时移动透传
+     * @tparam F 接收 ErrorType&& 并返回新错误对象的闭包
+     * @param Func 错误转换闭包
+     * @return 携带转换后错误的结果实例
+     */
+    template <typename F>
+    auto MapError(F&& Func) && {
+        using NewErrorType = std::invoke_result_t<F, ErrorType>;
+        using ReturnResultType = TGameResult<void, NewErrorType>;
+        if (IsSuccess()) {
+            return ReturnResultType::Success();
+        }
+        return ReturnResultType::Failure(Func(ExtractError()));
+    }
+
+    /**
+     * @brief 错误恢复算子（左值版本）：失败时调用闭包进行降级或兜底恢复，成功时原样返回
+     * @tparam F 接收 const ErrorType& 并返回 TGameResult<void, ErrorType> 的闭包
+     * @param RecoveryFunc 错误恢复闭包
+     * @return 恢复或原样结果实例
+     */
+    template <typename F>
+    TGameResult OrElse(F&& RecoveryFunc) const & {
+        if (IsSuccess()) {
+            return *this;
+        }
+        return RecoveryFunc(GetError());
+    }
+
+    /**
+     * @brief 错误恢复算子（右值移动版本）：失败时移动错误载荷并调用闭包进行降级或兜底恢复，成功时移动返回
+     * @tparam F 接收 ErrorType&& 并返回 TGameResult<void, ErrorType> 的闭包
+     * @param RecoveryFunc 错误恢复闭包
+     * @return 恢复或原样结果实例
+     */
+    template <typename F>
+    TGameResult OrElse(F&& RecoveryFunc) && {
+        if (IsSuccess()) {
+            return MoveTemp(*this);
+        }
+        return RecoveryFunc(ExtractError());
     }
 
     /**

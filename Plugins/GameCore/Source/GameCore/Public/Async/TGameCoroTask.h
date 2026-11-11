@@ -17,6 +17,7 @@
 #include <type_traits>
 
 class UObject;
+class FGameCoroSuspensionGuard;
 
 /**
  * @brief 协程运行生命周期状态枚举
@@ -45,7 +46,7 @@ public:
 
 public:
     FGameCoroStateBase() = default;
-    virtual ~FGameCoroStateBase() = default;
+    virtual ~FGameCoroStateBase();
 
     FGameCoroStateBase(const FGameCoroStateBase&) = delete;
     FGameCoroStateBase& operator=(const FGameCoroStateBase&) = delete;
@@ -69,12 +70,22 @@ public:
     }
 
     /**
-     * @brief 主动请求取消当前协程
+     * @brief 主动请求取消当前协程并立即唤醒挂起守卫自毁协程帧
      * @return 首次触发取消请求返回 true
      */
-    bool RequestCancel() noexcept {
-        return !bCancelRequested.exchange(true, std::memory_order_acq_rel);
-    }
+    bool RequestCancel() noexcept;
+
+    /**
+     * @brief 注册当前挂起状态的守卫弱引用（支持外部主动 Cancel 时立即唤醒并自毁）
+     * @param InGuard 挂起守卫共享引用
+     */
+    void RegisterSuspensionGuard(const TSharedRef<FGameCoroSuspensionGuard, ESPMode::ThreadSafe>& InGuard);
+
+    /**
+     * @brief 注销当前挂起守卫
+     * @param InGuard 待注销守卫指针
+     */
+    void UnregisterSuspensionGuard(const FGameCoroSuspensionGuard* InGuard);
 
     /**
      * @brief 查询当前协程是否已被请求取消或绑定宿主已销毁失效
@@ -91,15 +102,22 @@ public:
             return true;
         }
         if (bHasOwnerGuard.load(std::memory_order_acquire)) {
-            if (bOwnerNullAtBind) {
+            TWeakObjectPtr<UObject> LocalOwner;
+            bool bLocalNullAtBind = false;
+            {
+                FScopeLock Lock(&StateLock);
+                LocalOwner = OwnerWeak;
+                bLocalNullAtBind = bOwnerNullAtBind;
+            }
+            if (bLocalNullAtBind) {
                 return true;
             }
             if (IsInGameThread()) {
-                if (!OwnerWeak.IsValid()) {
+                if (!LocalOwner.IsValid()) {
                     return true;
                 }
             } else {
-                if (!OwnerWeak.IsValid(false, true)) {
+                if (!LocalOwner.IsValid(false, true)) {
                     return true;
                 }
             }
@@ -210,6 +228,7 @@ protected:
     std::atomic<EGameCoroStatus> Status{EGameCoroStatus::Running};
     std::atomic<bool> bCancelRequested{false};
     std::atomic<bool> bHasOwnerGuard{false};
+    TWeakPtr<FGameCoroSuspensionGuard, ESPMode::ThreadSafe> CurrentSuspensionGuard;
     bool bOwnerNullAtBind = false;
 };
 
@@ -335,21 +354,21 @@ public:
      * @return 成功恢复执行返回 true，被拦截并自毁返回 false
      */
     bool ResumeOrAbort() {
-        if (bHandled.exchange(true, std::memory_order_acq_rel)) {
-            return false;
+        if (!bSuspendCompleted.load(std::memory_order_acquire)) {
+            bPendingResume.store(true, std::memory_order_release);
+            return true;
         }
-        std::coroutine_handle<> LocalHandle = CoroHandle;
-        CoroHandle = nullptr;
-        if (!LocalHandle) {
-            return false;
+        return ResumeOrAbortInternal();
+    }
+
+    /**
+     * @brief 标记 await_suspend 已安全执行完成并退出底层调用栈，若期间有待恢复请求则统一派发恢复
+     */
+    void NotifySuspendCompleted() {
+        bSuspendCompleted.store(true, std::memory_order_release);
+        if (bPendingResume.load(std::memory_order_acquire)) {
+            ResumeOrAbortInternal();
         }
-        if (State->ShouldAbort()) {
-            State->MarkCancelled();
-            LocalHandle.destroy();
-            return false;
-        }
-        LocalHandle.resume();
-        return true;
     }
 
     /**
@@ -359,6 +378,7 @@ public:
         if (bHandled.exchange(true, std::memory_order_acq_rel)) {
             return;
         }
+        State->UnregisterSuspensionGuard(this);
         std::coroutine_handle<> LocalHandle = CoroHandle;
         CoroHandle = nullptr;
         State->MarkCancelled();
@@ -376,10 +396,80 @@ public:
     }
 
 private:
+    /**
+     * @brief 执行实际恢复或自毁
+     * @return 成功恢复返回 true，取消或自毁返回 false
+     */
+    bool ResumeOrAbortInternal() {
+        if (bHandled.exchange(true, std::memory_order_acq_rel)) {
+            return false;
+        }
+        State->UnregisterSuspensionGuard(this);
+        std::coroutine_handle<> LocalHandle = CoroHandle;
+        CoroHandle = nullptr;
+        if (!LocalHandle) {
+            return false;
+        }
+        if (State->ShouldAbort()) {
+            State->MarkCancelled();
+            LocalHandle.destroy();
+            return false;
+        }
+        LocalHandle.resume();
+        return true;
+    }
+
+private:
     std::coroutine_handle<> CoroHandle;
     TSharedRef<FGameCoroStateBase, ESPMode::ThreadSafe> State;
     std::atomic<bool> bHandled{false};
+    std::atomic<bool> bSuspendCompleted{false};
+    std::atomic<bool> bPendingResume{false};
 };
+
+inline FGameCoroStateBase::~FGameCoroStateBase() = default;
+
+inline bool FGameCoroStateBase::RequestCancel() noexcept {
+    const bool bFirst = !bCancelRequested.exchange(true, std::memory_order_acq_rel);
+    if (bFirst) {
+        TSharedPtr<FGameCoroSuspensionGuard, ESPMode::ThreadSafe> GuardPin;
+        {
+            FScopeLock Lock(&StateLock);
+            GuardPin = CurrentSuspensionGuard.Pin();
+            CurrentSuspensionGuard.Reset();
+        }
+        if (GuardPin.IsValid()) {
+            GuardPin->AbortAndDestroyFrame();
+        } else {
+            MarkCancelled();
+        }
+    }
+    return bFirst;
+}
+
+inline void FGameCoroStateBase::RegisterSuspensionGuard(
+    const TSharedRef<FGameCoroSuspensionGuard, ESPMode::ThreadSafe>& InGuard
+) {
+    FScopeLock Lock(&StateLock);
+    CurrentSuspensionGuard = InGuard;
+    if (bCancelRequested.load(std::memory_order_acquire) || ExternalToken.IsCancellationRequested()) {
+        Lock.Unlock();
+        InGuard->AbortAndDestroyFrame();
+    }
+}
+
+inline void FGameCoroStateBase::UnregisterSuspensionGuard(const FGameCoroSuspensionGuard* InGuard) {
+    FScopeLock Lock(&StateLock);
+    if (TSharedPtr<FGameCoroSuspensionGuard, ESPMode::ThreadSafe> Pinned = CurrentSuspensionGuard.Pin()) {
+        if (Pinned.Get() == InGuard) {
+            CurrentSuspensionGuard.Reset();
+        }
+    }
+}
+
+namespace Game::Coro {
+using FGameCoroSuspensionGuard = ::FGameCoroSuspensionGuard;
+}
 
 namespace Game::Coro::Detail {
 
@@ -402,10 +492,12 @@ struct FBindContextAwaiter {
     /**
      * @brief 若绑定时即已失效，原地标记 Cancelled 并销毁协程帧
      * @param InHandle 当前协程句柄
+     * @return 转移给空协程安全交接控制权
      */
-    void await_suspend(std::coroutine_handle<> InHandle) const noexcept {
+    std::coroutine_handle<> await_suspend(std::coroutine_handle<> InHandle) const noexcept {
         State->MarkCancelled();
         InHandle.destroy();
+        return std::noop_coroutine();
     }
 
     /**
@@ -424,15 +516,17 @@ class TGuardedAwaiter {
 public:
     /**
      * @brief 构造生命周期守卫代理 Awaiter
+     * @tparam TActualAwaiter 底层等待器通用转发类型
      * @param InState 当前协程共享状态
      * @param InAwaiter 底层 Awaiter 实例
      */
+    template <typename TActualAwaiter>
     TGuardedAwaiter(
         TSharedRef<FGameCoroStateBase, ESPMode::ThreadSafe> InState,
-        TInnerAwaiter&& InAwaiter
+        TActualAwaiter&& InAwaiter
     )
         : State(MoveTemp(InState))
-        , InnerAwaiter(Forward<TInnerAwaiter>(InAwaiter)) {
+        , InnerAwaiter(Forward<TActualAwaiter>(InAwaiter)) {
     }
 
     /**
@@ -457,7 +551,9 @@ public:
             Guard->AbortAndDestroyFrame();
             return;
         }
+        State->RegisterSuspensionGuard(Guard);
         InnerAwaiter.SuspendWithGuard(Guard);
+        Guard->NotifySuspendCompleted();
     }
 
     /**
@@ -749,12 +845,16 @@ public:
     }
 
     /**
-     * @brief 从外部为协程绑定或更新宿主 UObject 与取消令牌
+     * @brief 从外部为协程绑定或更新宿主 UObject 与取消令牌（若绑定时已失效则立即触发取消与挂起帧销毁）
      * @param InOwner 宿主对象指针
      * @param InToken 协同取消令牌
+     * @note 本接口为外部事后绑定；若需确保协程首段同步逻辑同样受宿主存活保护，请在协程函数首行使用 co_await Game::Coro::BindContext(InOwner, InToken)
      */
     void BindContext(UObject* InOwner, FCancellationToken InToken = FCancellationToken::None()) noexcept {
         State->BindExecutionContext(TWeakObjectPtr<UObject>(InOwner), true, MoveTemp(InToken));
+        if (State->ShouldAbort()) {
+            State->RequestCancel();
+        }
     }
 
     /**

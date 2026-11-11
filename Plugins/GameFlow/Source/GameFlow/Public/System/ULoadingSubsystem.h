@@ -9,6 +9,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Async/FWaitLoadingCompleteAwaiter.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "System/FLoadingBarrierToken.h"
 
@@ -20,6 +21,13 @@
  * @param TargetLevelName 目标关卡名称
  */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnLoadingStateChanged, bool, bIsLoading, FName, TargetLevelName);
+
+/**
+ * @brief 关卡加载状态变动原生 C++ 多播委托声明（支持 Lambda 与协程直连）
+ * @param bIsLoading 是否正在加载关卡
+ * @param TargetLevelName 目标关卡名称
+ */
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnLoadingStateChangedNative, bool, FName);
 
 /**
  * @brief 全局加载与关卡流转子系统
@@ -46,6 +54,11 @@ public:
      */
     UPROPERTY(BlueprintAssignable, Category = "GameFlow|Loading")
     FOnLoadingStateChanged OnLoadingStateChanged;
+
+    /**
+     * @brief 加载状态变动原生 C++ 多播委托（无需 UObject 包装即可直接绑定 Lambda）
+     */
+    FOnLoadingStateChangedNative OnLoadingStateChangedNative;
 
     /**
      * @brief 子系统初始化生命周期回调：挂钩引擎 PreLoadMap 与 PostLoadMapWithWorld 委托

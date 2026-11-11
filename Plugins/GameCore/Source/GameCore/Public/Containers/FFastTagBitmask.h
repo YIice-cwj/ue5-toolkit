@@ -31,7 +31,7 @@ struct GAMECORE_API FFastTagBitmask {
      * @param BitIndex 标签索引（必须处于 [0, 63] 区间）
      * @return 索引合法且成功置位返回 true，越界返回 false
      */
-    bool AddTag(int32 BitIndex) noexcept {
+    constexpr bool AddTag(int32 BitIndex) noexcept {
         if (BitIndex >= 0 && BitIndex < 64) {
             Value |= (1ULL << BitIndex);
             return true;
@@ -44,7 +44,7 @@ struct GAMECORE_API FFastTagBitmask {
      * @param BitIndex 标签索引（必须处于 [0, 63] 区间）
      * @return 索引合法且成功清除返回 true，越界返回 false
      */
-    bool RemoveTag(int32 BitIndex) noexcept {
+    constexpr bool RemoveTag(int32 BitIndex) noexcept {
         if (BitIndex >= 0 && BitIndex < 64) {
             Value &= ~(1ULL << BitIndex);
             return true;
@@ -57,7 +57,7 @@ struct GAMECORE_API FFastTagBitmask {
      * @param BitIndex 标签索引（必须处于 [0, 63] 区间）
      * @return 索引合法且成功翻转返回 true，越界返回 false
      */
-    bool ToggleTag(int32 BitIndex) noexcept {
+    constexpr bool ToggleTag(int32 BitIndex) noexcept {
         if (BitIndex >= 0 && BitIndex < 64) {
             Value ^= (1ULL << BitIndex);
             return true;
@@ -70,7 +70,7 @@ struct GAMECORE_API FFastTagBitmask {
      * @param BitIndex 标签索引
      * @return 激活返回 true
      */
-    [[nodiscard]] bool HasTag(int32 BitIndex) const noexcept {
+    [[nodiscard]] constexpr bool HasTag(int32 BitIndex) const noexcept {
         if (BitIndex >= 0 && BitIndex < 64) {
             return (Value & (1ULL << BitIndex)) != 0ULL;
         }
@@ -82,7 +82,7 @@ struct GAMECORE_API FFastTagBitmask {
      * @param Other 目标位掩码
      * @return 存在交集返回 true
      */
-    [[nodiscard]] bool HasAny(const FFastTagBitmask& Other) const noexcept {
+    [[nodiscard]] constexpr bool HasAny(const FFastTagBitmask& Other) const noexcept {
         return (Value & Other.Value) != 0ULL;
     }
 
@@ -91,7 +91,7 @@ struct GAMECORE_API FFastTagBitmask {
      * @param Other 目标位掩码
      * @return 完全包含返回 true
      */
-    [[nodiscard]] bool HasAll(const FFastTagBitmask& Other) const noexcept {
+    [[nodiscard]] constexpr bool HasAll(const FFastTagBitmask& Other) const noexcept {
         return (Value & Other.Value) == Other.Value;
     }
 
@@ -100,30 +100,14 @@ struct GAMECORE_API FFastTagBitmask {
      * @param Other 目标位掩码
      * @return 无任何交集返回 true
      */
-    [[nodiscard]] bool HasNone(const FFastTagBitmask& Other) const noexcept {
+    [[nodiscard]] constexpr bool HasNone(const FFastTagBitmask& Other) const noexcept {
         return (Value & Other.Value) == 0ULL;
-    }
-
-    /**
-     * @brief 合并目标位掩码中的所有标签
-     * @param Other 目标位掩码
-     */
-    void Combine(const FFastTagBitmask& Other) noexcept {
-        Value |= Other.Value;
-    }
-
-    /**
-     * @brief 排除目标位掩码中的所有标签
-     * @param Other 目标位掩码
-     */
-    void Remove(const FFastTagBitmask& Other) noexcept {
-        Value &= ~Other.Value;
     }
 
     /**
      * @brief 清空所有标签位
      */
-    void Clear() noexcept {
+    constexpr void Clear() noexcept {
         Value = 0ULL;
     }
 
@@ -131,7 +115,7 @@ struct GAMECORE_API FFastTagBitmask {
      * @brief 查询当前位掩码是否为空
      * @return 为空返回 true
      */
-    [[nodiscard]] bool IsEmpty() const noexcept {
+    [[nodiscard]] constexpr bool IsEmpty() const noexcept {
         return Value == 0ULL;
     }
 
@@ -159,8 +143,86 @@ struct GAMECORE_API FFastTagBitmask {
         return FFastTagBitmask(Value & Other.Value);
     }
 
+    /**
+     * @brief 按位异或运算符（对称差集：保留仅在其中一方出现的标签）
+     * @param Other 另一掩码
+     * @return 异或计算后的新掩码
+     */
+    [[nodiscard]] constexpr FFastTagBitmask operator^(const FFastTagBitmask& Other) const noexcept {
+        return FFastTagBitmask(Value ^ Other.Value);
+    }
+
+    /**
+     * @brief 掩码差集运算符（从当前掩码中扣除目标掩码包含的所有标签：Value & ~Other.Value）
+     * @param Other 待排除的目标掩码
+     * @return 扣除后的新掩码
+     */
+    [[nodiscard]] constexpr FFastTagBitmask operator-(const FFastTagBitmask& Other) const noexcept {
+        return FFastTagBitmask(Value & ~Other.Value);
+    }
+
+    /**
+     * @brief 复合按位或赋值运算符
+     * @param Other 另一掩码
+     * @return 自身引用
+     */
+    constexpr FFastTagBitmask& operator|=(const FFastTagBitmask& Other) noexcept {
+        Value |= Other.Value;
+        return *this;
+    }
+
+    /**
+     * @brief 复合按位与赋值运算符
+     * @param Other 另一掩码
+     * @return 自身引用
+     */
+    constexpr FFastTagBitmask& operator&=(const FFastTagBitmask& Other) noexcept {
+        Value &= Other.Value;
+        return *this;
+    }
+
+    /**
+     * @brief 复合按位异或赋值运算符
+     * @param Other 另一掩码
+     * @return 自身引用
+     */
+    constexpr FFastTagBitmask& operator^=(const FFastTagBitmask& Other) noexcept {
+        Value ^= Other.Value;
+        return *this;
+    }
+
+    /**
+     * @brief 复合掩码差集赋值运算符（从当前掩码中扣除目标掩码包含的所有标签）
+     * @param Other 待排除的目标掩码
+     * @return 自身引用
+     */
+    constexpr FFastTagBitmask& operator-=(const FFastTagBitmask& Other) noexcept {
+        Value &= ~Other.Value;
+        return *this;
+    }
+
     [[nodiscard]] constexpr FFastTagBitmask operator~() const noexcept {
         return FFastTagBitmask(~Value);
+    }
+
+    /**
+     * @brief 计算极速状态位掩码哈希值（支持直接作为 TMap / TSet 键）
+     * @param InMask 目标位掩码
+     * @return 32 位哈希值
+     */
+    friend uint32 GetTypeHash(const FFastTagBitmask& InMask) noexcept {
+        return GetTypeHash(InMask.Value);
+    }
+
+    /**
+     * @brief 序列化位掩码至归档流（支持 UE 存档与网络流）
+     * @param Ar 归档流
+     * @param InMask 待序列化或反序列化的位掩码
+     * @return 归档流引用
+     */
+    friend FArchive& operator<<(FArchive& Ar, FFastTagBitmask& InMask) {
+        Ar << InMask.Value;
+        return Ar;
     }
 };
 

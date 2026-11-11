@@ -6,6 +6,9 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Logging/LogMacros.h"
+
+GAMECORE_API DECLARE_LOG_CATEGORY_EXTERN(LogGameStateMachine, Log, All);
 
 #include <type_traits>
 
@@ -83,18 +86,11 @@ public:
     void Update(float DeltaSeconds);
 
     /**
-     * @brief 显式请求切换至目标状态（允许跃迁至未绑定回调的轻量纯枚举标签状态；若需强制校验已注册回调请使用 ChangeStateIfRegistered；若处于回调重入中则入 FIFO 队列拉平顺序执行，同状态切换直接忽略）
+     * @brief 显式请求切换至目标状态（允许跃迁至未绑定回调的轻量纯枚举标签状态；若需强制校验已注册回调请配合 HasState 使用；若处于回调重入中则入 FIFO 队列拉平顺序执行，同状态切换直接忽略）
      * @param NewState 目标新状态
      * @return 成功触发或入队状态跃迁返回 true
      */
     bool ChangeState(StateType NewState);
-
-    /**
-     * @brief 仅当目标状态已通过 RegisterState 显式注册时请求切换状态（严格校验目标状态已绑定回调配置）
-     * @param NewState 已注册的目标新状态
-     * @return 目标状态已注册且成功切换或入队返回 true
-     */
-    bool ChangeStateIfRegistered(StateType NewState);
 
     /**
      * @brief 检查指定状态是否已显式注册回调节点
@@ -170,6 +166,7 @@ private:
     float TimeInCurrentState = 0.0f;
     bool bIsRunning = false;
     bool bIsTransitioning = false;
+    bool bIsExitingState = false;
     bool bChainTruncated = false;
 };
 
@@ -248,12 +245,18 @@ void TGameStateMachine<TStateEnum>::Stop() {
     bIsRunning = false;
     bIsTransitioning = false;
 
+    if (bIsExitingState) {
+        return;
+    }
+
     FExitCallback ExitCopy;
     if (const FStateCallbacks* Node = States.Find(CurrentState)) {
         ExitCopy = Node->OnExit;
     }
     if (ExitCopy) {
+        bIsExitingState = true;
         ExitCopy(CurrentState);
+        bIsExitingState = false;
     }
 }
 
@@ -309,7 +312,7 @@ bool TGameStateMachine<TStateEnum>::ChangeState(StateType NewState) {
         }
         bChainTruncated = true;
         UE_LOG(
-            LogTemp,
+            LogGameStateMachine,
             Warning,
             TEXT("TGameStateMachine: Transition queue overflowed MAX_CHAINED_TRANSITIONS (%d); truncating chain."),
             MAX_CHAINED_TRANSITIONS
@@ -323,14 +326,6 @@ bool TGameStateMachine<TStateEnum>::ChangeState(StateType NewState) {
     bChainTruncated = false;
     ExecuteTransitionLoop(NewState);
     return true;
-}
-
-template <CGameStateEnum TStateEnum>
-bool TGameStateMachine<TStateEnum>::ChangeStateIfRegistered(StateType NewState) {
-    if (!States.Contains(NewState)) {
-        return false;
-    }
-    return ChangeState(NewState);
 }
 
 template <CGameStateEnum TStateEnum>
@@ -377,7 +372,9 @@ void TGameStateMachine<TStateEnum>::ExecuteTransitionLoop(StateType InitialTarge
             ExitCopy = OldNode->OnExit;
         }
         if (ExitCopy) {
+            bIsExitingState = true;
             ExitCopy(PendingTarget);
+            bIsExitingState = false;
         }
 
         if (!bIsRunning) {
@@ -411,7 +408,7 @@ void TGameStateMachine<TStateEnum>::ExecuteTransitionLoop(StateType InitialTarge
         if (ChainStep + 1 >= MAX_CHAINED_TRANSITIONS) {
             bChainTruncated = true;
             UE_LOG(
-                LogTemp,
+                LogGameStateMachine,
                 Warning,
                 TEXT("TGameStateMachine: Chained transition limit MAX_CHAINED_TRANSITIONS (%d) reached; breaking loop."),
                 MAX_CHAINED_TRANSITIONS

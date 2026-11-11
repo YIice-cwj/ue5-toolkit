@@ -5,7 +5,13 @@
 
 #include "Async/FThrottledTickScheduler.h"
 
+/**
+ * @brief 推进调度器中心跳时间
+ * @param DeltaTime 帧流逝时间
+ */
 void FThrottledTickScheduler::Tick(float DeltaTime) {
+    checkf(IsInGameThread(), TEXT("FThrottledTickScheduler::Tick must be called on GameThread"));
+
     if (Entries.IsEmpty() || bIsIterating) {
         return;
     }
@@ -47,16 +53,32 @@ void FThrottledTickScheduler::Tick(float DeltaTime) {
     });
 }
 
+/**
+ * @brief 注册无宿主绑定的全局节流心跳
+ * @param IntervalSeconds 间隔秒数
+ * @param Callback 心跳回调闭包
+ * @return 分配的句柄 ID
+ */
 uint64 FThrottledTickScheduler::RegisterIntervalTick(
     float IntervalSeconds,
     FThrottledTickCallback Callback) {
+    checkf(IsInGameThread(), TEXT("FThrottledTickScheduler::RegisterIntervalTick must be called on GameThread"));
     return RegisterIntervalTick(FOwnerValidator(nullptr), IntervalSeconds, MoveTemp(Callback));
 }
 
+/**
+ * @brief 注册自定义秒级间隔节流心跳（通用校验器闭包）
+ * @param InValidator 宿主生命周期有效性校验器
+ * @param IntervalSeconds 间隔秒数
+ * @param Callback 心跳回调闭包
+ * @return 分配的句柄 ID
+ */
 uint64 FThrottledTickScheduler::RegisterIntervalTick(
     FOwnerValidator InValidator,
     float IntervalSeconds,
     FThrottledTickCallback Callback) {
+    checkf(IsInGameThread(), TEXT("FThrottledTickScheduler::RegisterIntervalTick must be called on GameThread"));
+
     if (!Callback) {
         return 0ULL;
     }
@@ -80,10 +102,19 @@ uint64 FThrottledTickScheduler::RegisterIntervalTick(
     return AllocatedId;
 }
 
+/**
+ * @brief 针对 UE5 UObject 弱引用的重载注册接口
+ * @param Owner 宿主对象弱引用
+ * @param IntervalSeconds 间隔秒数
+ * @param Callback 心跳回调闭包
+ * @return 分配的句柄 ID
+ */
 uint64 FThrottledTickScheduler::RegisterIntervalTick(
     TWeakObjectPtr<UObject> Owner,
     float IntervalSeconds,
     FThrottledTickCallback Callback) {
+    checkf(IsInGameThread(), TEXT("FThrottledTickScheduler::RegisterIntervalTick must be called on GameThread"));
+
     if (!Callback) {
         return 0ULL;
     }
@@ -102,7 +133,14 @@ uint64 FThrottledTickScheduler::RegisterIntervalTick(
     );
 }
 
+/**
+ * @brief 依句柄 ID 注销心跳任务
+ * @param HandleId 目标句柄 ID
+ * @return 存在有效任务并成功标记注销返回 true
+ */
 bool FThrottledTickScheduler::UnregisterTick(uint64 HandleId) {
+    checkf(IsInGameThread(), TEXT("FThrottledTickScheduler::UnregisterTick must be called on GameThread"));
+
     if (HandleId == 0ULL) {
         return false;
     }
@@ -121,7 +159,15 @@ bool FThrottledTickScheduler::UnregisterTick(uint64 HandleId) {
     return false;
 }
 
+/**
+ * @brief 动态调整指定任务的间隔秒数
+ * @param HandleId 目标句柄 ID
+ * @param NewIntervalSeconds 新间隔秒数
+ * @return 调整成功返回 true
+ */
 bool FThrottledTickScheduler::SetTickInterval(uint64 HandleId, float NewIntervalSeconds) {
+    checkf(IsInGameThread(), TEXT("FThrottledTickScheduler::SetTickInterval must be called on GameThread"));
+
     if (HandleId == 0ULL) {
         return false;
     }
@@ -130,14 +176,13 @@ bool FThrottledTickScheduler::SetTickInterval(uint64 HandleId, float NewInterval
     for (FThrottledEntry& Entry : Entries) {
         if (Entry.HandleId == HandleId && !Entry.bPendingRemoval) {
             if (FMath::Abs(Entry.Interval - NormalizedInterval) <= KINDA_SMALL_NUMBER) {
+                return true;
+            }
+            Entry.Interval = NormalizedInterval;
+            if (NormalizedInterval <= 0.0f) {
                 Entry.Elapsed = 0.0f;
-            } else {
-                Entry.Interval = NormalizedInterval;
-                if (NormalizedInterval <= 0.0f) {
-                    Entry.Elapsed = 0.0f;
-                } else if (Entry.Elapsed >= NormalizedInterval) {
-                    Entry.Elapsed = NormalizedInterval;
-                }
+            } else if (Entry.Elapsed >= NormalizedInterval) {
+                Entry.Elapsed = NormalizedInterval;
             }
             return true;
         }
@@ -145,7 +190,14 @@ bool FThrottledTickScheduler::SetTickInterval(uint64 HandleId, float NewInterval
     return false;
 }
 
+/**
+ * @brief 查询目标任务是否处于活跃注册态
+ * @param HandleId 目标句柄 ID
+ * @return 活跃态返回 true
+ */
 bool FThrottledTickScheduler::IsTickActive(uint64 HandleId) const {
+    checkf(IsInGameThread(), TEXT("FThrottledTickScheduler::IsTickActive must be called on GameThread"));
+
     if (HandleId == 0ULL) {
         return false;
     }
@@ -161,7 +213,13 @@ bool FThrottledTickScheduler::IsTickActive(uint64 HandleId) const {
     return false;
 }
 
+/**
+ * @brief 查询当前已注册的心跳任务总数
+ * @return 任务总数
+ */
 int32 FThrottledTickScheduler::GetRegisteredCount() const {
+    checkf(IsInGameThread(), TEXT("FThrottledTickScheduler::GetRegisteredCount must be called on GameThread"));
+
     int32 ActiveCount = 0;
     for (const FThrottledEntry& Entry : Entries) {
         if (!Entry.bPendingRemoval) {
@@ -171,7 +229,12 @@ int32 FThrottledTickScheduler::GetRegisteredCount() const {
     return ActiveCount;
 }
 
+/**
+ * @brief 清空全部已注册心跳任务
+ */
 void FThrottledTickScheduler::ClearAll() {
+    checkf(IsInGameThread(), TEXT("FThrottledTickScheduler::ClearAll must be called on GameThread"));
+
     if (bIsIterating) {
         for (FThrottledEntry& Entry : Entries) {
             Entry.bPendingRemoval = true;
@@ -181,6 +244,11 @@ void FThrottledTickScheduler::ClearAll() {
     Entries.Empty();
 }
 
+/**
+ * @brief 将预定义频率枚举转换为秒数间隔
+ * @param Rate 预定义频率枚举
+ * @return 对应秒数
+ */
 float FThrottledTickScheduler::RateToIntervalSeconds(EThrottledRate Rate) noexcept {
     switch (Rate) {
         case EThrottledRate::EveryFrame:

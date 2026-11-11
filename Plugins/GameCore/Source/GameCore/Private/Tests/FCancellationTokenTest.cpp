@@ -119,6 +119,24 @@ bool FCancellationTokenLinkedSourceTest::RunTest([[maybe_unused]] const FString&
     TestTrue(TEXT("SourceB 取消后级联导致 LinkedToken 处于已取消态"), LinkedToken.IsCancellationRequested());
     TestTrue(TEXT("LinkedSource 本身也处于已取消态"), LinkedSource->IsCancellationRequested());
 
+    FCancellationTokenSource Source1;
+    FCancellationTokenSource Source2;
+    FCancellationTokenSource Source3;
+    const FCancellationToken MultiTokens[] = { Source1.GetToken(), Source2.GetToken(), Source3.GetToken() };
+    const TSharedRef<FCancellationTokenSource> MultiLinked = FCancellationTokenSource::CreateLinkedTokenSource(
+        MakeArrayView(MultiTokens)
+    );
+    TestFalse(TEXT("三元联合令牌初始处于未取消态"), MultiLinked->IsCancellationRequested());
+
+    Source3.Cancel();
+    TestTrue(TEXT("Source3 取消后三元联合令牌处于已取消态"), MultiLinked->IsCancellationRequested());
+
+    const FCancellationToken PreCancelledTokens[] = { Source1.GetToken(), Source3.GetToken() };
+    const TSharedRef<FCancellationTokenSource> PreCancelledLinked = FCancellationTokenSource::CreateLinkedTokenSource(
+        MakeArrayView(PreCancelledTokens)
+    );
+    TestTrue(TEXT("包含已取消令牌时新创建的联合令牌立即处于已取消态"), PreCancelledLinked->IsCancellationRequested());
+
     return true;
 }
 

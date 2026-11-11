@@ -62,6 +62,26 @@ public:
         const FCancellationToken& TokenB
     );
 
+    /**
+     * @brief 创建级联联合取消源（任一输入令牌触发取消时，衍生源自动被触发取消）
+     * @param Tokens 输入令牌数组切片
+     * @return 联动派生出的共享取消源指针
+     */
+    [[nodiscard]] static TSharedRef<FCancellationTokenSource> CreateLinkedTokenSource(
+        TConstArrayView<FCancellationToken> Tokens
+    );
+
+    /**
+     * @brief 创建级联联合取消源（初始化列表语法糖便捷重载）
+     * @param Tokens 输入令牌初始化列表
+     * @return 联动派生出的共享取消源指针
+     */
+    [[nodiscard]] static TSharedRef<FCancellationTokenSource> CreateLinkedTokenSource(
+        std::initializer_list<FCancellationToken> Tokens
+    ) {
+        return CreateLinkedTokenSource(MakeArrayView(Tokens.begin(), static_cast<int32>(Tokens.size())));
+    }
+
 private:
     TSharedRef<FCancellationState> State;
     TArray<FCancellationTokenRegistration> LinkedRegistrations;

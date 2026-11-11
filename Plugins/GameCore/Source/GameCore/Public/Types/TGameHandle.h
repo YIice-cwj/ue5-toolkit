@@ -41,14 +41,6 @@ public:
     }
 
     /**
-     * @brief 检查句柄位域格式是否合法（等价于 IsValid，语义显式区分于容器槽位存活校验）
-     * @return 格式合法返回 true
-     */
-    [[nodiscard]] constexpr bool IsWellFormed() const noexcept {
-        return IsValid();
-    }
-
-    /**
      * @brief 布尔显式转换操作符
      * @return 有效返回 true
      */
@@ -119,4 +111,21 @@ private:
 template <typename TTag>
 [[nodiscard]] uint32 GetTypeHash(const TGameHandle<TTag>& Handle) noexcept {
     return GetTypeHash(Handle.PackUInt64());
+}
+
+/**
+ * @brief 序列化代际句柄至归档流（支持 UE 存档与网络流）
+ * @tparam TTag 领域幻影标签类型
+ * @param Ar 归档流
+ * @param Handle 待序列化或反序列化的句柄
+ * @return 归档流引用
+ */
+template <typename TTag>
+FArchive& operator<<(FArchive& Ar, TGameHandle<TTag>& Handle) {
+    uint64 Packed = Handle.PackUInt64();
+    Ar << Packed;
+    if (Ar.IsLoading()) {
+        Handle = TGameHandle<TTag>::FromPackedUInt64(Packed);
+    }
+    return Ar;
 }

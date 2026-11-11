@@ -138,7 +138,7 @@ public:
     [[nodiscard]] static int32 GetInFlightTaskCount() noexcept;
 
     /**
-     * @brief 等待所有已派发的后台在飞任务执行完毕（供模块关停或单元测试排空使用）
+     * @brief 等待所有已派发的后台在飞任务执行完毕（主线程安全等待并泵送续体队列，消除自旋死锁，供模块关停或单元测试排空使用）
      * @param TimeoutSeconds 最大等待超时秒数
      * @return 超时前全部在飞任务排空返回 true
      */

@@ -113,6 +113,9 @@ bool FGameConfigWatchTest::RunTest([[maybe_unused]] const FString& Parameters) {
     Registry.SetConfig<int32>(WatchKey, 100);
     TestEqual(TEXT("守卫析构后自动退订，不再回调"), CallbackCount, 1);
     TestEqual(TEXT("退订后值仍可正常覆盖"), Registry.GetConfig<int32>(WatchKey, -1), 100);
+
+    const TSharedRef<FObserverSubscription> NullSubscription = Registry.WatchConfig<int32>(WatchKey, nullptr);
+    TestFalse(TEXT("空回调订阅返回未激活的守卫"), NullSubscription->IsActive());
     return true;
 }
 
@@ -133,11 +136,13 @@ bool FGameCompileSwitchBridgeTest::RunTest([[maybe_unused]] const FString& Param
     const FName TestKey(TEXT("Feature.Test"));
     const FName GmKey(TEXT("Feature.GM"));
     const FName DebugDrawKey(TEXT("Dev.DebugDraw"));
+    const FName CpuProfilerKey(TEXT("Dev.CpuProfiler"));
 
     TestTrue(TEXT("Env.IsEditor 已由模块启动注册"), Registry.IsRegistered(EditorKey));
     TestTrue(TEXT("Feature.Test 已由模块启动注册"), Registry.IsRegistered(TestKey));
     TestTrue(TEXT("Feature.GM 已由模块启动注册"), Registry.IsRegistered(GmKey));
     TestTrue(TEXT("Dev.DebugDraw 已由模块启动注册"), Registry.IsRegistered(DebugDrawKey));
+    TestTrue(TEXT("Dev.CpuProfiler 已由模块启动注册"), Registry.IsRegistered(CpuProfilerKey));
 
     TestTrue(TEXT("Env.IsEditor 初值与 IS_EDITOR 一致"),
         Registry.GetConfig<bool>(EditorKey, !Game::Config::bIsEditor) == Game::Config::bIsEditor);
@@ -147,6 +152,8 @@ bool FGameCompileSwitchBridgeTest::RunTest([[maybe_unused]] const FString& Param
         Registry.GetConfig<bool>(GmKey, !Game::Config::bEnableGM) == Game::Config::bEnableGM);
     TestTrue(TEXT("Dev.DebugDraw 初值与 ENABLE_DEBUG_DRAW 一致"),
         Registry.GetConfig<bool>(DebugDrawKey, !Game::Config::bEnableDebugDraw) == Game::Config::bEnableDebugDraw);
+    TestTrue(TEXT("Dev.CpuProfiler 初值与 ENABLE_CPU_PROFILER 一致"),
+        Registry.GetConfig<bool>(CpuProfilerKey, !Game::Config::bEnableCpuProfiler) == Game::Config::bEnableCpuProfiler);
     return true;
 }
 
@@ -316,7 +323,11 @@ bool FGameConfigIdempotencyAndVersionTest::RunTest([[maybe_unused]] const FStrin
     TestTrue(TEXT("未预先注册的 Env.* 只读键写入直接被拒绝"), RejectResult == ESetConfigResult::RejectedReadOnly);
 
     FGameCoreRegistration::RegisterAll(nullptr);
-    FGameCoreRegistration::UnregisterAll(nullptr);
+    FGameCoreRegistration::RegisterAll();
+
+    const FName EmptyDomainName(NAME_None);
+    FGameCoreRegistration::RegisterCacheDomain(EmptyDomainName);
+    TestFalse(TEXT("空域名注册不生成非法配置项"), Registry.IsRegistered(FName(TEXT("Cache..Strategy"))));
 
     const FName DomainKey(TEXT("UnitTestRegDomain"));
     FGameCoreRegistration::RegisterCacheDomain(DomainKey);

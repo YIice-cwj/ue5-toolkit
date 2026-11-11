@@ -8,6 +8,8 @@
 #if WITH_AUTOMATION_TESTS
 
 #include "Misc/AutomationTest.h"
+#include "Serialization/MemoryReader.h"
+#include "Serialization/MemoryWriter.h"
 
 namespace {
 
@@ -56,6 +58,19 @@ bool FGameHandlePackingAndHashTest::RunTest([[maybe_unused]] const FString& Para
 
     ValidHandle.Reset();
     TestFalse(TEXT("Reset 后句柄恢复无效态"), ValidHandle.IsValid());
+
+    TArray<uint8> Buffer;
+    FMemoryWriter Writer(Buffer);
+    FEntityHandle SaveHandle(42u, 7u);
+    Writer << SaveHandle;
+    TestTrue(TEXT("归档写入成功且包含数据"), Buffer.Num() > 0);
+
+    FMemoryReader Reader(Buffer);
+    FEntityHandle LoadedHandle;
+    Reader << LoadedHandle;
+    TestTrue(TEXT("归档读取还原句柄与原始句柄相等"), LoadedHandle == SaveHandle);
+    TestEqual(TEXT("还原句柄索引一致"), LoadedHandle.GetIndex(), 42u);
+    TestEqual(TEXT("还原句柄代际一致"), LoadedHandle.GetGeneration(), 7u);
 
     return true;
 }
@@ -138,6 +153,55 @@ bool FSlotMapLifecycleAndGenerationSafetyTest::RunTest([[maybe_unused]] const FS
     TestFalse(TEXT("Reset 后重新插入也不会令旧句柄 H1 复活"), Map.IsValidHandle(H1));
     TestFalse(TEXT("Reset 后重新插入也不会令旧句柄 H2 复活"), Map.IsValidHandle(H2));
     TestEqual(TEXT("Reset 后新句柄正常读取"), *Map.Find(PostResetHandle), FString(TEXT("Omega")));
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FSlotMapIterationAndHandleLookupTest,
+    "Game.Core.Memory.SlotMap.IterationAndHandleLookup",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证 TSlotMap 的密集索引反查 Handle 与 ForEach 遍历闭包
+ * @param Parameters 自动化测试参数
+ * @return 全部断言通过返回 true
+ */
+bool FSlotMapIterationAndHandleLookupTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    using FEntitySlotMap = TSlotMap<int32, FTestEntityTag>;
+    using FEntityHandle = FEntitySlotMap::HandleType;
+
+    FEntitySlotMap Map;
+    const FEntityHandle H0 = Map.Insert(10);
+    const FEntityHandle H1 = Map.Insert(20);
+    const FEntityHandle H2 = Map.Insert(30);
+
+    TestEqual(TEXT("反查 0 号密集项句柄一致"), Map.GetHandleForDenseIndex(0), H0);
+    TestEqual(TEXT("反查 1 号密集项句柄一致"), Map.GetHandleForDenseIndex(1), H1);
+    TestEqual(TEXT("反查 2 号密集项句柄一致"), Map.GetHandleForDenseIndex(2), H2);
+    TestFalse(TEXT("反查越界密集项返回无效句柄"), Map.GetHandleForDenseIndex(99).IsValid());
+
+    int32 Sum = 0;
+    int32 IterCount = 0;
+    Map.ForEach([this, &Sum, &IterCount](FEntityHandle Handle, int32& Val) {
+        TestTrue(TEXT("遍历中的句柄有效"), Handle.IsValid());
+        Sum += Val;
+        Val += 1;
+        ++IterCount;
+    });
+
+    TestEqual(TEXT("ForEach 遍历项数正确"), IterCount, 3);
+    TestEqual(TEXT("初始求和为 60"), Sum, 60);
+    TestEqual(TEXT("ForEach 原地修改生效：H0 变为 11"), *Map.Find(H0), 11);
+
+    int32 EarlyStopCount = 0;
+    const FEntitySlotMap& ConstMap = Map;
+    ConstMap.ForEach([&EarlyStopCount](FEntityHandle, const int32&) -> bool {
+        ++EarlyStopCount;
+        return false;
+    });
+    TestEqual(TEXT("返回 false 成功提前中止遍历"), EarlyStopCount, 1);
 
     return true;
 }

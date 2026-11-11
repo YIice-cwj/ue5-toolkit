@@ -11,7 +11,7 @@
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FFixedTimestepAccumulatorStepAndAlphaTest,
-    "Game.Core.Math.FixedTimestep.StepAndAlpha",
+    "Game.Core.Determinism.FixedTimestep.StepAndAlpha",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
@@ -61,7 +61,7 @@ bool FFixedTimestepAccumulatorStepAndAlphaTest::RunTest([[maybe_unused]] const F
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FFixedTimestepAccumulatorSpiralOfDeathProtectionTest,
-    "Game.Core.Math.FixedTimestep.SpiralOfDeathProtection",
+    "Game.Core.Determinism.FixedTimestep.SpiralOfDeathProtection",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 

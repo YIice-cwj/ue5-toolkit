@@ -30,7 +30,7 @@ public:
      */
     ~TCancelableScopeGuard() {
         if (bActive) {
-            Func();
+            ExecuteFunc();
         }
     }
 
@@ -55,7 +55,7 @@ public:
     TCancelableScopeGuard& operator=(TCancelableScopeGuard&& Other) noexcept {
         if (this != &Other) {
             if (bActive) {
-                Func();
+                ExecuteFunc();
             }
             Func = MoveTemp(Other.Func);
             bActive = Other.bActive;
@@ -80,6 +80,19 @@ public:
     }
 
 private:
+    /**
+     * @brief 安全执行清理回调（若支持有效性检查则在执行前判空）
+     */
+    void ExecuteFunc() {
+        if constexpr (std::is_constructible_v<bool, const TFunc&>) {
+            if (static_cast<bool>(Func)) {
+                Func();
+            }
+        } else {
+            Func();
+        }
+    }
+
     TFunc Func;
     bool bActive = false;
 };

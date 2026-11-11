@@ -71,6 +71,20 @@ bool FGameDistIdBitfieldsAndSerializationTest::RunTest([[maybe_unused]] const FS
     TestEqual(TEXT("反序列化后裸数值精确一致"), LoadedId.GetRawValue(), SyntheticId.GetRawValue());
     TestTrue(TEXT("运算符 == 判定相等"), LoadedId == SyntheticId);
 
+    TestEqual(TEXT("ToHex 格式化有效"), SyntheticId.ToHex(), FString::Printf(TEXT("0x%016llX"), SyntheticId.GetRawValue()));
+
+    FGameDistId ParsedDistDec;
+    TestTrue(TEXT("FromString 解析十进制成功"), FGameDistId::FromString(SyntheticId.ToString(), ParsedDistDec));
+    TestEqual(TEXT("十进制还原精确"), ParsedDistDec, SyntheticId);
+
+    FGameDistId ParsedDistHex;
+    TestTrue(TEXT("FromString 解析 0x 十六进制成功"), FGameDistId::FromString(SyntheticId.ToHex(), ParsedDistHex));
+    TestEqual(TEXT("十六进制还原精确"), ParsedDistHex, SyntheticId);
+
+    const uint32 DistHashA = GetTypeHash(SyntheticId);
+    const uint32 DistHashB = GetTypeHash(FGameDistId(SyntheticId.GetRawValue() + 1ULL));
+    TestNotEqual(TEXT("邻近雪花 ID 散列哈希绝不碰撞"), DistHashA, DistHashB);
+
     return true;
 }
 

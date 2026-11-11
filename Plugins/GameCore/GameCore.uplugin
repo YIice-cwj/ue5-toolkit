@@ -1,9 +1,9 @@
 {
     "FileVersion": 3,
     "Version": 3,
-    "VersionName": "2.2.0",
+    "VersionName": "3.0.0",
     "FriendlyName": "Game Core",
-    "Description": "Game bottom-layer common framework: config registry, deterministic RNG, value types & slot map, spatial hash grids (2D/3D), async cancellation token, lock-free ring buffer, priority arbitrator, lightweight FSM & game math, asset loader, time-sliced tasks, message bus, object pool, cache, loading barriers and GM cheat registry. Zero dependencies, copyable to any UE project.",
+    "Description": "Game bottom-layer common foundation framework: config registry, deterministic RNG & PRD, value types & slot map, C++20 coroutine awaiters, async cancellation token, lock-free ring buffer, priority arbitrator, lightweight FSM & game math, linear arena, versioned cache, throttled ticker and time-sliced scheduler. Zero plugin dependencies.",
     "Category": "Game",
     "CreatedBy": "Taoist Decree Team",
     "CanContainContent": false,

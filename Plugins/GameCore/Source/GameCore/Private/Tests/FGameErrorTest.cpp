@@ -28,6 +28,7 @@ bool FGameErrorContractAndSeverityTest::RunTest([[maybe_unused]] const FString& 
     TestFalse(TEXT("Ok() 不属于致命态"), SuccessErr.IsCritical());
     TestEqual(TEXT("Ok() 错误码为 0"), SuccessErr.ErrorCode, 0);
     TestEqual(TEXT("Ok() 严重级别为 Success"), SuccessErr.Severity, EGameErrorSeverity::Success);
+    TestEqual(TEXT("Debug 模块 ID 正确"), Game::ModuleId::Debug, 12);
 
     const FGameError WarningErr = FGameError::Make(
         Game::ModuleId::Core,

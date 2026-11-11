@@ -7,6 +7,10 @@
 
 #if WITH_AUTOMATION_TESTS
 
+#include "Config/FConfigRegistry.h"
+#include "Engine/Engine.h"
+#include "Engine/GameInstance.h"
+#include "Engine/World.h"
 #include "GameplayTagsManager.h"
 #include "Misc/AutomationTest.h"
 
@@ -90,6 +94,62 @@ bool FGameConfigBPLibrarySetAndGetTest::RunTest([[maybe_unused]] const FString& 
     TestTrue(TEXT("旋转体回读准确"), UConfigBPLibrary::GetConfigRotator(RotatorKey, FRotator::ZeroRotator).Equals(TargetRotator));
     TestTrue(TEXT("GameplayTag 回读准确"), UConfigBPLibrary::GetConfigGameplayTag(TagKey, FGameplayTag::EmptyTag) == TargetTag);
 
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameConfigBPLibraryWorldContextIsolationTest, "Game.Core.Config.BPLibrary.WorldContextIsolation",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+/**
+ * @brief 验证蓝图函数库传入 WorldContextObject 时正确穿透至 World 隔离注册表
+ * @param Parameters 自动化框架参数（未使用）
+ * @return 断言全部通过返回 true
+ */
+bool FGameConfigBPLibraryWorldContextIsolationTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    if (GEngine == nullptr) {
+        return false;
+    }
+
+    FConfigRegistry::ClearWorldRegistriesForTesting();
+
+    UGameInstance* GI_A = NewObject<UGameInstance>(GEngine);
+    GI_A->InitializeStandalone(FName(TEXT("BPWorldContextTest_A")));
+    UWorld* WorldA = GI_A->GetWorld();
+
+    UGameInstance* GI_B = NewObject<UGameInstance>(GEngine);
+    GI_B->InitializeStandalone(FName(TEXT("BPWorldContextTest_B")));
+    UWorld* WorldB = GI_B->GetWorld();
+
+    TestNotNull(TEXT("世界 A 有效"), WorldA);
+    TestNotNull(TEXT("世界 B 有效"), WorldB);
+    if (WorldA == nullptr || WorldB == nullptr) {
+        GI_A->Shutdown();
+        GI_B->Shutdown();
+        return false;
+    }
+
+    const FName TestKey(TEXT("UnitTest.BP.WorldContext.Float"));
+    UConfigBPLibrary::SetConfigFloat(TestKey, 10.0f, nullptr);
+
+    TestNearlyEqual(TEXT("World A 继承全局值"), UConfigBPLibrary::GetConfigFloat(TestKey, 0.0f, WorldA), 10.0f, 0.0001f);
+    TestNearlyEqual(TEXT("World B 继承全局值"), UConfigBPLibrary::GetConfigFloat(TestKey, 0.0f, WorldB), 10.0f, 0.0001f);
+
+    UConfigBPLibrary::SetConfigFloat(TestKey, 20.0f, WorldA);
+    UConfigBPLibrary::SetConfigFloat(TestKey, 30.0f, WorldB);
+
+    TestNearlyEqual(TEXT("World A 读取其专属值 20.0"), UConfigBPLibrary::GetConfigFloat(TestKey, 0.0f, WorldA), 20.0f, 0.0001f);
+    TestNearlyEqual(TEXT("World B 读取其专属值 30.0"), UConfigBPLibrary::GetConfigFloat(TestKey, 0.0f, WorldB), 30.0f, 0.0001f);
+    TestNearlyEqual(TEXT("全局根注册表未受污染仍为 10.0"), UConfigBPLibrary::GetConfigFloat(TestKey, 0.0f, nullptr), 10.0f, 0.0001f);
+
+    TSharedPtr<FConfigRegistry> SharedRegistryA = FConfigRegistry::GetShared(WorldA);
+    TestTrue(TEXT("GetShared 返回有效强引用"), SharedRegistryA.IsValid());
+
+    GI_A->Shutdown();
+    GI_B->Shutdown();
+
+    TestNearlyEqual(TEXT("World 销毁后强引用注册表依然安全可用"), SharedRegistryA->GetConfig<float>(TestKey, 0.0f), 20.0f, 0.0001f);
+
+    FConfigRegistry::ClearWorldRegistriesForTesting();
     return true;
 }
 

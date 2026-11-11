@@ -22,7 +22,7 @@ enum class ETestActorState : uint8 {
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameStateMachineTransitionsAndGuardsTest,
-    "Game.Core.FSM.TransitionsAndPriorityGuards",
+    "Game.Core.State.StateMachine.TransitionsAndPriorityGuards",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
@@ -107,7 +107,7 @@ bool FGameStateMachineTransitionsAndGuardsTest::RunTest([[maybe_unused]] const F
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameStateMachineReentrancyAndLoopGuardTest,
-    "Game.Core.FSM.ReentrancyAndLoopGuard",
+    "Game.Core.State.StateMachine.ReentrancyAndLoopGuard",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
@@ -187,7 +187,7 @@ bool FGameStateMachineReentrancyAndLoopGuardTest::RunTest([[maybe_unused]] const
     });
     FifoFsm.Start(ETestActorState::Idle);
     TestEqual(TEXT("同一回调内排队多个状态时按 FIFO 依次经过全部状态"), EnteredStates.Num(), 3);
-    TestFalse(TEXT("未注册 Dead 状态时 ChangeStateIfRegistered 返回 false"), FifoFsm.ChangeStateIfRegistered(ETestActorState::Dead));
+    TestFalse(TEXT("未注册 Dead 状态时 HasState 返回 false"), FifoFsm.HasState(ETestActorState::Dead));
 
     TGameStateMachine<ETestActorState> ReentrantMutationFsm;
     ReentrantMutationFsm.RegisterState(ETestActorState::Idle, {
@@ -241,6 +241,53 @@ bool FGameStateMachineReentrancyAndLoopGuardTest::RunTest([[maybe_unused]] const
         BounceCount,
         TGameStateMachine<ETestActorState>::MAX_CHAINED_TRANSITIONS
     );
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameStateMachineStopInExitCallbackTest,
+    "Game.Core.State.StateMachine.StopInExitCallback",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证在 OnExit 退出回调内部调用 Stop() 时，退出回调绝不重复执行两次
+ * @param Parameters 自动化测试参数
+ * @return 全部断言通过返回 true
+ */
+bool FGameStateMachineStopInExitCallbackTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    TGameStateMachine<ETestActorState> Fsm;
+    int32 IdleExitInvocations = 0;
+    int32 CombatEnterInvocations = 0;
+
+    Fsm.RegisterState(ETestActorState::Idle, {
+        nullptr,
+        nullptr,
+        [&Fsm, &IdleExitInvocations](ETestActorState Target) {
+            ++IdleExitInvocations;
+            // 在退出回调内部主动停止状态机
+            Fsm.Stop();
+        }
+    });
+
+    Fsm.RegisterState(ETestActorState::Combat, {
+        [&CombatEnterInvocations](ETestActorState Prev) {
+            ++CombatEnterInvocations;
+        },
+        nullptr,
+        nullptr
+    });
+
+    Fsm.Start(ETestActorState::Idle);
+    TestTrue(TEXT("状态机启动正常"), Fsm.IsRunning());
+
+    // 请求切态到 Combat，触发 Idle 的 OnExit，其内部调用 Stop()
+    Fsm.ChangeState(ETestActorState::Combat);
+
+    TestFalse(TEXT("Stop 后状态机处于停止状态"), Fsm.IsRunning());
+    TestEqual(TEXT("Idle 的 OnExit 回调必须严格仅触发 1 次，绝不重复重入"), IdleExitInvocations, 1);
+    TestEqual(TEXT("目标态 Combat 的 OnEnter 绝不触发"), CombatEnterInvocations, 0);
 
     return true;
 }

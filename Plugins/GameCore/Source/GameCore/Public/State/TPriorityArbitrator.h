@@ -6,6 +6,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include <concepts>
 
 /**
  * @brief 属性仲裁求值模式
@@ -33,7 +34,80 @@ private:
     };
 
 public:
-    TPriorityArbitrator() = default;
+    /**
+     * @brief 构造多源属性仲裁器实例并指定默认仲裁模式
+     * @param InMode 仲裁模式（默认最高优先级抢占覆盖）
+     */
+    constexpr explicit TPriorityArbitrator(EPriorityArbitrationMode InMode = EPriorityArbitrationMode::OverrideHighestPriority) noexcept
+        : ConfiguredMode(InMode) {
+    }
+
+    TPriorityArbitrator(const TPriorityArbitrator&) = delete;
+    TPriorityArbitrator& operator=(const TPriorityArbitrator&) = delete;
+
+    /**
+     * @brief 移动构造函数（重置内部指针缓存，确保移动后无悬垂引用）
+     * @param Other 源仲裁器引用
+     */
+    TPriorityArbitrator(TPriorityArbitrator&& Other) noexcept
+        : Channels(MoveTemp(Other.Channels))
+        , ConfiguredMode(Other.ConfiguredMode)
+        , CurrentSequence(Other.CurrentSequence)
+        , CachedWinnerChannel(Other.CachedWinnerChannel)
+        , bWinnerCacheDirty(Other.bWinnerCacheDirty)
+        , CachedAggregationBaseValue(MoveTemp(Other.CachedAggregationBaseValue))
+        , CachedAggregationResult(MoveTemp(Other.CachedAggregationResult))
+        , CachedAggregationMode(Other.CachedAggregationMode)
+        , bAggregationCacheDirty(true) {
+        SortedValuePtrsCache.Reset();
+        Other.SortedValuePtrsCache.Reset();
+        Other.bWinnerCacheDirty = true;
+        Other.bAggregationCacheDirty = true;
+    }
+
+    /**
+     * @brief 移动赋值运算符（重置内部指针缓存）
+     * @param Other 源仲裁器引用
+     * @return 自身引用
+     */
+    TPriorityArbitrator& operator=(TPriorityArbitrator&& Other) noexcept {
+        if (this != &Other) {
+            Channels = MoveTemp(Other.Channels);
+            ConfiguredMode = Other.ConfiguredMode;
+            CurrentSequence = Other.CurrentSequence;
+            CachedWinnerChannel = Other.CachedWinnerChannel;
+            bWinnerCacheDirty = Other.bWinnerCacheDirty;
+            CachedAggregationBaseValue = MoveTemp(Other.CachedAggregationBaseValue);
+            CachedAggregationResult = MoveTemp(Other.CachedAggregationResult);
+            CachedAggregationMode = Other.CachedAggregationMode;
+            bAggregationCacheDirty = true;
+            SortedValuePtrsCache.Reset();
+            Other.SortedValuePtrsCache.Reset();
+            Other.bWinnerCacheDirty = true;
+            Other.bAggregationCacheDirty = true;
+        }
+        return *this;
+    }
+
+    /**
+     * @brief 获取当前配置的仲裁模式
+     * @return 仲裁模式枚举值
+     */
+    [[nodiscard]] constexpr EPriorityArbitrationMode GetMode() const noexcept {
+        return ConfiguredMode;
+    }
+
+    /**
+     * @brief 更新仲裁模式并使对应缓存失效
+     * @param InMode 新仲裁模式
+     */
+    void SetMode(EPriorityArbitrationMode InMode) noexcept {
+        if (ConfiguredMode != InMode) {
+            ConfiguredMode = InMode;
+            bWinnerCacheDirty = true;
+            bAggregationCacheDirty = true;
+        }
+    }
 
     /**
      * @brief 注册或更新指定通道的属性值及其请求优先级
@@ -47,6 +121,7 @@ public:
         Record.Priority = InPriority;
         Record.Sequence = ++CurrentSequence;
         bWinnerCacheDirty = true;
+        bAggregationCacheDirty = true;
     }
 
     /**
@@ -57,6 +132,7 @@ public:
     bool ClearChannel(const FName& ChannelName) {
         if (Channels.Remove(ChannelName) > 0) {
             bWinnerCacheDirty = true;
+            bAggregationCacheDirty = true;
             return true;
         }
         return false;
@@ -72,52 +148,35 @@ public:
     }
 
     /**
-     * @brief 查找指定通道属性值的只读指针
-     * @param ChannelName 来源通道标识
-     * @return 存在时返回指向通道值的常量临时指针（后续 SetChannel/ClearChannel/Reset 可能导致该指针失效，严禁跨调用长期持有），不存在返回 nullptr
-     */
-    [[nodiscard]] const ValueType* FindChannelValue(const FName& ChannelName) const noexcept {
-        if (const FChannelRecord* Record = Channels.Find(ChannelName)) {
-            return &Record->Value;
-        }
-        return nullptr;
-    }
-
-    /**
      * @brief 获取指定通道当前的请求值（可选语义）
      * @param ChannelName 来源通道标识
      * @return 包含属性值的可选对象，通道不存在时返回未设置
      */
     [[nodiscard]] TOptional<ValueType> GetChannelValue(const FName& ChannelName) const {
-        if (const ValueType* ValuePtr = FindChannelValue(ChannelName)) {
-            return TOptional<ValueType>(*ValuePtr);
+        if (const FChannelRecord* Record = Channels.Find(ChannelName)) {
+            return TOptional<ValueType>(Record->Value);
         }
         return TOptional<ValueType>();
     }
 
     /**
-     * @brief 获取指定通道当前的请求值（历史传出参数重载，保持向下兼容）
-     * @param ChannelName 来源通道标识
-     * @param OutValue 输出请求属性值
-     * @return 通道存在返回 true
+     * @brief 计算并返回当前生效的最终仲裁值（基于构造期配置或 SetMode 设定的仲裁模式计算）
+     * @param DefaultValue 当所有通道为空时的默认回退值；在 Additive 与 Multiplicative 模式下同时作为累加/累乘的初始基准值
+     * @return 综合仲裁后的最终属性值
      */
-    bool GetChannelValue(const FName& ChannelName, ValueType& OutValue) const {
-        if (const ValueType* ValuePtr = FindChannelValue(ChannelName)) {
-            OutValue = *ValuePtr;
-            return true;
-        }
-        return false;
+    [[nodiscard]] ValueType GetEffectiveValue(const ValueType& DefaultValue) const {
+        return GetEffectiveValue(DefaultValue, ConfiguredMode);
     }
 
     /**
-     * @brief 计算并返回当前生效的最终仲裁值（Additive/Multiplicative 按通道名字典序聚合以保证跨进程浮点确定性）
+     * @brief 计算并返回当前生效的最终仲裁值（显式指定仲裁模式求值）
      * @param DefaultValue 当所有通道为空时的默认回退值；在 Additive 与 Multiplicative 模式下同时作为累加/累乘的初始基准值
-     * @param Mode 仲裁模式（默认最高优先级抢占覆盖）
+     * @param Mode 显式指定的仲裁模式
      * @return 综合仲裁后的最终属性值
      */
     [[nodiscard]] ValueType GetEffectiveValue(
         const ValueType& DefaultValue,
-        EPriorityArbitrationMode Mode = EPriorityArbitrationMode::OverrideHighestPriority
+        EPriorityArbitrationMode Mode
     ) const {
         if (Channels.IsEmpty()) {
             return DefaultValue;
@@ -129,24 +188,39 @@ public:
         }
 
         if (Mode == EPriorityArbitrationMode::Additive || Mode == EPriorityArbitrationMode::Multiplicative) {
-            TArray<FName, TInlineAllocator<16>> SortedChannelNames;
-            SortedChannelNames.Reserve(Channels.Num());
-            for (const auto& Pair : Channels) {
-                SortedChannelNames.Add(Pair.Key);
+            if constexpr (std::equality_comparable<ValueType>) {
+                if (!bAggregationCacheDirty && CachedAggregationMode == Mode && CachedAggregationBaseValue == DefaultValue) {
+                    return CachedAggregationResult;
+                }
             }
-            SortedChannelNames.Sort(FNameLexicalLess());
+
+            if (bAggregationCacheDirty) {
+                RebuildAggregationPointers();
+            }
 
             if (Mode == EPriorityArbitrationMode::Additive) {
                 ValueType Accum = DefaultValue;
-                for (const FName& Key : SortedChannelNames) {
-                    Accum = Accum + Channels.FindChecked(Key).Value;
+                for (const ValueType* ValPtr : SortedValuePtrsCache) {
+                    Accum = Accum + *ValPtr;
+                }
+                if constexpr (std::equality_comparable<ValueType>) {
+                    CachedAggregationBaseValue = DefaultValue;
+                    CachedAggregationResult = Accum;
+                    CachedAggregationMode = Mode;
+                    bAggregationCacheDirty = false;
                 }
                 return Accum;
             }
 
             ValueType Product = DefaultValue;
-            for (const FName& Key : SortedChannelNames) {
-                Product = Product * Channels.FindChecked(Key).Value;
+            for (const ValueType* ValPtr : SortedValuePtrsCache) {
+                Product = Product * (*ValPtr);
+            }
+            if constexpr (std::equality_comparable<ValueType>) {
+                CachedAggregationBaseValue = DefaultValue;
+                CachedAggregationResult = Product;
+                CachedAggregationMode = Mode;
+                bAggregationCacheDirty = false;
             }
             return Product;
         }
@@ -170,6 +244,8 @@ public:
         CurrentSequence = 0;
         CachedWinnerChannel = NAME_None;
         bWinnerCacheDirty = false;
+        SortedValuePtrsCache.Reset();
+        bAggregationCacheDirty = false;
     }
 
     /**
@@ -193,6 +269,21 @@ private:
         FName ChannelName = NAME_None;
         const ValueType* ValuePtr = nullptr;
     };
+
+    void RebuildAggregationPointers() const {
+        TArray<FName, TInlineAllocator<16>> SortedChannelNames;
+        SortedChannelNames.Reserve(Channels.Num());
+        for (const auto& Pair : Channels) {
+            SortedChannelNames.Add(Pair.Key);
+        }
+        SortedChannelNames.Sort(FNameLexicalLess());
+
+        SortedValuePtrsCache.Reset();
+        SortedValuePtrsCache.Reserve(SortedChannelNames.Num());
+        for (const FName& Key : SortedChannelNames) {
+            SortedValuePtrsCache.Add(&Channels.FindChecked(Key).Value);
+        }
+    }
 
     [[nodiscard]] FWinningMatch FindWinner() const noexcept {
         if (Channels.IsEmpty()) {
@@ -231,7 +322,14 @@ private:
 
 private:
     TMap<FName, FChannelRecord> Channels;
+    EPriorityArbitrationMode ConfiguredMode = EPriorityArbitrationMode::OverrideHighestPriority;
     uint64 CurrentSequence = 0;
     mutable FName CachedWinnerChannel = NAME_None;
     mutable bool bWinnerCacheDirty = true;
+
+    mutable TArray<const ValueType*, TInlineAllocator<16>> SortedValuePtrsCache;
+    mutable ValueType CachedAggregationBaseValue{};
+    mutable ValueType CachedAggregationResult{};
+    mutable EPriorityArbitrationMode CachedAggregationMode = EPriorityArbitrationMode::OverrideHighestPriority;
+    mutable bool bAggregationCacheDirty = true;
 };

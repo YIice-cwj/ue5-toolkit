@@ -53,15 +53,16 @@ struct FNetPacketArrivedEvent {
     TArrayView<const uint8> Payload;
 };
 
-// 订阅（极速零 GC）
-FObserverSubscription Sub = FListenerHub::Get().Subscribe<FNetPacketArrivedEvent>(
+// 订阅（极速零 GC，返回 RAII 守卫）
+TSharedRef<FObserverSubscription> Sub = FListenerHub::Get().Subscribe<FNetPacketArrivedEvent>(
+    TEXT("Net.PacketArrived"),
     [](const FNetPacketArrivedEvent& Evt) {
         // 处理数据包
     }
 );
 
-// 广播（纳秒级无锁遍历）
-FListenerHub::Get().Broadcast(FNetPacketArrivedEvent{1, DataView});
+// 广播（COW 快照遍历，纳秒级零锁派发）
+FListenerHub::Get().Emit(TEXT("Net.PacketArrived"), FNetPacketArrivedEvent{1, DataView});
 ```
 
 ### 2. 何时使用 Tier 1 (`UGameplayMessageSubsystem`)

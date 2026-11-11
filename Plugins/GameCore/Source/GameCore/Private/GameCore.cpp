@@ -7,8 +7,10 @@
 #include "Config/GameCompileSwitches.h"
 #include "Config/FGameCoreRegistration.h"
 #include "Async/FGameThreadTaskRunner.h"
+#include "State/TGameStateMachine.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogGameCore, Log, All);
+DEFINE_LOG_CATEGORY(LogGameStateMachine);
 
 /**
  * @brief 核心层主模块
@@ -40,7 +42,7 @@ public:
  * @brief 模块启动实现：注册编译开关桥接键并记录初始化里程碑
  */
 void FGameCoreModule::StartupModule() {
-    FGameCoreRegistration::RegisterAll(nullptr);
+    FGameCoreRegistration::RegisterAll();
     if constexpr (Game::Config::bEnableLog) {
         UE_LOG(LogGameCore, Log, TEXT("【GameCore】核心层主模块初始化完成。"));
     }
@@ -52,7 +54,6 @@ void FGameCoreModule::StartupModule() {
 void FGameCoreModule::ShutdownModule() {
     FGameThreadTaskRunner::CancelAllPendingTasks();
     FGameThreadTaskRunner::FlushInFlightTasks(1.0);
-    FGameCoreRegistration::UnregisterAll(nullptr);
     if constexpr (Game::Config::bEnableLog) {
         UE_LOG(LogGameCore, Log, TEXT("【GameCore】核心层主模块注销完成。"));
     }

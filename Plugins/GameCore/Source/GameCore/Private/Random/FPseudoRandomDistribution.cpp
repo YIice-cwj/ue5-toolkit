@@ -38,9 +38,12 @@ float FPseudoRandomDistribution::GetNextRollProbability() const noexcept {
     }
     const int32 ClampedStreak = FMath::Clamp(FailureStreak, 0, MAX_FAILURE_STREAK);
     const int64 NextAttempt = static_cast<int64>(ClampedStreak) + 1LL;
-    const double EffectiveConstant = (PreciseIncrementConstant > 0.0)
+    double EffectiveConstant = (PreciseIncrementConstant > 0.0)
         ? PreciseIncrementConstant
         : static_cast<double>(IncrementConstant);
+    if (EffectiveConstant <= 0.0 && NominalProbability > 0.0f) {
+        EffectiveConstant = CalculatePreciseConstantForProbability(static_cast<double>(NominalProbability));
+    }
     const double RawChance = EffectiveConstant * static_cast<double>(NextAttempt);
     return static_cast<float>(FMath::Clamp(RawChance, 0.0, 1.0));
 }

@@ -11,7 +11,7 @@
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FPriorityArbitratorOverrideModeTest,
-    "Game.Core.Arbitration.PriorityArbitrator.OverrideMode",
+    "Game.Core.State.PriorityArbitrator.OverrideMode",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
@@ -26,12 +26,9 @@ bool FPriorityArbitratorOverrideModeTest::RunTest([[maybe_unused]] const FString
     TestTrue(TEXT("初始状态为空"), Arbitrator.IsEmpty());
     TestEqual(TEXT("初始状态返回默认基准值 1.0"), Arbitrator.GetEffectiveValue(1.0f), 1.0f);
     TestEqual(TEXT("初始胜出通道为 NAME_None"), Arbitrator.GetWinningChannel(), NAME_None);
-    TestNull(TEXT("未注册通道 FindChannelValue 返回 nullptr"), Arbitrator.FindChannelValue(FName(TEXT("NonExistent"))));
     TestFalse(TEXT("未注册通道 GetChannelValue 返回 unset"), Arbitrator.GetChannelValue(FName(TEXT("NonExistent"))).IsSet());
 
     Arbitrator.SetChannel(FName(TEXT("BaseMovement")), 500.0f, 10);
-    TestNotNull(TEXT("已注册通道 FindChannelValue 返回有效指针"), Arbitrator.FindChannelValue(FName(TEXT("BaseMovement"))));
-    TestEqual(TEXT("指针指向数值 500.0"), *Arbitrator.FindChannelValue(FName(TEXT("BaseMovement"))), 500.0f);
     TestTrue(TEXT("已注册通道 GetChannelValue 返回 set"), Arbitrator.GetChannelValue(FName(TEXT("BaseMovement"))).IsSet());
     TestEqual(TEXT("可选对象数值 500.0"), Arbitrator.GetChannelValue(FName(TEXT("BaseMovement"))).GetValue(), 500.0f);
     TestEqual(TEXT("单一通道生效，当前值 500.0"), Arbitrator.GetEffectiveValue(1.0f), 500.0f);
@@ -60,7 +57,7 @@ bool FPriorityArbitratorOverrideModeTest::RunTest([[maybe_unused]] const FString
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FPriorityArbitratorMathModesTest,
-    "Game.Core.Arbitration.PriorityArbitrator.MathModes",
+    "Game.Core.State.PriorityArbitrator.MathModes",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
@@ -78,12 +75,70 @@ bool FPriorityArbitratorMathModesTest::RunTest([[maybe_unused]] const FString& P
     const float AdditiveResult = Arbitrator.GetEffectiveValue(100.0f, EPriorityArbitrationMode::Additive);
     TestEqual(TEXT("加算模式：100 + 10 + 25 = 135.0"), AdditiveResult, 135.0f);
 
+    const float AdditiveCachedResult = Arbitrator.GetEffectiveValue(100.0f, EPriorityArbitrationMode::Additive);
+    TestEqual(TEXT("加算模式缓存命中：保持 135.0"), AdditiveCachedResult, 135.0f);
+
+    Arbitrator.SetChannel(FName(TEXT("ModC")), 5.0f);
+    const float AdditiveAfterUpdate = Arbitrator.GetEffectiveValue(100.0f, EPriorityArbitrationMode::Additive);
+    TestEqual(TEXT("更新通道后置脏重算：100 + 10 + 25 + 5 = 140.0"), AdditiveAfterUpdate, 140.0f);
+
     Arbitrator.Reset();
     Arbitrator.SetChannel(FName(TEXT("TimeScaleSkill")), 0.5f);
     Arbitrator.SetChannel(FName(TEXT("TimeScaleGlobal")), 0.2f);
 
     const float MultiplicativeResult = Arbitrator.GetEffectiveValue(1.0f, EPriorityArbitrationMode::Multiplicative);
     TestEqual(TEXT("乘算模式：1.0 * 0.5 * 0.2 = 0.1"), MultiplicativeResult, 0.1f);
+
+    const float MultiplicativeCached = Arbitrator.GetEffectiveValue(1.0f, EPriorityArbitrationMode::Multiplicative);
+    TestEqual(TEXT("乘算模式缓存命中：保持 0.1"), MultiplicativeCached, 0.1f);
+
+    TPriorityArbitrator<float> ConfiguredAdditive(EPriorityArbitrationMode::Additive);
+    TestEqual(TEXT("构造器初始化仲裁模式为加算"), ConfiguredAdditive.GetMode(), EPriorityArbitrationMode::Additive);
+    ConfiguredAdditive.SetChannel(FName(TEXT("AtkBuff")), 50.0f);
+    TestEqual(TEXT("单实参 GetEffectiveValue 依自身配置模式返回 150.0"), ConfiguredAdditive.GetEffectiveValue(100.0f), 150.0f);
+
+    ConfiguredAdditive.SetMode(EPriorityArbitrationMode::Multiplicative);
+    TestEqual(TEXT("SetMode 动态切为乘算模式"), ConfiguredAdditive.GetMode(), EPriorityArbitrationMode::Multiplicative);
+    TestEqual(TEXT("乘算单实参计算 100 * 50 = 5000.0"), ConfiguredAdditive.GetEffectiveValue(100.0f), 5000.0f);
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FPriorityArbitratorMoveSemanticsTest,
+    "Game.Core.State.PriorityArbitrator.MoveSemantics",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证移动构造与移动赋值后的缓存重置、无悬垂引用与运算正确性
+ * @param Parameters 自动化测试参数
+ * @return 全部断言通过返回 true
+ */
+bool FPriorityArbitratorMoveSemanticsTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    TPriorityArbitrator<float> Source(EPriorityArbitrationMode::Additive);
+    Source.SetChannel(FName(TEXT("Buff1")), 10.0f);
+    Source.SetChannel(FName(TEXT("Buff2")), 20.0f);
+
+    // 触发内部指针缓存构建
+    const float SourceResult = Source.GetEffectiveValue(100.0f);
+    TestEqual(TEXT("原仲裁器计算结果为 130.0"), SourceResult, 130.0f);
+
+    // 移动构造
+    TPriorityArbitrator<float> Dest = MoveTemp(Source);
+    TestEqual(TEXT("移动后新对象计算结果依然为 130.0"), Dest.GetEffectiveValue(100.0f), 130.0f);
+    TestTrue(TEXT("新对象包含通道 Buff1"), Dest.HasChannel(FName(TEXT("Buff1"))));
+    TestTrue(TEXT("新对象包含通道 Buff2"), Dest.HasChannel(FName(TEXT("Buff2"))));
+
+    // 修改新对象
+    Dest.SetChannel(FName(TEXT("Buff3")), 5.0f);
+    TestEqual(TEXT("新对象继续加算计算结果为 135.0"), Dest.GetEffectiveValue(100.0f), 135.0f);
+
+    // 移动赋值
+    TPriorityArbitrator<float> AssignedDest(EPriorityArbitrationMode::Multiplicative);
+    AssignedDest = MoveTemp(Dest);
+    TestEqual(TEXT("移动赋值后模式继承为加算"), AssignedDest.GetMode(), EPriorityArbitrationMode::Additive);
+    TestEqual(TEXT("移动赋值后运算结果依然为 135.0"), AssignedDest.GetEffectiveValue(100.0f), 135.0f);
 
     return true;
 }

@@ -17,6 +17,7 @@
 #include "Serializer/INetSerializer.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "Transport/INetTransport.h"
+#include "Async/TNetRequestStructAwaiter.h"
 
 #include "GameNetServiceSubsystem.generated.h"
 
@@ -221,6 +222,24 @@ public:
         TFunction<void(ENetRequestResult, const TRspStruct*)> Callback
     );
 
+    /**
+     * @brief 泛型便捷异步 RPC（C++20 协程门面，支持直接 co_await 与生命周期守卫熔断）
+     * @tparam TReqStruct 请求反射结构体类型
+     * @tparam TRspStruct 响应反射结构体类型
+     * @param RequestMessageId 请求协议 ID
+     * @param ExpectedResponseMessageId 期望响应协议 ID
+     * @param RequestPayload 请求结构体实例
+     * @param TimeoutSeconds 超时秒数上限
+     * @return 协程挂起器，恢复后交付包含响应结构体或网络错误枚举的 TGameResult
+     */
+    template <typename TReqStruct, typename TRspStruct>
+    TNetRequestStructAwaiter<TReqStruct, TRspStruct> RequestStructAsync(
+        uint32 RequestMessageId,
+        uint32 ExpectedResponseMessageId,
+        const TReqStruct& RequestPayload,
+        float TimeoutSeconds = 5.0f
+    );
+
 public:
     /**
      * @brief 安全获取业务网络门面子系统指针（可空）
@@ -394,6 +413,54 @@ TGameStatusResult<uint32> UGameNetServiceSubsystem::SendStructRequest(
             const TRspStruct Value = DecodedRsp.GetValue();
             Callback(ENetRequestResult::Success, &Value);
         }
+    );
+}
+
+template <typename TReqStruct, typename TRspStruct>
+void TNetRequestStructAwaiter<TReqStruct, TRspStruct>::SuspendWithGuard(
+    TSharedRef<Game::Coro::FGameCoroSuspensionGuard, ESPMode::ThreadSafe> InGuard
+) {
+    UGameNetServiceSubsystem* Subsystem = SubsystemWeak.Get();
+    if (Subsystem == nullptr) {
+        InGuard->AbortAndDestroyFrame();
+        return;
+    }
+
+    TSharedRef<TGameResult<TRspStruct, ENetRequestResult>, ESPMode::ThreadSafe> CapturedSlot = ResultHolder;
+    const TGameStatusResult<uint32> SendResult = Subsystem->SendStructRequest<TReqStruct, TRspStruct>(
+        RequestMessageId,
+        ExpectedResponseMessageId,
+        Payload,
+        TimeoutSeconds,
+        [InGuard, CapturedSlot](ENetRequestResult ReqResult, const TRspStruct* RspPtr) {
+            if (ReqResult == ENetRequestResult::Success && RspPtr != nullptr) {
+                *CapturedSlot = TGameResult<TRspStruct, ENetRequestResult>::Success(*RspPtr);
+            } else {
+                *CapturedSlot = TGameResult<TRspStruct, ENetRequestResult>::Failure(ReqResult);
+            }
+            InGuard->ResumeOrAbort();
+        }
+    );
+
+    if (SendResult.IsFailure()) {
+        *CapturedSlot = TGameResult<TRspStruct, ENetRequestResult>::Failure(ENetRequestResult::SendFailed);
+        InGuard->ResumeOrAbort();
+    }
+}
+
+template <typename TReqStruct, typename TRspStruct>
+TNetRequestStructAwaiter<TReqStruct, TRspStruct> UGameNetServiceSubsystem::RequestStructAsync(
+    uint32 RequestMessageId,
+    uint32 ExpectedResponseMessageId,
+    const TReqStruct& RequestPayload,
+    float TimeoutSeconds
+) {
+    return TNetRequestStructAwaiter<TReqStruct, TRspStruct>(
+        this,
+        RequestMessageId,
+        ExpectedResponseMessageId,
+        RequestPayload,
+        TimeoutSeconds
     );
 }
 
