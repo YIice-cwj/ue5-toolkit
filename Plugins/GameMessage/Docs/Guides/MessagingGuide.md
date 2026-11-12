@@ -134,7 +134,7 @@ public:
     FValueObserver<float>& GetCritChanceObserver() { return CritChance; }
 
 private:
-    FValueObserver<float> CritChance{0.05f};
+    FValueObserver<float> CritChance{FName(TEXT("Combat.CritChance")), 0.05f};
 };
 
 // UI 模块：订阅（SubscribeWithReplay 立即拿到当前值，之后每次变化收到回调）
@@ -151,7 +151,7 @@ void UCombatHudWidget::BindCritChance(UCombatAttributeComponent* AttributeComp)
 }
 ```
 
-- Key 与类型由业务约定，不需要在框架中登记枚举或结构体。
-- UI 控件销毁时 `CritSubscription` 自动退订；关卡结束随 World 子系统一并回收。
-- 同一 Key 被注册为不同类型时会返回空守卫并记录 Error，不会发生类型踩踏。
+- `ObserverName` 对应唯一的业务观察域配置键（`Listener.{Name}.Enabled`），不需要在框架中登记枚举或结构体。
+- UI 控件销毁时 `CritSubscription` 自动退订；绑定 UObject 宿主在 GC 销毁后自动跳过回调并由 `NumListeners()` 惰性清理。
+- 构造期支持指定初始值与默认值初始化，通过 `SubscribeWithReplay` 可在订阅瞬间获取当前属性值。
 

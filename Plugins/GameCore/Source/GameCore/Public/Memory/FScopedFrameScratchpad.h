@@ -85,6 +85,29 @@ public:
             return TArrayView<T>();
         }
         T* Data = ArenaRef.AllocateArray<T>(static_cast<size_t>(Count));
+        if (Data == nullptr) {
+            return TArrayView<T>();
+        }
+        return TArrayView<T>(Data, Count);
+    }
+
+    /**
+     * @brief 分配并构造连续元素数组（非平凡对象自动注册作用域逆序析构）
+     * @tparam T 元素类型
+     * @tparam Args 元素构造实参类型包
+     * @param Count 元素数量
+     * @param InArgs 传递给每个元素的构造参数
+     * @return 元素数组视图
+     */
+    template <typename T, typename... Args>
+    [[nodiscard]] TArrayView<T> NewArray(int32 Count, Args&&... InArgs) {
+        if (Count <= 0) {
+            return TArrayView<T>();
+        }
+        T* Data = ArenaRef.NewArray<T>(static_cast<size_t>(Count), Forward<Args>(InArgs)...);
+        if (Data == nullptr) {
+            return TArrayView<T>();
+        }
         return TArrayView<T>(Data, Count);
     }
 

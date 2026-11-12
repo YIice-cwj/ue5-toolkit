@@ -7,6 +7,8 @@
 
 #if WITH_AUTOMATION_TESTS
 
+#include <limits>
+
 #include "Misc/AutomationTest.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -55,6 +57,31 @@ bool FGameMathCriticalSpringDampTest::RunTest([[maybe_unused]] const FString& Pa
     }
     TestTrue(TEXT("三维阻尼弹簧平滑收敛至目标点"), VecState.Value.Equals(TargetVec, 0.5));
 
+    const float NanVal = std::numeric_limits<float>::quiet_NaN();
+    const FGameMath::FSpringFloatState NanState{NanVal, 10.0f};
+    const FGameMath::FSpringFloatState RecoveredFloat = FGameMath::CriticalSpringDampFloat(NanState, 50.0f, 0.2f, 0.016f);
+    TestEqual(TEXT("标量弹簧输入 NaN 安全重置为目标值"), RecoveredFloat.Value, 50.0f);
+    TestEqual(TEXT("标量弹簧输入 NaN 安全重置速度为 0"), RecoveredFloat.Velocity, 0.0f);
+
+    const FGameMath::FSpringVectorState NanVecState{FVector(NAN, 0.0, 0.0), FVector::ZeroVector};
+    const FGameMath::FSpringVectorState RecoveredVec = FGameMath::CriticalSpringDampVector(NanVecState, FVector(10.0, 20.0, 30.0), 0.2f, 0.016f);
+    TestTrue(TEXT("向量弹簧输入 NaN 安全重置为目标向量"), RecoveredVec.Value.Equals(FVector(10.0, 20.0, 30.0), 1e-4));
+    TestTrue(TEXT("向量弹簧输入 NaN 安全重置速度为零"), RecoveredVec.Velocity.IsZero());
+
+    const FGameMath::FSpringFloatState StateA{1.0f, 2.0f};
+    const FGameMath::FSpringFloatState StateB{1.0f, 2.0f};
+    TestTrue(TEXT("FSpringFloatState 等号运算符一致"), StateA == StateB);
+
+    const FGameMath::FSpringVectorState VecA{FVector(1, 2, 3), FVector(4, 5, 6)};
+    const FGameMath::FSpringVectorState VecB{FVector(1, 2, 3), FVector(4, 5, 6)};
+    TestTrue(TEXT("FSpringVectorState 等号运算符一致"), VecA == VecB);
+
+    FGameMath::FSpringFloatState AngleState{170.0f, 0.0f};
+    for (int32 Step = 0; Step < 60; ++Step) {
+        AngleState = FGameMath::CriticalSpringDampAngleDegrees(AngleState, -170.0f, 0.1f, 1.0f / 60.0f);
+    }
+    TestTrue(TEXT("角度弹簧沿最短弧度收敛至 -170 附近"), FMath::IsNearlyEqual(AngleState.Value, -170.0f, 1.0f));
+
     return true;
 }
 
@@ -86,6 +113,10 @@ bool FGameMathSpatialGeometryTest::RunTest([[maybe_unused]] const FString& Param
     TestTrue(TEXT("180 度全向球视域内命中后方目标"), FGameMath::IsInVisionCone(FVector(-50.0, 0.0, 0.0), AxisX, 100.0f, 180.0f));
     TestTrue(TEXT("44 度目标命中 45 度半张角视锥"), FGameMath::IsInVisionCone(FVector(50.0, 48.0, 0.0), AxisX, 100.0f, 45.0f));
     TestFalse(TEXT("60 度目标被 45 度半张角视锥排除"), FGameMath::IsInVisionCone(FVector(40.0, 70.0, 0.0), AxisX, 100.0f, 45.0f));
+
+    const float NanAngle = std::numeric_limits<float>::quiet_NaN();
+    TestFalse(TEXT("NaN 视距恒不在视锥内"), FGameMath::IsInVisionCone(FVector(10, 0, 0), AxisX, NanAngle, 45.0f));
+    TestFalse(TEXT("NaN 半张角恒不在视锥内"), FGameMath::IsInVisionCone(FVector(10, 0, 0), AxisX, 100.0f, NanAngle));
 
     return true;
 }
@@ -139,6 +170,9 @@ bool FGameMathExpDecayTest::RunTest([[maybe_unused]] const FString& Parameters) 
     const FQuat QuatHalf = FGameMath::ExpDecayQuat(QuatA, QuatB, HalfLife, HalfLife);
     const FQuat QuatExpected = FQuat(FVector::UpVector, FMath::DegreesToRadians(45.0f));
     TestTrue(TEXT("四元数在 1 个半衰期平滑旋转 45 度"), QuatHalf.Equals(QuatExpected, 0.02f));
+
+    const float AngleHalf = FGameMath::ExpDecayAngleDegrees(170.0f, -170.0f, HalfLife, HalfLife);
+    TestTrue(TEXT("角度在 1 个半衰期沿最短弧度旋转到达 180 度附近"), FMath::IsNearlyEqual(FMath::Abs(AngleHalf), 180.0f, 0.1f));
 
     return true;
 }

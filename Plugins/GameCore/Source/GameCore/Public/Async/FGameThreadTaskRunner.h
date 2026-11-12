@@ -39,6 +39,20 @@ public:
     [[nodiscard]] bool IsValid() const noexcept;
 
     /**
+     * @brief 布尔显式类型转换操作符（等价于 IsValid()）
+     * @return 句柄有效返回 true
+     */
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return IsValid();
+    }
+
+    /**
+     * @brief 查询任务是否已被请求协同取消
+     * @return 已被取消返回 true
+     */
+    [[nodiscard]] bool IsCancelled() const noexcept;
+
+    /**
      * @brief 查询后台任务是否已执行完成
      * @return 已完成或未绑定有效任务返回 true
      */

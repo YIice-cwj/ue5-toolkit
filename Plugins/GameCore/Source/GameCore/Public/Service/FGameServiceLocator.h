@@ -78,6 +78,19 @@ public:
     }
 
     /**
+     * @brief 获取已注册的强引用服务（未注册时触发断言，适用于系统关键依赖）
+     * @tparam TInterface 抽象接口类型
+     * @param ServiceName 可选具名服务标识
+     * @return 线程安全共享引用
+     */
+    template <typename TInterface>
+    [[nodiscard]] TSharedRef<TInterface, ESPMode::ThreadSafe> ResolveRequired(FName ServiceName = NAME_None) const {
+        TSharedPtr<TInterface, ESPMode::ThreadSafe> Resolved = Resolve<TInterface>(ServiceName);
+        checkf(Resolved.IsValid(), TEXT("FGameServiceLocator: Failed to resolve required service [%s]"), *ServiceName.ToString());
+        return Resolved.ToSharedRef();
+    }
+
+    /**
      * @brief 查询类型单例服务是否已注册
      * @tparam TInterface 抽象接口类型
      * @return 已注册返回 true
@@ -95,6 +108,9 @@ public:
      * @return 已注册返回 true
      */
     [[nodiscard]] bool HasService(FName ServiceName) const {
+        if (ServiceName.IsNone()) {
+            return false;
+        }
         FReadScopeLock ReadLock(Lock);
         return NamedServices.Contains(ServiceName);
     }
@@ -117,6 +133,9 @@ public:
      * @return 成功移除返回 true，未找到返回 false
      */
     bool UnregisterService(FName ServiceName) {
+        if (ServiceName.IsNone()) {
+            return false;
+        }
         FWriteScopeLock WriteLock(Lock);
         return NamedServices.Remove(ServiceName) > 0;
     }
@@ -131,6 +150,19 @@ public:
      * @return 服务数量
      */
     [[nodiscard]] int32 Num() const;
+
+    /**
+     * @brief 查询当前是否未注册任何服务
+     * @return 无服务返回 true
+     */
+    [[nodiscard]] bool IsEmpty() const;
+
+    /**
+     * @brief 获取所有已注册的具名服务名称列表
+     * @param OutNames 接收具名服务名称的输出数组
+     * @return 具名服务数量
+     */
+    int32 GetNamedServiceNames(TArray<FName>& OutNames) const;
 
 private:
     mutable FRWLock Lock;

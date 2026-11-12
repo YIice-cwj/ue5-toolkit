@@ -40,7 +40,7 @@ void RegisterCacheDomainDefaults(FConfigRegistry& Registry, const FName& Domain)
     Registry.RegisterConfig<FString>(FName(*(KeyPrefix + TEXT("Strategy"))), TEXT("auto"));
     Registry.RegisterConfig<int64>(FName(*(KeyPrefix + TEXT("LazyMinRows"))), MAX_int64);
     Registry.RegisterConfig<int64>(FName(*(KeyPrefix + TEXT("LruMinRows"))), MAX_int64);
-    Registry.RegisterConfig<int64>(FName(*(KeyPrefix + TEXT("LruCapacity"))), FCachePolicy::DEFAULT_LRU_CAPACITY);
+    Registry.RegisterConfig<int64>(FName(*(KeyPrefix + TEXT("LruCapacity"))), FCachePolicy::DefaultLruCapacity);
 }
 
 }  // namespace

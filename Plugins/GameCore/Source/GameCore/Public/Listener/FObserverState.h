@@ -58,6 +58,12 @@ public:
 public:
     FObserverState() = default;
 
+    /**
+     * @brief 携带指定初始值构造观察者内部共享状态
+     * @param InitialValue 初始值常量引用
+     */
+    explicit FObserverState(ConstReference InitialValue) : Value(InitialValue) {}
+
 private:
     template<typename> friend class FValueObserver;
 

@@ -238,22 +238,35 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FGameListenerHubResetTest::RunTest([[maybe_unused]] const FString& Parameters) {
     FListenerHub& Hub = FListenerHub::Get();
     Hub.Reset();
+    TestTrue(TEXT("初始重置后 IsEmpty 返回 true"), Hub.IsEmpty());
     TestEqual(TEXT("初始重置后通道数为 0"), Hub.Num(), 0);
 
     const FName Evt1(TEXT("ResetTest.Event1"));
     const FName Evt2(TEXT("ResetTest.Event2"));
+
+    TestFalse(TEXT("未注册事件 Contains 返回 false"), Hub.Contains(Evt1));
+    TestFalse(TEXT("未注册事件 HasListeners 返回 false"), Hub.HasListeners(Evt1));
+    TestEqual(TEXT("未注册事件 NumListeners 返回 0"), Hub.NumListeners(Evt1), 0);
 
     int32 Count1 = 0;
     int32 Count2 = 0;
     auto Sub1 = Hub.Subscribe<int32>(Evt1, [&Count1](const int32& Val) { Count1 += Val; });
     auto Sub2 = Hub.Subscribe<float>(Evt2, [&Count2](const float& Val) { Count2 += static_cast<int32>(Val); });
 
+    TestFalse(TEXT("注册事件后 IsEmpty 返回 false"), Hub.IsEmpty());
     TestEqual(TEXT("注册 2 个事件后通道数为 2"), Hub.Num(), 2);
+    TestTrue(TEXT("Contains Evt1 返回 true"), Hub.Contains(Evt1));
+    TestTrue(TEXT("Contains Evt2 返回 true"), Hub.Contains(Evt2));
+    TestTrue(TEXT("Evt1 HasListeners 返回 true"), Hub.HasListeners(Evt1));
+    TestEqual(TEXT("Evt1 NumListeners 返回 1"), Hub.NumListeners(Evt1), 1);
     TestTrue(TEXT("广播 Event1 成功"), Hub.Emit<int32>(Evt1, 10));
     TestEqual(TEXT("Count1 收到 10"), Count1, 10);
 
     Hub.Reset();
+    TestTrue(TEXT("Reset 后 IsEmpty 返回 true"), Hub.IsEmpty());
     TestEqual(TEXT("Reset 后通道数清零"), Hub.Num(), 0);
+    TestFalse(TEXT("Reset 后 Contains Evt1 返回 false"), Hub.Contains(Evt1));
+    TestFalse(TEXT("Reset 后 HasListeners 返回 false"), Hub.HasListeners(Evt1));
     TestFalse(TEXT("Reset 后广播已不存在的事件返回 false"), Hub.Emit<int32>(Evt1, 20));
     TestEqual(TEXT("Count1 不再增加"), Count1, 10);
 

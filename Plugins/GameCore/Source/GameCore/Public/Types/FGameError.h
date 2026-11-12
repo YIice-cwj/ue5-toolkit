@@ -65,7 +65,7 @@ struct GAMECORE_API FGameError {
      * @brief 产生错误的系统模块 ID
      */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Game|Error")
-    int32 ModuleId = Game::ModuleId::Unknown;
+    int32 ModuleId = Game::ModuleId::Core;
 
     /**
      * @brief 模块内部自定义错误码（0 表示成功，非 0 表示特定错误）
@@ -132,7 +132,24 @@ struct GAMECORE_API FGameError {
     }
 
     /**
-     * @brief 快速构造普通错误实例
+     * @brief 快速构造标准错误实例（参数排布严格对齐全参构造函数）
+     * @param InModuleId 产生错误的模块 ID
+     * @param InErrorCode 错误码
+     * @param InSeverity 严重级别
+     * @param InMessage 详细描述文案
+     * @return 错误实例
+     */
+    [[nodiscard]] static FGameError Make(
+        int32 InModuleId,
+        int32 InErrorCode,
+        EGameErrorSeverity InSeverity,
+        FString InMessage
+    ) {
+        return FGameError(InModuleId, InErrorCode, InSeverity, MoveTemp(InMessage));
+    }
+
+    /**
+     * @brief 快速构造普通错误实例（文案在前，严重级别默认 Error）
      * @param InModuleId 产生错误的模块 ID
      * @param InErrorCode 错误码
      * @param InMessage 详细描述文案
@@ -177,7 +194,7 @@ struct GAMECORE_API FGameError {
      * @param InContext 当前层级上下文说明
      * @return 附加了上下文说明的错误实例
      */
-    [[nodiscard]] FGameError WithContext(const FString& InContext) const {
+    [[nodiscard]] FGameError WithContext(const FString& InContext) const & {
         FGameError Updated = *this;
         if (!InContext.IsEmpty()) {
             Updated.Message = Updated.Message.IsEmpty()
@@ -185,6 +202,20 @@ struct GAMECORE_API FGameError {
                 : FString::Printf(TEXT("%s [%s]"), *Updated.Message, *InContext);
         }
         return Updated;
+    }
+
+    /**
+     * @brief 移动追加调用链上下文说明（右值版本，零深拷贝复用字符串缓冲区）
+     * @param InContext 当前层级上下文说明
+     * @return 附加了上下文说明的原错误实例右值
+     */
+    [[nodiscard]] FGameError WithContext(const FString& InContext) && {
+        if (!InContext.IsEmpty()) {
+            Message = Message.IsEmpty()
+                ? InContext
+                : FString::Printf(TEXT("%s [%s]"), *Message, *InContext);
+        }
+        return MoveTemp(*this);
     }
 
     /**

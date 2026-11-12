@@ -22,6 +22,10 @@ FGameMath::FSpringFloatState FGameMath::CriticalSpringDampFloat(
     if (DeltaSeconds <= 0.0f) {
         return CurrentState;
     }
+    if (!FMath::IsFinite(CurrentState.Value) || !FMath::IsFinite(CurrentState.Velocity) || !FMath::IsFinite(TargetValue)) {
+        const float SafeTarget = FMath::IsFinite(TargetValue) ? TargetValue : 0.0f;
+        return FSpringFloatState{SafeTarget, 0.0f};
+    }
 
     const float ClampedSmoothTime = FMath::Max(MIN_SMOOTH_TIME, SmoothTime);
     const float Omega = 2.0f / ClampedSmoothTime;
@@ -54,6 +58,10 @@ FGameMath::FSpringVectorState FGameMath::CriticalSpringDampVector(
     if (DeltaSeconds <= 0.0f) {
         return CurrentState;
     }
+    if (CurrentState.Value.ContainsNaN() || CurrentState.Velocity.ContainsNaN() || TargetValue.ContainsNaN()) {
+        const FVector SafeTarget = !TargetValue.ContainsNaN() ? TargetValue : FVector::ZeroVector;
+        return FSpringVectorState{SafeTarget, FVector::ZeroVector};
+    }
 
     const double ClampedSmoothTime = static_cast<double>(FMath::Max(MIN_SMOOTH_TIME, SmoothTime));
     const double Dt = static_cast<double>(DeltaSeconds);
@@ -68,6 +76,41 @@ FGameMath::FSpringVectorState FGameMath::CriticalSpringDampVector(
     const FVector NextValue = TargetValue + (DeltaVec + TempVec) * ExpFactor;
 
     return FSpringVectorState{NextValue, NextVelocity};
+}
+
+/**
+ * @brief 计算角度标量（度）无超调临界阻尼弹簧下一帧状态（自动沿 [-180, 180] 最短圆弧路径收敛）
+ * @param CurrentState 当前角度（度）与角速度（度/秒）
+ * @param TargetAngleDegrees 目标角度（度）
+ * @param SmoothTime 近似收敛平滑时长（秒）
+ * @param DeltaSeconds 帧流逝时间（秒）
+ * @return 更新后的角度与角速度状态（角度标准化至 [-180, 180]）
+ */
+FGameMath::FSpringFloatState FGameMath::CriticalSpringDampAngleDegrees(
+    FSpringFloatState CurrentState,
+    float TargetAngleDegrees,
+    float SmoothTime,
+    float DeltaSeconds
+) noexcept {
+    if (DeltaSeconds <= 0.0f) {
+        return CurrentState;
+    }
+    if (!FMath::IsFinite(CurrentState.Value) || !FMath::IsFinite(CurrentState.Velocity) || !FMath::IsFinite(TargetAngleDegrees)) {
+        const float SafeTarget = FMath::IsFinite(TargetAngleDegrees) ? FRotator::NormalizeAxis(TargetAngleDegrees) : 0.0f;
+        return FSpringFloatState{SafeTarget, 0.0f};
+    }
+
+    const float NormalizedCurrent = FRotator::NormalizeAxis(CurrentState.Value);
+    const float ShortestAngleDelta = FRotator::NormalizeAxis(TargetAngleDegrees - NormalizedCurrent);
+    const float VirtualTarget = NormalizedCurrent + ShortestAngleDelta;
+
+    const FSpringFloatState Result = CriticalSpringDampFloat(
+        FSpringFloatState{NormalizedCurrent, CurrentState.Velocity},
+        VirtualTarget,
+        SmoothTime,
+        DeltaSeconds
+    );
+    return FSpringFloatState{FRotator::NormalizeAxis(Result.Value), Result.Velocity};
 }
 
 /**
@@ -106,7 +149,7 @@ bool FGameMath::IsInVisionCone(
     float MaxDistance,
     float HalfAngleDegrees
 ) noexcept {
-    if (MaxDistance <= 0.0f || HalfAngleDegrees < 0.0f) {
+    if (!FMath::IsFinite(MaxDistance) || !FMath::IsFinite(HalfAngleDegrees) || MaxDistance <= 0.0f || HalfAngleDegrees < 0.0f) {
         return false;
     }
 
@@ -205,6 +248,30 @@ FVector FGameMath::ExpDecayVector(
         return TargetValue;
     }
     return CurrentValue + (TargetValue - CurrentValue) * Factor;
+}
+
+/**
+ * @brief 基于半衰期参数化的角度标量（度）精确帧率无关指数衰减平滑（最短圆弧路径）
+ * @param CurrentDegrees 当前角度（度）
+ * @param TargetDegrees 目标角度（度）
+ * @param HalfLifeSeconds 误差衰减至一半所需的半衰期时长（秒）
+ * @param DeltaSeconds 帧流逝时间（秒）
+ * @return 平滑后的角度（度，标准化至 [-180, 180]）
+ */
+float FGameMath::ExpDecayAngleDegrees(
+    float CurrentDegrees,
+    float TargetDegrees,
+    float HalfLifeSeconds,
+    float DeltaSeconds
+) noexcept {
+    if (!FMath::IsFinite(CurrentDegrees) || !FMath::IsFinite(TargetDegrees)) {
+        return FMath::IsFinite(TargetDegrees) ? FRotator::NormalizeAxis(TargetDegrees) : 0.0f;
+    }
+    const float NormalizedCurrent = FRotator::NormalizeAxis(CurrentDegrees);
+    const float ShortestAngleDelta = FRotator::NormalizeAxis(TargetDegrees - NormalizedCurrent);
+    const float VirtualTarget = NormalizedCurrent + ShortestAngleDelta;
+    const float Smoothed = ExpDecayFloat(NormalizedCurrent, VirtualTarget, HalfLifeSeconds, DeltaSeconds);
+    return FRotator::NormalizeAxis(Smoothed);
 }
 
 /**

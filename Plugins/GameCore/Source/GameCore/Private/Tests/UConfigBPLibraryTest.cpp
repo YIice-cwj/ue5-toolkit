@@ -94,6 +94,15 @@ bool FGameConfigBPLibrarySetAndGetTest::RunTest([[maybe_unused]] const FString& 
     TestTrue(TEXT("旋转体回读准确"), UConfigBPLibrary::GetConfigRotator(RotatorKey, FRotator::ZeroRotator).Equals(TargetRotator));
     TestTrue(TEXT("GameplayTag 回读准确"), UConfigBPLibrary::GetConfigGameplayTag(TagKey, FGameplayTag::EmptyTag) == TargetTag);
 
+    const FName ReadOnlyKey(TEXT("Env.IsEditor"));
+    const bool OriginalEditorVal = UConfigBPLibrary::GetConfigBool(ReadOnlyKey, true);
+    UConfigBPLibrary::SetConfigBool(ReadOnlyKey, !OriginalEditorVal);
+    TestEqual(TEXT("蓝图尝试写入只读键静默拒绝且不破坏原值"),
+        UConfigBPLibrary::GetConfigBool(ReadOnlyKey, true), OriginalEditorVal);
+
+    TestTrue(TEXT("蓝图查询注册表版本号大于 0"), UConfigBPLibrary::GetConfigVersion() > 0);
+    TestTrue(TEXT("蓝图查询已注册配置项总数大于 0"), UConfigBPLibrary::GetRegisteredConfigCount() > 0);
+
     return true;
 }
 

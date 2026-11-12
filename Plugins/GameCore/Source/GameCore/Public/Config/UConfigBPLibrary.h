@@ -222,4 +222,20 @@ public:
      */
     UFUNCTION(BlueprintCallable, Category = "GameCore|Config", meta = (WorldContext = "WorldContextObject"))
     static void SetConfigGameplayTag(FName Key, FGameplayTag Value, const UObject* WorldContextObject = nullptr);
+
+    /**
+     * @brief 获取当前配置注册表全局版本号
+     * @param WorldContextObject 世界上下文对象（蓝图隐式绑定）
+     * @return 当前版本号
+     */
+    UFUNCTION(BlueprintPure, Category = "GameCore|Config", meta = (WorldContext = "WorldContextObject"))
+    static int64 GetConfigVersion(const UObject* WorldContextObject = nullptr);
+
+    /**
+     * @brief 获取当前已注册配置项总数
+     * @param WorldContextObject 世界上下文对象（蓝图隐式绑定）
+     * @return 配置项总数
+     */
+    UFUNCTION(BlueprintPure, Category = "GameCore|Config", meta = (WorldContext = "WorldContextObject"))
+    static int32 GetRegisteredConfigCount(const UObject* WorldContextObject = nullptr);
 };

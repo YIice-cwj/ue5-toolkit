@@ -247,6 +247,22 @@ public:
     }
 
     /**
+     * @brief 获取当前借出的活跃对象数量（等价于 GetAllocatedCount）
+     * @return 活跃对象数量
+     */
+    [[nodiscard]] int32 Num() const noexcept {
+        return static_cast<int32>(GetAllocatedCount());
+    }
+
+    /**
+     * @brief 检查当前是否有借出的活跃对象
+     * @return 无活跃借出对象返回 true
+     */
+    [[nodiscard]] bool IsEmpty() const noexcept {
+        return GetAllocatedCount() == 0;
+    }
+
+    /**
      * @brief 获取当前已开辟的 Chunk 数量
      * @return Chunk 总数
      */

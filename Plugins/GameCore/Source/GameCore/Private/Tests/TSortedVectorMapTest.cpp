@@ -181,6 +181,34 @@ bool FSortedVectorMapRangeAndBatchTest::RunTest([[maybe_unused]] const FString& 
     TestEqual(TEXT("键 20 的数值被批量项覆盖"), Map[20], TEXT("Twenty-Overwritten"));
     TestEqual(TEXT("尾元素为 40"), Map.GetEntries()[4].Key, 40);
 
+    Map.ForRange(20, 40, [](const int32& Key, FString& Value) {
+        Value += TEXT("!");
+    });
+    TestEqual(TEXT("非常量 ForRange 原地修改生效：20"), Map[20], TEXT("Twenty-Overwritten!"));
+    TestEqual(TEXT("非常量 ForRange 原地修改生效：40"), Map[40], TEXT("Forty!"));
+
+    const int32 NumBeforeSelfAppend = Map.Num();
+    Map.AppendOrAssign(Map.GetEntries());
+    TestEqual(TEXT("自别名 AppendOrAssign 幂等保持原项数"), Map.Num(), NumBeforeSelfAppend);
+    TestEqual(TEXT("自别名 AppendOrAssign 不损坏内部数据"), Map[20], TEXT("Twenty-Overwritten!"));
+
+    const FEntry SingleItem(99, TEXT("NinetyNine"));
+    Map.AppendOrAssign(MakeArrayView(&SingleItem, 1));
+    TestEqual(TEXT("单条目 AppendOrAssign 成功插入"), Map[99], TEXT("NinetyNine"));
+
+    const FEntry EntryA(1, TEXT("Alpha"));
+    const FEntry EntryB(1, TEXT("Alpha"));
+    const FEntry EntryC(1, TEXT("Beta"));
+    TestTrue(TEXT("键与值全等 Entry 相等"), EntryA == EntryB);
+    TestFalse(TEXT("键同值异 Entry 不相等"), EntryA == EntryC);
+
+    TSortedVectorMap<int32, FString, 8> MapClone = Map;
+    TestTrue(TEXT("克隆字典相等性成立"), Map == MapClone);
+    TestFalse(TEXT("克隆字典不相等性为假"), Map != MapClone);
+    MapClone[99] = TEXT("Modified");
+    TestFalse(TEXT("值修改后克隆字典不再相等"), Map == MapClone);
+    TestTrue(TEXT("值修改后克隆字典不相等为真"), Map != MapClone);
+
     return true;
 }
 

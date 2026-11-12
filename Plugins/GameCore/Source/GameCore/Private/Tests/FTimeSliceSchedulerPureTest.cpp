@@ -25,6 +25,7 @@ bool FTimeSliceSchedulerPureTest::RunTest([[maybe_unused]] const FString& Parame
     FTimeSliceScheduler Scheduler;
     TestTrue(TEXT("初始状态为空"), Scheduler.IsEmpty());
     TestEqual(TEXT("初始待处理任务数为 0"), Scheduler.GetPendingTaskCount(), 0);
+    TestEqual(TEXT("Num() 返回待处理任务数 0"), Scheduler.Num(), 0);
 
     int32 StepCounter = 0;
     const uint64 TaskId = Scheduler.EnqueueTask([&StepCounter]() -> bool {
@@ -38,6 +39,7 @@ bool FTimeSliceSchedulerPureTest::RunTest([[maybe_unused]] const FString& Parame
     TestTrue(TEXT("任务成功入队且返回有效 ID"), TaskId > 0ULL);
     TestTrue(TEXT("任务处于活跃状态"), Scheduler.IsTaskActive(TaskId));
     TestFalse(TEXT("队列非空"), Scheduler.IsEmpty());
+    TestEqual(TEXT("入队后 Num() 为 1"), Scheduler.Num(), 1);
 
     Scheduler.Step(0.00005);
     TestEqual(TEXT("首轮推进后计数器为 1"), StepCounter, 1);
@@ -69,6 +71,11 @@ bool FTimeSliceSchedulerPureTest::RunTest([[maybe_unused]] const FString& Parame
     TestTrue(TEXT("纯 C++ 批处理完成回调触发"), bBatchCompleted);
     TestEqual(TEXT("纯 C++ 批处理元素聚合结果正确 (0+1+2+3+4=10)"), BatchSum, 10);
 
+    const uint64 NullOwnerTaskId = Scheduler.EnqueueTask(TWeakObjectPtr<UObject>(), []() -> bool {
+        return false;
+    });
+    TestTrue(TEXT("传入显式空弱指针优雅退化为全局任务成功入队"), NullOwnerTaskId > 0ULL);
+
     return true;
 }
 
@@ -87,6 +94,7 @@ bool FThrottledTickSchedulerPureTest::RunTest([[maybe_unused]] const FString& Pa
     FThrottledTickScheduler Scheduler;
     TestTrue(TEXT("初始状态为空"), Scheduler.IsEmpty());
     TestEqual(TEXT("初始注册数为 0"), Scheduler.GetRegisteredCount(), 0);
+    TestEqual(TEXT("初始 Num() 返回 0"), Scheduler.Num(), 0);
 
     int32 TickCount = 0;
     float LastDelta = 0.0f;
@@ -101,6 +109,7 @@ bool FThrottledTickSchedulerPureTest::RunTest([[maybe_unused]] const FString& Pa
     TestTrue(TEXT("心跳成功注册"), HandleId > 0ULL);
     TestTrue(TEXT("心跳任务活跃"), Scheduler.IsTickActive(HandleId));
     TestEqual(TEXT("当前注册数为 1"), Scheduler.GetRegisteredCount(), 1);
+    TestEqual(TEXT("当前 Num() 为 1"), Scheduler.Num(), 1);
 
     Scheduler.Tick(0.02f);
     TestEqual(TEXT("流逝未达 0.1s 时未触发"), TickCount, 0);

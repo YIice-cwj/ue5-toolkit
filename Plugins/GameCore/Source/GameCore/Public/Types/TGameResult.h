@@ -83,24 +83,70 @@ public:
     [[nodiscard]] const SuccessType& GetValue() const;
 
     /**
+     * @brief 解引用运算符重载（只读版本，调用前须处于成功态）
+     * @return 成功载荷常量引用
+     */
+    [[nodiscard]] const SuccessType& operator*() const noexcept {
+        return GetValue();
+    }
+
+    /**
      * @brief 获取成功载荷可变引用（调用前须处于成功态）
      * @return 成功载荷可变引用
      */
     [[nodiscard]] SuccessType& GetMutableValue();
 
     /**
+     * @brief 解引用运算符重载（可变版本，调用前须处于成功态）
+     * @return 成功载荷可变引用
+     */
+    [[nodiscard]] SuccessType& operator*() noexcept {
+        return GetMutableValue();
+    }
+
+    /**
+     * @brief 成员指针访问运算符重载（只读版本，调用前须处于成功态）
+     * @return 成功载荷常量指针
+     */
+    [[nodiscard]] const SuccessType* operator->() const noexcept {
+        return &GetValue();
+    }
+
+    /**
+     * @brief 成员指针访问运算符重载（可变版本，调用前须处于成功态）
+     * @return 成功载荷可变指针
+     */
+    [[nodiscard]] SuccessType* operator->() noexcept {
+        return &GetMutableValue();
+    }
+
+    /**
      * @brief 获取成功载荷副本，若处于失败态则返回常量引用回退值副本
      * @param FallbackValue 失败时的回退值常量引用
      * @return 成功载荷或回退值
      */
-    [[nodiscard]] SuccessType GetValueOr(const SuccessType& FallbackValue) const;
+    [[nodiscard]] SuccessType GetValueOr(const SuccessType& FallbackValue) const &;
 
     /**
      * @brief 获取成功载荷副本，若处于失败态则移动返回右值回退值
      * @param FallbackValue 失败时的回退值右值引用
      * @return 成功载荷或回退值
      */
-    [[nodiscard]] SuccessType GetValueOr(SuccessType&& FallbackValue) const;
+    [[nodiscard]] SuccessType GetValueOr(SuccessType&& FallbackValue) const &;
+
+    /**
+     * @brief 移动获取成功载荷，若处于失败态则移动返回回退值（支持仅移动载荷类型）
+     * @param FallbackValue 失败时的回退值右值引用
+     * @return 移动出的成功载荷或回退值
+     */
+    [[nodiscard]] SuccessType GetValueOr(SuccessType&& FallbackValue) &&;
+
+    /**
+     * @brief 移动获取成功载荷，若处于失败态则返回回退值副本
+     * @param FallbackValue 失败时的回退值常量引用
+     * @return 移动出的成功载荷或回退值
+     */
+    [[nodiscard]] SuccessType GetValueOr(const SuccessType& FallbackValue) &&;
 
     /**
      * @brief 移动提取成功载荷（调用前须处于成功态，提取后原载荷处于被移走状态）
@@ -358,7 +404,7 @@ typename TGameResult<TSuccess, TError>::SuccessType& TGameResult<TSuccess, TErro
 template <typename TSuccess, typename TError>
 typename TGameResult<TSuccess, TError>::SuccessType TGameResult<TSuccess, TError>::GetValueOr(
     const SuccessType& FallbackValue
-) const {
+) const & {
     if (IsSuccess()) {
         return Storage.template Get<FSuccessStorage>().Value;
     }
@@ -368,11 +414,31 @@ typename TGameResult<TSuccess, TError>::SuccessType TGameResult<TSuccess, TError
 template <typename TSuccess, typename TError>
 typename TGameResult<TSuccess, TError>::SuccessType TGameResult<TSuccess, TError>::GetValueOr(
     SuccessType&& FallbackValue
-) const {
+) const & {
     if (IsSuccess()) {
         return Storage.template Get<FSuccessStorage>().Value;
     }
     return MoveTemp(FallbackValue);
+}
+
+template <typename TSuccess, typename TError>
+typename TGameResult<TSuccess, TError>::SuccessType TGameResult<TSuccess, TError>::GetValueOr(
+    SuccessType&& FallbackValue
+) && {
+    if (IsSuccess()) {
+        return ExtractValue();
+    }
+    return MoveTemp(FallbackValue);
+}
+
+template <typename TSuccess, typename TError>
+typename TGameResult<TSuccess, TError>::SuccessType TGameResult<TSuccess, TError>::GetValueOr(
+    const SuccessType& FallbackValue
+) && {
+    if (IsSuccess()) {
+        return ExtractValue();
+    }
+    return FallbackValue;
 }
 
 template <typename TSuccess, typename TError>
@@ -682,26 +748,36 @@ template <typename TSuccess>
 using TGameStatusResult = TGameResult<TSuccess, FGameError>;
 
 /**
- * @brief 链式错误向上传播宏（支持左值/右值结果表达式以及跨不同 TSuccess 返回类型的函数间自动错误传播）
+ * @brief 链式错误向上传播宏（支持常量/左值/右值结果表达式以及跨不同 TSuccess 返回类型的函数间自动错误传播）
  */
 #define GAME_TRY(ResultExpr) \
     do { \
         auto&& _GameTryResult = (ResultExpr); \
         if (_GameTryResult.IsFailure()) { \
-            using _GameTryErrorType = typename std::remove_cvref_t<decltype(_GameTryResult)>::ErrorType; \
-            return TGameErrorForwarder<_GameTryErrorType>(_GameTryResult.ExtractError()); \
+            using _GameTryDecayedType = std::remove_cvref_t<decltype(_GameTryResult)>; \
+            using _GameTryErrorType = typename _GameTryDecayedType::ErrorType; \
+            if constexpr (std::is_rvalue_reference_v<decltype(_GameTryResult)>) { \
+                return TGameErrorForwarder<_GameTryErrorType>(_GameTryResult.ExtractError()); \
+            } else { \
+                return TGameErrorForwarder<_GameTryErrorType>(_GameTryResult.GetError()); \
+            } \
         } \
     } while (false)
 
 /**
- * @brief 带调用栈上下文追加的链式错误向上传播宏（针对 FGameError 自动调用 WithContext 后向上返回）
+ * @brief 带调用栈上下文追加的链式错误向上传播宏（针对 FGameError 自动调用 WithContext 后向上返回，支持常量与左值引用）
  */
 #define GAME_TRY_CTX(ResultExpr, ContextText) \
     do { \
         auto&& _GameTryResult = (ResultExpr); \
         if (_GameTryResult.IsFailure()) { \
-            using _GameTryErrorType = typename std::remove_cvref_t<decltype(_GameTryResult)>::ErrorType; \
-            return TGameErrorForwarder<_GameTryErrorType>(_GameTryResult.ExtractError().WithContext(ContextText)); \
+            using _GameTryDecayedType = std::remove_cvref_t<decltype(_GameTryResult)>; \
+            using _GameTryErrorType = typename _GameTryDecayedType::ErrorType; \
+            if constexpr (std::is_rvalue_reference_v<decltype(_GameTryResult)>) { \
+                return TGameErrorForwarder<_GameTryErrorType>(_GameTryResult.ExtractError().WithContext(ContextText)); \
+            } else { \
+                return TGameErrorForwarder<_GameTryErrorType>(_GameTryResult.GetError().WithContext(ContextText)); \
+            } \
         } \
     } while (false)
 

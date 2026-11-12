@@ -110,6 +110,14 @@ public:
         return Items.IsEmpty();
     }
 
+    /**
+     * @brief 获取袋内全部元素只读视图
+     * @return 内部数组只读引用
+     */
+    [[nodiscard]] const TArray<ValueType>& GetItems() const noexcept {
+        return Items;
+    }
+
 private:
     TArray<ValueType> Items;
     SizeType RemainingCount = 0;

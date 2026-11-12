@@ -9,6 +9,9 @@
 
 #if WITH_AUTOMATION_TESTS
 
+#include "Engine/Engine.h"
+#include "Engine/GameInstance.h"
+#include "Engine/World.h"
 #include "GameplayTagsManager.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/ConfigCacheIni.h"
@@ -102,17 +105,40 @@ bool FGameConfigSourceBridgeParseAndInjectTest::RunTest([[maybe_unused]] const F
 
     if (GConfig != nullptr && !GGameIni.IsEmpty()) {
         const FString TestSection = TEXT("UnitTest.GameCore.ConfigSourceBridgeSection");
+        GConfig->SetString(*TestSection, TEXT("; CommentKey"), TEXT("IgnoredValue"), GGameIni);
+        GConfig->SetString(*TestSection, TEXT("# HashCommentKey"), TEXT("IgnoredValue"), GGameIni);
+        GConfig->SetString(*TestSection, TEXT("// SlashCommentKey"), TEXT("IgnoredValue"), GGameIni);
         GConfig->SetString(*TestSection, TEXT("int32:UnitTest.Bridge.IniPort"), TEXT("7788"), GGameIni);
         GConfig->SetString(*TestSection, TEXT("bool:UnitTest.Bridge.IniVerbose"), TEXT("true"), GGameIni);
 
         const int32 IniApplied = FConfigSourceBridge::LoadIniSection(GGameIni, TestSection);
-        TestEqual(TEXT("INI 节成功读取并注入 2 条配置"), IniApplied, 2);
+        TestEqual(TEXT("INI 节成功读取并过滤注释后仅注入 2 条配置"), IniApplied, 2);
+        TestFalse(TEXT("分号注释行未作为配置项注入"), Registry.IsRegistered(FName(TEXT("; CommentKey"))));
+        TestFalse(TEXT("井号注释行未作为配置项注入"), Registry.IsRegistered(FName(TEXT("# HashCommentKey"))));
+        TestFalse(TEXT("双斜杠注释行未作为配置项注入"), Registry.IsRegistered(FName(TEXT("// SlashCommentKey"))));
         TestEqual(TEXT("INI 注入端口值一致"),
             Registry.GetConfig<int32>(FName(TEXT("UnitTest.Bridge.IniPort")), 0), 7788);
         TestTrue(TEXT("INI 注入布尔值一致"),
             Registry.GetConfig<bool>(FName(TEXT("UnitTest.Bridge.IniVerbose")), false));
 
         GConfig->EmptySection(*TestSection, GGameIni);
+    }
+
+    if (GEngine != nullptr) {
+        UGameInstance* GI = NewObject<UGameInstance>(GEngine);
+        GI->InitializeStandalone(FName(TEXT("BridgeWorldContextTest")));
+        if (UWorld* World = GI->GetWorld()) {
+            const FName IsolatedKey(TEXT("UnitTest.Bridge.WorldSpecificKey"));
+            const bool bAppliedToWorld = FConfigSourceBridge::ApplySingleEntry(
+                TEXT("int32:UnitTest.Bridge.WorldSpecificKey"), TEXT("12345"), World);
+            TestTrue(TEXT("向隔离世界上下文成功注入配置"), bAppliedToWorld);
+            TestEqual(TEXT("隔离世界上下文正确读取注入值"),
+                FConfigRegistry::Get(World).GetConfig<int32>(IsolatedKey, 0), 12345);
+            TestEqual(TEXT("全局根注册表未受隔离写入污染"),
+                Registry.GetConfig<int32>(IsolatedKey, 0), 0);
+        }
+        GI->Shutdown();
+        FConfigRegistry::ClearWorldRegistriesForTesting();
     }
 
     return true;

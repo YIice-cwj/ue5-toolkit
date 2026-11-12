@@ -71,6 +71,14 @@ bool FGameAsyncTaskHandle::IsValid() const noexcept {
 }
 
 /**
+ * @brief 查询任务是否已被请求协同取消
+ * @return 已被取消返回 true
+ */
+bool FGameAsyncTaskHandle::IsCancelled() const noexcept {
+    return CancelState.IsValid() && CancelState->IsCancellationRequested();
+}
+
+/**
  * @brief 查询后台任务是否已执行完成
  * @return 已完成或未绑定有效任务返回 true
  */

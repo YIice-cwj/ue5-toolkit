@@ -51,6 +51,8 @@ bool FGameRandomStreamDeterminismAndSamplingTest::RunTest([[maybe_unused]] const
     FGameRandomStream DefaultStreamA;
     FGameRandomStream DefaultStreamB;
 
+    TestTrue(TEXT("相同初始状态两实例等号成立"), StreamA == StreamB);
+    TestTrue(TEXT("不同初始状态两实例不等号成立"), StreamA != StreamDiff);
     TestEqual(TEXT("默认构造两实例初始状态一致"), DefaultStreamA.NextUInt32(), DefaultStreamB.NextUInt32());
 
     bool bAnyDiffBetweenSeeds = false;
@@ -204,6 +206,9 @@ bool FPseudoRandomDistributionTest::RunTest([[maybe_unused]] const FString& Para
         Prop->SetValue_InContainer(&RawPrd, &Val);
     }
     TestTrue(TEXT("未初始化常数的 PRD 具备自动求解保底能力"), RawPrd.GetNextRollProbability() > 0.0f);
+    TestTrue(TEXT("求解后常数写回缓存"), RawPrd.GetIncrementConstant() > 0.0f);
+    const float CachedC = RawPrd.GetIncrementConstant();
+    TestEqual(TEXT("后续调用保持缓存一致"), RawPrd.GetIncrementConstant(), CachedC);
 
     return true;
 }
@@ -236,6 +241,7 @@ bool FShuffleBagAndWeightedPickerTest::RunTest([[maybe_unused]] const FString& P
     Bag.Emplace(TEXT("Epic"));
     TestEqual(TEXT("袋总容量为 6"), Bag.Num(), 6);
     TestEqual(TEXT("初始剩余可抽数为 6"), Bag.Remaining(), 6);
+    TestEqual(TEXT("GetItems 获取数组大小为 6"), Bag.GetItems().Num(), 6);
 
     for (int32 Cycle = 0; Cycle < 5; ++Cycle) {
         TMap<FName, int32> CycleCounts;
@@ -273,6 +279,10 @@ bool FShuffleBagAndWeightedPickerTest::RunTest([[maybe_unused]] const FString& P
     TestTrue(TEXT("添加权重 60 成功"), Picker.AddEntry(300, 60.0));
     TestEqual(TEXT("候选条目数为 3"), Picker.Num(), 3);
     TestEqual(TEXT("总权重等于 100"), Picker.GetTotalWeight(), 100.0);
+    TestEqual(TEXT("条目 0 权重为 10.0"), Picker.GetWeight(0), 10.0);
+    TestEqual(TEXT("条目 1 权重为 30.0"), Picker.GetWeight(1), 30.0);
+    TestEqual(TEXT("条目 2 权重为 60.0"), Picker.GetWeight(2), 60.0);
+    TestEqual(TEXT("非法索引返回 0.0"), Picker.GetWeight(99), 0.0);
 
     TMap<int32, int32> PickCounts;
     constexpr int32 TotalSamples = 30000;
@@ -286,6 +296,9 @@ bool FShuffleBagAndWeightedPickerTest::RunTest([[maybe_unused]] const FString& P
     TestTrue(TEXT("权重 10% 抽中率处于 [0.085, 0.115]"), FMath::IsWithinInclusive(Ratio100, 0.085, 0.115));
     TestTrue(TEXT("权重 30% 抽中率处于 [0.285, 0.315]"), FMath::IsWithinInclusive(Ratio200, 0.285, 0.315));
     TestTrue(TEXT("权重 60% 抽中率处于 [0.585, 0.615]"), FMath::IsWithinInclusive(Ratio300, 0.585, 0.615));
+
+    const int32 PickedVal = Picker.PickValue(Stream);
+    TestTrue(TEXT("PickValue 安全值拷贝有效"), PickedVal == 100 || PickedVal == 200 || PickedVal == 300);
 
     Picker.Clear();
     TestTrue(TEXT("Clear 后抽取器为空"), Picker.IsEmpty());
@@ -336,6 +349,12 @@ bool FRandomSubsystemIsolationAndArchiveTest::RunTest([[maybe_unused]] const FSt
     FGameRandomStream& DefaultByName = Subsystem.GetOrCreateStream(TEXT("Default"));
     TestTrue(TEXT("NAME_None 自动归一化映射到 Default 通道"), &DefaultByNone == &DefaultByName);
     TestTrue(TEXT("HasStream(Combat) 为真"), Subsystem.HasStream(TEXT("Combat")));
+
+    TArray<FName> ActiveChannelNames;
+    Subsystem.GetChannelNames(ActiveChannelNames);
+    TestTrue(TEXT("GetChannelNames 包含 Combat"), ActiveChannelNames.Contains(TEXT("Combat")));
+    TestTrue(TEXT("GetChannelNames 包含 Cosmetic"), ActiveChannelNames.Contains(TEXT("Cosmetic")));
+    TestTrue(TEXT("GetChannelNames 包含 Default"), ActiveChannelNames.Contains(TEXT("Default")));
 
     TArray<uint8> SnapshotBytes;
     {
@@ -402,6 +421,15 @@ bool FRandomSubsystemIsolationAndArchiveTest::RunTest([[maybe_unused]] const FSt
 
     TestTrue(TEXT("RemoveStream 移除已存在通道返回 true"), Subsystem.RemoveStream(TEXT("Cosmetic")));
     TestFalse(TEXT("RemoveStream 重复移除返回 false"), Subsystem.RemoveStream(TEXT("Cosmetic")));
+
+    TSharedRef<FGameRandomStream> SharedStream = Subsystem.GetOrCreateStreamShared(TEXT("SharedChannel"));
+    const uint32 Val1 = SharedStream->NextUInt32();
+    TestTrue(TEXT("子系统包含 SharedChannel"), Subsystem.HasStream(TEXT("SharedChannel")));
+    Subsystem.RemoveStream(TEXT("SharedChannel"));
+    TestFalse(TEXT("移除后子系统不包含 SharedChannel"), Subsystem.HasStream(TEXT("SharedChannel")));
+    const uint32 Val2 = SharedStream->NextUInt32();
+    TestNotEqual(TEXT("持有共享引用在通道移除后仍可安全继续推进状态且内存有效"), Val2, Val1);
+
     Subsystem.ClearAllStreams();
 
     return true;

@@ -31,3 +31,23 @@ int32 FGameServiceLocator::Num() const {
     FReadScopeLock ReadLock(Lock);
     return TypeServices.Num() + NamedServices.Num();
 }
+
+/**
+ * @brief 查询当前是否未注册任何服务
+ * @return 无服务返回 true
+ */
+bool FGameServiceLocator::IsEmpty() const {
+    FReadScopeLock ReadLock(Lock);
+    return TypeServices.IsEmpty() && NamedServices.IsEmpty();
+}
+
+/**
+ * @brief 获取所有已注册的具名服务名称列表
+ * @param OutNames 接收具名服务名称的输出数组
+ * @return 具名服务数量
+ */
+int32 FGameServiceLocator::GetNamedServiceNames(TArray<FName>& OutNames) const {
+    FReadScopeLock ReadLock(Lock);
+    NamedServices.GenerateKeyArray(OutNames);
+    return OutNames.Num();
+}

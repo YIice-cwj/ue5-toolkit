@@ -150,12 +150,16 @@ bool FFixedSizePoolObjectLifecycleTest::RunTest([[maybe_unused]] const FString& 
 
     {
         TFixedSizePool<FPoolTestObject, 8> ObjectPool;
+        TestTrue(TEXT("初始对象池 IsEmpty 为真"), ObjectPool.IsEmpty());
+        TestEqual(TEXT("初始对象池 Num 为 0"), ObjectPool.Num(), 0);
 
         FPoolTestObject* Obj1 = ObjectPool.New(101);
         TestNotNull(TEXT("对象池 New 成功"), Obj1);
         TestEqual(TEXT("构造函数调用 1 次"), FPoolTestObject::ConstructorCalls.load(), 1);
         TestEqual(TEXT("构造值正确写入"), Obj1->GetValue(), 101);
         TestEqual(TEXT("分配计数为 1"), ObjectPool.GetAllocatedCount(), static_cast<size_t>(1));
+        TestEqual(TEXT("Num 与 GetAllocatedCount 一致"), ObjectPool.Num(), 1);
+        TestFalse(TEXT("有分配后 IsEmpty 为假"), ObjectPool.IsEmpty());
 
         FPoolTestObject* Obj2 = ObjectPool.New(202);
         TestNotNull(TEXT("对象 2 New 成功"), Obj2);

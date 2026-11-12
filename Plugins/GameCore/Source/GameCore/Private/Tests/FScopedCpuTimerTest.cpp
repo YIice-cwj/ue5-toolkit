@@ -22,6 +22,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
  */
 bool FScopedCpuTimerBasicTest::RunTest([[maybe_unused]] const FString& Parameters) {
     FScopedCpuTimer Timer;
+    TestTrue(TEXT("起始周期计数大于 0"), Timer.GetStartCycles() > 0);
     const double ElapsedSec = Timer.GetElapsedSeconds();
     const double ElapsedMs = Timer.GetElapsedMilliseconds();
     const double ElapsedUs = Timer.GetElapsedMicroseconds();
@@ -63,10 +64,13 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FMovingAverageSamplerTest::RunTest([[maybe_unused]] const FString& Parameters) {
     FMovingAverageSampler<4> Sampler;
 
+    TestTrue(TEXT("初始状态 IsEmpty 为真"), Sampler.IsEmpty());
+    TestEqual(TEXT("窗口容量为 4"), Sampler.GetCapacity(), 4);
     TestEqual(TEXT("初始采样数为 0"), Sampler.GetSampleCount(), 0);
     TestEqual(TEXT("初始平均值为 0"), Sampler.GetAverage(), 0.0);
 
     Sampler.AddSample(10.0);
+    TestFalse(TEXT("添加样本后 IsEmpty 为假"), Sampler.IsEmpty());
     Sampler.AddSample(20.0);
     TestEqual(TEXT("已采集 2 项"), Sampler.GetSampleCount(), 2);
     TestEqual(TEXT("前两项均值为 15"), Sampler.GetAverage(), 15.0);

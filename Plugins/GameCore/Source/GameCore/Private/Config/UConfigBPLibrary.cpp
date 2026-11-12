@@ -90,3 +90,11 @@ void UConfigBPLibrary::SetConfigRotator(FName Key, FRotator Value, const UObject
 void UConfigBPLibrary::SetConfigGameplayTag(FName Key, FGameplayTag Value, const UObject* WorldContextObject) {
     FConfigRegistry::Get(WorldContextObject).SetConfig<FGameplayTag>(Key, Value);
 }
+
+int64 UConfigBPLibrary::GetConfigVersion(const UObject* WorldContextObject) {
+    return static_cast<int64>(FConfigRegistry::Get(WorldContextObject).GetVersion());
+}
+
+int32 UConfigBPLibrary::GetRegisteredConfigCount(const UObject* WorldContextObject) {
+    return FConfigRegistry::Get(WorldContextObject).Num();
+}

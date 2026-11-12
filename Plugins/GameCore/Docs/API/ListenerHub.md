@@ -60,7 +60,7 @@ public:
 template<typename T>
 class FValueObserver : public FObserverBase {
 public:
-    explicit FValueObserver(const FName& ObserverName);
+    explicit FValueObserver(const FName& ObserverName, const T& InitialValue = T{});
 
     void Set(const T& InValue);
     [[nodiscard]] T Get() const;

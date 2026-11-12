@@ -27,14 +27,21 @@ public:
     /**
      * @brief 构造通用值观察者实例
      * @param ObserverName 观察者唯一名称（用于生成对应的开关配置键 Listener.{Name}.Enabled）
+     * @param InitialValue 可选初始值（默认值初始化）
      */
-    explicit FValueObserver(const FName& ObserverName);
+    explicit FValueObserver(const FName& ObserverName, ConstReference InitialValue = ValueType{});
 
     /**
      * @brief 线程安全提交新值，监听器快照随通知入队并在出锁后按全局 FIFO 派发
      * @param InValue 待赋予的新值常量引用
      */
     void Set(ConstReference InValue);
+
+    /**
+     * @brief 获取当前值副本并通过修改闭包变换后提交新值
+     * @param Mutator 原地修改值副本的闭包
+     */
+    void Update(TFunctionRef<void(ValueType&)> Mutator);
 
     /**
      * @brief 线程安全获取当前值的副本（锁内拷贝后出锁，调用方持有独立副本）
@@ -78,14 +85,22 @@ public:
      */
     [[nodiscard]] int32 NumListeners();
 
+    /**
+     * @brief 检查当前是否存在活跃监听条目
+     * @return 存在活跃监听者返回 true
+     */
+    [[nodiscard]] bool HasListeners() {
+        return NumListeners() > 0;
+    }
+
 private:
     TSharedRef<FObserverState<ValueType>> State;
 };
 
 template<typename T>
-FValueObserver<T>::FValueObserver(const FName& ObserverName)
+FValueObserver<T>::FValueObserver(const FName& ObserverName, ConstReference InitialValue)
     : FObserverBase(ObserverName),
-      State(MakeShared<FObserverState<ValueType>>()) {}
+      State(MakeShared<FObserverState<ValueType>>(InitialValue)) {}
 
 template<typename T>
 void FValueObserver<T>::Set(ConstReference InValue) {
@@ -93,6 +108,13 @@ void FValueObserver<T>::Set(ConstReference InValue) {
     if (State->SetValueAndPurge(InValue, bBroadcast)) {
         FNotificationDispatcher::Get().Drain();
     }
+}
+
+template<typename T>
+void FValueObserver<T>::Update(TFunctionRef<void(ValueType&)> Mutator) {
+    ValueType UpdatedValue = Get();
+    Mutator(UpdatedValue);
+    Set(UpdatedValue);
 }
 
 template<typename T>

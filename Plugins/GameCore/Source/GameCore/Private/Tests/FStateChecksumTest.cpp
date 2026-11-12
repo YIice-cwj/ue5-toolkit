@@ -32,6 +32,11 @@ bool FStateChecksumBuilderDeterminismTest::RunTest([[maybe_unused]] const FStrin
 
     BuilderA.AddUInt32(42);
     BuilderA.AddUInt64(10086ULL);
+    BuilderA.AddBool(true);
+    BuilderA.AddInt32(-123);
+    BuilderA.AddInt64(-9876543210LL);
+    BuilderA.AddString(TEXT("PlayerState_Hero"));
+    BuilderA.AddName(FName(TEXT("StaticMesh_Sword")));
     BuilderA.AddFloatQuantized(12.345f, 0.001f);
     BuilderA.AddVectorQuantized(FVector(10.0, 20.0, 30.0), 0.01f);
 
@@ -40,6 +45,11 @@ bool FStateChecksumBuilderDeterminismTest::RunTest([[maybe_unused]] const FStrin
 
     BuilderB.AddUInt32(42);
     BuilderB.AddUInt64(10086ULL);
+    BuilderB.AddBool(true);
+    BuilderB.AddInt32(-123);
+    BuilderB.AddInt64(-9876543210LL);
+    BuilderB.AddString(TEXT("PlayerState_Hero"));
+    BuilderB.AddName(FName(TEXT("StaticMesh_Sword")));
     BuilderB.AddFloatQuantized(12.345f, 0.001f);
     BuilderB.AddVectorQuantized(FVector(10.0, 20.0, 30.0), 0.01f);
     BuilderB.AddBytes(RawPayload, sizeof(RawPayload));
@@ -78,7 +88,22 @@ bool FStateChecksumBuilderDeterminismTest::RunTest([[maybe_unused]] const FStrin
     BuilderNaN2.AddFloatQuantized(NAN, 0.001f);
     BuilderNaN2.AddVectorQuantized(FVector(NAN, INFINITY, -INFINITY), 0.01f);
 
+    FStateChecksumBuilder BuilderZero;
+    BuilderZero.AddFloatQuantized(0.0f, 0.001f);
+    BuilderZero.AddVectorQuantized(FVector(0.0, 0.0, 0.0), 0.01f);
+
     TestEqual(TEXT("非法浮点（NAN/INF）输入具备一致的哈希结果且不崩溃"), BuilderNaN1.Finalize(), BuilderNaN2.Finalize());
+    TestNotEqual(TEXT("非法浮点输入绝不与正常 0.0 哈希碰撞产生伪同步"), BuilderNaN1.Finalize(), BuilderZero.Finalize());
+
+    FStateChecksumBuilder BuilderLwcA;
+    BuilderLwcA.AddDoubleQuantized(5000000.12345, 0.001);
+    BuilderLwcA.AddVectorQuantized(FVector(1000000.0, 2000000.0, 3000000.0), 0.01);
+
+    FStateChecksumBuilder BuilderLwcJitter;
+    BuilderLwcJitter.AddDoubleQuantized(5000000.12349, 0.001);
+    BuilderLwcJitter.AddVectorQuantized(FVector(1000000.002, 2000000.001, 3000000.002), 0.01);
+
+    TestEqual(TEXT("大世界双精度坐标在容差范围内平滑量化消除抖动"), BuilderLwcJitter.Finalize(), BuilderLwcA.Finalize());
 
     return true;
 }
@@ -96,6 +121,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
  */
 bool FDesyncDetectorDetectionTest::RunTest([[maybe_unused]] const FString& Parameters) {
     FDesyncDetector Detector;
+    TestEqual(TEXT("GetCapacity 返回 128"), Detector.GetCapacity(), FDesyncDetector::HistoryCapacity);
+    TestFalse(TEXT("初始状态 HasFrame 返回 false"), Detector.HasFrame(10ULL));
 
     uint64 QueriedChecksum = 0ULL;
     TestFalse(TEXT("初始状态查询任意帧返回 false"), Detector.GetLocalChecksum(10ULL, QueriedChecksum));
@@ -105,6 +132,7 @@ bool FDesyncDetectorDetectionTest::RunTest([[maybe_unused]] const FString& Param
     TestFalse(TEXT("报告标记为未分叉"), Report.bDiverged);
 
     Detector.RecordLocalChecksum(10ULL, 0xAABBCCDDEEFFULL);
+    TestTrue(TEXT("记录后 HasFrame 返回 true"), Detector.HasFrame(10ULL));
     TestTrue(TEXT("成功查询已记录的本地帧"), Detector.GetLocalChecksum(10ULL, QueriedChecksum));
     TestEqual(TEXT("查询校验码一致"), QueriedChecksum, 0xAABBCCDDEEFFULL);
 

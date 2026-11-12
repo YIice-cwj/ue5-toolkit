@@ -36,10 +36,17 @@ bool FCancellationTokenBasicLifecycleTest::RunTest([[maybe_unused]] const FStrin
     TestTrue(TEXT("Source 派生的令牌可被取消"), Token.CanBeCancelled());
     TestFalse(TEXT("初始状态未被请求取消"), Source.IsCancellationRequested());
     TestFalse(TEXT("初始状态令牌未被请求取消"), Token.IsCancellationRequested());
+    TestFalse(TEXT("初始状态令牌 explicit operator bool 返回 false"), static_cast<bool>(Token));
+
+    const FCancellationToken TokenCopy = Token;
+    TestTrue(TEXT("相同源派生的令牌 operator== 成立"), TokenCopy == Token);
+    TestFalse(TEXT("与 None 令牌 operator== 返回 false"), Token == NoneToken);
+    TestTrue(TEXT("与 None 令牌 operator!= 返回 true"), Token != NoneToken);
 
     TestTrue(TEXT("首次 Cancel 返回 true"), Source.Cancel());
     TestTrue(TEXT("取消后 Source 状态处于已取消"), Source.IsCancellationRequested());
     TestTrue(TEXT("取消后 Token 状态处于已取消"), Token.IsCancellationRequested());
+    TestTrue(TEXT("取消后 Token explicit operator bool 返回 true"), static_cast<bool>(Token));
 
     TestFalse(TEXT("重复调用 Cancel 返回 false 幂等防重入"), Source.Cancel());
 
@@ -67,12 +74,15 @@ bool FCancellationTokenCallbackDispatchTest::RunTest([[maybe_unused]] const FStr
     FCancellationTokenRegistration RegA = Token.Register([&CallbackACallCount]() {
         ++CallbackACallCount;
     });
+    TestTrue(TEXT("RegA 处于注册状态"), RegA.IsRegistered());
 
     {
         FCancellationTokenRegistration RegB = Token.Register([&CallbackBCallCount]() {
             ++CallbackBCallCount;
         });
+        TestTrue(TEXT("RegB 注册后处于有效状态"), RegB.IsRegistered());
         RegB.Unregister();
+        TestFalse(TEXT("RegB Unregister 后不再处于注册状态"), RegB.IsRegistered());
     }
 
     TestEqual(TEXT("触发前 CallbackA 未执行"), CallbackACallCount, 0);

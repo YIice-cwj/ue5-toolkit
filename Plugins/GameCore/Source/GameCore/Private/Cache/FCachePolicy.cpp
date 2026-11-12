@@ -51,12 +51,13 @@ ECacheStrategy ParseStrategy(const FString& InStrategy) {
  * @return 解析并完成边界钳制后的缓存策略实例
  */
 FCachePolicy FCachePolicy::Resolve(const FName& Domain) {
+    ensureMsgf(!Domain.IsNone(), TEXT("FCachePolicy::Resolve should be called with a valid, non-None Domain."));
     FConfigRegistry& Registry = FConfigRegistry::Get();
     FCachePolicy Policy;
     Policy.Strategy = ParseStrategy(Registry.GetConfig<FString>(BuildCacheKey(Domain, TEXT("Strategy")), TEXT("auto")));
     Policy.LazyMinRows = FMath::Max<int64>(0, Registry.GetConfig<int64>(BuildCacheKey(Domain, TEXT("LazyMinRows")), MAX_int64));
     Policy.LruMinRows = FMath::Max<int64>(0, Registry.GetConfig<int64>(BuildCacheKey(Domain, TEXT("LruMinRows")), MAX_int64));
-    const int64 RawCapacity = Registry.GetConfig<int64>(BuildCacheKey(Domain, TEXT("LruCapacity")), DEFAULT_LRU_CAPACITY);
-    Policy.LruCapacity = FMath::Clamp(RawCapacity, MIN_LRU_CAPACITY, MAX_LRU_CAPACITY);
+    const int64 RawCapacity = Registry.GetConfig<int64>(BuildCacheKey(Domain, TEXT("LruCapacity")), DefaultLruCapacity);
+    Policy.LruCapacity = FMath::Clamp(RawCapacity, MinLruCapacity, MaxLruCapacity);
     return Policy;
 }

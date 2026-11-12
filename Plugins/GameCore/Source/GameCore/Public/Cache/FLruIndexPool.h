@@ -33,9 +33,9 @@ public:
         int32 Next = INDEX_NONE;
 
         /**
-         * @brief 并发读命中原子二次机会热度位（1 表示近期被读命中，淘汰扫描时晋升至链表头并清零）
+         * @brief 并发读命中原子二次机会热度位（1 表示近期被读命中，淘汰扫描时晋升至链表头并清零；32 位整型全平台通用且自然对齐）
          */
-        mutable volatile int8 HotBit = 0;
+        mutable volatile int32 HotBit = 0;
     };
 
     /**
@@ -105,6 +105,46 @@ public:
     }
 
     /**
+     * @brief 获取当前处于活跃双向链表头部的键名（最热条目）
+     * @return 头部条目键名；若链表为空则返回 NAME_None
+     */
+    [[nodiscard]] FName GetHeadKey() const noexcept {
+        return Head != INDEX_NONE ? Pool[Head].Key : NAME_None;
+    }
+
+    /**
+     * @brief 获取当前处于活跃双向链表尾部的键名（最冷淘汰候选条目）
+     * @return 尾部条目键名；若链表为空则返回 NAME_None
+     */
+    [[nodiscard]] FName GetTailKey() const noexcept {
+        return Tail != INDEX_NONE ? Pool[Tail].Key : NAME_None;
+    }
+
+    /**
+     * @brief 获取节点存储池当前容量
+     * @return 节点池当前已分配容量
+     */
+    [[nodiscard]] int32 GetCapacity() const noexcept {
+        return Pool.Max();
+    }
+
+    /**
+     * @brief 获取当前已索引的活跃节点条目总数
+     * @return 活跃条目数量
+     */
+    [[nodiscard]] int32 Num() const noexcept {
+        return KeyToNode.Num();
+    }
+
+    /**
+     * @brief 检查 LRU 索引池是否为空
+     * @return 为空返回 true
+     */
+    [[nodiscard]] bool IsEmpty() const noexcept {
+        return KeyToNode.IsEmpty();
+    }
+
+    /**
      * @brief 在并发读锁内原子标记指定键被命中访问（零写锁竞争，供淘汰时执行 Clock 二次机会晋升）
      * @param Key 被命中的缓存键
      * @return 键存在于池中并完成标记返回 true
@@ -147,6 +187,7 @@ public:
             RemoveFromChain(NodeIdx);
             KeyToNode.Remove(Key);
             Pool[NodeIdx].Key = NAME_None;
+            Pool[NodeIdx].Prev = INDEX_NONE;
             Pool[NodeIdx].Next = FreeHead;
             FPlatformAtomics::InterlockedExchange(&Pool[NodeIdx].HotBit, 0);
             FreeHead = NodeIdx;
@@ -197,11 +238,18 @@ public:
     }
 
     /**
-     * @brief 为新键分配节点槽位（优先复用空闲链表槽位，否则扩容数组）
+     * @brief 为新键分配节点槽位（优先复用既有槽位或空闲链表槽位，否则扩容数组）
      * @param Key 新增条目的缓存键
      * @return 分配到的节点在 Pool 数组中的索引
      */
     int32 AllocateNode(FName Key) {
+        if (const int32* FoundIdx = KeyToNode.Find(Key)) {
+            const int32 ExistingIdx = *FoundIdx;
+            RemoveFromChain(ExistingIdx);
+            Pool[ExistingIdx] = FLruNode{Key, INDEX_NONE, INDEX_NONE, 0};
+            return ExistingIdx;
+        }
+
         int32 NodeIdx = INDEX_NONE;
         if (FreeHead != INDEX_NONE) {
             NodeIdx = FreeHead;
@@ -237,6 +285,10 @@ public:
             }
         }
 
+        if (Tail == INDEX_NONE) {
+            return NAME_None;
+        }
+
         const int32 EvictedIdx = Tail;
         const FName EvictedKey = Pool[EvictedIdx].Key;
 
@@ -244,6 +296,7 @@ public:
         KeyToNode.Remove(EvictedKey);
 
         Pool[EvictedIdx].Key = NAME_None;
+        Pool[EvictedIdx].Prev = INDEX_NONE;
         Pool[EvictedIdx].Next = FreeHead;
         FPlatformAtomics::InterlockedExchange(&Pool[EvictedIdx].HotBit, 0);
         FreeHead = EvictedIdx;

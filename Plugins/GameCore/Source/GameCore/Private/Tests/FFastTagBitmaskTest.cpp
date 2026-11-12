@@ -143,6 +143,16 @@ bool FFastTagBitmaskBasicOpsTest::RunTest([[maybe_unused]] const FString& Parame
     TestEqual(TEXT("归档序列化往返无损一致"), LoadedMask.Value, 0xDEADBEEFCAFEULL);
     TestTrue(TEXT("往返还原掩码与源掩码相等"), LoadedMask == SaveMask);
 
+    const FFastTagBitmask SmallBitmask(10ULL);
+    const FFastTagBitmask LargeBitmask(20ULL);
+    TestTrue(TEXT("operator< 比较正确"), SmallBitmask < LargeBitmask);
+    TestFalse(TEXT("自身不小于自身"), SmallBitmask < SmallBitmask);
+
+    TArray<FFastTagBitmask> SortBitmasks = { LargeBitmask, SmallBitmask };
+    SortBitmasks.Sort();
+    TestEqual(TEXT("Sort 排序后首项为 SmallBitmask"), SortBitmasks[0], SmallBitmask);
+    TestEqual(TEXT("Sort 排序后末项为 LargeBitmask"), SortBitmasks[1], LargeBitmask);
+
     return true;
 }
 
@@ -199,6 +209,24 @@ bool FFastTagDictionaryTest::RunTest([[maybe_unused]] const FString& Parameters)
     TestTrue(TEXT("批量掩码包含 Stun"), BatchMask.HasTag(StunIndex));
     TestTrue(TEXT("批量掩码包含 SuperArmor"), BatchMask.HasTag(ArmorIndex));
     TestEqual(TEXT("有效激活数量为 2"), BatchMask.CountBits(), 2);
+
+    bool bSuccessAll = false;
+    TArray<FName> ValidBatch = {
+        TEXT("State.Combat.Stun"),
+        TEXT("State.Combat.SuperArmor")
+    };
+    FFastTagBitmask ValidMask = Dict.MakeMask(ValidBatch, &bSuccessAll);
+    TestTrue(TEXT("全部合法标签转换 MakeMask 返回 true"), bSuccessAll);
+    TestEqual(TEXT("全部合法标签掩码 bit 数正确"), ValidMask.CountBits(), 2);
+
+    bool bSuccessPartial = true;
+    TArray<FName> InvalidBatch = {
+        TEXT("State.Combat.Stun"),
+        NAME_None
+    };
+    FFastTagBitmask PartialMask = Dict.MakeMask(InvalidBatch, &bSuccessPartial);
+    TestFalse(TEXT("包含非法标签时 MakeMask 置 OutAllSucceeded 为 false"), bSuccessPartial);
+    TestTrue(TEXT("合法标签仍成功置入掩码"), PartialMask.HasTag(StunIndex));
 
     Dict.Reset();
     TestEqual(TEXT("测试完成重置后数量为 0"), Dict.Num(), 0);

@@ -31,6 +31,9 @@ bool FPriorityArbitratorOverrideModeTest::RunTest([[maybe_unused]] const FString
     Arbitrator.SetChannel(FName(TEXT("BaseMovement")), 500.0f, 10);
     TestTrue(TEXT("已注册通道 GetChannelValue 返回 set"), Arbitrator.GetChannelValue(FName(TEXT("BaseMovement"))).IsSet());
     TestEqual(TEXT("可选对象数值 500.0"), Arbitrator.GetChannelValue(FName(TEXT("BaseMovement"))).GetValue(), 500.0f);
+    TestTrue(TEXT("已注册通道 GetChannelPriority 返回 set"), Arbitrator.GetChannelPriority(FName(TEXT("BaseMovement"))).IsSet());
+    TestEqual(TEXT("已注册通道优先级为 10"), Arbitrator.GetChannelPriority(FName(TEXT("BaseMovement"))).GetValue(), 10);
+    TestFalse(TEXT("未注册通道 GetChannelPriority 返回 unset"), Arbitrator.GetChannelPriority(FName(TEXT("NonExistent"))).IsSet());
     TestEqual(TEXT("单一通道生效，当前值 500.0"), Arbitrator.GetEffectiveValue(1.0f), 500.0f);
     TestEqual(TEXT("胜出通道为 BaseMovement"), Arbitrator.GetWinningChannel(), FName(TEXT("BaseMovement")));
 
@@ -41,6 +44,13 @@ bool FPriorityArbitratorOverrideModeTest::RunTest([[maybe_unused]] const FString
     Arbitrator.SetChannel(FName(TEXT("SlowDebuff")), 200.0f, 20);
     TestEqual(TEXT("相同优先级最新更新通道 SlowDebuff 胜出"), Arbitrator.GetEffectiveValue(1.0f), 200.0f);
     TestEqual(TEXT("胜出通道为 SlowDebuff"), Arbitrator.GetWinningChannel(), FName(TEXT("SlowDebuff")));
+
+    TArray<FName> ChannelNames;
+    Arbitrator.GetChannelNames(ChannelNames);
+    TestEqual(TEXT("注册 3 个通道后 GetChannelNames 数量为 3"), ChannelNames.Num(), 3);
+    TestTrue(TEXT("通道名称列表包含 BaseMovement"), ChannelNames.Contains(FName(TEXT("BaseMovement"))));
+    TestTrue(TEXT("通道名称列表包含 SprintBuff"), ChannelNames.Contains(FName(TEXT("SprintBuff"))));
+    TestTrue(TEXT("通道名称列表包含 SlowDebuff"), ChannelNames.Contains(FName(TEXT("SlowDebuff"))));
 
     TestTrue(TEXT("清除 SlowDebuff 通道成功"), Arbitrator.ClearChannel(FName(TEXT("SlowDebuff"))));
     TestEqual(TEXT("清除后回退至次早同级通道 SprintBuff (800.0)"), Arbitrator.GetEffectiveValue(1.0f), 800.0f);
@@ -120,21 +130,17 @@ bool FPriorityArbitratorMoveSemanticsTest::RunTest([[maybe_unused]] const FStrin
     Source.SetChannel(FName(TEXT("Buff1")), 10.0f);
     Source.SetChannel(FName(TEXT("Buff2")), 20.0f);
 
-    // 触发内部指针缓存构建
     const float SourceResult = Source.GetEffectiveValue(100.0f);
     TestEqual(TEXT("原仲裁器计算结果为 130.0"), SourceResult, 130.0f);
 
-    // 移动构造
     TPriorityArbitrator<float> Dest = MoveTemp(Source);
     TestEqual(TEXT("移动后新对象计算结果依然为 130.0"), Dest.GetEffectiveValue(100.0f), 130.0f);
     TestTrue(TEXT("新对象包含通道 Buff1"), Dest.HasChannel(FName(TEXT("Buff1"))));
     TestTrue(TEXT("新对象包含通道 Buff2"), Dest.HasChannel(FName(TEXT("Buff2"))));
 
-    // 修改新对象
     Dest.SetChannel(FName(TEXT("Buff3")), 5.0f);
     TestEqual(TEXT("新对象继续加算计算结果为 135.0"), Dest.GetEffectiveValue(100.0f), 135.0f);
 
-    // 移动赋值
     TPriorityArbitrator<float> AssignedDest(EPriorityArbitrationMode::Multiplicative);
     AssignedDest = MoveTemp(Dest);
     TestEqual(TEXT("移动赋值后模式继承为加算"), AssignedDest.GetMode(), EPriorityArbitrationMode::Additive);

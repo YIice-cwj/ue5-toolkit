@@ -108,6 +108,14 @@ public:
     [[nodiscard]] int32 GetRegisteredCount() const;
 
     /**
+     * @brief 获取当前已注册的活跃心跳任务总数（标准容器别名）
+     * @return 任务总数
+     */
+    [[nodiscard]] int32 Num() const {
+        return GetRegisteredCount();
+    }
+
+    /**
      * @brief 清空全部已注册心跳任务
      */
     void ClearAll();

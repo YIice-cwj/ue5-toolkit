@@ -109,29 +109,8 @@ struct GAMECORE_API FGameLocalId {
         return false;
     }
 
-    constexpr bool operator==(const FGameLocalId& Other) const noexcept {
-        return Value == Other.Value;
-    }
-
-    constexpr bool operator!=(const FGameLocalId& Other) const noexcept {
-        return Value != Other.Value;
-    }
-
-    constexpr bool operator<(const FGameLocalId& Other) const noexcept {
-        return Value < Other.Value;
-    }
-
-    constexpr bool operator<=(const FGameLocalId& Other) const noexcept {
-        return Value <= Other.Value;
-    }
-
-    constexpr bool operator>(const FGameLocalId& Other) const noexcept {
-        return Value > Other.Value;
-    }
-
-    constexpr bool operator>=(const FGameLocalId& Other) const noexcept {
-        return Value >= Other.Value;
-    }
+    [[nodiscard]] constexpr bool operator==(const FGameLocalId& Other) const noexcept = default;
+    [[nodiscard]] constexpr auto operator<=>(const FGameLocalId& Other) const noexcept = default;
 
     /**
      * @brief 雪崩散列计算函数（彻底消除连续自增序列在 TMap / TSet 中的哈希聚集）

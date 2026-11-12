@@ -11,6 +11,7 @@
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "Listener/FNotificationDispatcher.h"
+#include "Misc/StringBuilder.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogGameConfig, Log, All);
 
@@ -24,7 +25,9 @@ namespace {
  * 实现思路：Env.* 为构建态环境信息恒只读；未开启对应编译开关时 Dev.* 与 Feature.GM 恒只读，防调试后门。
  */
 bool IsReadOnlyKeyName(const FName& Name) {
-    const FString KeyText = Name.ToString();
+    TStringBuilder<128> KeyBuilder;
+    Name.AppendString(KeyBuilder);
+    const FStringView KeyText = KeyBuilder.ToView();
     if (KeyText.StartsWith(TEXT("Env."))) {
         return true;
     }
@@ -155,6 +158,35 @@ void FConfigRegistry::FWatcherState::RemoveListener(uint64 SubscriptionId) {
 }
 
 /**
+ * @brief 获取已注册配置项总数
+ * @return 配置项数量
+ */
+int32 FConfigRegistry::Num() const {
+    FReadScopeLock ReadLock(RwLock);
+    return Entries.Num();
+}
+
+/**
+ * @brief 查询注册表是否为空
+ * @return 无注册项返回 true
+ */
+bool FConfigRegistry::IsEmpty() const {
+    FReadScopeLock ReadLock(RwLock);
+    return Entries.IsEmpty();
+}
+
+/**
+ * @brief 获取所有已注册配置键名列表
+ * @param OutKeys 接收键名的输出数组
+ * @return 已注册配置项数量
+ */
+int32 FConfigRegistry::GetRegisteredKeys(TArray<FName>& OutKeys) const {
+    FReadScopeLock ReadLock(RwLock);
+    Entries.GenerateKeyArray(OutKeys);
+    return OutKeys.Num();
+}
+
+/**
  * @brief 查询配置键是否已注册
  * @param Name 配置键
  * @return 已注册返回 true
@@ -217,10 +249,20 @@ static TSharedPtr<FConfigRegistry> GetGlobalShared() {
  * @param Other 源注册表引用
  */
 void FConfigRegistry::InheritFrom(const FConfigRegistry& Other) {
-    FReadScopeLock ReadLock(Other.RwLock);
-    FWriteScopeLock WriteLock(RwLock);
-    Entries = Other.Entries;
-    GlobalVersion = Other.GlobalVersion;
+    if (this == &Other) {
+        return;
+    }
+    if (reinterpret_cast<uintptr_t>(this) < reinterpret_cast<uintptr_t>(&Other)) {
+        FWriteScopeLock WriteLock(RwLock);
+        FReadScopeLock ReadLock(Other.RwLock);
+        Entries = Other.Entries;
+        GlobalVersion = Other.GlobalVersion;
+    } else {
+        FReadScopeLock ReadLock(Other.RwLock);
+        FWriteScopeLock WriteLock(RwLock);
+        Entries = Other.Entries;
+        GlobalVersion = Other.GlobalVersion;
+    }
 }
 
 /**
@@ -342,6 +384,7 @@ ESetConfigResult FConfigRegistry::ApplySet(FName Name, FConfigVariant&& NewValue
         } else {
             if (Entry == nullptr) {
                 Entry = &Entries.Emplace(Name);
+                Entry->bReadOnly = IsReadOnlyKeyName(Name);
             }
             Entry->Value = MoveTemp(NewValue);
             ++Entry->Version;
@@ -409,30 +452,5 @@ TSharedRef<FObserverSubscription> FConfigRegistry::AddWatcher(FName Name, TFunct
  * @return 类型名文案
  */
 FString FConfigRegistry::VariantTypeName(const FConfigVariant& InVariant) {
-    FString TypeName = TEXT("未知类型");
-    Visit([&TypeName](const auto& Stored) {
-        using FStoredType = std::decay_t<decltype(Stored)>;
-        if constexpr (std::is_same_v<FStoredType, bool>) {
-            TypeName = TEXT("bool");
-        } else if constexpr (std::is_same_v<FStoredType, int32>) {
-            TypeName = TEXT("int32");
-        } else if constexpr (std::is_same_v<FStoredType, int64>) {
-            TypeName = TEXT("int64");
-        } else if constexpr (std::is_same_v<FStoredType, float>) {
-            TypeName = TEXT("float");
-        } else if constexpr (std::is_same_v<FStoredType, double>) {
-            TypeName = TEXT("double");
-        } else if constexpr (std::is_same_v<FStoredType, FString>) {
-            TypeName = TEXT("FString");
-        } else if constexpr (std::is_same_v<FStoredType, FName>) {
-            TypeName = TEXT("FName");
-        } else if constexpr (std::is_same_v<FStoredType, FVector>) {
-            TypeName = TEXT("FVector");
-        } else if constexpr (std::is_same_v<FStoredType, FRotator>) {
-            TypeName = TEXT("FRotator");
-        } else if constexpr (std::is_same_v<FStoredType, FGameplayTag>) {
-            TypeName = TEXT("FGameplayTag");
-        }
-    }, InVariant);
-    return TypeName;
+    return Game::Config::GetVariantTypeName(InVariant);
 }

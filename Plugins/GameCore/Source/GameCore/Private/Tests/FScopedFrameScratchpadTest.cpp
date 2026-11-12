@@ -201,4 +201,76 @@ bool TScratchArrayTest::RunTest([[maybe_unused]] const FString& Parameters) {
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FScopedFrameScratchpadNewArrayTest,
+    "Game.Core.Memory.ScopedFrameScratchpad.NewArrayAggregation",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证单帧分配器 NewArray 数组构造与聚合逆序析构机制
+ * @param Parameters 自动化测试参数
+ * @return 全部断言通过返回 true
+ */
+bool FScopedFrameScratchpadNewArrayTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    FLinearArena Arena(4096);
+    int32 DestructCount = 0;
+    TArray<int32> DestructOrder;
+
+    struct FOrderTracker {
+        int32* Counter = nullptr;
+        TArray<int32>* Order = nullptr;
+        int32 Id = 0;
+
+        FOrderTracker(int32* InCounter, TArray<int32>* InOrder, int32 InId)
+            : Counter(InCounter)
+            , Order(InOrder)
+            , Id(InId) {
+        }
+
+        ~FOrderTracker() {
+            if (Counter != nullptr) {
+                ++(*Counter);
+            }
+            if (Order != nullptr) {
+                Order->Add(Id);
+            }
+        }
+    };
+
+    {
+        FScopedFrameScratchpad Scratch(Arena);
+
+        TArrayView<int32> ZeroArr = Scratch.NewArray<int32>(0);
+        TestEqual(TEXT("0 长度 NewArray 为空"), ZeroArr.Num(), 0);
+
+        TArrayView<int32> NegArr = Scratch.NewArray<int32>(-1);
+        TestEqual(TEXT("负长度 NewArray 为空"), NegArr.Num(), 0);
+
+        TArrayView<int32> TrivialArr = Scratch.NewArray<int32>(5, 42);
+        TestEqual(TEXT("平凡类型数组长度正确"), TrivialArr.Num(), 5);
+        for (int32 Val : TrivialArr) {
+            TestEqual(TEXT("平凡类型构造参数传递生效"), Val, 42);
+        }
+
+        constexpr int32 ItemCount = 4;
+        TArrayView<FOrderTracker> Items = Scratch.NewArray<FOrderTracker>(ItemCount, &DestructCount, &DestructOrder, 0);
+        for (int32 Index = 0; Index < ItemCount; ++Index) {
+            Items[Index].Id = Index + 1;
+        }
+        TestEqual(TEXT("对象构造完成，析构计数为 0"), DestructCount, 0);
+    }
+
+    TestEqual(TEXT("作用域退出后析构全部 4 个对象"), DestructCount, 4);
+    TestEqual(TEXT("析构顺序收集完整"), DestructOrder.Num(), 4);
+    if (DestructOrder.Num() == 4) {
+        TestEqual(TEXT("首个析构的是最后一个元素"), DestructOrder[0], 4);
+        TestEqual(TEXT("第二个析构的是第三个元素"), DestructOrder[1], 3);
+        TestEqual(TEXT("第三个析构的是第二个元素"), DestructOrder[2], 2);
+        TestEqual(TEXT("最后一个析构的是首元素"), DestructOrder[3], 1);
+    }
+
+    return true;
+}
+
 #endif

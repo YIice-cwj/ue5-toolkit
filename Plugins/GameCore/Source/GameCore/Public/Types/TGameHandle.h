@@ -6,6 +6,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Types/FGameDistId.h"
 
 /**
  * @brief 强类型代际句柄模板（不同 TTag 之间编译期类型隔离，零运行时开销）
@@ -87,6 +88,15 @@ public:
      */
     [[nodiscard]] constexpr bool operator==(const TGameHandle& Other) const noexcept = default;
 
+    /**
+     * @brief 严格弱序小于比较操作符（支持直接存入有序容器或调用 Algo::Sort）
+     * @param Other 待比较句柄
+     * @return 64 位打包数值小于对方返回 true
+     */
+    [[nodiscard]] constexpr bool operator<(const TGameHandle& Other) const noexcept {
+        return PackUInt64() < Other.PackUInt64();
+    }
+
 public:
     /**
      * @brief 从 64 位打包整数还原代际句柄
@@ -103,14 +113,14 @@ private:
 };
 
 /**
- * @brief 计算代际句柄哈希值（支持直接作为 TMap / TSet 键）
+ * @brief 计算代际句柄雪崩哈希值（MurmurHash3 散列算法，彻底消除自增槽位在 TMap / TSet 中的哈希聚集）
  * @tparam TTag 领域幻影标签类型
  * @param Handle 目标句柄
- * @return 32 位哈希值
+ * @return 32 位均匀分布哈希值
  */
 template <typename TTag>
 [[nodiscard]] uint32 GetTypeHash(const TGameHandle<TTag>& Handle) noexcept {
-    return GetTypeHash(Handle.PackUInt64());
+    return Game::Hash::Hash64To32(Handle.PackUInt64());
 }
 
 /**

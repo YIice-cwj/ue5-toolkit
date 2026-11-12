@@ -20,6 +20,24 @@ public:
     FStateChecksumBuilder() noexcept;
 
     /**
+     * @brief 注入布尔值
+     * @param bValue 输入布尔值
+     */
+    void AddBool(bool bValue) noexcept;
+
+    /**
+     * @brief 注入 32 位有符号整数
+     * @param Value 输入数值
+     */
+    void AddInt32(int32 Value) noexcept;
+
+    /**
+     * @brief 注入 64 位有符号整数
+     * @param Value 输入数值
+     */
+    void AddInt64(int64 Value) noexcept;
+
+    /**
      * @brief 注入 32 位无符号整数
      * @param Value 输入数值
      */
@@ -32,6 +50,18 @@ public:
     void AddUInt64(uint64 Value) noexcept;
 
     /**
+     * @brief 注入字符串视图（按字符底层字节连续注入，各端表现严格一致）
+     * @param Str 输入字符串视图
+     */
+    void AddString(FStringView Str) noexcept;
+
+    /**
+     * @brief 注入 FName（自动转为全字符串内容注入，杜绝各端资产加载顺序不同导致的索引伪分叉）
+     * @param Name 输入 FName
+     */
+    void AddName(const FName& Name) noexcept;
+
+    /**
      * @brief 注入按指定精度量化截断的单精度浮点数（消除微小浮点舍入抖动）
      * @param Value 输入浮点数
      * @param Precision 量化精度（默认 0.001f，即毫米/千分位级）
@@ -39,11 +69,18 @@ public:
     void AddFloatQuantized(float Value, float Precision = 0.001f) noexcept;
 
     /**
-     * @brief 注入按指定精度量化截断的三维空间向量
-     * @param Vec 输入三维向量
-     * @param Precision 量化精度（默认 0.01f，即厘米级）
+     * @brief 注入按指定精度量化截断的双精度浮点数（保留大世界坐标高精度，消除微小浮点舍入抖动）
+     * @param Value 输入双精度浮点数
+     * @param Precision 量化精度（默认 0.001，即毫米/千分位级）
      */
-    void AddVectorQuantized(const FVector& Vec, float Precision = 0.01f) noexcept;
+    void AddDoubleQuantized(double Value, double Precision = 0.001) noexcept;
+
+    /**
+     * @brief 注入按指定精度量化截断的三维空间向量（支持 UE5 LWC 大世界双精度坐标）
+     * @param Vec 输入三维向量
+     * @param Precision 量化精度（默认 0.01，即厘米级）
+     */
+    void AddVectorQuantized(const FVector& Vec, double Precision = 0.01) noexcept;
 
     /**
      * @brief 注入原生二进制连续字节流
@@ -124,6 +161,21 @@ public:
      * @param InCallback 回调委托
      */
     void SetDesyncCallback(FOnDesyncDetected InCallback);
+
+    /**
+     * @brief 获取探测器历史记录槽位容量
+     * @return 静态容量上限
+     */
+    [[nodiscard]] constexpr uint32 GetCapacity() const noexcept {
+        return HistoryCapacity;
+    }
+
+    /**
+     * @brief 检查本地历史记录中是否存在指定帧的记录
+     * @param Frame 目标帧序号
+     * @return 存在有效记录返回 true
+     */
+    [[nodiscard]] bool HasFrame(uint64 Frame) const noexcept;
 
     /**
      * @brief 查询本地历史记录中是否存在指定帧的记录

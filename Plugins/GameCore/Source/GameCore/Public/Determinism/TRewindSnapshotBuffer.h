@@ -6,6 +6,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Misc/Optional.h"
 #include "Templates/Function.h"
 
 /**
@@ -46,27 +47,71 @@ public:
     TRewindSnapshotBuffer& operator=(TRewindSnapshotBuffer&&) noexcept = default;
 
     /**
-     * @brief 写入新的帧快照（自动保证环内时间戳单调非递减不变式，乱序较小时间戳钳制为上一帧时间戳）
+     * @brief 写入新的帧快照（拷贝语义，自动保证环内时间戳单调非递减不变式，乱序较小时间戳钳制为上一帧时间戳）
      * @param Timestamp 仿真物理时间戳（秒）
      * @param FrameSequence 递增帧序号
      * @param InSnapshot 目标快照数据
      */
     void RecordSnapshot(double Timestamp, uint64 FrameSequence, const TSnapshot& InSnapshot) {
-        double SafeTimestamp = FMath::IsFinite(Timestamp) ? Timestamp : 0.0;
-        if (ValidCount > 0 && Entries[HeadIndex].bValid && SafeTimestamp < Entries[HeadIndex].Timestamp) {
-            SafeTimestamp = Entries[HeadIndex].Timestamp;
+        const uint32 Slot = PrepareNextSlot(Timestamp, FrameSequence);
+        Entries[Slot].State = InSnapshot;
+    }
+
+    /**
+     * @brief 写入新的帧快照（移动语义，自动保证环内时间戳单调非递减不变式，乱序较小时间戳钳制为上一帧时间戳）
+     * @param Timestamp 仿真物理时间戳（秒）
+     * @param FrameSequence 递增帧序号
+     * @param InSnapshot 目标快照数据（右值）
+     */
+    void RecordSnapshot(double Timestamp, uint64 FrameSequence, TSnapshot&& InSnapshot) {
+        const uint32 Slot = PrepareNextSlot(Timestamp, FrameSequence);
+        Entries[Slot].State = MoveTemp(InSnapshot);
+    }
+
+    /**
+     * @brief 原位构造写入新的帧快照（避免临时对象的构造与移动开销）
+     * @tparam Args 构造参数包
+     * @param Timestamp 仿真物理时间戳（秒）
+     * @param FrameSequence 递增帧序号
+     * @param InArgs 快照构造参数
+     * @return 槽位内原位构造的快照引用
+     */
+    template <typename... Args>
+    TSnapshot& EmplaceSnapshot(double Timestamp, uint64 FrameSequence, Args&&... InArgs) {
+        const uint32 Slot = PrepareNextSlot(Timestamp, FrameSequence);
+        Entries[Slot].State = TSnapshot(Forward<Args>(InArgs)...);
+        return Entries[Slot].State;
+    }
+
+    /**
+     * @brief 按物理帧序号精确探测快照只读指针（连续帧序列下优先 O(1) 偏移直达，非连续帧序列回退环形扫描）
+     * @param FrameSequence 期望查询的帧序号
+     * @return 存在有效快照返回只读指针，否则返回 nullptr
+     */
+    [[nodiscard]] const TSnapshot* PeekSnapshotAtFrame(uint64 FrameSequence) const {
+        if (ValidCount == 0) {
+            return nullptr;
         }
 
-        HeadIndex = (HeadIndex + 1) & Mask;
-
-        Entries[HeadIndex].Timestamp = SafeTimestamp;
-        Entries[HeadIndex].FrameSequence = FrameSequence;
-        Entries[HeadIndex].State = InSnapshot;
-        Entries[HeadIndex].bValid = true;
-
-        if (ValidCount < static_cast<int32>(Capacity)) {
-            ++ValidCount;
+        const FSnapshotEntry& Newest = Entries[HeadIndex];
+        if (Newest.bValid && FrameSequence <= Newest.FrameSequence) {
+            const uint64 SequenceDelta = Newest.FrameSequence - FrameSequence;
+            if (SequenceDelta < static_cast<uint64>(ValidCount)) {
+                const uint32 DirectSlot = (HeadIndex + Capacity - static_cast<uint32>(SequenceDelta)) & Mask;
+                if (Entries[DirectSlot].bValid && Entries[DirectSlot].FrameSequence == FrameSequence) {
+                    return &Entries[DirectSlot].State;
+                }
+            }
         }
+
+        for (int32 Offset = 0; Offset < ValidCount; ++Offset) {
+            const uint32 Slot = (HeadIndex + Capacity - static_cast<uint32>(Offset)) & Mask;
+            if (Entries[Slot].bValid && Entries[Slot].FrameSequence == FrameSequence) {
+                return &Entries[Slot].State;
+            }
+        }
+
+        return nullptr;
     }
 
     /**
@@ -76,31 +121,35 @@ public:
      * @return 存在且有效返回 true
      */
     [[nodiscard]] bool GetSnapshotAtFrame(uint64 FrameSequence, TSnapshot& OutSnapshot) const {
-        if (ValidCount == 0) {
-            return false;
+        const TSnapshot* Found = PeekSnapshotAtFrame(FrameSequence);
+        if (Found != nullptr) {
+            OutSnapshot = *Found;
+            return true;
         }
-
-        const FSnapshotEntry& Newest = Entries[HeadIndex];
-        if (Newest.bValid && FrameSequence <= Newest.FrameSequence) {
-            const uint64 SequenceDelta = Newest.FrameSequence - FrameSequence;
-            if (SequenceDelta < static_cast<uint64>(ValidCount)) {
-                const uint32 DirectSlot = (HeadIndex + Capacity - static_cast<uint32>(SequenceDelta)) & Mask;
-                if (Entries[DirectSlot].bValid && Entries[DirectSlot].FrameSequence == FrameSequence) {
-                    OutSnapshot = Entries[DirectSlot].State;
-                    return true;
-                }
-            }
-        }
-
-        for (int32 Offset = 0; Offset < ValidCount; ++Offset) {
-            const uint32 Slot = (HeadIndex + Capacity - static_cast<uint32>(Offset)) & Mask;
-            if (Entries[Slot].bValid && Entries[Slot].FrameSequence == FrameSequence) {
-                OutSnapshot = Entries[Slot].State;
-                return true;
-            }
-        }
-
         return false;
+    }
+
+    /**
+     * @brief 按物理帧序号精确获取快照（现代可选值包装）
+     * @param FrameSequence 期望查询的帧序号
+     * @return 包含快照的 Optional 实例；若不存在返回空 Optional
+     */
+    [[nodiscard]] TOptional<TSnapshot> GetSnapshotAtFrame(uint64 FrameSequence) const {
+        if (const TSnapshot* Found = PeekSnapshotAtFrame(FrameSequence)) {
+            return *Found;
+        }
+        return {};
+    }
+
+    /**
+     * @brief 获取最新写入的快照只读指针（零拷贝）
+     * @return 存在有效快照返回只读指针，否则返回 nullptr
+     */
+    [[nodiscard]] const TSnapshot* PeekLatestSnapshot() const {
+        if (ValidCount == 0 || !Entries[HeadIndex].bValid) {
+            return nullptr;
+        }
+        return &Entries[HeadIndex].State;
     }
 
     /**
@@ -109,12 +158,39 @@ public:
      * @return 存在有效快照返回 true
      */
     [[nodiscard]] bool GetLatestSnapshot(TSnapshot& OutSnapshot) const {
-        if (ValidCount == 0 || !Entries[HeadIndex].bValid) {
-            return false;
+        const TSnapshot* Found = PeekLatestSnapshot();
+        if (Found != nullptr) {
+            OutSnapshot = *Found;
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * @brief 获取最新写入的快照（现代可选值包装）
+     * @return 包含快照的 Optional 实例；若不存在返回空 Optional
+     */
+    [[nodiscard]] TOptional<TSnapshot> GetLatestSnapshot() const {
+        if (const TSnapshot* Found = PeekLatestSnapshot()) {
+            return *Found;
+        }
+        return {};
+    }
+
+    /**
+     * @brief 获取最早尚未被覆盖的历史快照只读指针（零拷贝）
+     * @return 存在有效快照返回只读指针，否则返回 nullptr
+     */
+    [[nodiscard]] const TSnapshot* PeekOldestSnapshot() const {
+        if (ValidCount == 0) {
+            return nullptr;
         }
 
-        OutSnapshot = Entries[HeadIndex].State;
-        return true;
+        const uint32 TailIndex = (HeadIndex + Capacity - static_cast<uint32>(ValidCount - 1)) & Mask;
+        if (!Entries[TailIndex].bValid) {
+            return nullptr;
+        }
+        return &Entries[TailIndex].State;
     }
 
     /**
@@ -123,17 +199,23 @@ public:
      * @return 存在有效快照返回 true
      */
     [[nodiscard]] bool GetOldestSnapshot(TSnapshot& OutSnapshot) const {
-        if (ValidCount == 0) {
-            return false;
+        const TSnapshot* Found = PeekOldestSnapshot();
+        if (Found != nullptr) {
+            OutSnapshot = *Found;
+            return true;
         }
+        return false;
+    }
 
-        const uint32 TailIndex = (HeadIndex + Capacity - static_cast<uint32>(ValidCount - 1)) & Mask;
-        if (!Entries[TailIndex].bValid) {
-            return false;
+    /**
+     * @brief 获取最早尚未被覆盖的历史快照（现代可选值包装）
+     * @return 包含快照的 Optional 实例；若不存在返回空 Optional
+     */
+    [[nodiscard]] TOptional<TSnapshot> GetOldestSnapshot() const {
+        if (const TSnapshot* Found = PeekOldestSnapshot()) {
+            return *Found;
         }
-
-        OutSnapshot = Entries[TailIndex].State;
-        return true;
+        return {};
     }
 
     /**
@@ -192,6 +274,23 @@ public:
     }
 
     /**
+     * @brief 依据连续时间戳获取亚帧平滑插值快照（现代可选值包装）
+     * @param TargetTimestamp 目标插值时间戳
+     * @param Interpolator 元素插值委托 (A, B, Alpha) -> TSnapshot
+     * @return 包含插值快照的 Optional 实例；若无法插值返回空 Optional
+     */
+    [[nodiscard]] TOptional<TSnapshot> GetInterpolatedSnapshot(
+        double TargetTimestamp,
+        FInterpolator Interpolator
+    ) const {
+        TSnapshot OutSnapshot{};
+        if (GetInterpolatedSnapshot(TargetTimestamp, OutSnapshot, Interpolator)) {
+            return OutSnapshot;
+        }
+        return {};
+    }
+
+    /**
      * @brief 获取当前有效的快照记录数
      * @return 有效槽位数
      */
@@ -227,6 +326,25 @@ public:
     }
 
 private:
+    uint32 PrepareNextSlot(double Timestamp, uint64 FrameSequence) noexcept {
+        double SafeTimestamp = FMath::IsFinite(Timestamp) ? Timestamp : 0.0;
+        if (ValidCount > 0 && Entries[HeadIndex].bValid && SafeTimestamp < Entries[HeadIndex].Timestamp) {
+            SafeTimestamp = Entries[HeadIndex].Timestamp;
+        }
+
+        HeadIndex = (HeadIndex + 1) & Mask;
+
+        Entries[HeadIndex].Timestamp = SafeTimestamp;
+        Entries[HeadIndex].FrameSequence = FrameSequence;
+        Entries[HeadIndex].bValid = true;
+
+        if (ValidCount < static_cast<int32>(Capacity)) {
+            ++ValidCount;
+        }
+
+        return HeadIndex;
+    }
+
     static constexpr uint32 Mask = Capacity - 1;
 
     FSnapshotEntry Entries[Capacity];

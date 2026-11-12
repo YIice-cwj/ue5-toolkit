@@ -87,6 +87,16 @@ public:
     }
 
     /**
+     * @brief 获取当前所有已注册的通道名称列表
+     * @param OutChannelNames 接收通道名称的输出数组
+     * @return 已注册通道数量
+     */
+    int32 GetChannelNames(TArray<FName>& OutChannelNames) const {
+        ChannelStreams.GenerateKeyArray(OutChannelNames);
+        return OutChannelNames.Num();
+    }
+
+    /**
      * @brief 将所有通道随机流内部状态按确定性字典序导出至二进制归档
      * @param Ar 写入归档器
      */

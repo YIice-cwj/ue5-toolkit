@@ -43,7 +43,7 @@ namespace Game::Config {
 ### 2.2 多源级联桥接 (`FConfigSourceBridge`)
 `GameCore` 支持将不同配置来源（如命令行启动参数、INI 配置文件、远端拉取数据）通过 `FConfigSourceBridge` 接入：
 - **优先级级联覆盖**：遵循 Commandline > INI > Default 级联生效；
-- **PIE 隔离与自动回滚**：编辑器退出 PIE 模式时，自动将游戏实例运行期间的临时修改回滚至快照默认值，防止污染编辑器资产与常驻内存；
+- **PIE 实例独立隔离**：按 UWorld 独立分离配置实例并继承全局默认项，退出 PIE 时对应 World 注册表自动注销析构，绝不污染全局资产与常驻内存；
 - **只读键防篡改**：由 Bridge 声明的只读键，调用 `SetConfig` 时直接失败并记录告警。
 
 ### 2.3 响应式监听模式

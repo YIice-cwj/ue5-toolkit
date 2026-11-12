@@ -10,7 +10,13 @@
 #include <type_traits>
 
 /**
- * @brief 强类型枚举紧凑位掩码集合
+ * @brief 强类型枚举紧凑位掩码集合（基于 0 起始的位索引映射至底层二进制比特位）
+ *
+ * 契约约定：
+ * - 构造函数与 Set/Has/Toggle 接收的 TEnum 实参代表【位索引（Bit Index，如 0, 1, 2...）】；
+ * - 内部自动将位索引映射为 (1 << BitIndex) 单比特掩码；
+ * - 若需直接从原生二进制掩码（Bit Pattern，如 0x01, 0x02, 0x04）初始化，请使用 FromRawMask 工厂方法或 explicit TBitMask(FUnderlying)。
+ *
  * @tparam TEnum 枚举类型
  */
 template <typename TEnum>
@@ -45,6 +51,24 @@ public:
      */
     constexpr explicit TBitMask(FUnderlying InRawMask) noexcept
         : RawMask(InRawMask) {
+    }
+
+    /**
+     * @brief 工厂方法：基于单枚举位索引创建位掩码（等价于 1 << BitIndex）
+     * @param BitIndex 0 起始的枚举位索引
+     * @return 构造出的强类型位掩码实例
+     */
+    [[nodiscard]] static constexpr TBitMask FromBitIndex(TEnum BitIndex) noexcept {
+        return TBitMask(BitIndex);
+    }
+
+    /**
+     * @brief 工厂方法：基于原始二进制位掩码创建（直接包装底层二进制掩码）
+     * @param InRawMask 底层位掩码整数
+     * @return 构造出的强类型位掩码实例
+     */
+    [[nodiscard]] static constexpr TBitMask FromRawMask(FUnderlying InRawMask) noexcept {
+        return TBitMask(InRawMask);
     }
 
     /**

@@ -100,6 +100,25 @@ public:
     TSharedRef<FObserverSubscription> WatchConfig(FName Name, TFunction<void(const T&)> OnChanged);
 
     /**
+     * @brief 获取已注册配置项总数
+     * @return 配置项数量
+     */
+    [[nodiscard]] int32 Num() const;
+
+    /**
+     * @brief 查询注册表是否为空
+     * @return 无注册项返回 true
+     */
+    [[nodiscard]] bool IsEmpty() const;
+
+    /**
+     * @brief 获取所有已注册配置键名列表
+     * @param OutKeys 接收键名的输出数组
+     * @return 已注册配置项数量
+     */
+    int32 GetRegisteredKeys(TArray<FName>& OutKeys) const;
+
+    /**
      * @brief 查询配置键是否已注册
      * @param Name 配置键
      * @return 已注册返回 true

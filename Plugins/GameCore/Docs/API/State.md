@@ -23,7 +23,9 @@
 - **死循环截断熔断保护**：
   - 内建 `MAX_CHAINED_TRANSITIONS = 8` 步长截断机制；
   - 若状态机因规则互锁发生 $A \leftrightarrow B$ 无尽链式死循环，第 8 步自动中断并输出 `LogGameStateMachine` 警告，避免游戏卡死无响应。
-- **精确驻留时长**：状态机切换时重置驻留秒数，每帧 `Update` 累加，可通过 `GetTimeInCurrentState()` 便捷用于状态超时检测与动画过渡。
+- **精确驻留时长与即刻推进契约**：
+  - 状态机切换时重置驻留秒数，每帧 `Update` 累加，可通过 `GetTimeInCurrentState()` 便捷用于状态超时检测与动画过渡；
+  - 当在 `Update(DeltaSeconds)` 内因守卫触发自动跃迁时，时序执行线为：`旧态OnExit(新态)` -> `新态OnEnter(旧态)` -> `新态OnUpdate(DeltaSeconds)`，新状态当帧无延迟即刻生效。
 
 ```cpp
 enum class EPlayerStance : uint8 {
@@ -92,6 +94,8 @@ void Tick(float DeltaSeconds) {
 - **缓存与脏标记机制**：
   - 对满足 `std::equality_comparable` 的值类型自动缓存仲裁结果；
   - 通道无变动且基准值不变时直接返回缓存结果，单次查询微秒级耗时；
+- **通道观测能力**：
+  - 提供 `GetChannelNames(OutNames)` 与 `HasChannel(Name)`，供 UI 面板与调试工具实时获取当前激活的仲裁源；
 - **零额外堆内存分配**：
   - 排序与缓存队列采用 `TInlineAllocator<16>`，在绝大多数常规通道（$\le 16$ 个来源）下全程零堆分配。
 
@@ -102,6 +106,10 @@ TPriorityArbitrator<float> SpeedArbitrator(EPriorityArbitrationMode::OverrideHig
 SpeedArbitrator.SetChannel(TEXT("BaseStats"), 600.0f, /* Priority = */ 0);
 SpeedArbitrator.SetChannel(TEXT("SlowDebuff"), 300.0f, /* Priority = */ 10);
 SpeedArbitrator.SetChannel(TEXT("FreezeStun"), 0.0f,   /* Priority = */ 100);
+
+// 查询所有生效来源通道列表
+TArray<FName> ActiveSources;
+SpeedArbitrator.GetChannelNames(ActiveSources); // [BaseStats, SlowDebuff, FreezeStun]
 
 // 胜出通道为 FreezeStun，最终移速为 0.0f
 const float FinalSpeed = SpeedArbitrator.GetEffectiveValue(/* DefaultValue = */ 600.0f);

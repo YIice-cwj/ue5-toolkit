@@ -43,7 +43,7 @@ flowchart TD
 | **01. Config** | `FConfigRegistry`, `FConfigSourceBridge` | 读写锁、单向级联多源覆盖、PIE 自动回滚 | [ConfigRegistry.md](../API/ConfigRegistry.md) |
 | **02. Types** | `TGameResult<T>`, `FGameError`, `FFastTagBitmask`, `FGameDistId` | 强类型错误、64 位快速标签位掩码、无撞车 Snowflake 分布式 ID | [RandomAndTypes.md](../API/RandomAndTypes.md) |
 | **03. Containers** | `TSlotMap`, `TSortedVectorMap`, `TLockFreeRingBuffer` | 紧凑存储代际句柄防 ABA、连续内存二分查找、SPSC 零锁环形缓冲 | [Containers.md](../API/Containers.md) |
-| **04. Memory** | `TLinearArena`, `FScopedFrameScratchpad`, `TFixedBlockAllocator`, `TScratchArray` | 1~3ns 极速线性分配、双缓冲帧局部暂存栈、侵入式空闲链表、栈保底动态数组 | [Memory.md](../API/Memory.md) |
+| **04. Memory** | `FLinearArena`, `FScopedFrameScratchpad`, `TFixedBlockAllocator`, `TScratchArray` | 1~3ns 极速线性分配、双缓冲帧局部暂存栈、侵入式空闲链表、栈保底动态数组 | [Memory.md](../API/Memory.md) |
 | **05. Determinism** | `FFixedTimestepAccumulator`, `TRewindSnapshotBuffer` | 亚毫秒固定步长累加器、确定性逻辑回放快照环形缓冲区 | [Determinism.md](../API/Determinism.md) |
 | **06. Random** | `FGameRandomStream`, `FPseudoRandomDistribution`, `UGameRandomManager` | PCG32 高质量伪随机、PRD 真实保底暴击分布、子系统状态序列化 | [Random.md](../API/Random.md) |
 | **07. State** | `TGameStateMachine`, `TPriorityArbitrator` | 编译期强类型层次有限状态机、动态权值多源仲裁器 | [State.md](../API/State.md) |

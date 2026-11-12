@@ -145,7 +145,7 @@ const FString& PulledCard = CardBag.Draw(Rng);
 - **Vose's Alias Method（沃斯别名法）**：
   - 传统权重轮盘赌查找复杂度为 $O(N)$ 或 $O(\log N)$；
   - 本容器在 $O(N)$ 预构建/惰性构建别名表后，**单次权重抽取时间严格为 $O(1)$**，与条目数量无关；
-- **防数值截断与权重保护**：严格校验输入权重（必须大于 0 且有限），支持 `TryPick` 安全指针接口与 `Pick` 强契约引用接口。
+- **防数值截断与权重保护**：严格校验输入权重（必须大于 0 且有限），支持 `TryPick` 安全指针接口、`Pick` 强契约引用接口与 `PickValue` 安全值拷贝接口。
 
 ```cpp
 TWeightedPicker<FName> EnemySpawnTable;
@@ -156,8 +156,8 @@ EnemySpawnTable.AddEntry(TEXT("Dragon"), 10.0);
 // 显式预构建（也可在首次 Pick 时惰性构建）
 EnemySpawnTable.Build();
 
-// 极速 O(1) 权重轮盘抽取
-const FName ChosenEnemy = EnemySpawnTable.Pick(Rng);
+// 极速 O(1) 权重轮盘抽取（值语义安全拷贝）
+const FName ChosenEnemy = EnemySpawnTable.PickValue(Rng);
 ```
 
 ---
@@ -169,16 +169,17 @@ const FName ChosenEnemy = EnemySpawnTable.Pick(Rng);
 ### 引擎集成方式
 - 继承自 `UWorldSubsystem`，生命周期与当前关卡世界强绑定；
 - 采用 Thin-Shell 设计，将所有流管理直接委托给底层 `FGameRandomManager`；
+- 提供 `GetOrCreateStreamShared` 返回 `TSharedRef<FGameRandomStream>`，确保跨通道移除与重载生命周期绝对安全；
 - 提供静态便捷获取方法 `URandomSubsystem::Get(WorldContextObject)` 与安全空指针检查 `URandomSubsystem::GetPtr(...)`。
 
 ```cpp
 void AMyCharacter::BeginPlay() {
     Super::BeginPlay();
 
-    // 安全获取子系统并抽取随机数
+    // 安全获取子系统并持有共享随机流句柄（跨通道卸载内存安全）
     if (URandomSubsystem* RngSys = URandomSubsystem::GetPtr(this)) {
-        FGameRandomStream& CombatRng = RngSys->GetOrCreateStream(TEXT("Combat"));
-        const int32 Roll = CombatRng.RandRange(1, 100);
+        TSharedRef<FGameRandomStream> CombatRng = RngSys->GetOrCreateStreamShared(TEXT("Combat"));
+        const int32 Roll = CombatRng->RandRange(1, 100);
     }
 }
 ```

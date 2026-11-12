@@ -77,21 +77,23 @@ bool FLockFreeRingBufferBasicTest::RunTest([[maybe_unused]] const FString& Param
     TLockFreeRingBuffer<int32, 4> Buffer;
     TestEqual(TEXT("初始容量常量为 4"), Buffer.GetCapacity(), 4U);
     TestTrue(TEXT("初始队列为空"), Buffer.IsEmpty());
-    TestEqual(TEXT("初始计数为 0"), Buffer.Count(), 0U);
+    TestEqual(TEXT("初始计数为 0"), Buffer.Num(), 0U);
 
     int32 OutVal = 0;
     TestFalse(TEXT("空队列 Dequeue 返回 false"), Buffer.Dequeue(OutVal));
+    TestFalse(TEXT("空队列 Optional Dequeue 返回未设置"), Buffer.Dequeue().IsSet());
 
     TestTrue(TEXT("入队 10 成功"), Buffer.Enqueue(10));
     TestTrue(TEXT("入队 20 成功"), Buffer.Enqueue(20));
     TestTrue(TEXT("入队 30 成功"), Buffer.Enqueue(30));
     TestTrue(TEXT("入队 40 成功"), Buffer.Enqueue(40));
 
-    TestEqual(TEXT("满载时 Count 为 4"), Buffer.Count(), 4U);
+    TestEqual(TEXT("满载时 Num 为 4"), Buffer.Num(), 4U);
     TestFalse(TEXT("队列满载入队被拒绝"), Buffer.Enqueue(50));
 
-    TestTrue(TEXT("出队首个元素成功"), Buffer.Dequeue(OutVal));
-    TestEqual(TEXT("出队值严格符合 FIFO 为 10"), OutVal, 10);
+    const TOptional<int32> OptFirst = Buffer.Dequeue();
+    TestTrue(TEXT("Optional 出队首个元素成功"), OptFirst.IsSet());
+    TestEqual(TEXT("出队值严格符合 FIFO 为 10"), OptFirst.GetValue(), 10);
 
     TestTrue(TEXT("出队后腾出空间，入队 50 成功"), Buffer.Enqueue(50));
 
@@ -116,9 +118,30 @@ bool FLockFreeRingBufferBasicTest::RunTest([[maybe_unused]] const FString& Param
     TLockFreeRingBuffer<FNonDefaultConstructible, 4> NonDefaultBuffer;
     NonDefaultBuffer.Emplace(1001);
     NonDefaultBuffer.Emplace(1002);
-    TestEqual(TEXT("非默认构造类型容器容量正常"), NonDefaultBuffer.Count(), 2U);
-    NonDefaultBuffer.Clear();
-    TestTrue(TEXT("非默认构造类型容器 Clear 成功"), NonDefaultBuffer.IsEmpty());
+    TestEqual(TEXT("非默认构造类型容器容量正常"), NonDefaultBuffer.Num(), 2U);
+    const TOptional<FNonDefaultConstructible> NonDefaultFirst = NonDefaultBuffer.Dequeue();
+    TestTrue(TEXT("非默认构造类型可通过 Optional Dequeue 成功出队"), NonDefaultFirst.IsSet());
+    TestEqual(TEXT("出队内容 ID 精确匹配"), NonDefaultFirst->Id, 1001);
+    const TOptional<FNonDefaultConstructible> NonDefaultSecond = NonDefaultBuffer.Dequeue();
+    TestTrue(TEXT("出队第二项成功"), NonDefaultSecond.IsSet());
+    TestEqual(TEXT("出队内容 ID 匹配第二项"), NonDefaultSecond->Id, 1002);
+    TestTrue(TEXT("取空后队列为空"), NonDefaultBuffer.IsEmpty());
+
+    TLockFreeRingBuffer<TUniquePtr<int32>, 4> MoveOnlyBuffer;
+    TestTrue(TEXT("仅移动类型入队成功"), MoveOnlyBuffer.Enqueue(MakeUnique<int32>(777)));
+    TestTrue(TEXT("仅移动类型 Emplace 成功"), MoveOnlyBuffer.Emplace(MakeUnique<int32>(888)));
+    TestEqual(TEXT("仅移动类型计数为 2"), MoveOnlyBuffer.Num(), 2U);
+    TUniquePtr<int32> DequeuedMoveOnly;
+    TestTrue(TEXT("仅移动类型出队成功"), MoveOnlyBuffer.Dequeue(DequeuedMoveOnly));
+    TestNotNull(TEXT("出队指针非空"), DequeuedMoveOnly.Get());
+    if (DequeuedMoveOnly.IsValid()) {
+        TestEqual(TEXT("出队数值正确"), *DequeuedMoveOnly, 777);
+    }
+    TestTrue(TEXT("仅移动类型出队第二项成功"), MoveOnlyBuffer.Dequeue(DequeuedMoveOnly));
+    if (DequeuedMoveOnly.IsValid()) {
+        TestEqual(TEXT("出队数值正确"), *DequeuedMoveOnly, 888);
+    }
+    TestTrue(TEXT("全部取出后仅移动缓冲区为空"), MoveOnlyBuffer.IsEmpty());
 
     return true;
 }
@@ -215,8 +238,8 @@ bool FLockFreeRingBufferConcurrentMPMCTest::RunTest([[maybe_unused]] const FStri
         }
     });
 
-    const uint32 ConcurrentSampleCount = Buffer.Count();
-    TestTrue(TEXT("并发期间弱一致 Count 采样始终受限于 [0, Capacity]"), ConcurrentSampleCount <= BufferCapacity);
+    const uint32 ConcurrentSampleCount = Buffer.Num();
+    TestTrue(TEXT("并发期间弱一致 Num 采样始终受限于 [0, Capacity]"), ConcurrentSampleCount <= BufferCapacity);
 
     for (TFuture<void>& Future : ConsumerFutures) {
         Future.Wait();
@@ -258,20 +281,20 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证无锁环形缓冲区的 Count、IsEmpty 与连续入队出队准确性
+ * @brief 验证无锁环形缓冲区的 Num、IsEmpty 与连续入队出队准确性
  * @param Parameters 自动化测试参数
  * @return 全部断言通过返回 true
  */
 bool FLockFreeRingBufferCountAndWrapTest::RunTest([[maybe_unused]] const FString& Parameters) {
     TLockFreeRingBuffer<int32, 8> Buffer;
     TestTrue(TEXT("初始状态为空"), Buffer.IsEmpty());
-    TestEqual(TEXT("初始计数为 0"), Buffer.Count(), 0U);
+    TestEqual(TEXT("初始计数为 0"), Buffer.Num(), 0U);
 
     for (int32 Cycle = 0; Cycle < 1000; ++Cycle) {
         for (int32 i = 0; i < 4; ++i) {
             TestTrue(TEXT("入队成功"), Buffer.Enqueue(i));
         }
-        TestEqual(TEXT("入队 4 个元素后计数为 4"), Buffer.Count(), 4U);
+        TestEqual(TEXT("入队 4 个元素后计数为 4"), Buffer.Num(), 4U);
         TestFalse(TEXT("队列非空"), Buffer.IsEmpty());
 
         for (int32 i = 0; i < 4; ++i) {
@@ -279,7 +302,7 @@ bool FLockFreeRingBufferCountAndWrapTest::RunTest([[maybe_unused]] const FString
             TestTrue(TEXT("出队成功"), Buffer.Dequeue(OutVal));
             TestEqual(TEXT("出队值正确"), OutVal, i);
         }
-        TestEqual(TEXT("出队 4 个元素后计数为 0"), Buffer.Count(), 0U);
+        TestEqual(TEXT("出队 4 个元素后计数为 0"), Buffer.Num(), 0U);
         TestTrue(TEXT("队列为空"), Buffer.IsEmpty());
     }
 

@@ -1,7 +1,7 @@
 # GameCore 高性能内存与分配器 API 参考
 
 本文档汇总 `GameCore` 提供的底层高性能内存管理与连续流序列化原语（全部位于 `Memory/` 目录）：
-- `FLinearArena` / `TLinearArena`：高速单向线性分配器与非平凡对象析构链管理
+- `FLinearArena`：高速单向线性分配器与非平凡对象析构链管理
 - `TFixedBlockAllocator` 与 `TFixedSizePool<T>`：固定微块侵入式空闲链表分配器与对象池
 - `FByteSpanWriter` 与 `FByteSpanReader`：零拷贝连续内存二进制切片流读写器
 - `FScopedFrameScratchpad` 与 `TScratchArray<T>`：作用域级单帧刮擦内存与临时连续动态数组
@@ -16,7 +16,7 @@
 - **1~3 纳秒级分配**：采用单向指针自增（Bump Allocation），跨块分配自动开辟新链表块，极速满足短期或批量内存申请；
 - **指针绝对稳定**：扩容时采用分段链表块（`FMemoryChunk`）级联，**绝不迁移或重新分配已有块的内存**，先前分配的所有对象指针与引用永久有效直至被重置；
 - **非平凡对象生命周期与逆序析构**：
-  - 针对非平凡类型提供 `New<T>(Args...)` 与 `Emplace<T>(Args...)`；
+  - 针对非平凡类型提供 `New<T>(Args...)`；
   - 内部自动建立侵入式析构链节点（`FDestructorNode`），在 `Reset()` 或标记回滚时严格按**构造的相反顺序**依次执行析构函数；
 - **作用域标记与部分回滚**：
   - 调用 `CreateScopeMarker()` 获得 RAII 守卫对象 `FScopeMarker`；
@@ -58,7 +58,7 @@ Arena.Reset();
 - **极速微块复用**：针对高频创建、删除的微小对象（如节点、事件包、投射物实体元数据）；
 - **侵入式单向链表（Intrusive Free-List）**：未借出的空闲块直接复用前 `sizeof(void*)` 字节作为 `Next` 指针，元数据开销为绝对零；
 - **严格 $O(1)$ 指令分配与归还**：申请仅需取出头指针，归还仅需头插法插入，耗时恒定在 2~3 条机器指令；
-- **类型化对象池 `TFixedSizePool<T>`**：在分配器基础上封装 `Construct(Args...)` 与 `Destroy(Ptr)`，自动管理对象的 placement new 与显式析构。
+- **类型化对象池 `TFixedSizePool<T>`**：在分配器基础上封装 `New(Args...)` 与 `Free(Ptr)`，自动管理对象的 placement new 与显式析构。
 
 ```cpp
 // 1. 原生块分配器（块尺寸 32 字节，每个 Chunk 预备 128 个块）
@@ -74,11 +74,11 @@ struct FPathNode {
 };
 
 TFixedSizePool<FPathNode, 256> NodePool;
-FPathNode* Node = NodePool.Construct();
+FPathNode* Node = NodePool.New();
 Node->Position = FVector(10.f, 20.f, 0.f);
 
 // 归还对象（显式调用析构函数并将块插入空闲链表）
-NodePool.Destroy(Node);
+NodePool.Free(Node);
 ```
 
 ---
@@ -95,7 +95,7 @@ NodePool.Destroy(Node);
 - **变长整数压缩编码（VarInt / ZigZag）**：
   - **32 位轻量变长整数**：`WriteVarUInt32` / `ReadVarUInt32`，`WriteVarInt32` / `ReadVarInt32`，专为枚举、长度前缀与 ID 优化，循环更紧凑；
   - **64 位长整数压缩**：`WriteVarUInt64` / `ReadVarUInt64`，`WriteVarInt64` / `ReadVarInt64`，配合 ZigZag 编码消除负数补码高位冗余膨胀；
-- **引擎核心数学结构直接支持**：原生提供 `WriteVector3f` / `ReadVector3f`（12 字节紧凑三维向量）、`WriteVector` / `ReadVector`（24 字节双精度三维向量）、`WriteRotator` / `ReadRotator` 与 `WriteQuat4f` / `ReadQuat4f`（16 字节四元数）；
+- **引擎核心数学结构统一支持**：基于 `requires std::is_trivially_copyable_v<T>` 统一原生支持 `FVector3f`（12 字节紧凑向量）、`FVector`（24 字节双精度向量）、`FRotator` 与 `FQuat4f` 等结构（`Write` / `Read` / `<<` / `>>` 直写直读）；
 - **真正零拷贝视图与原位探测**：
   - `ReadBytesView(ByteCount, OutView)`：直接返回指向源内存切片的 `TArrayView<const uint8>`，绝不发生 `memcpy`；
   - `ReadUtf8Span(OutView)`：直接返回指向源缓冲区的 UTF-8 字节切片视图，零堆分配反序列化字符串；

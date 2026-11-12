@@ -70,6 +70,33 @@ public:
      */
     [[nodiscard]] int32 Num() const;
 
+    /**
+     * @brief 检查总线中是否没有任何已注册事件通道
+     * @return 为空返回 true
+     */
+    [[nodiscard]] bool IsEmpty() const;
+
+    /**
+     * @brief 检查指定名称的事件通道是否已存在
+     * @param EventName 事件名
+     * @return 存在返回 true
+     */
+    [[nodiscard]] bool Contains(const FName& EventName) const;
+
+    /**
+     * @brief 检查指定事件通道当前是否有活跃监听者（供发射端在打包昂贵载荷前做短路优化）
+     * @param EventName 事件名
+     * @return 存在且有活跃监听者返回 true
+     */
+    [[nodiscard]] bool HasListeners(const FName& EventName) const;
+
+    /**
+     * @brief 获取指定事件通道的当前活跃监听者数量
+     * @param EventName 事件名
+     * @return 活跃监听者数量；通道不存在返回 0
+     */
+    [[nodiscard]] int32 NumListeners(const FName& EventName) const;
+
 private:
     /**
      * @brief 类型擦除事件基类（继承观察者状态基类以复用 RAII 订阅守卫，构造期固化双指纹消除虚调用开销）
@@ -87,6 +114,12 @@ private:
         }
 
         ~FEventBase() override = default;
+
+        /**
+         * @brief 获取当前事件通道活跃监听者数量
+         * @return 监听者数量
+         */
+        [[nodiscard]] virtual int32 NumListeners() const = 0;
 
         /**
          * @brief 获取载荷类型指纹（Emit 类型匹配校验，零虚函数开销）
@@ -146,6 +179,15 @@ private:
          */
         void Broadcast(const T& Payload) const;
 
+        /**
+         * @brief 获取当前事件通道活跃监听者数量
+         * @return 监听者数量
+         */
+        [[nodiscard]] int32 NumListeners() const override {
+            FReadScopeLock ReadLock(HandlersLock);
+            return Handlers.IsValid() ? Handlers->Num() : 0;
+        }
+
     private:
         void RemoveListener(uint64 SubscriptionId) override;
 
@@ -166,6 +208,13 @@ private:
     TSharedPtr<FEvent<T>> GetOrCreateEvent(const FName& EventName);
 
 private:
+    FListenerHub() = default;
+    ~FListenerHub() = default;
+    FListenerHub(const FListenerHub&) = delete;
+    FListenerHub& operator=(const FListenerHub&) = delete;
+    FListenerHub(FListenerHub&&) = delete;
+    FListenerHub& operator=(FListenerHub&&) = delete;
+
     mutable FRWLock EventsLock;
     TMap<FName, TSharedPtr<FEventBase>> Events;
 };
@@ -200,7 +249,9 @@ void FListenerHub::FEvent<T>::Broadcast(const T& Payload) const {
         return;
     }
     for (const FHandlerEntry& Entry : *Snapshot) {
-        Entry.Callback(Payload);
+        if (Entry.Callback) {
+            Entry.Callback(Payload);
+        }
     }
 }
 
@@ -222,6 +273,9 @@ void FListenerHub::FEvent<T>::RemoveListener(uint64 SubscriptionId) {
 template<typename T>
 TSharedRef<FObserverSubscription> FListenerHub::Subscribe(const FName& EventName, TFunction<void(const T&)> InListener) {
     const TSharedRef<FObserverSubscription> Subscription = MakeShared<FObserverSubscription>();
+    if (EventName.IsNone()) {
+        return Subscription;
+    }
     const TSharedPtr<FEvent<T>> Event = GetOrCreateEvent<T>(EventName);
     if (Event.IsValid()) {
         Subscription->Initialize(Event.ToSharedRef(), Event->AddListener(MoveTemp(InListener)));
@@ -231,6 +285,9 @@ TSharedRef<FObserverSubscription> FListenerHub::Subscribe(const FName& EventName
 
 template<typename T>
 bool FListenerHub::Emit(const FName& EventName, const T& Payload) {
+    if (EventName.IsNone()) {
+        return false;
+    }
     TSharedPtr<FEventBase> Event;
     {
         FReadScopeLock ReadLock(EventsLock);

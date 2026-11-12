@@ -151,6 +151,24 @@ bool FLinearArenaScopeMarkerAndDestructorsTest::RunTest([[maybe_unused]] const F
     TestEqual(TEXT("已失效的 StaleScope 离开作用域时不触发二次析构"), ResetWhileScopedDestructCount, 1);
     TestEqual(TEXT("已失效的 StaleScope 离开作用域时不将游标错误前推"), Arena.GetTotalAllocatedBytes(), static_cast<size_t>(0));
 
+    FLinearArena MoveSource(2048);
+    int32* NumPtr = MoveSource.AllocateArray<int32>(10);
+    TestNotNull(TEXT("移动源分配数组有效"), NumPtr);
+    NumPtr[0] = 12345;
+
+    FLinearArena MoveTarget(MoveTemp(MoveSource));
+    TestEqual(TEXT("移动构造后源分配字节归零"), MoveSource.GetTotalAllocatedBytes(), static_cast<size_t>(0));
+    TestTrue(TEXT("移动构造后目标接管已分配字节"), MoveTarget.GetTotalAllocatedBytes() > 0);
+
+    FLinearArena AssignTarget(1024);
+    AssignTarget = MoveTemp(MoveTarget);
+    TestEqual(TEXT("移动赋值后源分配字节归零"), MoveTarget.GetTotalAllocatedBytes(), static_cast<size_t>(0));
+    TestTrue(TEXT("移动赋值后目标接管已分配字节"), AssignTarget.GetTotalAllocatedBytes() > 0);
+
+    FLinearArena::FScopeMarker OuterMarker = AssignTarget.CreateScopeMarker();
+    FLinearArena::FScopeMarker MovedMarker(MoveTemp(OuterMarker));
+    TestEqual(TEXT("移动作用域标记后活跃深度保持为 1"), AssignTarget.GetActiveScopeCount(), 1);
+
     return true;
 }
 

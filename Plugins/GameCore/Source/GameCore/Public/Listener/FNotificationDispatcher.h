@@ -35,6 +35,11 @@ public:
 
 private:
     FNotificationDispatcher() = default;
+    ~FNotificationDispatcher() = default;
+    FNotificationDispatcher(const FNotificationDispatcher&) = delete;
+    FNotificationDispatcher& operator=(const FNotificationDispatcher&) = delete;
+    FNotificationDispatcher(FNotificationDispatcher&&) = delete;
+    FNotificationDispatcher& operator=(FNotificationDispatcher&&) = delete;
 
 private:
     FCriticalSection QueueMutex;

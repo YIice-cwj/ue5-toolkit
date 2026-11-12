@@ -85,6 +85,64 @@ public:
     [[nodiscard]] const ValueType* Find(HandleType Handle) const noexcept;
 
     /**
+     * @brief 下标访问运算符（可变版本，若句柄无效或过期则触发断言）
+     * @param Handle 目标句柄
+     * @return 元素可变引用
+     */
+    [[nodiscard]] ValueType& operator[](HandleType Handle) {
+        ValueType* Found = Find(Handle);
+        checkf(Found != nullptr, TEXT("TSlotMap::operator[] Attempted to access with invalid or expired handle"));
+        return *Found;
+    }
+
+    /**
+     * @brief 下标访问运算符（只读版本，若句柄无效或过期则触发断言）
+     * @param Handle 目标句柄
+     * @return 元素常量引用
+     */
+    [[nodiscard]] const ValueType& operator[](HandleType Handle) const {
+        const ValueType* Found = Find(Handle);
+        checkf(Found != nullptr, TEXT("TSlotMap::operator[] const Attempted to access with invalid or expired handle"));
+        return *Found;
+    }
+
+    /**
+     * @brief 密集元素底层数组起始迭代器（支持 C++ 范围 for 循环）
+     * @return 连续可变迭代器
+     */
+    [[nodiscard]] auto begin() noexcept { return DenseValues.begin(); }
+
+    /**
+     * @brief 密集元素底层数组结束迭代器
+     * @return 连续可变结束迭代器
+     */
+    [[nodiscard]] auto end() noexcept { return DenseValues.end(); }
+
+    /**
+     * @brief 密集元素底层数组起始只读迭代器（支持常量 C++ 范围 for 循环）
+     * @return 连续常量迭代器
+     */
+    [[nodiscard]] auto begin() const noexcept { return DenseValues.begin(); }
+
+    /**
+     * @brief 密集元素底层数组结束只读迭代器
+     * @return 连续常量结束迭代器
+     */
+    [[nodiscard]] auto end() const noexcept { return DenseValues.end(); }
+
+    /**
+     * @brief 密集元素底层数组常量起始迭代器
+     * @return 连续常量迭代器
+     */
+    [[nodiscard]] auto cbegin() const noexcept { return DenseValues.cbegin(); }
+
+    /**
+     * @brief 密集元素底层数组常量结束迭代器
+     * @return 连续常量结束迭代器
+     */
+    [[nodiscard]] auto cend() const noexcept { return DenseValues.cend(); }
+
+    /**
      * @brief 清空全部活跃元素并使此前签发的所有句柄全部代际失效
      */
     void Reset();

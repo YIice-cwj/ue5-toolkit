@@ -43,11 +43,16 @@ bool FCachedConfigHandleBasicTest::RunTest([[maybe_unused]] const FString& Param
     const float ImplicitVal = SpeedHandle;
     TestEqual(TEXT("隐式类型转换必须返回当前有效值"), ImplicitVal, 750.0f);
     TestEqual(TEXT("解引用运算符必须返回当前有效值"), *SpeedHandle, 750.0f);
+    TestTrue(TEXT("相等运算符必须返回 true"), SpeedHandle == 750.0f);
+    TestFalse(TEXT("不等运算符必须返回 false"), SpeedHandle != 750.0f);
 
     TCachedConfigHandle<FVector> VectorHandle(VecKey, FVector(10.0, 20.0, 30.0));
     TestEqual(TEXT("复合向量句柄初始应为 Fallback"), VectorHandle.Get(), FVector(10.0, 20.0, 30.0));
     Registry.RegisterConfig<FVector>(VecKey, FVector(100.0, 200.0, 300.0));
     TestEqual(TEXT("复合向量句柄注册后应更新"), VectorHandle.Get(), FVector(100.0, 200.0, 300.0));
+    TestEqual(TEXT("箭头运算符直连访问成员 X"), VectorHandle->X, 100.0);
+    TestEqual(TEXT("箭头运算符直连访问成员 Y"), VectorHandle->Y, 200.0);
+    TestEqual(TEXT("箭头运算符直连访问成员 Z"), VectorHandle->Z, 300.0);
 
     return true;
 }
@@ -95,6 +100,16 @@ bool FCachedConfigHandleObserverAndCopyTest::RunTest([[maybe_unused]] const FStr
     LevelHandle.Reset();
     TestFalse(TEXT("Reset 后句柄必须变为无效"), LevelHandle.IsValid());
     TestEqual(TEXT("Reset 后 Get 必须返回默认构造值"), LevelHandle.Get(), 0);
+
+    static const FName ResetKey(TEXT("UnitTest.CachedHandle.ResetKey"));
+    Registry.RegisterConfig<int32>(ResetKey, 88);
+    LevelHandle.Reset(ResetKey, 0);
+    TestTrue(TEXT("Reset 全参重置后句柄有效且绑定到新键"), LevelHandle.IsValid() && LevelHandle.IsBound());
+    TestEqual(TEXT("Reset 全参重置后取新键值"), LevelHandle.Get(), 88);
+
+    LevelHandle.Rebind(nullptr);
+    TestTrue(TEXT("Rebind 重新绑定后依然有效"), LevelHandle.IsValid() && LevelHandle.IsBound());
+    TestEqual(TEXT("Rebind 后取值正确"), LevelHandle.Get(), 88);
 
     return true;
 }

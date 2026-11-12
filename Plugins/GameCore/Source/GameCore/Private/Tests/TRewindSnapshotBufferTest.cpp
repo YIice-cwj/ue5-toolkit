@@ -47,8 +47,11 @@ bool TRewindSnapshotBufferBasicAndInterpolationTest::RunTest([[maybe_unused]] co
 
     FSimpleMotionState Dummy;
     TestFalse(TEXT("空缓冲区查询最新失败"), Buffer.GetLatestSnapshot(Dummy));
+    TestNull(TEXT("空缓冲区 PeekLatestSnapshot 返回 nullptr"), Buffer.PeekLatestSnapshot());
     TestFalse(TEXT("空缓冲区查询最早失败"), Buffer.GetOldestSnapshot(Dummy));
+    TestNull(TEXT("空缓冲区 PeekOldestSnapshot 返回 nullptr"), Buffer.PeekOldestSnapshot());
     TestFalse(TEXT("空缓冲区精确帧查询失败"), Buffer.GetSnapshotAtFrame(1ULL, Dummy));
+    TestNull(TEXT("空缓冲区 PeekSnapshotAtFrame 返回 nullptr"), Buffer.PeekSnapshotAtFrame(1ULL));
     TestFalse(TEXT("空缓冲区插值查询失败"), Buffer.GetInterpolatedSnapshot(1.0, Dummy, &FSimpleMotionState::Lerp));
 
     FSimpleMotionState S1;
@@ -83,15 +86,22 @@ bool TRewindSnapshotBufferBasicAndInterpolationTest::RunTest([[maybe_unused]] co
     FSimpleMotionState Latest;
     TestTrue(TEXT("成功获取最新快照"), Buffer.GetLatestSnapshot(Latest));
     TestEqual(TEXT("最新快照血量正确"), Latest.Health, 70.0f);
+    TestNotNull(TEXT("PeekLatestSnapshot 返回有效指针"), Buffer.PeekLatestSnapshot());
+    TestEqual(TEXT("PeekLatestSnapshot 字段正确"), Buffer.PeekLatestSnapshot()->Health, 70.0f);
 
     FSimpleMotionState Oldest;
     TestTrue(TEXT("成功获取最早快照"), Buffer.GetOldestSnapshot(Oldest));
     TestEqual(TEXT("最早快照血量正确"), Oldest.Health, 100.0f);
+    TestNotNull(TEXT("PeekOldestSnapshot 返回有效指针"), Buffer.PeekOldestSnapshot());
+    TestEqual(TEXT("PeekOldestSnapshot 字段正确"), Buffer.PeekOldestSnapshot()->Health, 100.0f);
 
     FSimpleMotionState FoundFrame;
     TestTrue(TEXT("找到帧 11"), Buffer.GetSnapshotAtFrame(11ULL, FoundFrame));
     TestEqual(TEXT("帧 11 数据匹配"), FoundFrame.Position.X, 100.0);
+    TestNotNull(TEXT("PeekSnapshotAtFrame 找到帧 11"), Buffer.PeekSnapshotAtFrame(11ULL));
+    TestEqual(TEXT("PeekSnapshotAtFrame 帧 11 数据匹配"), Buffer.PeekSnapshotAtFrame(11ULL)->Position.X, 100.0);
     TestFalse(TEXT("未找到不存在的帧 99"), Buffer.GetSnapshotAtFrame(99ULL, FoundFrame));
+    TestNull(TEXT("PeekSnapshotAtFrame 未找到帧 99 返回 nullptr"), Buffer.PeekSnapshotAtFrame(99ULL));
 
     FSimpleMotionState S5;
     S5.Position = FVector(400.0f, 0.0f, 0.0f);
@@ -137,6 +147,78 @@ bool TRewindSnapshotBufferBasicAndInterpolationTest::RunTest([[maybe_unused]] co
         TEXT("传入非有限时间戳 (NaN) 无匹配区间时 GetInterpolatedSnapshot 安全返回 false"),
         Buffer.GetInterpolatedSnapshot(NanTimestamp, InvalidNanInterp, &FSimpleMotionState::Lerp)
     );
+
+    Buffer.Clear();
+    FSimpleMotionState MoveTarget;
+    MoveTarget.Position = FVector(777.0f, 888.0f, 999.0f);
+    MoveTarget.Health = 55.0f;
+    Buffer.RecordSnapshot(1.0, 10ULL, MoveTemp(MoveTarget));
+    TestEqual(TEXT("移动写入快照成功"), Buffer.PeekLatestSnapshot()->Health, 55.0f);
+
+    Buffer.Clear();
+    FSimpleMotionState Jump1;
+    Jump1.Position = FVector(10.0f, 0.0f, 0.0f);
+    Buffer.RecordSnapshot(1.0, 10ULL, Jump1);
+
+    FSimpleMotionState Jump2;
+    Jump2.Position = FVector(50.0f, 0.0f, 0.0f);
+    Buffer.RecordSnapshot(2.0, 50ULL, Jump2);
+
+    FSimpleMotionState Jump3;
+    Jump3.Position = FVector(90.0f, 0.0f, 0.0f);
+    Buffer.RecordSnapshot(3.0, 90ULL, Jump3);
+
+    FSimpleMotionState NonSequentialFound;
+    TestTrue(TEXT("非连续跳跃帧回退环形扫描命中帧 50"), Buffer.GetSnapshotAtFrame(50ULL, NonSequentialFound));
+    TestEqual(TEXT("非连续帧数据精确匹配"), NonSequentialFound.Position.X, 50.0);
+    TestNotNull(TEXT("非连续跳跃帧 PeekSnapshotAtFrame 命中"), Buffer.PeekSnapshotAtFrame(50ULL));
+    TestEqual(TEXT("非连续跳跃帧 Peek 数据精确匹配"), Buffer.PeekSnapshotAtFrame(50ULL)->Position.X, 50.0);
+    TestFalse(TEXT("非连续跳跃帧未记录帧查询返回 false"), Buffer.GetSnapshotAtFrame(30ULL, NonSequentialFound));
+    TestNull(TEXT("非连续跳跃帧未记录帧 Peek 返回 nullptr"), Buffer.PeekSnapshotAtFrame(30ULL));
+
+    Buffer.Clear();
+    FSimpleMotionState SameTime1;
+    SameTime1.Health = 10.0f;
+    Buffer.RecordSnapshot(5.0, 1ULL, SameTime1);
+
+    FSimpleMotionState SameTime2;
+    SameTime2.Health = 20.0f;
+    Buffer.RecordSnapshot(5.0, 2ULL, SameTime2);
+
+    FSimpleMotionState ZeroDeltaInterp;
+    TestTrue(TEXT("零时差多帧插值安全命中"), Buffer.GetInterpolatedSnapshot(5.0, ZeroDeltaInterp, &FSimpleMotionState::Lerp));
+    TestEqual(TEXT("零时差插值安全返回最新帧"), ZeroDeltaInterp.Health, 20.0f);
+
+    Buffer.Clear();
+    Buffer.EmplaceSnapshot(10.0, 100ULL, FVector(11.0f, 22.0f, 33.0f), 88.0f);
+    TestEqual(TEXT("EmplaceSnapshot 原位构造成功"), Buffer.Num(), 1);
+
+    TOptional<FSimpleMotionState> OptLatest = Buffer.GetLatestSnapshot();
+    TestTrue(TEXT("GetLatestSnapshot Optional 有效"), OptLatest.IsSet());
+    if (OptLatest.IsSet()) {
+        TestEqual(TEXT("Optional 最新状态字段正确"), OptLatest->Health, 88.0f);
+        TestEqual(TEXT("Optional 最新坐标 X 正确"), OptLatest->Position.X, 11.0);
+    }
+
+    TOptional<FSimpleMotionState> OptOldest = Buffer.GetOldestSnapshot();
+    TestTrue(TEXT("GetOldestSnapshot Optional 有效"), OptOldest.IsSet());
+    if (OptOldest.IsSet()) {
+        TestEqual(TEXT("Optional 最早状态字段正确"), OptOldest->Health, 88.0f);
+    }
+
+    TOptional<FSimpleMotionState> OptFrame = Buffer.GetSnapshotAtFrame(100ULL);
+    TestTrue(TEXT("GetSnapshotAtFrame Optional 命中"), OptFrame.IsSet());
+    if (OptFrame.IsSet()) {
+        TestEqual(TEXT("Optional 帧状态匹配"), OptFrame->Health, 88.0f);
+    }
+    TestFalse(TEXT("GetSnapshotAtFrame Optional 未命中返回空"), Buffer.GetSnapshotAtFrame(999ULL).IsSet());
+
+    Buffer.EmplaceSnapshot(20.0, 101ULL, FVector(111.0f, 222.0f, 333.0f), 10.0f);
+    TOptional<FSimpleMotionState> OptInterp = Buffer.GetInterpolatedSnapshot(15.0, &FSimpleMotionState::Lerp);
+    TestTrue(TEXT("GetInterpolatedSnapshot Optional 成功计算"), OptInterp.IsSet());
+    if (OptInterp.IsSet()) {
+        TestEqual(TEXT("Optional 插值血量正确"), OptInterp->Health, 49.0f);
+    }
 
     return true;
 }

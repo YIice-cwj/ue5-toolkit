@@ -23,12 +23,19 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
  */
 bool FGameErrorContractAndSeverityTest::RunTest([[maybe_unused]] const FString& Parameters) {
     const FGameError SuccessErr = FGameError::Ok();
+    const FGameError DefaultErr;
+    TestEqual(TEXT("默认构造与 Ok() 等价"), DefaultErr, SuccessErr);
+    TestEqual(TEXT("默认构造 ModuleId 为 Core"), DefaultErr.ModuleId, Game::ModuleId::Core);
     TestTrue(TEXT("Ok() 属于成功态"), SuccessErr.IsOk());
     TestFalse(TEXT("Ok() 不属于错误态"), SuccessErr.IsError());
     TestFalse(TEXT("Ok() 不属于致命态"), SuccessErr.IsCritical());
     TestEqual(TEXT("Ok() 错误码为 0"), SuccessErr.ErrorCode, 0);
     TestEqual(TEXT("Ok() 严重级别为 Success"), SuccessErr.Severity, EGameErrorSeverity::Success);
     TestEqual(TEXT("Debug 模块 ID 正确"), Game::ModuleId::Debug, 12);
+
+    const FGameError StringCtorErr(TEXT("LiteralMsg"));
+    TestEqual(TEXT("字符串构造消息一致"), StringCtorErr.Message, FString(TEXT("LiteralMsg")));
+    TestEqual(TEXT("字符串构造默认码为 OperationFailed"), StringCtorErr.ErrorCode, Game::CommonErrorCodes::OperationFailed);
 
     const FGameError WarningErr = FGameError::Make(
         Game::ModuleId::Core,
@@ -42,6 +49,27 @@ bool FGameErrorContractAndSeverityTest::RunTest([[maybe_unused]] const FString& 
     TestEqual(TEXT("模块 ID 正确"), WarningErr.ModuleId, Game::ModuleId::Core);
     TestEqual(TEXT("错误码正确"), WarningErr.ErrorCode, 1001);
     TestEqual(TEXT("错误消息一致"), WarningErr.Message, TEXT("MemoryThresholdExceeded"));
+
+    const FGameError SeverityFirstErr = FGameError::Make(
+        Game::ModuleId::Core,
+        1002,
+        EGameErrorSeverity::Warning,
+        TEXT("SeverityFirst")
+    );
+    TestEqual(TEXT("参数排布对齐 Make 严重级别正确"), SeverityFirstErr.Severity, EGameErrorSeverity::Warning);
+    TestEqual(TEXT("参数排布对齐 Make 消息一致"), SeverityFirstErr.Message, FString(TEXT("SeverityFirst")));
+
+    const FGameError EnrichedLValue = WarningErr.WithContext(TEXT("InnerStage"));
+    TestEqual(TEXT("左值 WithContext 正确追加上下文"), EnrichedLValue.Message, FString(TEXT("MemoryThresholdExceeded [InnerStage]")));
+
+    const FGameError EnrichedRValue = FGameError(TEXT("Initial")).WithContext(TEXT("OuterStage"));
+    TestEqual(TEXT("右值 WithContext 正确追加上下文"), EnrichedRValue.Message, FString(TEXT("Initial [OuterStage]")));
+
+    const FGameError EmptyCtxErr = WarningErr.WithContext(TEXT(""));
+    TestEqual(TEXT("空上下文不修改消息"), EmptyCtxErr.Message, WarningErr.Message);
+
+    const FGameError EmptyInitWithCtx = FGameError().WithContext(TEXT("StandaloneCtx"));
+    TestEqual(TEXT("初始空消息追加上下文直接使用上下文文本"), EmptyInitWithCtx.Message, FString(TEXT("StandaloneCtx")));
 
     const FGameError CriticalErr = FGameError::Make(
         Game::ModuleId::Net,

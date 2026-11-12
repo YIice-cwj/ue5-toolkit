@@ -157,6 +157,47 @@ public:
     }
 
     /**
+     * @brief 局部值代理对象（支持 -> 成员直连访问，完全杜绝多线程锁逃逸与悬垂指针）
+     */
+    struct FArrowProxy {
+        T Value;
+
+        /**
+         * @brief 代理内部值指针获取
+         * @return 常量指针
+         */
+        const T* operator->() const noexcept {
+            return &Value;
+        }
+    };
+
+    /**
+     * @brief 箭头运算符（支持对结构体配置成员的安全直连访问）
+     * @return 局部只读代理对象
+     */
+    FArrowProxy operator->() const {
+        return FArrowProxy{Get()};
+    }
+
+    /**
+     * @brief 与同类型配置值的值相等性比较
+     * @param Other 比较目标值
+     * @return 值相等返回 true
+     */
+    bool operator==(const T& Other) const {
+        return Get() == Other;
+    }
+
+    /**
+     * @brief 与同类型配置值的值不等性比较
+     * @param Other 比较目标值
+     * @return 值不等返回 true
+     */
+    bool operator!=(const T& Other) const {
+        return !(*this == Other);
+    }
+
+    /**
      * @brief 获取配置键名
      * @return 配置键名
      */
@@ -235,6 +276,10 @@ private:
         FConfigRegistry& Registry = FConfigRegistry::Get(WorldContextObject);
 
         TWeakPtr<FState> WeakState = State;
+        {
+            FWriteScopeLock WriteLock(State->DataLock);
+            State->bIsBound = false;
+        }
         State->Subscription = Registry.WatchConfig<T>(State->KeyName, [WeakState](const T& NewValue) {
             if (TSharedPtr<FState> Pinned = WeakState.Pin()) {
                 TFunction<void(const T&)> UserCallbackToInvoke;
@@ -253,12 +298,14 @@ private:
         const TOptional<T> InitialValue = Registry.GetConfigOptional<T>(State->KeyName);
         {
             FWriteScopeLock WriteLock(State->DataLock);
-            if (InitialValue.IsSet()) {
-                State->CachedValue = *InitialValue;
-                State->bIsBound = true;
-            } else {
-                State->CachedValue = State->FallbackValue;
-                State->bIsBound = false;
+            if (!State->bIsBound) {
+                if (InitialValue.IsSet()) {
+                    State->CachedValue = *InitialValue;
+                    State->bIsBound = true;
+                } else {
+                    State->CachedValue = State->FallbackValue;
+                    State->bIsBound = false;
+                }
             }
         }
     }

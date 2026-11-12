@@ -142,6 +142,14 @@ public:
     [[nodiscard]] int32 GetPendingTaskCount() const noexcept;
 
     /**
+     * @brief 获取待处理及执行中的任务总数（标准命名别名）
+     * @return 任务数
+     */
+    [[nodiscard]] int32 Num() const noexcept {
+        return GetPendingTaskCount();
+    }
+
+    /**
      * @brief 队列是否为空
      * @return 为空返回 true
      */

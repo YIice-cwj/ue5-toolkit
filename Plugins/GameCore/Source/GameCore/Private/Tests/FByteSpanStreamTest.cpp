@@ -26,6 +26,7 @@ bool FByteSpanStreamScalarAndBytesTest::RunTest([[maybe_unused]] const FString& 
 
     TestEqual(TEXT("初始已写字节为 0"), Writer.GetBytesWritten(), 0);
     TestEqual(TEXT("初始剩余容量为 128"), Writer.GetRemainingCapacity(), 128);
+    TestEqual(TEXT("初始 GetRemainingBytes 匹配剩余容量"), Writer.GetRemainingBytes(), 128);
 
     const uint32 ValU32 = 0xDEADBEEF;
     const float ValFloat = 3.14159f;
@@ -135,6 +136,12 @@ bool FByteSpanStreamVarIntAndStringTest::RunTest([[maybe_unused]] const FString&
 
     TestTrue(TEXT("读取中文字符串成功"), Reader.ReadString(ReadStrC));
     TestEqual(TEXT("中文字符串内容匹配"), ReadStrC, TestStrC);
+
+    const uint8 MalformedVarU64[10] = { 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02 };
+    FByteSpanReader CorruptReader(MakeArrayView(MalformedVarU64, 10));
+    uint64 DummyVal = 0;
+    TestFalse(TEXT("畸形 VarUInt64 第 10 字节溢出位被安全拦截"), CorruptReader.ReadVarUInt64(DummyVal));
+    TestTrue(TEXT("读取失败设置错误标志"), CorruptReader.HasError());
 
     return true;
 }
@@ -302,6 +309,15 @@ bool FByteSpanStreamBoundsSafetyTest::RunTest([[maybe_unused]] const FString& Pa
 
     TArrayView<const uint8> OverflowView;
     TestFalse(TEXT("越界视图读取失败"), Reader.ReadBytesView(1, OverflowView));
+
+    TestFalse(TEXT("巨大 ByteCount 越界写入被安全拦截"), Writer.WriteBytes(TinyBuffer, MAX_int32));
+    TestFalse(TEXT("巨大 ByteCount 越界读取被安全拦截"), Reader.ReadBytes(TinyBuffer, MAX_int32));
+
+    const uint8 MaliciousData[8] = { 0xFF, 0xFF, 0xFF, 0xFF, 0x0F, 0x00, 0x00, 0x00 };
+    FByteSpanReader MaliciousReader(MakeArrayView(MaliciousData, 8));
+    TArrayView<const UTF8CHAR> MaliciousSpan;
+    TestFalse(TEXT("巨额 VarInt 长度前缀越界读取被安全拦截"), MaliciousReader.ReadUtf8Span(MaliciousSpan));
+    TestTrue(TEXT("拦截后触发黏性错误"), MaliciousReader.HasError());
 
     return true;
 }

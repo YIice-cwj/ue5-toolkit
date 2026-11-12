@@ -6,6 +6,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Misc/Optional.h"
 
 #include <atomic>
 #include <new>
@@ -147,6 +148,37 @@ public:
     }
 
     /**
+     * @brief 尝试从队头弹出一个元素并返回可选值包装（若队列为空则非阻塞返回未设置的 Optional）
+     * @return 成功出队返回包含元素的 Optional，队列为空返回空 Optional
+     */
+    [[nodiscard]] TOptional<T> Dequeue() {
+        FSlot* TargetSlot = nullptr;
+        uint32 Pos = Head.load(std::memory_order_relaxed);
+
+        for (;;) {
+            TargetSlot = &Slots[Pos & INDEX_MASK];
+            const uint32 Seq = TargetSlot->Sequence.load(std::memory_order_acquire);
+            const int32 Diff = static_cast<int32>(Seq - (Pos + 1));
+
+            if (Diff < 0) {
+                return TOptional<T>();
+            }
+            if (Diff == 0 && Head.compare_exchange_weak(Pos, Pos + 1, std::memory_order_relaxed)) {
+                break;
+            }
+            if (Diff > 0) {
+                Pos = Head.load(std::memory_order_relaxed);
+            }
+        }
+
+        T* TypedPtr = TargetSlot->Storage.GetTypedPtr();
+        TOptional<T> Result(MoveTemp(*TypedPtr));
+        TypedPtr->~T();
+        TargetSlot->Sequence.store(Pos + INDEX_MASK + 1, std::memory_order_release);
+        return Result;
+    }
+
+    /**
      * @brief 尝试弹出并就地析构队头的一个元素（不进行拷贝与移动赋值）
      * @return 成功弹出并析构元素返回 true，队列为空返回 false
      */
@@ -196,7 +228,7 @@ public:
      * @brief 查询队列当前近似容纳的元素数量（弱一致性读，带并发反转下界钳制保护）
      * @return [0, Capacity] 范围内的近似元素计数
      */
-    [[nodiscard]] uint32 Count() const noexcept {
+    [[nodiscard]] uint32 Num() const noexcept {
         const uint32 CurrentHead = Head.load(std::memory_order_relaxed);
         const uint32 CurrentTail = Tail.load(std::memory_order_relaxed);
         const int32 Delta = static_cast<int32>(CurrentTail - CurrentHead);

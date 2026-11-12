@@ -7,6 +7,8 @@
 
 #if WITH_AUTOMATION_TESTS
 
+#include <limits>
+
 #include "Misc/AutomationTest.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -27,9 +29,17 @@ bool FFixedTimestepAccumulatorStepAndAlphaTest::RunTest([[maybe_unused]] const F
     TestEqual(TEXT("初始固定步长正确"), Accumulator.GetFixedDeltaTime(), FixedDt);
     TestEqual(TEXT("初始累计时间为 0"), Accumulator.GetAccumulatedTime(), 0.0);
     TestEqual(TEXT("初始插值 Alpha 为 0"), Accumulator.GetInterpolationAlpha(), 0.0);
+    TestFalse(TEXT("初始无待处理子步"), Accumulator.HasPendingSubstep());
 
     TestEqual(TEXT("输入 0 秒流逝执行 0 次子步"), Accumulator.Advance(0.0, [](double) {}), 0);
     TestEqual(TEXT("输入负流逝时间安全返回 0"), Accumulator.Advance(-0.01, [](double) {}), 0);
+
+    const double NanDelta = std::numeric_limits<double>::quiet_NaN();
+    const double InfDelta = std::numeric_limits<double>::infinity();
+    TestEqual(TEXT("输入 NaN 流逝时间安全返回 0 且不污染余量"), Accumulator.Advance(NanDelta, [](double) {}), 0);
+    TestEqual(TEXT("输入 Inf 流逝时间安全返回 0 且不污染余量"), Accumulator.Advance(InfDelta, [](double) {}), 0);
+    TestEqual(TEXT("异常流逝后累计时间仍为 0"), Accumulator.GetAccumulatedTime(), 0.0);
+    TestFalse(TEXT("异常流逝后无待处理子步"), Accumulator.HasPendingSubstep());
 
     int32 ExecutedSteps = 0;
     double ReceivedDt = 0.0;
@@ -41,6 +51,7 @@ bool FFixedTimestepAccumulatorStepAndAlphaTest::RunTest([[maybe_unused]] const F
     TestEqual(TEXT("未触发回调"), ExecutedSteps, 0);
     TestNearlyEqual(TEXT("已累计 0.01 秒"), Accumulator.GetAccumulatedTime(), 0.01, 0.0001);
     TestNearlyEqual(TEXT("插值 Alpha 为 0.5"), Accumulator.GetInterpolationAlpha(), 0.5, 0.0001);
+    TestFalse(TEXT("0.01s 未达 0.02s 步长无待处理子步"), Accumulator.HasPendingSubstep());
 
     const int32 Steps2 = Accumulator.Advance(0.015, [&ExecutedSteps, &ReceivedDt](double Dt) {
         ++ExecutedSteps;
@@ -51,6 +62,7 @@ bool FFixedTimestepAccumulatorStepAndAlphaTest::RunTest([[maybe_unused]] const F
     TestEqual(TEXT("子步回调接收固定步长"), ReceivedDt, FixedDt);
     TestNearlyEqual(TEXT("消费后余量为 0.005 秒"), Accumulator.GetAccumulatedTime(), 0.005, 0.0001);
     TestNearlyEqual(TEXT("插值 Alpha 为 0.25"), Accumulator.GetInterpolationAlpha(), 0.25, 0.0001);
+    TestFalse(TEXT("消费后余量 0.005s 无待处理子步"), Accumulator.HasPendingSubstep());
 
     Accumulator.Reset();
     TestEqual(TEXT("Reset 后累计时间归零"), Accumulator.GetAccumulatedTime(), 0.0);

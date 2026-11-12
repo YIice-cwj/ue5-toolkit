@@ -18,6 +18,8 @@ public:
     struct FSpringFloatState {
         float Value = 0.0f;
         float Velocity = 0.0f;
+
+        bool operator==(const FSpringFloatState&) const = default;
     };
 
     /**
@@ -26,6 +28,8 @@ public:
     struct FSpringVectorState {
         FVector Value = FVector::ZeroVector;
         FVector Velocity = FVector::ZeroVector;
+
+        bool operator==(const FSpringVectorState&) const = default;
     };
 
 public:
@@ -66,6 +70,21 @@ public:
     ) noexcept;
 
     /**
+     * @brief 计算角度标量（度）无超调临界阻尼弹簧下一帧状态（自动沿 [-180, 180] 最短圆弧路径收敛）
+     * @param CurrentState 当前角度（度）与角速度（度/秒）
+     * @param TargetAngleDegrees 目标角度（度）
+     * @param SmoothTime 近似收敛平滑时长（秒）
+     * @param DeltaSeconds 帧流逝时间（秒，<=0 时原样返回当前状态）
+     * @return 更新后的角度与角速度状态（角度标准化至 [-180, 180]）
+     */
+    [[nodiscard]] static FSpringFloatState CriticalSpringDampAngleDegrees(
+        FSpringFloatState CurrentState,
+        float TargetAngleDegrees,
+        float SmoothTime,
+        float DeltaSeconds
+    ) noexcept;
+
+    /**
      * @brief 计算水平面（XY）上从基准朝向旋转至目标方向的有符号偏航夹角（度，范围 [-180, 180]）
      * @param ForwardDir 自身前向向量
      * @param ToTargetDir 指向目标的方向或位移向量
@@ -99,6 +118,21 @@ public:
     [[nodiscard]] static float ExpDecayFloat(
         float CurrentValue,
         float TargetValue,
+        float HalfLifeSeconds,
+        float DeltaSeconds
+    ) noexcept;
+
+    /**
+     * @brief 基于半衰期参数化的角度标量（度）精确帧率无关指数衰减平滑（最短圆弧路径）
+     * @param CurrentDegrees 当前角度（度）
+     * @param TargetDegrees 目标角度（度）
+     * @param HalfLifeSeconds 误差衰减至一半所需的半衰期时长（秒，<=0 时瞬时收敛）
+     * @param DeltaSeconds 帧流逝时间（秒，<=0 时原样返回当前值）
+     * @return 平滑后的角度（度，标准化至 [-180, 180]）
+     */
+    [[nodiscard]] static float ExpDecayAngleDegrees(
+        float CurrentDegrees,
+        float TargetDegrees,
         float HalfLifeSeconds,
         float DeltaSeconds
     ) noexcept;

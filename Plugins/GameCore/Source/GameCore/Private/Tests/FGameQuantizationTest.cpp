@@ -51,6 +51,11 @@ bool FGameQuantizationFloatAndRotatorTest::RunTest([[maybe_unused]] const FStrin
     TestNearlyEqual(TEXT("8位还原浮点准确"), FGameQuantization::DequantizeUint8ToFloat(Q8Half, 0.0f, 100.0f), 50.0f, 0.5f);
     TestEqual(TEXT("非法范围直接安全返回 0"), FGameQuantization::QuantizeFloatToUint8(10.0f, 100.0f, 50.0f), static_cast<uint8>(0));
 
+    const float NanVal = FMath::DegreesToRadians(NAN);
+    TestEqual(TEXT("NaN 浮点量化直接安全返回 0"), FGameQuantization::QuantizeFloatToUint8(NanVal, 0.0f, 100.0f), static_cast<uint8>(0));
+    TestEqual(TEXT("NaN 范围量化直接安全返回 0"), FGameQuantization::QuantizeFloatToUint8(10.0f, NanVal, 100.0f), static_cast<uint8>(0));
+    TestNearlyEqual(TEXT("NaN 范围反量化直接安全返回默认下限"), FGameQuantization::DequantizeUint8ToFloat(128, NanVal, 100.0f), 0.0f, 0.001f);
+
     const uint16 Q16 = FGameQuantization::QuantizeFloatToUint16(250.0f, 0.0f, 1000.0f);
     TestNearlyEqual(TEXT("16位还原浮点误差小于 0.05"), FGameQuantization::DequantizeUint16ToFloat(Q16, 0.0f, 1000.0f), 250.0f, 0.05f);
 
@@ -144,6 +149,15 @@ bool FGameQuantizationVectorAndBitMaskTest::RunTest([[maybe_unused]] const FStri
     TestTrue(TEXT("越界枚举位构造的位掩码安全忽略为空"), SafeBoundsMask.IsEmpty());
     SafeBoundsMask.Set(OutOfBoundsBit);
     TestFalse(TEXT("越界枚举位 Has 查询安全返回 false"), SafeBoundsMask.Has(OutOfBoundsBit));
+
+    const auto MaskFromIndex = TBitMask<ETestChannelBits>::FromBitIndex(ETestChannelBits::Combat);
+    TestTrue(TEXT("FromBitIndex 包含对应位"), MaskFromIndex.Has(ETestChannelBits::Combat));
+    TestEqual(TEXT("FromBitIndex 底层掩码等于 1 << 4"), MaskFromIndex.GetRawMask(), static_cast<uint32>(1 << 4));
+
+    const auto MaskFromRaw = TBitMask<ETestChannelBits>::FromRawMask(static_cast<uint32>((1 << 1) | (1 << 3)));
+    TestTrue(TEXT("FromRawMask 包含 Collision"), MaskFromRaw.Has(ETestChannelBits::Collision));
+    TestTrue(TEXT("FromRawMask 包含 Effects"), MaskFromRaw.Has(ETestChannelBits::Effects));
+    TestFalse(TEXT("FromRawMask 不包含 Audio"), MaskFromRaw.Has(ETestChannelBits::Audio));
 
     TMap<TBitMask<ETestChannelBits>, FString> MaskMap;
     MaskMap.Add(MaskA, TEXT("CollisionAndAudio"));

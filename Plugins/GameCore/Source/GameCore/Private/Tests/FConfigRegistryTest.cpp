@@ -116,6 +116,13 @@ bool FGameConfigWatchTest::RunTest([[maybe_unused]] const FString& Parameters) {
 
     const TSharedRef<FObserverSubscription> NullSubscription = Registry.WatchConfig<int32>(WatchKey, nullptr);
     TestFalse(TEXT("空回调订阅返回未激活的守卫"), NullSubscription->IsActive());
+
+    FEnsureScope MismatchScope([](const FEnsureHandlerArgs& Args) {
+        return FString(Args.Message).Contains(TEXT("float"));
+    });
+    const TSharedRef<FObserverSubscription> MismatchSubscription = Registry.WatchConfig<float>(WatchKey, [](const float&) {});
+    TestFalse(TEXT("类型错配的订阅返回未激活的守卫"), MismatchSubscription->IsActive());
+    TestEqual(TEXT("类型错配触发 ensure 告警"), MismatchScope.GetCount(), 1);
     return true;
 }
 
@@ -332,6 +339,17 @@ bool FGameConfigIdempotencyAndVersionTest::RunTest([[maybe_unused]] const FStrin
     const FName DomainKey(TEXT("UnitTestRegDomain"));
     FGameCoreRegistration::RegisterCacheDomain(DomainKey);
     TestTrue(TEXT("注册域缓存策略默认键已生效"), Registry.IsRegistered(FName(TEXT("Cache.UnitTestRegDomain.Strategy"))));
+
+    TestTrue(TEXT("无有效世界的 UObject 获取共享注册表回退到全局单例"),
+        FConfigRegistry::GetShared(GetTransientPackage()) == FConfigRegistry::GetShared(nullptr));
+
+    TestTrue(TEXT("全局注册表非空"), !Registry.IsEmpty());
+    TestTrue(TEXT("已注册配置项总数大于 0"), Registry.Num() > 0);
+
+    TArray<FName> AllKeys;
+    const int32 KeyCount = Registry.GetRegisteredKeys(AllKeys);
+    TestEqual(TEXT("GetRegisteredKeys 返回数量与 Num() 一致"), KeyCount, Registry.Num());
+    TestTrue(TEXT("导出的键列表中包含指定测试键"), AllKeys.Contains(Key));
 
     return true;
 }

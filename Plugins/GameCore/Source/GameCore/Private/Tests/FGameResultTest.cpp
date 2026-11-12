@@ -30,6 +30,17 @@ bool FGameResultSuccessAndMoveTest::RunTest([[maybe_unused]] const FString& Para
 
     SuccessResult.GetMutableValue() = 108;
     TestEqual(TEXT("GetMutableValue 原地修改生效"), SuccessResult.GetValue(), 108);
+    TestEqual(TEXT("operator* 读取值精确匹配"), *SuccessResult, 108);
+    *SuccessResult = 200;
+    TestEqual(TEXT("operator* 可变解引用修改生效"), SuccessResult.GetValue(), 200);
+
+    struct FTestPayload {
+        int32 Code = 0;
+    };
+    TGameResult<FTestPayload, FString> PayloadResult = TGameResult<FTestPayload, FString>::Success(FTestPayload{333});
+    TestEqual(TEXT("operator-> 访问结构体成员有效"), PayloadResult->Code, 333);
+    PayloadResult->Code = 444;
+    TestEqual(TEXT("operator-> 修改结构体成员生效"), PayloadResult->Code, 444);
 
     TGameResult<TUniquePtr<int32>, FString> MoveOnlyResult =
         TGameResult<TUniquePtr<int32>, FString>::Success(MakeUnique<int32>(777));
@@ -38,6 +49,22 @@ bool FGameResultSuccessAndMoveTest::RunTest([[maybe_unused]] const FString& Para
     TestNotNull(TEXT("ExtractValue 移出独占指针非空"), ExtractedPtr.Get());
     if (ExtractedPtr.IsValid()) {
         TestEqual(TEXT("ExtractValue 移出数据精确一致"), *ExtractedPtr, 777);
+    }
+
+    TGameResult<TUniquePtr<int32>, FString> MoveOnlyOk =
+        TGameResult<TUniquePtr<int32>, FString>::Success(MakeUnique<int32>(555));
+    TUniquePtr<int32> UnwrappedOk = MoveTemp(MoveOnlyOk).GetValueOr(MakeUnique<int32>(0));
+    TestNotNull(TEXT("MoveTemp(Result).GetValueOr 成功解包"), UnwrappedOk.Get());
+    if (UnwrappedOk.IsValid()) {
+        TestEqual(TEXT("GetValueOr 移出数据正确"), *UnwrappedOk, 555);
+    }
+
+    TGameResult<TUniquePtr<int32>, FString> MoveOnlyFailed =
+        TGameResult<TUniquePtr<int32>, FString>::Failure(TEXT("Failed"));
+    TUniquePtr<int32> UnwrappedFallback = MoveTemp(MoveOnlyFailed).GetValueOr(MakeUnique<int32>(999));
+    TestNotNull(TEXT("MoveTemp(Result).GetValueOr 失败时解包回退值"), UnwrappedFallback.Get());
+    if (UnwrappedFallback.IsValid()) {
+        TestEqual(TEXT("GetValueOr 失败解包回退值正确"), *UnwrappedFallback, 999);
     }
 
     return true;
@@ -109,12 +136,31 @@ bool FGameResultFailureAndHomogeneousTest::RunTest([[maybe_unused]] const FStrin
             PropagatedVoid.GetError().Message.Contains(TEXT("TopVoidStage"))
     );
 
-    // 默认模板参数 TError = FGameError 契约验证
+    auto ConstRefPropagate = []() -> TGameStatusResult<int32> {
+        const TGameStatusResult<FString> ConstFailed = TGameStatusResult<FString>::Failure(502, TEXT("ConstFail"));
+        GAME_TRY(ConstFailed);
+        return TGameStatusResult<int32>::Success(1);
+    };
+    const TGameStatusResult<int32> ConstTryResult = ConstRefPropagate();
+    TestTrue(TEXT("GAME_TRY 支持常量左值引用向上传播"), ConstTryResult.IsFailure());
+    TestEqual(TEXT("常量引用传播错误码一致"), ConstTryResult.GetError().ErrorCode, 502);
+    TestEqual(TEXT("常量引用传播错误文案一致"), ConstTryResult.GetError().Message, FString(TEXT("ConstFail")));
+
     TGameResult<int32> DefaultErrorResult = TGameResult<int32>::Failure(FGameError(TEXT("DefaultErrorMsg")));
     static_assert(std::is_same_v<typename decltype(DefaultErrorResult)::ErrorType, FGameError>, "TGameResult 默认错误载荷必须为 FGameError");
     TestTrue(TEXT("单实参模板 TGameResult<int32> 默认采用 FGameError"), DefaultErrorResult.IsFailure());
     TestEqual(TEXT("FGameError 字符串构造器信息正确"), DefaultErrorResult.GetError().Message, FString(TEXT("DefaultErrorMsg")));
     TestEqual(TEXT("默认模块 ID 为 Core"), DefaultErrorResult.GetError().ModuleId, Game::ModuleId::Core);
+
+    const TGameResult<int32> ConvenienceErr2 = TGameResult<int32>::Failure(400, TEXT("BadParam"));
+    TestEqual(TEXT("两参数 Failure 错误码正确"), ConvenienceErr2.GetError().ErrorCode, 400);
+    TestEqual(TEXT("两参数 Failure 错误文案正确"), ConvenienceErr2.GetError().Message, FString(TEXT("BadParam")));
+
+    const TGameResult<int32> ConvenienceErr4 = TGameResult<int32>::Failure(
+        Game::ModuleId::Data, 401, EGameErrorSeverity::Critical, TEXT("CritData"));
+    TestEqual(TEXT("四参数 Failure 模块 ID 正确"), ConvenienceErr4.GetError().ModuleId, Game::ModuleId::Data);
+    TestEqual(TEXT("四参数 Failure 错误码正确"), ConvenienceErr4.GetError().ErrorCode, 401);
+    TestEqual(TEXT("四参数 Failure 级别正确"), ConvenienceErr4.GetError().Severity, EGameErrorSeverity::Critical);
 
     return true;
 }
@@ -131,7 +177,6 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
  * @return 全部断言通过返回 true
  */
 bool FGameResultMonadicOperatorsTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    // 1. Map 测试
     const TGameStatusResult<int32> InitialOk = TGameStatusResult<int32>::Success(21);
     const TGameStatusResult<int32> MappedOk = InitialOk.Map([](int32 V) { return V * 2; });
     TestTrue(TEXT("Map 变换后保持成功态"), MappedOk.IsSuccess());
@@ -150,7 +195,6 @@ bool FGameResultMonadicOperatorsTest::RunTest([[maybe_unused]] const FString& Pa
     TestTrue(TEXT("失败态 Map 保持失败"), MappedFail.IsFailure());
     TestEqual(TEXT("失败态 Map 错误码保持不变"), MappedFail.GetError().ErrorCode, 500);
 
-    // 2. AndThen 链式测试
     const TGameStatusResult<FString> ChainedOk = TGameStatusResult<int32>::Success(100)
         .AndThen([](int32 V) -> TGameStatusResult<float> {
             return TGameStatusResult<float>::Success(static_cast<float>(V) * 0.5f);
@@ -172,14 +216,12 @@ bool FGameResultMonadicOperatorsTest::RunTest([[maybe_unused]] const FString& Pa
     TestEqual(TEXT("短路后错误码来自中间失败步骤"), ShortCircuited.GetError().ErrorCode, 403);
     TestEqual(TEXT("短路后错误消息来自中间步骤"), ShortCircuited.GetError().Message, FString(TEXT("ForbiddenMiddle")));
 
-    // 3. MapError 错误转换测试
     const TGameResult<int32, FString> CustomErrResult = InitialFail.MapError([](const FGameError& Err) {
         return FString::Printf(TEXT("Mapped[%d]:%s"), Err.ErrorCode, *Err.Message);
     });
     TestTrue(TEXT("MapError 转换后为失败态"), CustomErrResult.IsFailure());
     TestEqual(TEXT("MapError 生成新错误格式"), CustomErrResult.GetError(), FString(TEXT("Mapped[500]:InternalErr")));
 
-    // 4. OrElse 兜底恢复测试
     const TGameStatusResult<int32> Recovered = InitialFail.OrElse([](const FGameError& Err) {
         if (Err.ErrorCode == 500) {
             return TGameStatusResult<int32>::Success(999);
@@ -194,7 +236,6 @@ bool FGameResultMonadicOperatorsTest::RunTest([[maybe_unused]] const FString& Pa
     });
     TestEqual(TEXT("成功态调用 OrElse 原样保留"), UnneededRecovery.GetValue(), 21);
 
-    // 5. TGameResult<void> 的 Monadic 算子测试
     const TGameStatusResult<void> VoidStart = TGameStatusResult<void>::Success();
     const TGameStatusResult<int32> VoidToVal = VoidStart.Map([]() { return 123; });
     TestTrue(TEXT("void.Map 返回成功态"), VoidToVal.IsSuccess());
@@ -212,7 +253,6 @@ bool FGameResultMonadicOperatorsTest::RunTest([[maybe_unused]] const FString& Pa
     });
     TestTrue(TEXT("void.OrElse 成功恢复"), VoidRecovered.IsSuccess());
 
-    // 6. 仅移动类型（Move-Only）右值链路零拷贝验证
     TGameResult<TUniquePtr<int32>, FString> MoveOnlyStart =
         TGameResult<TUniquePtr<int32>, FString>::Success(MakeUnique<int32>(888));
     TGameResult<int32, FString> MoveOnlyFinal = MoveTemp(MoveOnlyStart)

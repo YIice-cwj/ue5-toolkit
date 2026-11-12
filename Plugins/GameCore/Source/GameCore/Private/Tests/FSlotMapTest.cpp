@@ -56,6 +56,10 @@ bool FGameHandlePackingAndHashTest::RunTest([[maybe_unused]] const FString& Para
         TestEqual(TEXT("TMap 映射值一致"), *FoundName, FString(TEXT("HeroUnit")));
     }
 
+    const FEntityHandle HandleA(1u, 1u);
+    const FEntityHandle HandleB(2u, 1u);
+    TestNotEqual(TEXT("连续自增槽位句柄雪崩哈希绝不相同"), GetTypeHash(HandleA), GetTypeHash(HandleB));
+
     ValidHandle.Reset();
     TestFalse(TEXT("Reset 后句柄恢复无效态"), ValidHandle.IsValid());
 
@@ -71,6 +75,19 @@ bool FGameHandlePackingAndHashTest::RunTest([[maybe_unused]] const FString& Para
     TestTrue(TEXT("归档读取还原句柄与原始句柄相等"), LoadedHandle == SaveHandle);
     TestEqual(TEXT("还原句柄索引一致"), LoadedHandle.GetIndex(), 42u);
     TestEqual(TEXT("还原句柄代际一致"), LoadedHandle.GetGeneration(), 7u);
+
+    const FEntityHandle SmallHandle(10u, 2u);
+    const FEntityHandle LargeIndexHandle(11u, 2u);
+    const FEntityHandle LargeGenHandle(10u, 3u);
+    TestTrue(TEXT("句柄 operator< 索引递增比较正确"), SmallHandle < LargeIndexHandle);
+    TestTrue(TEXT("句柄 operator< 索引相同时代际递增比较正确"), SmallHandle < LargeGenHandle);
+    TestFalse(TEXT("句柄自身不小于自身"), SmallHandle < SmallHandle);
+
+    TArray<FEntityHandle> SortList = { LargeGenHandle, SmallHandle, LargeIndexHandle };
+    SortList.Sort();
+    TestEqual(TEXT("Sort 排序后首元素为 SmallHandle"), SortList[0], SmallHandle);
+    TestEqual(TEXT("Sort 排序后中间元素为 LargeIndexHandle"), SortList[1], LargeIndexHandle);
+    TestEqual(TEXT("Sort 排序后末元素为 LargeGenHandle"), SortList[2], LargeGenHandle);
 
     return true;
 }
@@ -136,6 +153,17 @@ bool FSlotMapLifecycleAndGenerationSafetyTest::RunTest([[maybe_unused]] const FS
     TestEqual(TEXT("连续密集视图遍历修改生效"), Map.GetDenseValues().Num(), 3);
     TestEqual(TEXT("H1 追加感叹号成功"), *ConstMap.Find(H1), FString(TEXT("Bravo!")));
 
+    TestEqual(TEXT("operator[] 句柄下标访问正确"), Map[H1], FString(TEXT("Bravo!")));
+    Map[H1] = TEXT("BravoUpdated");
+    TestEqual(TEXT("operator[] 原地修改生效"), Map[H1], FString(TEXT("BravoUpdated")));
+    TestEqual(TEXT("const operator[] 读取生效"), ConstMap[H1], FString(TEXT("BravoUpdated")));
+
+    int32 RangeForCount = 0;
+    for (const FString& Item : Map) {
+        ++RangeForCount;
+    }
+    TestEqual(TEXT("Range-based for 遍历总数正确"), RangeForCount, 3);
+
     const FEntityHandle OutOfRangeHandle(999u, 1u);
     TestFalse(TEXT("越界索引句柄无效"), Map.IsValidHandle(OutOfRangeHandle));
     TestFalse(TEXT("越界索引句柄移除失败"), Map.Remove(OutOfRangeHandle));
@@ -181,6 +209,7 @@ bool FSlotMapIterationAndHandleLookupTest::RunTest([[maybe_unused]] const FStrin
     TestEqual(TEXT("反查 1 号密集项句柄一致"), Map.GetHandleForDenseIndex(1), H1);
     TestEqual(TEXT("反查 2 号密集项句柄一致"), Map.GetHandleForDenseIndex(2), H2);
     TestFalse(TEXT("反查越界密集项返回无效句柄"), Map.GetHandleForDenseIndex(99).IsValid());
+    TestFalse(TEXT("反查负数密集项返回无效句柄"), Map.GetHandleForDenseIndex(-1).IsValid());
 
     int32 Sum = 0;
     int32 IterCount = 0;
@@ -202,6 +231,17 @@ bool FSlotMapIterationAndHandleLookupTest::RunTest([[maybe_unused]] const FStrin
         return false;
     });
     TestEqual(TEXT("返回 false 成功提前中止遍历"), EarlyStopCount, 1);
+
+    TSlotMap<TUniquePtr<int32>, FTestEntityTag> MoveOnlyMap;
+    const auto MoveHandle = MoveOnlyMap.Insert(MakeUnique<int32>(999));
+    TestTrue(TEXT("仅移动类型插入后句柄有效"), MoveHandle.IsValid());
+    TUniquePtr<int32>* FoundMoveOnly = MoveOnlyMap.Find(MoveHandle);
+    TestNotNull(TEXT("查找仅移动类型元素非空"), FoundMoveOnly);
+    if (FoundMoveOnly != nullptr) {
+        TestEqual(TEXT("仅移动类型数值匹配"), **FoundMoveOnly, 999);
+    }
+    TestTrue(TEXT("仅移动类型移除成功"), MoveOnlyMap.Remove(MoveHandle));
+    TestFalse(TEXT("仅移动类型移除后句柄失效"), MoveOnlyMap.IsValidHandle(MoveHandle));
 
     return true;
 }

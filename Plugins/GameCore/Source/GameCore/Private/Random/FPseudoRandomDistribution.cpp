@@ -43,6 +43,8 @@ float FPseudoRandomDistribution::GetNextRollProbability() const noexcept {
         : static_cast<double>(IncrementConstant);
     if (EffectiveConstant <= 0.0 && NominalProbability > 0.0f) {
         EffectiveConstant = CalculatePreciseConstantForProbability(static_cast<double>(NominalProbability));
+        PreciseIncrementConstant = EffectiveConstant;
+        const_cast<FPseudoRandomDistribution*>(this)->IncrementConstant = static_cast<float>(EffectiveConstant);
     }
     const double RawChance = EffectiveConstant * static_cast<double>(NextAttempt);
     return static_cast<float>(FMath::Clamp(RawChance, 0.0, 1.0));

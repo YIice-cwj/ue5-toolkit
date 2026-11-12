@@ -39,7 +39,7 @@ public:
     template <typename T>
     requires std::is_trivially_copyable_v<T>
     bool Write(const T& Value) noexcept {
-        if (WriteOffset + static_cast<int32>(sizeof(T)) > Buffer.Num()) {
+        if (static_cast<int32>(sizeof(T)) > (Buffer.Num() - WriteOffset)) {
             bHasError = true;
             return false;
         }
@@ -58,7 +58,7 @@ public:
         if (ByteCount <= 0) {
             return true;
         }
-        if (Data == nullptr || WriteOffset + ByteCount > Buffer.Num()) {
+        if (Data == nullptr || ByteCount > (Buffer.Num() - WriteOffset)) {
             bHasError = true;
             return false;
         }
@@ -229,6 +229,14 @@ public:
     }
 
     /**
+     * @brief 获取剩余可写字节数（对齐 Reader 命名）
+     * @return 剩余字节数
+     */
+    [[nodiscard]] constexpr int32 GetRemainingBytes() const noexcept {
+        return Buffer.Num() - WriteOffset;
+    }
+
+    /**
      * @brief 获取已写入有效数据的只读切片
      * @return 只读字节切片
      */
@@ -276,7 +284,7 @@ public:
     template <typename T>
     requires std::is_trivially_copyable_v<T>
     bool Read(T& OutValue) noexcept {
-        if (ReadOffset + static_cast<int32>(sizeof(T)) > Buffer.Num()) {
+        if (static_cast<int32>(sizeof(T)) > (Buffer.Num() - ReadOffset)) {
             bHasError = true;
             return false;
         }
@@ -294,7 +302,7 @@ public:
     template <typename T>
     requires std::is_trivially_copyable_v<T>
     [[nodiscard]] bool Peek(T& OutValue) const noexcept {
-        if (ReadOffset + static_cast<int32>(sizeof(T)) > Buffer.Num()) {
+        if (static_cast<int32>(sizeof(T)) > (Buffer.Num() - ReadOffset)) {
             return false;
         }
         FMemory::Memcpy(&OutValue, Buffer.GetData() + ReadOffset, sizeof(T));
@@ -311,7 +319,7 @@ public:
         if (ByteCount <= 0) {
             return true;
         }
-        if (OutData == nullptr || ReadOffset + ByteCount > Buffer.Num()) {
+        if (OutData == nullptr || ByteCount > (Buffer.Num() - ReadOffset)) {
             bHasError = true;
             return false;
         }
@@ -327,7 +335,7 @@ public:
      * @return 成功返回 true，越界返回 false
      */
     bool ReadBytesView(int32 ByteCount, TArrayView<const uint8>& OutView) noexcept {
-        if (ByteCount < 0 || ReadOffset + ByteCount > Buffer.Num()) {
+        if (ByteCount < 0 || ByteCount > (Buffer.Num() - ReadOffset)) {
             bHasError = true;
             return false;
         }
@@ -384,15 +392,19 @@ public:
         int32 Shift = 0;
         while (ReadOffset < Buffer.Num()) {
             const uint8 Byte = Buffer[ReadOffset++];
-            OutValue |= (static_cast<uint64>(Byte & 0x7F) << Shift);
-            if ((Byte & 0x80) == 0) {
+            if (Shift == 63) {
+                if ((Byte & 0xFEU) != 0U) {
+                    bHasError = true;
+                    return false;
+                }
+                OutValue |= (static_cast<uint64>(Byte & 1U) << 63);
+                return true;
+            }
+            OutValue |= (static_cast<uint64>(Byte & 0x7FU) << Shift);
+            if ((Byte & 0x80U) == 0U) {
                 return true;
             }
             Shift += 7;
-            if (Shift >= 64) {
-                bHasError = true;
-                return false;
-            }
         }
         bHasError = true;
         return false;
@@ -426,11 +438,11 @@ public:
             OutUtf8View = TArrayView<const UTF8CHAR>();
             return true;
         }
-        if (ReadOffset + static_cast<int32>(ByteLen) > Buffer.Num()) {
+        if (ByteLen > static_cast<uint32>(Buffer.Num() - ReadOffset)) {
             bHasError = true;
             return false;
         }
-        OutUtf8View = MakeArrayView(reinterpret_cast<const UTF8CHAR*>(Buffer.GetData() + ReadOffset), ByteLen);
+        OutUtf8View = MakeArrayView(reinterpret_cast<const UTF8CHAR*>(Buffer.GetData() + ReadOffset), static_cast<int32>(ByteLen));
         ReadOffset += static_cast<int32>(ByteLen);
         return true;
     }
@@ -483,7 +495,7 @@ public:
      * @return 成功跳过返回 true，越界返回 false
      */
     bool Skip(int32 ByteCount) noexcept {
-        if (ByteCount < 0 || ReadOffset + ByteCount > Buffer.Num()) {
+        if (ByteCount < 0 || ByteCount > (Buffer.Num() - ReadOffset)) {
             bHasError = true;
             return false;
         }

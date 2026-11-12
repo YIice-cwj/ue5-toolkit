@@ -119,38 +119,16 @@ bool TrySetTypedValue(FConfigRegistry& Registry, const FName& KeyName, const FSt
     return false;
 }
 
-FString ResolveRegisteredTypeTag(const FConfigRegistry::FConfigVariant& ExistingVariant) {
-    FString TypeTag = TEXT("string");
-    Visit([&TypeTag](const auto& Stored) {
-        using FStoredType = std::decay_t<decltype(Stored)>;
-        if constexpr (std::is_same_v<FStoredType, bool>) {
-            TypeTag = TEXT("bool");
-        } else if constexpr (std::is_same_v<FStoredType, int32>) {
-            TypeTag = TEXT("int32");
-        } else if constexpr (std::is_same_v<FStoredType, int64>) {
-            TypeTag = TEXT("int64");
-        } else if constexpr (std::is_same_v<FStoredType, float>) {
-            TypeTag = TEXT("float");
-        } else if constexpr (std::is_same_v<FStoredType, double>) {
-            TypeTag = TEXT("double");
-        } else if constexpr (std::is_same_v<FStoredType, FString>) {
-            TypeTag = TEXT("string");
-        } else if constexpr (std::is_same_v<FStoredType, FName>) {
-            TypeTag = TEXT("name");
-        } else if constexpr (std::is_same_v<FStoredType, FVector>) {
-            TypeTag = TEXT("vector");
-        } else if constexpr (std::is_same_v<FStoredType, FRotator>) {
-            TypeTag = TEXT("rotator");
-        } else if constexpr (std::is_same_v<FStoredType, FGameplayTag>) {
-            TypeTag = TEXT("tag");
-        }
-    }, ExistingVariant);
-    return TypeTag;
-}
-
 }  // namespace
 
-int32 FConfigSourceBridge::LoadIniSection(const FString& ConfigFilename, const FString& SectionName) {
+/**
+ * @brief 从指定 INI 配置文件的指定节读取全部键值对并注入 FConfigRegistry
+ * @param ConfigFilename 目标 INI 文件名（如 GGameIni）
+ * @param SectionName 目标节名称（如 TEXT("GameCore.Config")）
+ * @param WorldContextObject 关联的世界上下文对象（为空表示全局根注册表）
+ * @return 成功解析并写入的配置项数量
+ */
+int32 FConfigSourceBridge::LoadIniSection(const FString& ConfigFilename, const FString& SectionName, const UObject* WorldContextObject) {
     if (GConfig == nullptr || ConfigFilename.IsEmpty() || SectionName.IsEmpty()) {
         return 0;
     }
@@ -162,10 +140,15 @@ int32 FConfigSourceBridge::LoadIniSection(const FString& ConfigFilename, const F
 
     int32 AppliedCount = 0;
     for (const FString& Line : SectionLines) {
+        const FString TrimmedLine = Line.TrimStartAndEnd();
+        if (TrimmedLine.IsEmpty() || TrimmedLine.StartsWith(TEXT(";")) ||
+            TrimmedLine.StartsWith(TEXT("#")) || TrimmedLine.StartsWith(TEXT("//"))) {
+            continue;
+        }
         FString KeyPart;
         FString ValuePart;
-        if (Line.Split(TEXT("="), &KeyPart, &ValuePart)) {
-            if (ApplySingleEntry(KeyPart, ValuePart)) {
+        if (TrimmedLine.Split(TEXT("="), &KeyPart, &ValuePart)) {
+            if (ApplySingleEntry(KeyPart, ValuePart, WorldContextObject)) {
                 ++AppliedCount;
             }
         }
@@ -173,17 +156,30 @@ int32 FConfigSourceBridge::LoadIniSection(const FString& ConfigFilename, const F
     return AppliedCount;
 }
 
-int32 FConfigSourceBridge::ApplyKeyValueMap(const TMap<FString, FString>& KeyValues) {
+/**
+ * @brief 批量解析内存键值对映射并注入 FConfigRegistry
+ * @param KeyValues 键值对集合（键支持可选前缀如 int32:MaxPlayers、float:Speed 等）
+ * @param WorldContextObject 关联的世界上下文对象（为空表示全局根注册表）
+ * @return 成功解析并写入的配置项数量
+ */
+int32 FConfigSourceBridge::ApplyKeyValueMap(const TMap<FString, FString>& KeyValues, const UObject* WorldContextObject) {
     int32 AppliedCount = 0;
     for (const TPair<FString, FString>& Pair : KeyValues) {
-        if (ApplySingleEntry(Pair.Key, Pair.Value)) {
+        if (ApplySingleEntry(Pair.Key, Pair.Value, WorldContextObject)) {
             ++AppliedCount;
         }
     }
     return AppliedCount;
 }
 
-int32 FConfigSourceBridge::ApplyCommandLineOverrides(const TCHAR* CommandLine, const FString& ArgPrefix) {
+/**
+ * @brief 解析命令行参数中带指定前缀的覆盖项（如 -Config.Combat.Crit=0.5）并注入 FConfigRegistry
+ * @param CommandLine 原始命令行字符串
+ * @param ArgPrefix 命令行参数匹配前缀（默认 TEXT("Config.")，自动兼容前导 -）
+ * @param WorldContextObject 关联的世界上下文对象（为空表示全局根注册表）
+ * @return 成功解析并写入的配置项数量
+ */
+int32 FConfigSourceBridge::ApplyCommandLineOverrides(const TCHAR* CommandLine, const FString& ArgPrefix, const UObject* WorldContextObject) {
     if (CommandLine == nullptr || ArgPrefix.IsEmpty()) {
         return 0;
     }
@@ -217,7 +213,7 @@ int32 FConfigSourceBridge::ApplyCommandLineOverrides(const TCHAR* CommandLine, c
         FString KeySpec;
         FString RawValue;
         if (Remainder.Split(TEXT("="), &KeySpec, &RawValue)) {
-            if (ApplySingleEntry(KeySpec, RawValue)) {
+            if (ApplySingleEntry(KeySpec, RawValue, WorldContextObject)) {
                 ++AppliedCount;
             }
         }
@@ -225,7 +221,14 @@ int32 FConfigSourceBridge::ApplyCommandLineOverrides(const TCHAR* CommandLine, c
     return AppliedCount;
 }
 
-bool FConfigSourceBridge::ApplySingleEntry(const FString& RawKeySpec, const FString& RawValue) {
+/**
+ * @brief 解析单条外部键值规格并安全写入 FConfigRegistry（只读键与非法格式在边界直接拦截）
+ * @param RawKeySpec 原始键规格（如 TEXT("Combat.Crit") 或 TEXT("float:Combat.Crit")）
+ * @param RawValue 原始字符串值
+ * @param WorldContextObject 关联的世界上下文对象（为空表示全局根注册表）
+ * @return 解析合法且成功写入返回 true；只读拦截或格式非法返回 false
+ */
+bool FConfigSourceBridge::ApplySingleEntry(const FString& RawKeySpec, const FString& RawValue, const UObject* WorldContextObject) {
     const FString TrimmedSpec = RawKeySpec.TrimStartAndEnd();
     if (TrimmedSpec.IsEmpty()) {
         return false;
@@ -244,7 +247,7 @@ bool FConfigSourceBridge::ApplySingleEntry(const FString& RawKeySpec, const FStr
     }
 
     const FName KeyName(*CleanKeyString);
-    FConfigRegistry& Registry = FConfigRegistry::Get();
+    FConfigRegistry& Registry = FConfigRegistry::Get(WorldContextObject);
     if (Registry.IsReadOnly(KeyName)) {
         if constexpr (Game::Config::bEnableLog) {
             UE_LOG(LogGameConfigBridge, Warning,
@@ -257,7 +260,7 @@ bool FConfigSourceBridge::ApplySingleEntry(const FString& RawKeySpec, const FStr
     FString EffectiveTypeTag = ExplicitTypeTag;
     if (EffectiveTypeTag.IsEmpty()) {
         if (const TOptional<FConfigRegistry::FConfigVariant> Existing = Registry.GetRawConfigOptional(KeyName)) {
-            EffectiveTypeTag = ResolveRegisteredTypeTag(*Existing);
+            EffectiveTypeTag = Game::Config::GetVariantTypeName(*Existing);
         } else {
             EffectiveTypeTag = TEXT("string");
         }

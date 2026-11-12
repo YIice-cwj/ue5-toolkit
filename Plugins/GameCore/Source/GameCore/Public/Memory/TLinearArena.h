@@ -154,12 +154,26 @@ public:
         }
         for (size_t Index = 0; Index < InCount; ++Index) {
             new (&ArrayPtr[Index]) T(InArgs...);
-            if constexpr (!std::is_trivially_destructible_v<T>) {
+        }
+        if constexpr (!std::is_trivially_destructible_v<T>) {
+            struct FArrayDestructorPayload {
+                T* Data;
+                size_t Count;
+            };
+            FArrayDestructorPayload* Payload = static_cast<FArrayDestructorPayload*>(
+                Allocate(sizeof(FArrayDestructorPayload), alignof(FArrayDestructorPayload))
+            );
+            if (Payload != nullptr) {
+                Payload->Data = ArrayPtr;
+                Payload->Count = InCount;
                 RegisterDestructor(
                     [](void* InTarget) {
-                        static_cast<T*>(InTarget)->~T();
+                        FArrayDestructorPayload* P = static_cast<FArrayDestructorPayload*>(InTarget);
+                        for (size_t Index = P->Count; Index > 0; --Index) {
+                            P->Data[Index - 1].~T();
+                        }
                     },
-                    &ArrayPtr[Index]
+                    Payload
                 );
             }
         }

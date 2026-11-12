@@ -113,5 +113,5 @@ private:
     UPROPERTY(SaveGame, VisibleAnywhere, BlueprintReadOnly, Category = "GameCore|Random", meta = (AllowPrivateAccess = "true"))
     int32 FailureStreak = 0;
 
-    double PreciseIncrementConstant = 0.0;
+    mutable double PreciseIncrementConstant = 0.0;
 };

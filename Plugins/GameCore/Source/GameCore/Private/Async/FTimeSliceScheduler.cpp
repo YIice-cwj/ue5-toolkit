@@ -105,7 +105,13 @@ uint64 FTimeSliceScheduler::EnqueueTask(FOwnerValidator InValidator, FStepTaskCa
 uint64 FTimeSliceScheduler::EnqueueTask(TWeakObjectPtr<UObject> Owner, FStepTaskCallback StepWork) {
     checkf(IsInGameThread(), TEXT("FTimeSliceScheduler::EnqueueTask must be called on GameThread"));
 
-    if (!Owner.IsValid() || !StepWork) {
+    if (!StepWork) {
+        return 0ULL;
+    }
+    if (Owner.IsExplicitlyNull()) {
+        return EnqueueTask(MoveTemp(StepWork));
+    }
+    if (!Owner.IsValid()) {
         return 0ULL;
     }
     return EnqueueTask(
@@ -147,7 +153,13 @@ uint64 FTimeSliceScheduler::EnqueueBatch(
     FBatchCompleteCallback OnComplete) {
     checkf(IsInGameThread(), TEXT("FTimeSliceScheduler::EnqueueBatch must be called on GameThread"));
 
-    if (!Owner.IsValid() || !PerItemWork) {
+    if (!PerItemWork) {
+        return 0ULL;
+    }
+    if (Owner.IsExplicitlyNull()) {
+        return EnqueueBatch(TotalCount, MoveTemp(PerItemWork), MoveTemp(OnComplete));
+    }
+    if (!Owner.IsValid()) {
         return 0ULL;
     }
     if (TotalCount <= 0) {

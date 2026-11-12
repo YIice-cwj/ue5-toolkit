@@ -8,6 +8,7 @@
 #include "CoreMinimal.h"
 #include "HAL/CriticalSection.h"
 #include "Math/UnrealMathUtility.h"
+#include "Types/FGameDistId.h"
 
 /**
  * @brief 64 位无锁极速状态位掩码
@@ -127,13 +128,8 @@ struct GAMECORE_API FFastTagBitmask {
         return static_cast<int32>(FPlatformMath::CountBits64(Value));
     }
 
-    [[nodiscard]] constexpr bool operator==(const FFastTagBitmask& Other) const noexcept {
-        return Value == Other.Value;
-    }
-
-    [[nodiscard]] constexpr bool operator!=(const FFastTagBitmask& Other) const noexcept {
-        return Value != Other.Value;
-    }
+    [[nodiscard]] constexpr bool operator==(const FFastTagBitmask& Other) const noexcept = default;
+    [[nodiscard]] constexpr auto operator<=>(const FFastTagBitmask& Other) const noexcept = default;
 
     [[nodiscard]] constexpr FFastTagBitmask operator|(const FFastTagBitmask& Other) const noexcept {
         return FFastTagBitmask(Value | Other.Value);
@@ -206,12 +202,12 @@ struct GAMECORE_API FFastTagBitmask {
     }
 
     /**
-     * @brief 计算极速状态位掩码哈希值（支持直接作为 TMap / TSet 键）
+     * @brief 计算极速状态位掩码雪崩哈希值（MurmurHash3 算法，消除低位聚集）
      * @param InMask 目标位掩码
      * @return 32 位哈希值
      */
     friend uint32 GetTypeHash(const FFastTagBitmask& InMask) noexcept {
-        return GetTypeHash(InMask.Value);
+        return Game::Hash::Hash64To32(InMask.Value);
     }
 
     /**

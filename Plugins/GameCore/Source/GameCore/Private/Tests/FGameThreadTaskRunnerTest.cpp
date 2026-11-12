@@ -147,6 +147,8 @@ bool FGameTaskRunnerInvalidOwnerTest::RunTest([[maybe_unused]] const FString& Pa
         TaskStepCount.fetch_add(1, std::memory_order_relaxed);
     });
     TestTrue(TEXT("有效宿主派发任务返回有效 FGameAsyncTaskHandle"), ValidOwnerHandle.IsValid());
+    TestTrue(TEXT("FGameAsyncTaskHandle explicit operator bool 为 true"), static_cast<bool>(ValidOwnerHandle));
+    TestFalse(TEXT("未取消任务 IsCancelled 为 false"), ValidOwnerHandle.IsCancelled());
     TestTrue(TEXT("WaitWithTimeout 等待任务完成返回 true"), ValidOwnerHandle.WaitWithTimeout(FTimespan::FromSeconds(2.0)));
     TestTrue(TEXT("Wait 完成后 IsCompleted 为 true"), ValidOwnerHandle.IsCompleted());
     TestEqual(TEXT("任务执行计数为 1"), TaskStepCount.load(std::memory_order_relaxed), 1);

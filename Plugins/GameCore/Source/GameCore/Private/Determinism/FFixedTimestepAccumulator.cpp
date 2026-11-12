@@ -33,7 +33,7 @@ int32 FFixedTimestepAccumulator::Advance(
     double InDeltaSeconds,
     const TFunctionRef<void(double FixedDt)>& SubstepCallback
 ) {
-    if (InDeltaSeconds <= 0.0) {
+    if (!FMath::IsFinite(InDeltaSeconds) || InDeltaSeconds <= 0.0) {
         return 0;
     }
 
@@ -98,6 +98,14 @@ int32 FFixedTimestepAccumulator::GetMaxSubsteps() const noexcept {
  */
 void FFixedTimestepAccumulator::SetMaxSubsteps(int32 InMaxSubsteps) {
     MaxSubsteps = FMath::Max(1, InMaxSubsteps);
+}
+
+/**
+ * @brief 检查当前未消费的累计时间是否满足至少触发一次固定子步
+ * @return 存在待执行子步返回 true
+ */
+bool FFixedTimestepAccumulator::HasPendingSubstep() const noexcept {
+    return FixedDeltaTime > 0.0 && AccumulatedTime >= FixedDeltaTime;
 }
 
 /**

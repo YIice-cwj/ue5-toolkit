@@ -47,10 +47,11 @@ void Tick(float DeltaSeconds) {
 ### 核心特性
 - **绝对零堆内存分配**：内部仅维护 64 位哈希状态机，单次调用均为纯纳秒级寄存器运算，适合每逻辑步高频全量计算；
 - **Mix64 高雪崩位混合**：采用 MurmurHash3 终态散列混淆算法，任意 1-bit 输入变化引发输出哈希完全雪崩；
-- **浮点量化（Quantization）抗抖动**：
+- **浮点量化（Quantization）抗抖动与 UE5 LWC 坐标支持**：
   - 跨平台、不同编译器版本与 SIMD 优化可能引发尾数微小的舍入差异；
-  - 提供 `AddFloatQuantized` 与 `AddVectorQuantized`，按配置精度（如毫米级 `0.001f` 或厘米级 `0.01f`）离散化后再注入哈希，消灭非恶性浮点舍入抖动；
-  - 对非法浮点数（`NAN`/`INF`）内建安全防御，避免未定义行为。
+  - 提供 `AddFloatQuantized`、`AddDoubleQuantized` 与 `AddVectorQuantized`，按配置精度（如毫米级 `0.001f` 或厘米级 `0.01f`）离散化后再注入哈希，消灭非恶性浮点舍入抖动；
+  - `AddVectorQuantized` 原生采用双精度（`double`）处理 UE5 Large World Coordinates（LWC），彻底杜绝大世界远距离坐标的尾数精度丢失；
+  - 对非法浮点数（`NAN`/`INF`）内建非零 Sentinel 安全防御，杜绝与正常 `0.0` 发生伪同步碰撞，同时避免未定义行为。
 
 ```cpp
 FStateChecksumBuilder Builder;
@@ -59,8 +60,11 @@ FStateChecksumBuilder Builder;
 Builder.AddUInt32(EntityCount);
 Builder.AddUInt64(GlobalSeed);
 
-// 注入按厘米精度量化的空间坐标
-Builder.AddVectorQuantized(PlayerPosition, 0.01f);
+// 注入高精度双精度浮点数
+Builder.AddDoubleQuantized(WorldTimeSeconds, 0.001);
+
+// 注入按厘米精度量化的大世界空间坐标（原生 double 运算，杜绝截断失真）
+Builder.AddVectorQuantized(PlayerPosition, 0.01);
 
 // 注入原生字节流数据
 Builder.AddBytes(InventoryBytes.GetData(), InventoryBytes.Num());
@@ -108,10 +112,11 @@ if (!Detector.VerifyRemoteChecksum(RemoteFrame, RemoteChecksum, Report)) {
 头文件：`#include "Determinism/TRewindSnapshotBuffer.h"`
 
 ### 核心特性与算法
-- **编译期定长容量**：`Capacity` 必须为 2 的幂且 $\ge 2$，全程零堆内存分配，覆写旧帧；
-- **$O(1)$ 直达帧寻址**：
+- **编译期定长容量与移动语义**：`Capacity` 必须为 2 的幂且 $\ge 2$，全程零堆内存分配，支持右值移动写入（`RecordSnapshot(..., MoveTemp(State))`），覆写旧帧；
+- **$O(1)$ 直达帧寻址与零拷贝只读**：
   - 针对正常连续帧序列，通过 `SequenceDelta = Newest.FrameSequence - TargetFrame` 实现一次位运算直达；
   - 针对丢帧或乱序场景，自动回退为定长环形安全扫描；
+  - 提供 `PeekSnapshotAtFrame`、`PeekLatestSnapshot` 与 `PeekOldestSnapshot`，返回常量指针实现 0 拷贝就地直读；
 - **时间戳单调守卫**：写入乱序时间戳时自动钳制为上一帧时间戳，维护环内严格非递减；
 - **亚帧插值（Sub-frame Interpolation）**：
   - 采用 $O(\log N)$ 二分查找精确定位目标时间戳前后的快照区间；

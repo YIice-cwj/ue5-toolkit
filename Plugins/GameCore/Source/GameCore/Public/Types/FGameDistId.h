@@ -228,29 +228,8 @@ public:
         return FGameDistId(T | N | S);
     }
 
-    constexpr bool operator==(const FGameDistId& Other) const noexcept {
-        return RawValue == Other.RawValue;
-    }
-
-    constexpr bool operator!=(const FGameDistId& Other) const noexcept {
-        return RawValue != Other.RawValue;
-    }
-
-    constexpr bool operator<(const FGameDistId& Other) const noexcept {
-        return RawValue < Other.RawValue;
-    }
-
-    constexpr bool operator<=(const FGameDistId& Other) const noexcept {
-        return RawValue <= Other.RawValue;
-    }
-
-    constexpr bool operator>(const FGameDistId& Other) const noexcept {
-        return RawValue > Other.RawValue;
-    }
-
-    constexpr bool operator>=(const FGameDistId& Other) const noexcept {
-        return RawValue >= Other.RawValue;
-    }
+    [[nodiscard]] constexpr bool operator==(const FGameDistId& Other) const noexcept = default;
+    [[nodiscard]] constexpr auto operator<=>(const FGameDistId& Other) const noexcept = default;
 
     /**
      * @brief 雪崩散列计算函数（彻底消除序号聚集对 TMap / TSet 的性能退化）

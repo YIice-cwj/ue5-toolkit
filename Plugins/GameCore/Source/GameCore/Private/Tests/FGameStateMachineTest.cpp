@@ -65,8 +65,16 @@ bool FGameStateMachineTransitionsAndGuardsTest::RunTest([[maybe_unused]] const F
     });
 
     Fsm.AddTransition(ETestActorState::Idle, ETestActorState::Patrol, TGameStateMachine<ETestActorState>::FTransitionGuard{});
+    Fsm.AddTransition(ETestActorState::Idle, ETestActorState::Idle, []() { return true; });
     Fsm.AddTransition(ETestActorState::Idle, ETestActorState::Combat, [&bEnemySpotted]() { return bEnemySpotted; }, 10);
     Fsm.AddTransition(ETestActorState::Idle, ETestActorState::Dead, [&bHealthZero]() { return bHealthZero; }, 100);
+
+    TestEqual(TEXT("注册了 4 个状态"), Fsm.GetStateCount(), 4);
+    TArray<ETestActorState> RegisteredStates;
+    TestEqual(TEXT("GetRegisteredStates 数量为 4"), Fsm.GetRegisteredStates(RegisteredStates), 4);
+    TestTrue(TEXT("包含 Idle"), RegisteredStates.Contains(ETestActorState::Idle));
+    TestEqual(TEXT("Idle 状态有 2 条有效转换规则（自转移和空 Guard 忽略）"), Fsm.GetTransitionCount(ETestActorState::Idle), 2);
+    TestEqual(TEXT("Combat 状态无转换规则"), Fsm.GetTransitionCount(ETestActorState::Combat), 0);
 
     TArray<TPair<ETestActorState, ETestActorState>> ObservedChanges;
     Fsm.SetOnStateChanged([&ObservedChanges](ETestActorState Prev, ETestActorState Next) {
@@ -98,9 +106,23 @@ bool FGameStateMachineTransitionsAndGuardsTest::RunTest([[maybe_unused]] const F
     TestFalse(TEXT("Stop 后不再处于运行态"), Fsm.IsRunning());
     TestEqual(TEXT("末尾日志为 Exit:Combat"), EventLog.Last(), FString(TEXT("Exit:Combat")));
 
+    Fsm.ClearTransitions(ETestActorState::Idle);
+    TestEqual(TEXT("ClearTransitions 后 Idle 转换规则清零"), Fsm.GetTransitionCount(ETestActorState::Idle), 0);
+
     Fsm.Reset();
     TestFalse(TEXT("Reset 后未运行"), Fsm.IsRunning());
     TestEqual(TEXT("Reset 后驻留时间清零"), Fsm.GetTimeInCurrentState(), 0.0f);
+
+    Fsm.RegisterState(ETestActorState::Patrol, {
+        nullptr,
+        nullptr,
+        [&EventLog](ETestActorState) { EventLog.Add(TEXT("Exit:PatrolOnReset")); }
+    });
+    Fsm.Start(ETestActorState::Patrol);
+    TestTrue(TEXT("重新启动成功"), Fsm.IsRunning());
+    Fsm.Reset(true);
+    TestFalse(TEXT("Reset(true) 后停止运行"), Fsm.IsRunning());
+    TestEqual(TEXT("Reset(true) 触发当前状态 OnExit"), EventLog.Last(), FString(TEXT("Exit:PatrolOnReset")));
 
     return true;
 }
@@ -266,7 +288,6 @@ bool FGameStateMachineStopInExitCallbackTest::RunTest([[maybe_unused]] const FSt
         nullptr,
         [&Fsm, &IdleExitInvocations](ETestActorState Target) {
             ++IdleExitInvocations;
-            // 在退出回调内部主动停止状态机
             Fsm.Stop();
         }
     });
@@ -282,7 +303,6 @@ bool FGameStateMachineStopInExitCallbackTest::RunTest([[maybe_unused]] const FSt
     Fsm.Start(ETestActorState::Idle);
     TestTrue(TEXT("状态机启动正常"), Fsm.IsRunning());
 
-    // 请求切态到 Combat，触发 Idle 的 OnExit，其内部调用 Stop()
     Fsm.ChangeState(ETestActorState::Combat);
 
     TestFalse(TEXT("Stop 后状态机处于停止状态"), Fsm.IsRunning());

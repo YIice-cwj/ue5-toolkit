@@ -39,6 +39,13 @@ public:
     [[nodiscard]] FGameRandomStream& GetOrCreateStream(const FName& ChannelName);
 
     /**
+     * @brief 获取或惰性创建指定通道的独立随机流共享引用句柄（跨通道移除与重载生命周期安全）
+     * @param ChannelName 业务通道名（None 自动归入 Default）
+     * @return 随机流共享引用句柄
+     */
+    [[nodiscard]] TSharedRef<FGameRandomStream> GetOrCreateStreamShared(const FName& ChannelName);
+
+    /**
      * @brief 使用显式 64 位种子初始化（或重置）指定通道的随机流
      * @param ChannelName 业务通道名
      * @param Seed 显式 64 位初始种子
@@ -71,6 +78,15 @@ public:
      */
     [[nodiscard]] int32 GetStreamCount() const noexcept {
         return Manager.GetStreamCount();
+    }
+
+    /**
+     * @brief 获取当前所有已注册的通道名称列表
+     * @param OutChannelNames 接收通道名称的输出数组
+     * @return 已注册通道数量
+     */
+    int32 GetChannelNames(TArray<FName>& OutChannelNames) const {
+        return Manager.GetChannelNames(OutChannelNames);
     }
 
     /**

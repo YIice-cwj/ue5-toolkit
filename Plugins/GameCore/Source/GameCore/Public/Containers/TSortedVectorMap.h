@@ -48,12 +48,12 @@ public:
         }
 
         /**
-         * @brief 基于键的相等性比较
+         * @brief 基于键与值的完整相等性比较
          * @param Other 待比较条目
-         * @return 键相等返回 true
+         * @return 键与值均相等返回 true
          */
         [[nodiscard]] bool operator==(const FEntry& Other) const {
-            return Key == Other.Key;
+            return Key == Other.Key && Value == Other.Value;
         }
     };
 
@@ -173,6 +173,13 @@ public:
         if (NewEntries.IsEmpty()) {
             return;
         }
+        if (NewEntries.Num() == 1) {
+            Add(NewEntries[0].Key, NewEntries[0].Value);
+            return;
+        }
+        if (NewEntries.GetData() >= Entries.GetData() && NewEntries.GetData() < Entries.GetData() + Entries.Num()) {
+            return;
+        }
         struct FTaggedEntry {
             KeyType Key;
             ValueType Value;
@@ -263,7 +270,32 @@ public:
     }
 
     /**
-     * @brief 对键落入 [MinKey, MaxKey] 闭区间的条目进行高效范围遍历
+     * @brief 对键落入 [MinKey, MaxKey] 闭区间的条目进行高效范围遍历（可变版本，支持原地修改值）
+     * @tparam TFunc 遍历闭包 void(const KeyType&, ValueType&) 或 bool(...)
+     * @param MinKey 最小键边界（闭区间）
+     * @param MaxKey 最大键边界（闭区间）
+     * @param Func 遍历回调闭包
+     */
+    template <typename TFunc>
+    void ForRange(const KeyType& MinKey, const KeyType& MaxKey, TFunc&& Func) {
+        if (MaxKey < MinKey || Entries.IsEmpty()) {
+            return;
+        }
+        const int32 StartIndex = LowerBoundIndex(MinKey);
+        const int32 EndIndex = UpperBoundIndex(MaxKey);
+        for (int32 Index = StartIndex; Index < EndIndex; ++Index) {
+            if constexpr (std::is_invocable_r_v<bool, TFunc, const KeyType&, ValueType&>) {
+                if (!Func(Entries[Index].Key, Entries[Index].Value)) {
+                    break;
+                }
+            } else {
+                Func(Entries[Index].Key, Entries[Index].Value);
+            }
+        }
+    }
+
+    /**
+     * @brief 对键落入 [MinKey, MaxKey] 闭区间的条目进行高效范围遍历（只读版本）
      * @tparam TFunc 遍历闭包 void(const KeyType&, const ValueType&) 或 bool(...)
      * @param MinKey 最小键边界（闭区间）
      * @param MaxKey 最大键边界（闭区间）
@@ -367,6 +399,32 @@ public:
     auto end() const noexcept { return Entries.end(); }
     auto cbegin() const noexcept { return Entries.cbegin(); }
     auto cend() const noexcept { return Entries.cend(); }
+
+    /**
+     * @brief 字典相等性比较运算符（两字典容量及对应键值对全等返回 true）
+     * @param Other 待比较字典
+     * @return 字典全等返回 true
+     */
+    [[nodiscard]] bool operator==(const TSortedVectorMap& Other) const {
+        if (Entries.Num() != Other.Entries.Num()) {
+            return false;
+        }
+        for (int32 Index = 0; Index < Entries.Num(); ++Index) {
+            if (!(Entries[Index].Key == Other.Entries[Index].Key && Entries[Index].Value == Other.Entries[Index].Value)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * @brief 字典不相等比较运算符
+     * @param Other 待比较字典
+     * @return 存在差异返回 true
+     */
+    [[nodiscard]] bool operator!=(const TSortedVectorMap& Other) const {
+        return !(*this == Other);
+    }
 
 private:
     [[nodiscard]] int32 FindIndex(const KeyType& Key) const noexcept {

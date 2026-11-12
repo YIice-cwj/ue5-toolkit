@@ -68,6 +68,12 @@ public:
     void SetMaxSubsteps(int32 InMaxSubsteps);
 
     /**
+     * @brief 检查当前未消费的累计时间是否满足至少触发一次固定子步
+     * @return 存在待执行子步返回 true
+     */
+    [[nodiscard]] bool HasPendingSubstep() const noexcept;
+
+    /**
      * @brief 获取当前未消费的累计流逝时间（秒）
      * @return 累计秒数
      */

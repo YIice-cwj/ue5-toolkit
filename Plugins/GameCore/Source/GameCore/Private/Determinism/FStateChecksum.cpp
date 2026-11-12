@@ -8,6 +8,7 @@
 namespace {
 
 static constexpr uint64 GInitialHashSeed = 0x9E3779B97F4A7C15ULL;
+static constexpr uint64 GNonFiniteFloatSentinel = 0x7FF8000000000001ULL;
 
 /**
  * @brief 执行 MurmurHash3 64 位终态雪崩位混合
@@ -33,6 +34,30 @@ FStateChecksumBuilder::FStateChecksumBuilder() noexcept
 }
 
 /**
+ * @brief 注入布尔值
+ * @param bValue 输入布尔值
+ */
+void FStateChecksumBuilder::AddBool(bool bValue) noexcept {
+    AddUInt32(bValue ? 1U : 0U);
+}
+
+/**
+ * @brief 注入 32 位有符号整数
+ * @param Value 输入数值
+ */
+void FStateChecksumBuilder::AddInt32(int32 Value) noexcept {
+    AddUInt32(static_cast<uint32>(Value));
+}
+
+/**
+ * @brief 注入 64 位有符号整数
+ * @param Value 输入数值
+ */
+void FStateChecksumBuilder::AddInt64(int64 Value) noexcept {
+    AddUInt64(static_cast<uint64>(Value));
+}
+
+/**
  * @brief 注入 32 位无符号整数
  * @param Value 输入数值
  */
@@ -49,16 +74,48 @@ void FStateChecksumBuilder::AddUInt64(uint64 Value) noexcept {
 }
 
 /**
+ * @brief 注入字符串视图（按字符底层字节连续注入，各端表现严格一致）
+ * @param Str 输入字符串视图
+ */
+void FStateChecksumBuilder::AddString(FStringView Str) noexcept {
+    AddBytes(Str.GetData(), Str.Len() * sizeof(TCHAR));
+}
+
+/**
+ * @brief 注入 FName（自动转为全字符串内容注入，杜绝各端资产加载顺序不同导致的索引伪分叉）
+ * @param Name 输入 FName
+ */
+void FStateChecksumBuilder::AddName(const FName& Name) noexcept {
+    const FString NameStr = Name.ToString();
+    AddString(FStringView(NameStr));
+}
+
+/**
  * @brief 注入按指定精度量化截断的单精度浮点数
  * @param Value 输入浮点数
  * @param Precision 量化精度
  */
 void FStateChecksumBuilder::AddFloatQuantized(float Value, float Precision) noexcept {
     if (!FMath::IsFinite(Value)) {
-        AddUInt64(0ULL);
+        AddUInt64(GNonFiniteFloatSentinel);
         return;
     }
     const float SafePrecision = Precision > 1e-7f ? Precision : 0.001f;
+    const int64 Quantized = FMath::RoundToInt64(Value / SafePrecision);
+    AddUInt64(static_cast<uint64>(Quantized));
+}
+
+/**
+ * @brief 注入按指定精度量化截断的双精度浮点数
+ * @param Value 输入双精度浮点数
+ * @param Precision 量化精度
+ */
+void FStateChecksumBuilder::AddDoubleQuantized(double Value, double Precision) noexcept {
+    if (!FMath::IsFinite(Value)) {
+        AddUInt64(GNonFiniteFloatSentinel);
+        return;
+    }
+    const double SafePrecision = Precision > 1e-12 ? Precision : 0.001;
     const int64 Quantized = FMath::RoundToInt64(Value / SafePrecision);
     AddUInt64(static_cast<uint64>(Quantized));
 }
@@ -68,10 +125,10 @@ void FStateChecksumBuilder::AddFloatQuantized(float Value, float Precision) noex
  * @param Vec 输入三维向量
  * @param Precision 量化精度
  */
-void FStateChecksumBuilder::AddVectorQuantized(const FVector& Vec, float Precision) noexcept {
-    AddFloatQuantized(static_cast<float>(Vec.X), Precision);
-    AddFloatQuantized(static_cast<float>(Vec.Y), Precision);
-    AddFloatQuantized(static_cast<float>(Vec.Z), Precision);
+void FStateChecksumBuilder::AddVectorQuantized(const FVector& Vec, double Precision) noexcept {
+    AddDoubleQuantized(Vec.X, Precision);
+    AddDoubleQuantized(Vec.Y, Precision);
+    AddDoubleQuantized(Vec.Z, Precision);
 }
 
 /**
@@ -154,6 +211,16 @@ bool FDesyncDetector::VerifyRemoteChecksum(uint64 Frame, uint64 RemoteChecksum, 
  */
 void FDesyncDetector::SetDesyncCallback(FOnDesyncDetected InCallback) {
     OnDesyncDetectedDelegate = MoveTemp(InCallback);
+}
+
+/**
+ * @brief 检查本地历史记录中是否存在指定帧的记录
+ * @param Frame 目标帧序号
+ * @return 存在有效记录返回 true
+ */
+bool FDesyncDetector::HasFrame(uint64 Frame) const noexcept {
+    const uint32 Slot = static_cast<uint32>(Frame & Mask);
+    return History[Slot].bValid && History[Slot].Frame == Frame;
 }
 
 /**

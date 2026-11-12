@@ -68,6 +68,14 @@ public:
     }
 
     /**
+     * @brief 获取计时起始周期计数值
+     * @return 起始 Cycles64 计数
+     */
+    [[nodiscard]] uint64 GetStartCycles() const noexcept {
+        return StartCycles;
+    }
+
+    /**
      * @brief 重置计时器起始点
      */
     void Reset() noexcept {
@@ -142,6 +150,22 @@ public:
      */
     [[nodiscard]] int32 GetSampleCount() const noexcept {
         return SampleCount;
+    }
+
+    /**
+     * @brief 查询采样器是否为空
+     * @return 无采样数据返回 true
+     */
+    [[nodiscard]] bool IsEmpty() const noexcept {
+        return SampleCount == 0;
+    }
+
+    /**
+     * @brief 获取滑动窗口容量上限
+     * @return 窗口大小
+     */
+    [[nodiscard]] static constexpr int32 GetCapacity() noexcept {
+        return WindowSize;
     }
 
     /**

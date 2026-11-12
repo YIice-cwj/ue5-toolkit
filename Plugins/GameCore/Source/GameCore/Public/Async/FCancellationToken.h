@@ -49,6 +49,14 @@ public:
      */
     void Unregister() noexcept;
 
+    /**
+     * @brief 查询当前句柄是否仍持有有效的注册回调
+     * @return 处于注册态返回 true
+     */
+    [[nodiscard]] bool IsRegistered() const noexcept {
+        return CallbackId != 0;
+    }
+
 private:
     TWeakPtr<class FCancellationState> WeakState;
     uint64 CallbackId = 0;
@@ -141,6 +149,32 @@ public:
             return FCancellationTokenRegistration();
         }
         return State->RegisterCallback(MoveTemp(Callback));
+    }
+
+    /**
+     * @brief 布尔显式类型转换操作符（已被请求取消返回 true）
+     * @return 已取消返回 true
+     */
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return IsCancellationRequested();
+    }
+
+    /**
+     * @brief 令牌相等比较操作符（比较内部共享状态同一性）
+     * @param Other 待比较令牌
+     * @return 状态源同一返回 true
+     */
+    [[nodiscard]] bool operator==(const FCancellationToken& Other) const noexcept {
+        return State == Other.State;
+    }
+
+    /**
+     * @brief 令牌不相等比较操作符
+     * @param Other 待比较令牌
+     * @return 状态源不相同返回 true
+     */
+    [[nodiscard]] bool operator!=(const FCancellationToken& Other) const noexcept {
+        return State != Other.State;
     }
 
     /**

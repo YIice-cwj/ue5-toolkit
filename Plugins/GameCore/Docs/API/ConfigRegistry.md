@@ -47,6 +47,7 @@ class GAMECORE_API FConfigRegistry {
 public:
     using FConfigVariant = Game::Config::FConfigVariant;
 
+    static TSharedPtr<FConfigRegistry> GetShared(const UObject* WorldContextObject = nullptr);
     static FConfigRegistry& Get(const UObject* WorldContextObject = nullptr);
 
     template<typename T>
@@ -74,11 +75,18 @@ public:
 
 ### 接口详细规范
 
+#### `GetShared`
+```cpp
+static TSharedPtr<FConfigRegistry> GetShared(const UObject* WorldContextObject = nullptr);
+```
+- 获取配置注册中心的共享指针（推荐跨帧或持久持有使用，完全杜绝 World 销毁导致的裸引用悬垂崩溃）。
+
 #### `Get`
 ```cpp
 static FConfigRegistry& Get(const UObject* WorldContextObject = nullptr);
 ```
-- 获取配置注册中心实例；支持基于 World 上下文的 PIE 多实例隔离（WITH_EDITOR 下自动按 UWorld 分离并继承全局默认项，脱离 World 或传 nullptr 时返回全局根单例）。
+- 获取配置注册中心引用；支持基于 World 上下文的 PIE 多实例隔离（WITH_EDITOR 下自动按 UWorld 分离并继承全局默认项，脱离 World 或传 nullptr 时返回全局根单例）。
+- **注意**：返回的裸引用生命周期与对应 UWorld 绑定，仅限当前调用栈或单帧内临时使用，严禁跨帧持久缓存；持久持有请使用 `GetShared()`。
 
 #### `RegisterConfig<T>`
 ```cpp
@@ -153,7 +161,7 @@ TSharedRef<FObserverSubscription> WatchConfig(FName Name, TFunction<void(const T
 `TCachedConfigHandle<T>` 专为高频读取设计：
 - **$O(1)$ 局部缓存读取**：消灭哈希计算与字典查找开销，读取直接解指针/读取本地缓存，极致轻量；
 - **响应式自同步**：内部持有弱引用订阅 `FObserverSubscription`。当外部通过 `RegisterConfig` 或 `SetConfig` 热重载配置时，句柄自动同步最新值，无需调用方写轮询或样板监听代码；
-- **线程安全与自然语法**：支持按值读取 `Get()` / `GetValue()`、隐式类型转换 `operator T()` 与解引用操作符 `*Handle`；
+- **线程安全与自然语法**：支持按值读取 `Get()`、隐式类型转换 `operator T()` 与解引用操作符 `*Handle`；
 - **PIE 多实例感知**：支持指定 `WorldContextObject` 绑定对应 PIE 独立配置，并提供 `Rebind()` 支持切关动态重定向。
 
 ### 接口与使用示例

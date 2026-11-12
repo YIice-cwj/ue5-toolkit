@@ -102,6 +102,44 @@ public:
     }
 
     /**
+     * @brief 获取已注册状态节点总数
+     * @return 状态节点总数
+     */
+    [[nodiscard]] int32 GetStateCount() const noexcept {
+        return States.Num();
+    }
+
+    /**
+     * @brief 获取所有已注册的状态枚举列表
+     * @param OutStates 接收状态列表的输出数组
+     * @return 状态节点数量
+     */
+    int32 GetRegisteredStates(TArray<StateType>& OutStates) const {
+        States.GenerateKeyArray(OutStates);
+        return OutStates.Num();
+    }
+
+    /**
+     * @brief 查询指定状态配置的自动转换规则数量
+     * @param State 目标源状态
+     * @return 规则数量
+     */
+    [[nodiscard]] int32 GetTransitionCount(StateType State) const noexcept {
+        if (const TSharedPtr<TArray<FTransitionRule>>* Rules = Transitions.Find(State)) {
+            return Rules->IsValid() ? (*Rules)->Num() : 0;
+        }
+        return 0;
+    }
+
+    /**
+     * @brief 清除指定源状态的所有自动转换规则
+     * @param State 目标源状态
+     */
+    void ClearTransitions(StateType State) {
+        Transitions.Remove(State);
+    }
+
+    /**
      * @brief 设置全局状态跃迁完成监听回调
      * @param InObserver 监听闭包
      */

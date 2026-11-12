@@ -295,6 +295,12 @@ bool FGameCachePolicyResolveTest::RunTest([[maybe_unused]] const FString& Parame
     TestEqual(TEXT("LazyMinRows 解析准确"), LruPolicy.LazyMinRows, 500LL);
     TestEqual(TEXT("LruMinRows 解析准确"), LruPolicy.LruMinRows, 2000LL);
     TestEqual(TEXT("LruCapacity 解析准确"), LruPolicy.LruCapacity, 50LL);
+    TestEqual(TEXT("GetClampedLruCapacity 正确映射到 int32"), LruPolicy.GetClampedLruCapacity(), 50);
+
+    FCachePolicy CopyPolicy = LruPolicy;
+    TestTrue(TEXT("FCachePolicy operator== 成立"), CopyPolicy == LruPolicy);
+    CopyPolicy.LruCapacity = 100;
+    TestFalse(TEXT("修改字段后 operator== 返回 false"), CopyPolicy == LruPolicy);
 
     Registry.SetConfig<FString>(FName(TEXT("Cache.PolicyCustomDomain.Strategy")), TEXT("eager"));
     TestTrue(TEXT("配置 eager 解析为 ECacheStrategy::Eager"), FCachePolicy::Resolve(CustomDomain).Strategy == ECacheStrategy::Eager);
@@ -328,6 +334,95 @@ bool FGameCachePolicyResolveTest::RunTest([[maybe_unused]] const FString& Parame
     });
     TestEqual(TEXT("Lazy 策略 16 线程并发惰性构建与读取零竞态异常"), LazyInvalidReads.load(), 0);
     TestEqual(TEXT("Lazy 策略并发构建后全部 64 键就绪"), LazyCache.Num(), UnitTestKeyCount);
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameCacheLruIndexPoolAndResetTest,
+    "Game.Core.Cache.LruIndexPoolAndReset",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证 FLruIndexPool 节点复用与二次机会淘汰机制，以及 FVersionedCache::Reset、空闭包与空键安全
+ * @param Parameters 自动化测试参数（未使用）
+ * @return 全部断言通过返回 true
+ */
+bool FGameCacheLruIndexPoolAndResetTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    FLruIndexPool Lru;
+    TestTrue(TEXT("初始状态索引池为空"), Lru.IsEmpty());
+    TestEqual(TEXT("初始条目数为 0"), Lru.Num(), 0);
+
+    const FName Key1(TEXT("LruKey1"));
+    const FName Key2(TEXT("LruKey2"));
+    const FName Key3(TEXT("LruKey3"));
+
+    const int32 Node1 = Lru.AllocateNode(Key1);
+    Lru.InsertAtHead(Node1);
+    const int32 Node2 = Lru.AllocateNode(Key2);
+    Lru.InsertAtHead(Node2);
+    const int32 Node3 = Lru.AllocateNode(Key3);
+    Lru.InsertAtHead(Node3);
+
+    TestEqual(TEXT("插入 3 个节点后条目数为 3"), Lru.Num(), 3);
+    TestFalse(TEXT("非空判定准确"), Lru.IsEmpty());
+    TestTrue(TEXT("最近插入的 Key3 处于头部"), Lru.IsHead(Key3));
+    TestEqual(TEXT("GetHeadKey 返回 Key3"), Lru.GetHeadKey(), Key3);
+    TestTrue(TEXT("GetTailKey 返回有效尾部"), !Lru.GetTailKey().IsNone());
+    TestTrue(TEXT("GetCapacity 大于等于 3"), Lru.GetCapacity() >= 3);
+
+    const int32 ReallocatedNode2 = Lru.AllocateNode(Key2);
+    TestEqual(TEXT("重复分配既有键复用既有节点索引"), ReallocatedNode2, Node2);
+    Lru.InsertAtHead(ReallocatedNode2);
+    TestTrue(TEXT("重复分配复用后节点处于头部"), Lru.IsHead(Key2));
+
+    Lru.Touch(Key1);
+    TestTrue(TEXT("Touch 将 Key1 提升至头部"), Lru.IsHead(Key1));
+
+    TestTrue(TEXT("并发读标记 Key2 热度位成功"), Lru.MarkReferenced(Key2));
+    TestFalse(TEXT("未注册键标记热度返回 false"), Lru.MarkReferenced(FName(TEXT("NoSuchKey"))));
+
+    const FName Evicted = Lru.EvictTail();
+    TestTrue(TEXT("尾部节点持有二次机会晋升后淘汰冷节点"), Evicted == Key3 || Evicted == Key1 || Evicted == Key2);
+    TestFalse(TEXT("被淘汰节点不再存在于池中"), Lru.Contains(Evicted));
+    TestEqual(TEXT("淘汰后条目数减少为 2"), Lru.Num(), 2);
+
+    Lru.Reset();
+    TestTrue(TEXT("Reset 后索引池清空"), Lru.IsEmpty());
+    TestEqual(TEXT("Reset 后条目数为 0"), Lru.Num(), 0);
+    TestTrue(TEXT("空池 EvictTail 安全返回 NAME_None"), Lru.EvictTail().IsNone());
+
+    FConfigRegistry& Registry = FConfigRegistry::Get();
+    static const FName Domain(TEXT("UnitTestCacheResetDomain"));
+    Registry.SetConfig<FString>(FName(TEXT("Cache.UnitTestCacheResetDomain.Strategy")), TEXT("eager"));
+
+    FVersionedCache<FUnitTestCacheValue> Cache(Domain);
+    const TArray<FName> Keys = {Key1, Key2};
+    Cache.Rebuild(Keys, [](FName Key) {
+        return FUnitTestCacheValue{Key, 10};
+    });
+    TestEqual(TEXT("预热后包含 2 个条目"), Cache.Num(), 2);
+    TestFalse(TEXT("预热后 IsEmpty 为 false"), Cache.IsEmpty());
+    TestTrue(TEXT("Contains Key1 为 true"), Cache.Contains(Key1));
+    TestTrue(TEXT("Contains Key2 为 true"), Cache.Contains(Key2));
+    TestFalse(TEXT("Contains 未知键为 false"), Cache.Contains(FName(TEXT("UnknownKey"))));
+    TestEqual(TEXT("GetEffectiveStrategy 返回 Eager"), Cache.GetEffectiveStrategy(), ECacheStrategy::Eager);
+    TestEqual(TEXT("GetDomain 返回预期 Domain"), Cache.GetDomain(), Domain);
+    TestTrue(TEXT("GetGeneration 大于 0"), Cache.GetGeneration() > 0);
+    TestTrue(TEXT("Key1 查找成功"), Cache.FindShared(Key1).IsValid());
+
+    Cache.Reset();
+    TestEqual(TEXT("Cache.Reset 后条目数归零"), Cache.Num(), 0);
+    TestTrue(TEXT("Cache.Reset 后 IsEmpty 为 true"), Cache.IsEmpty());
+    TestFalse(TEXT("Reset 后原有键不再命中"), Cache.FindShared(Key1).IsValid());
+    TestFalse(TEXT("Reset 后 Contains Key1 为 false"), Cache.Contains(Key1));
+
+    Cache.Rebuild(Keys, nullptr);
+    TestEqual(TEXT("空闭包 Rebuild 安全清空不崩溃"), Cache.Num(), 0);
+
+    TestFalse(TEXT("查找 NAME_None 安全返回空指针"), Cache.FindShared(NAME_None).IsValid());
+    TestFalse(TEXT("失效 NAME_None 安全返回 false"), Cache.Invalidate(NAME_None));
 
     return true;
 }

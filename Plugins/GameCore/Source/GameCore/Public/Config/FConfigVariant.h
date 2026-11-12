@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include <type_traits>
+
 #include "CoreMinimal.h"
 #include "GameplayTagContainer.h"
 #include "Misc/TVariant.h"
@@ -25,6 +27,40 @@ using FConfigVariant = TVariant<bool, int32, int64, float, double, FString, FNam
 template<typename T>
 const T* FindVariantValue(const FConfigVariant& InVariant) {
     return InVariant.TryGet<T>();
+}
+
+/**
+ * @brief 获取变体当前承载的具体类型名称
+ * @param InVariant 源配置变体
+ * @return 类型名字符串（如 "bool", "int32", "FString" 等）
+ */
+inline FString GetVariantTypeName(const FConfigVariant& InVariant) {
+    FString TypeName = TEXT("未知类型");
+    Visit([&TypeName](const auto& Stored) {
+        using FStoredType = std::decay_t<decltype(Stored)>;
+        if constexpr (std::is_same_v<FStoredType, bool>) {
+            TypeName = TEXT("bool");
+        } else if constexpr (std::is_same_v<FStoredType, int32>) {
+            TypeName = TEXT("int32");
+        } else if constexpr (std::is_same_v<FStoredType, int64>) {
+            TypeName = TEXT("int64");
+        } else if constexpr (std::is_same_v<FStoredType, float>) {
+            TypeName = TEXT("float");
+        } else if constexpr (std::is_same_v<FStoredType, double>) {
+            TypeName = TEXT("double");
+        } else if constexpr (std::is_same_v<FStoredType, FString>) {
+            TypeName = TEXT("FString");
+        } else if constexpr (std::is_same_v<FStoredType, FName>) {
+            TypeName = TEXT("FName");
+        } else if constexpr (std::is_same_v<FStoredType, FVector>) {
+            TypeName = TEXT("FVector");
+        } else if constexpr (std::is_same_v<FStoredType, FRotator>) {
+            TypeName = TEXT("FRotator");
+        } else if constexpr (std::is_same_v<FStoredType, FGameplayTag>) {
+            TypeName = TEXT("FGameplayTag");
+        }
+    }, InVariant);
+    return TypeName;
 }
 
 }  // namespace Game::Config

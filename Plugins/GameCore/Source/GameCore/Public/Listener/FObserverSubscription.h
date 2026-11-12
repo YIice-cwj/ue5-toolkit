@@ -62,6 +62,14 @@ public:
     }
 
     /**
+     * @brief 获取当前订阅的唯一 ID
+     * @return 64 位订阅 ID（0 表示未初始化或已注销）
+     */
+    [[nodiscard]] uint64 GetSubscriptionId() const noexcept {
+        return SubscriptionId;
+    }
+
+    /**
      * @brief 布尔显式类型转换操作符
      * @return 订阅有效返回 true
      */

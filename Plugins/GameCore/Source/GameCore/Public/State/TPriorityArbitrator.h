@@ -148,6 +148,14 @@ public:
     }
 
     /**
+     * @brief 获取当前所有已注册的活跃通道名称列表
+     * @param OutChannelNames 输出通道名称数组
+     */
+    void GetChannelNames(TArray<FName>& OutChannelNames) const {
+        Channels.GetKeys(OutChannelNames);
+    }
+
+    /**
      * @brief 获取指定通道当前的请求值（可选语义）
      * @param ChannelName 来源通道标识
      * @return 包含属性值的可选对象，通道不存在时返回未设置
@@ -157,6 +165,18 @@ public:
             return TOptional<ValueType>(Record->Value);
         }
         return TOptional<ValueType>();
+    }
+
+    /**
+     * @brief 获取指定通道当前的配置优先级（可选语义）
+     * @param ChannelName 来源通道标识
+     * @return 包含优先级的可选对象，通道不存在时返回未设置
+     */
+    [[nodiscard]] TOptional<int32> GetChannelPriority(const FName& ChannelName) const {
+        if (const FChannelRecord* Record = Channels.Find(ChannelName)) {
+            return TOptional<int32>(Record->Priority);
+        }
+        return TOptional<int32>();
     }
 
     /**
@@ -270,18 +290,27 @@ private:
         const ValueType* ValuePtr = nullptr;
     };
 
-    void RebuildAggregationPointers() const {
-        TArray<FName, TInlineAllocator<16>> SortedChannelNames;
-        SortedChannelNames.Reserve(Channels.Num());
-        for (const auto& Pair : Channels) {
-            SortedChannelNames.Add(Pair.Key);
+    struct FChannelSortEntry {
+        FName Name = NAME_None;
+        const ValueType* ValuePtr = nullptr;
+
+        bool operator<(const FChannelSortEntry& Other) const noexcept {
+            return FNameLexicalLess()(Name, Other.Name);
         }
-        SortedChannelNames.Sort(FNameLexicalLess());
+    };
+
+    void RebuildAggregationPointers() const {
+        TArray<FChannelSortEntry, TInlineAllocator<16>> SortedEntries;
+        SortedEntries.Reserve(Channels.Num());
+        for (const auto& Pair : Channels) {
+            SortedEntries.Add(FChannelSortEntry{Pair.Key, &Pair.Value.Value});
+        }
+        SortedEntries.Sort();
 
         SortedValuePtrsCache.Reset();
-        SortedValuePtrsCache.Reserve(SortedChannelNames.Num());
-        for (const FName& Key : SortedChannelNames) {
-            SortedValuePtrsCache.Add(&Channels.FindChecked(Key).Value);
+        SortedValuePtrsCache.Reserve(SortedEntries.Num());
+        for (const FChannelSortEntry& Entry : SortedEntries) {
+            SortedValuePtrsCache.Add(Entry.ValuePtr);
         }
     }
 

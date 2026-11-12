@@ -51,6 +51,7 @@ bool FGameServiceLocatorTypeAndNamedTest::RunTest([[maybe_unused]] const FString
     FGameServiceLocator& Locator = FGameServiceLocator::Get();
     Locator.Reset();
 
+    TestTrue(TEXT("Reset 后 IsEmpty 为真"), Locator.IsEmpty());
     TestEqual(TEXT("初始状态服务总数为 0"), Locator.Num(), 0);
     TestFalse(TEXT("未注册类型服务解析返回空"), Locator.HasService<ITestAudioService>());
     TestNull(TEXT("未注册类型服务 Resolve 为空指针"), Locator.Resolve<ITestAudioService>().Get());
@@ -59,12 +60,21 @@ bool FGameServiceLocatorTypeAndNamedTest::RunTest([[maybe_unused]] const FString
         MakeShared<FConcreteAudioService, ESPMode::ThreadSafe>(80);
     Locator.RegisterService<ITestAudioService>(AudioImpl);
 
+    TestFalse(TEXT("注册后 IsEmpty 为假"), Locator.IsEmpty());
     TestTrue(TEXT("注册后 HasService 为真"), Locator.HasService<ITestAudioService>());
     TestEqual(TEXT("服务计数为 1"), Locator.Num(), 1);
 
     TSharedPtr<ITestAudioService, ESPMode::ThreadSafe> ResolvedAudio = Locator.Resolve<ITestAudioService>();
     TestNotNull(TEXT("成功解析出音频服务"), ResolvedAudio.Get());
     TestEqual(TEXT("音频服务接口调用正常"), ResolvedAudio->GetVolume(), 80);
+
+    TSharedRef<ITestAudioService, ESPMode::ThreadSafe> RequiredAudio = Locator.ResolveRequired<ITestAudioService>();
+    TestEqual(TEXT("ResolveRequired 强契约解析音频服务正常"), RequiredAudio->GetVolume(), 80);
+
+    TestFalse(TEXT("空名称查询具名服务恒返回假"), Locator.HasService(NAME_None));
+    TestFalse(TEXT("注销空名称服务恒返回假"), Locator.UnregisterService(NAME_None));
+    TestFalse(TEXT("注销不存在的具名服务返回假"), Locator.UnregisterService(FName(TEXT("NonExistent"))));
+    TestFalse(TEXT("注销不存在的类型服务返回假"), Locator.UnregisterService<ITestNetworkService>());
 
     const FName RegionNorth(TEXT("Region.North"));
     const FName RegionSouth(TEXT("Region.South"));
@@ -81,6 +91,11 @@ bool FGameServiceLocatorTypeAndNamedTest::RunTest([[maybe_unused]] const FString
     TestTrue(TEXT("包含 South 服务"), Locator.HasService(RegionSouth));
     TestEqual(TEXT("服务计数为 3"), Locator.Num(), 3);
 
+    TArray<FName> NamedServices;
+    TestEqual(TEXT("GetNamedServiceNames 数量为 2"), Locator.GetNamedServiceNames(NamedServices), 2);
+    TestTrue(TEXT("包含 Region.North"), NamedServices.Contains(RegionNorth));
+    TestTrue(TEXT("包含 Region.South"), NamedServices.Contains(RegionSouth));
+
     TSharedPtr<ITestNetworkService, ESPMode::ThreadSafe> ResolvedNorth =
         Locator.Resolve<ITestNetworkService>(RegionNorth);
     TSharedPtr<ITestNetworkService, ESPMode::ThreadSafe> ResolvedSouth =
@@ -90,6 +105,15 @@ bool FGameServiceLocatorTypeAndNamedTest::RunTest([[maybe_unused]] const FString
     TestNotNull(TEXT("成功解析 South"), ResolvedSouth.Get());
     TestEqual(TEXT("North 区域匹配"), ResolvedNorth->GetRegion(), TEXT("NorthAmerica"));
     TestEqual(TEXT("South 区域匹配"), ResolvedSouth->GetRegion(), TEXT("SouthAmerica"));
+
+    TSharedRef<ITestNetworkService, ESPMode::ThreadSafe> NetNorthUpdated =
+        MakeShared<FConcreteNetworkService, ESPMode::ThreadSafe>(TEXT("NorthAmericaUpdated"));
+    Locator.RegisterService<ITestNetworkService>(NetNorthUpdated, RegionNorth);
+    TestEqual(TEXT("覆盖注册后总服务计数不变"), Locator.Num(), 3);
+    TSharedPtr<ITestNetworkService, ESPMode::ThreadSafe> ResolvedUpdatedNorth =
+        Locator.Resolve<ITestNetworkService>(RegionNorth);
+    TestNotNull(TEXT("成功解析覆盖更新后的 North"), ResolvedUpdatedNorth.Get());
+    TestEqual(TEXT("更新后区域值匹配"), ResolvedUpdatedNorth->GetRegion(), TEXT("NorthAmericaUpdated"));
 
     TestTrue(TEXT("注销类型服务成功"), Locator.UnregisterService<ITestAudioService>());
     TestFalse(TEXT("再次查询类型服务已不存在"), Locator.HasService<ITestAudioService>());

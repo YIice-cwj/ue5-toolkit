@@ -174,7 +174,7 @@ private:
      */
     template <typename TUInt, uint32 MaxScale>
     [[nodiscard]] static TUInt QuantizeFloatToUnsigned(float InValue, float InMinValue, float InMaxValue) noexcept {
-        if (InMaxValue <= InMinValue || !FMath::IsFinite(InValue)) {
+        if (!FMath::IsFinite(InValue) || !FMath::IsFinite(InMinValue) || !FMath::IsFinite(InMaxValue) || InMaxValue <= InMinValue) {
             return 0;
         }
         const float Clamped = FMath::Clamp(InValue, InMinValue, InMaxValue);
@@ -193,8 +193,8 @@ private:
      */
     template <typename TUInt, uint32 MaxScale>
     [[nodiscard]] static float DequantizeUnsignedToFloat(TUInt InQuantized, float InMinValue, float InMaxValue) noexcept {
-        if (InMaxValue <= InMinValue) {
-            return InMinValue;
+        if (!FMath::IsFinite(InMinValue) || !FMath::IsFinite(InMaxValue) || InMaxValue <= InMinValue) {
+            return FMath::IsFinite(InMinValue) ? InMinValue : 0.0f;
         }
         const float Normalized = static_cast<float>(InQuantized) / static_cast<float>(MaxScale);
         return InMinValue + Normalized * (InMaxValue - InMinValue);

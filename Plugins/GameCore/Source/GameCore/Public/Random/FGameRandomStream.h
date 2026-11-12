@@ -112,6 +112,24 @@ public:
     }
 
     /**
+     * @brief 比较两个随机流的内部状态是否相同
+     * @param Other 比较目标流
+     * @return 内部状态一致返回 true
+     */
+    bool operator==(const FGameRandomStream& Other) const noexcept {
+        return CurrentState == Other.CurrentState;
+    }
+
+    /**
+     * @brief 比较两个随机流的内部状态是否不同
+     * @param Other 比较目标流
+     * @return 内部状态不一致返回 true
+     */
+    bool operator!=(const FGameRandomStream& Other) const noexcept {
+        return CurrentState != Other.CurrentState;
+    }
+
+    /**
      * @brief 二进制归档序列化流状态
      * @param Ar 归档器引用
      */

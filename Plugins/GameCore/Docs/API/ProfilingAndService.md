@@ -115,29 +115,27 @@ public:
     // 获取全局单例引用
     static FGameServiceLocator& Get();
 
-    // 1. 基于抽象接口类型的单例服务注册与解析
+    // 1. 基于抽象接口类型的单例服务与具名服务注册
     template <typename TInterface>
-    void RegisterService(TSharedRef<TInterface, ESPMode::ThreadSafe> ServiceInstance);
+    void RegisterService(
+        TSharedRef<TInterface, ESPMode::ThreadSafe> ServiceInstance,
+        FName ServiceName = NAME_None
+    );
 
     template <typename TInterface>
-    [[nodiscard]] TSharedPtr<TInterface, ESPMode::ThreadSafe> Resolve() const;
+    [[nodiscard]] TSharedPtr<TInterface, ESPMode::ThreadSafe> Resolve(FName ServiceName = NAME_None) const;
 
     template <typename TInterface>
     [[nodiscard]] bool HasService() const;
 
+    [[nodiscard]] bool HasService(FName ServiceName) const;
+
     template <typename TInterface>
     bool UnregisterService();
 
-    // 2. 基于 FName 具名与接口类型的服务注册与解析
-    template <typename TInterface>
-    void RegisterService(FName ServiceName, TSharedRef<TInterface, ESPMode::ThreadSafe> ServiceInstance);
-
-    template <typename TInterface>
-    [[nodiscard]] TSharedPtr<TInterface, ESPMode::ThreadSafe> Resolve(FName ServiceName) const;
-
     bool UnregisterService(FName ServiceName);
 
-    // 3. 生命周期与统计
+    // 2. 生命周期与统计
     void Reset();
     [[nodiscard]] int32 Num() const;
 };
@@ -184,8 +182,8 @@ void FGameCoreModule::ShutdownModule() {
     // 2. 协同等待当前所有在飞工作线程任务排空退出（超时 1.0 秒防挂死）
     FGameThreadTaskRunner::FlushInFlightTasks(1.0);
 
-    // 3. 对称注销所有全局编译开关注册项
-    FGameCoreRegistration::UnregisterAll();
+    // 3. 协同清空重置全局服务定位器实例防悬垂引用
+    FGameServiceLocator::Get().Reset();
 }
 ```
 
