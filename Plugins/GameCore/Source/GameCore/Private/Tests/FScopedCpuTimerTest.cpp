@@ -4,6 +4,7 @@
  */
 
 #include "Profiling/FScopedCpuTimer.h"
+#include "Profiling/FMovingAverageSampler.h"
 
 #if WITH_AUTOMATION_TESTS
 

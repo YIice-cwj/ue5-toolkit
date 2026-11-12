@@ -210,6 +210,7 @@ FGameError Enriched = Err.WithContext(TEXT("LoadCharacterMesh"));
 - `#include "Types/FGameDistId.h"`
 - `#include "Types/FGameDistIdGenerator.h"`
 - `#include "Types/FGameLocalId.h"`
+- `#include "Types/FGameLocalIdGenerator.h"`
 
 ### 体系分工与核心能力
 - **`FGameDistId`（分布式雪花 ID）**：专司多服网络、跨节点协同与持久化记录。采用 `[1-bit 保留] + [41-bit 毫秒时间戳] + [10-bit 节点编号] + [12-bit 递增序号]` 紧凑 64 位编码，时钟停滞/回拨自旋并自动推进逻辑毫秒防死锁；

@@ -4,6 +4,7 @@
  */
 
 #include "Types/FGameLocalId.h"
+#include "Types/FGameLocalIdGenerator.h"
 
 #if WITH_AUTOMATION_TESTS
 

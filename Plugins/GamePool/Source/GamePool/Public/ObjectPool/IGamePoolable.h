@@ -22,7 +22,7 @@ public:
     /**
      * @brief 从对象池借出并激活时调用（重置状态、刷新生命周期）
      */
-    UFUNCTION(BlueprintNativeEvent, Category = "GamePool|Pool")
+    UFUNCTION(BlueprintNativeEvent, Category = "GamePool|ObjectPool")
     void OnAcquireFromPool();
     virtual void OnAcquireFromPool_Implementation() {}
 
@@ -38,7 +38,7 @@ public:
     /**
      * @brief 归还至对象池休眠时调用（清理引用、重置特效/声音）
      */
-    UFUNCTION(BlueprintNativeEvent, Category = "GamePool|Pool")
+    UFUNCTION(BlueprintNativeEvent, Category = "GamePool|ObjectPool")
     void OnReleaseToPool();
     virtual void OnReleaseToPool_Implementation() {}
 };

@@ -42,7 +42,7 @@ void Tick(float DeltaSeconds) {
 
 ## 2. 64 位确定性状态校验器 `FStateChecksumBuilder`
 
-头文件：`#include "Determinism/FStateChecksum.h"`
+头文件：`#include "Determinism/FStateChecksumBuilder.h"`
 
 ### 核心特性
 - **绝对零堆内存分配**：内部仅维护 64 位哈希状态机，单次调用均为纯纳秒级寄存器运算，适合每逻辑步高频全量计算；
@@ -77,7 +77,7 @@ const uint64 FrameChecksum = Builder.Finalize();
 
 ## 3. 双端联机分叉探测器 `FDesyncDetector`
 
-头文件：`#include "Determinism/FStateChecksum.h"`
+头文件：`#include "Determinism/FDesyncDetector.h"`
 
 ### 适用场景
 - **帧同步与网络状态回放**：在定长历史滑动窗口内比对本地与远端汇报的校验码；

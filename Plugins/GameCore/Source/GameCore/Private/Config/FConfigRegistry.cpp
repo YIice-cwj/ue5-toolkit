@@ -7,6 +7,7 @@
 
 #include <type_traits>
 
+#include "Config/FConfigPolicy.h"
 #include "Config/GameCompileSwitches.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
@@ -14,37 +15,6 @@
 #include "Misc/StringBuilder.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogGameConfig, Log, All);
-
-namespace {
-
-/**
- * @brief 判定配置键是否属于只读域
- * @param Name 配置键
- * @return 只读返回 true
- *
- * 实现思路：Env.* 为构建态环境信息恒只读；未开启对应编译开关时 Dev.* 与 Feature.GM 恒只读，防调试后门。
- */
-bool IsReadOnlyKeyName(const FName& Name) {
-    TStringBuilder<128> KeyBuilder;
-    Name.AppendString(KeyBuilder);
-    const FStringView KeyText = KeyBuilder.ToView();
-    if (KeyText.StartsWith(TEXT("Env."))) {
-        return true;
-    }
-    if constexpr (!Game::Config::bEnableDebugDraw) {
-        if (KeyText.StartsWith(TEXT("Dev."))) {
-            return true;
-        }
-    }
-    if constexpr (!Game::Config::bEnableGM) {
-        if (KeyText == TEXT("Feature.GM")) {
-            return true;
-        }
-    }
-    return false;
-}
-
-}  // namespace
 
 /**
  * @brief 单键订阅状态：持类型擦除回调条目，锁内拷贝快照并入队、锁外统一派发
@@ -206,7 +176,7 @@ bool FConfigRegistry::IsReadOnly(FName Name) const {
     if (const FEntry* Entry = Entries.Find(Name)) {
         return Entry->bReadOnly;
     }
-    return IsReadOnlyKeyName(Name);
+    return FConfigPolicy::IsBuiltinReadOnlyKey(Name);
 }
 
 /**
@@ -344,7 +314,7 @@ void FConfigRegistry::ApplyRegister(FName Name, FConfigVariant&& DefaultValue) {
         }
         FEntry& Entry = Entries.Emplace(Name);
         Entry.Value = MoveTemp(DefaultValue);
-        Entry.bReadOnly = IsReadOnlyKeyName(Name);
+        Entry.bReadOnly = FConfigPolicy::IsBuiltinReadOnlyKey(Name);
         ++Entry.Version;
         ++GlobalVersion;
         if constexpr (Game::Config::bEnableLog) {
@@ -379,12 +349,12 @@ ESetConfigResult FConfigRegistry::ApplySet(FName Name, FConfigVariant&& NewValue
     {
         FWriteScopeLock WriteLock(RwLock);
         FEntry* Entry = Entries.Find(Name);
-        if ((Entry != nullptr && Entry->bReadOnly) || (Entry == nullptr && IsReadOnlyKeyName(Name))) {
+        if ((Entry != nullptr && Entry->bReadOnly) || (Entry == nullptr && FConfigPolicy::IsBuiltinReadOnlyKey(Name))) {
             bRejected = true;
         } else {
             if (Entry == nullptr) {
                 Entry = &Entries.Emplace(Name);
-                Entry->bReadOnly = IsReadOnlyKeyName(Name);
+                Entry->bReadOnly = FConfigPolicy::IsBuiltinReadOnlyKey(Name);
             }
             Entry->Value = MoveTemp(NewValue);
             ++Entry->Version;

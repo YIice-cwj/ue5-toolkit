@@ -11,14 +11,16 @@
 /**
  * @brief 对象池归还 Actor 时的组件自动重置策略位掩码
  */
-enum class EPoolResetFlags : uint8 {
+enum class EPoolResetFlags : uint16 {
     None = 0,
     Timers = 1 << 0,
     Physics = 1 << 1,
     Movement = 1 << 2,
     Audio = 1 << 3,
     FXSystem = 1 << 4,
-    All = Timers | Physics | Movement | Audio | FXSystem
+    Animation = 1 << 5,
+    PawnAndAI = 1 << 6,
+    All = Timers | Physics | Movement | Audio | FXSystem | Animation | PawnAndAI
 };
 ENUM_CLASS_FLAGS(EPoolResetFlags)
 
@@ -29,13 +31,13 @@ USTRUCT(BlueprintType)
 struct GAMEPOOL_API FPoolStats {
     GENERATED_BODY()
 
-    UPROPERTY(BlueprintReadOnly, Category = "GamePool|Pool")
+    UPROPERTY(BlueprintReadOnly, Category = "GamePool|ObjectPool")
     int32 TotalCount = 0;
 
-    UPROPERTY(BlueprintReadOnly, Category = "GamePool|Pool")
+    UPROPERTY(BlueprintReadOnly, Category = "GamePool|ObjectPool")
     int32 ActiveCount = 0;
 
-    UPROPERTY(BlueprintReadOnly, Category = "GamePool|Pool")
+    UPROPERTY(BlueprintReadOnly, Category = "GamePool|ObjectPool")
     int32 IdleCount = 0;
 };
 

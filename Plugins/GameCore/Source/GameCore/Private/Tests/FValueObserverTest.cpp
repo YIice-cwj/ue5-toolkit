@@ -178,7 +178,7 @@ bool FGameValueObserverOwnerLifecycleAndInitialValueTest::RunTest([[maybe_unused
     TestEqual(TEXT("宿主垃圾回收后回调被安全跳过"), OwnerReceived, 88);
     TestEqual(TEXT("Purge 自动清理失效监听条目总数归零"), Observer.NumListeners(), 0);
 
-    ObserverSub->Reset();
+    OwnerSub->Reset();
     TestFalse(TEXT("句柄 Reset 后处于非活跃状态"), OwnerSub->IsActive());
     OwnerSub->Reset();
     TestFalse(TEXT("句柄重复 Reset 保证幂等安全"), OwnerSub->IsActive());
@@ -255,6 +255,7 @@ bool FGameListenerHubTest::RunTest([[maybe_unused]] const FString& Parameters) {
 
     TestFalse(TEXT("不同载荷类型 Emit 被类型指纹安全拦截"), Hub.Emit(TestEvent, FString(TEXT("NotAnInt"))));
 
+    AddExpectedErrorPlain(TEXT("已注册为其他载荷类型"), EAutomationExpectedErrorFlags::Contains, 1);
     const TSharedRef<FObserverSubscription> MismatchSub = Hub.Subscribe<FString>(TestEvent, [](const FString&) {});
     TestFalse(TEXT("不同载荷类型 Subscribe 被类型指纹拦截返回非活跃句柄"), MismatchSub->IsActive());
     TestEqual(TEXT("拦截后 NumListeners 依然为 2"), Hub.NumListeners(TestEvent), 2);

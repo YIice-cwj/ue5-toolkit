@@ -3,7 +3,8 @@
  * @brief 零拷贝内存二进制流读写器单元测试
  */
 
-#include "Memory/FByteSpanStream.h"
+#include "Memory/FByteSpanWriter.h"
+#include "Memory/FByteSpanReader.h"
 
 #if WITH_AUTOMATION_TESTS
 

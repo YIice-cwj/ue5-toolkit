@@ -85,7 +85,7 @@ void PerformComplexCalculation()
 
 ### 2. `FMovingAverageSampler<WindowSize>` (固定窗口连续滑动平均采样器)
 
-头文件：`#include "Profiling/FScopedCpuTimer.h"`
+头文件：`#include "Profiling/FMovingAverageSampler.h"`
 
 #### 算法与时间复杂度
 - **O(1) 增量滑动更新**：内部使用连续固定大小栈数组 `double Samples[WindowSize]`，通过环形写游标 `WriteIndex` 覆写最旧项并更新 `RunningSum`，单次 `AddSample()` 仅涉及 2 次加减法与 1 次取模。

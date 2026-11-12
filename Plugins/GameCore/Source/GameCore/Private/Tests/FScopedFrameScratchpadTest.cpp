@@ -4,6 +4,7 @@
  */
 
 #include "Memory/FScopedFrameScratchpad.h"
+#include "Containers/TScratchArray.h"
 
 #if WITH_AUTOMATION_TESTS
 

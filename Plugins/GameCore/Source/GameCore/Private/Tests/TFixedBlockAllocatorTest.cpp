@@ -4,6 +4,7 @@
  */
 
 #include "Memory/TFixedBlockAllocator.h"
+#include "Memory/TFixedSizePool.h"
 
 #if WITH_AUTOMATION_TESTS
 

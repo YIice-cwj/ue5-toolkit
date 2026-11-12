@@ -747,6 +747,46 @@ private:
 template <typename TSuccess>
 using TGameStatusResult = TGameResult<TSuccess, FGameError>;
 
+namespace Game::Private {
+
+/**
+ * @brief 根据结果表达式的引用与常量类型自动以移动或拷贝方式转发错误载荷
+ * @tparam TResult 结果类型包
+ * @param Result 结果实例引用
+ * @return 错误转发器包裹体
+ */
+template <typename TResult>
+[[nodiscard]] auto ForwardGameResultError(TResult&& Result) {
+    using DecayedType = std::remove_cvref_t<TResult>;
+    using ErrorType = typename DecayedType::ErrorType;
+    if constexpr (std::is_rvalue_reference_v<TResult&&> && !std::is_const_v<std::remove_reference_t<TResult>>) {
+        return TGameErrorForwarder<ErrorType>(Result.ExtractError());
+    } else {
+        return TGameErrorForwarder<ErrorType>(Result.GetError());
+    }
+}
+
+/**
+ * @brief 根据结果表达式类型自动追加调用栈上下文并转发错误载荷
+ * @tparam TResult 结果类型包
+ * @tparam TContext 上下文文本类型
+ * @param Result 结果实例引用
+ * @param Context 追加的上下文描述
+ * @return 错误转发器包裹体
+ */
+template <typename TResult, typename TContext>
+[[nodiscard]] auto ForwardGameResultErrorWithContext(TResult&& Result, TContext&& Context) {
+    using DecayedType = std::remove_cvref_t<TResult>;
+    using ErrorType = typename DecayedType::ErrorType;
+    if constexpr (std::is_rvalue_reference_v<TResult&&> && !std::is_const_v<std::remove_reference_t<TResult>>) {
+        return TGameErrorForwarder<ErrorType>(Result.ExtractError().WithContext(Forward<TContext>(Context)));
+    } else {
+        return TGameErrorForwarder<ErrorType>(Result.GetError().WithContext(Forward<TContext>(Context)));
+    }
+}
+
+}  // namespace Game::Private
+
 /**
  * @brief 链式错误向上传播宏（支持常量/左值/右值结果表达式以及跨不同 TSuccess 返回类型的函数间自动错误传播）
  */
@@ -754,13 +794,7 @@ using TGameStatusResult = TGameResult<TSuccess, FGameError>;
     do { \
         auto&& _GameTryResult = (ResultExpr); \
         if (_GameTryResult.IsFailure()) { \
-            using _GameTryDecayedType = std::remove_cvref_t<decltype(_GameTryResult)>; \
-            using _GameTryErrorType = typename _GameTryDecayedType::ErrorType; \
-            if constexpr (std::is_rvalue_reference_v<decltype(_GameTryResult)>) { \
-                return TGameErrorForwarder<_GameTryErrorType>(_GameTryResult.ExtractError()); \
-            } else { \
-                return TGameErrorForwarder<_GameTryErrorType>(_GameTryResult.GetError()); \
-            } \
+            return ::Game::Private::ForwardGameResultError(Forward<decltype(_GameTryResult)>(_GameTryResult)); \
         } \
     } while (false)
 
@@ -771,13 +805,8 @@ using TGameStatusResult = TGameResult<TSuccess, FGameError>;
     do { \
         auto&& _GameTryResult = (ResultExpr); \
         if (_GameTryResult.IsFailure()) { \
-            using _GameTryDecayedType = std::remove_cvref_t<decltype(_GameTryResult)>; \
-            using _GameTryErrorType = typename _GameTryDecayedType::ErrorType; \
-            if constexpr (std::is_rvalue_reference_v<decltype(_GameTryResult)>) { \
-                return TGameErrorForwarder<_GameTryErrorType>(_GameTryResult.ExtractError().WithContext(ContextText)); \
-            } else { \
-                return TGameErrorForwarder<_GameTryErrorType>(_GameTryResult.GetError().WithContext(ContextText)); \
-            } \
+            return ::Game::Private::ForwardGameResultErrorWithContext( \
+                Forward<decltype(_GameTryResult)>(_GameTryResult), (ContextText)); \
         } \
     } while (false)
 

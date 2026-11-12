@@ -3,7 +3,8 @@
  * @brief FStateChecksumBuilder 与 FDesyncDetector 单元测试
  */
 
-#include "Determinism/FStateChecksum.h"
+#include "Determinism/FStateChecksumBuilder.h"
+#include "Determinism/FDesyncDetector.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -61,6 +62,11 @@ bool FStateChecksumBuilderDeterminismTest::RunTest([[maybe_unused]] const FStrin
     FStateChecksumBuilder BuilderJitter;
     BuilderJitter.AddUInt32(42);
     BuilderJitter.AddUInt64(10086ULL);
+    BuilderJitter.AddBool(true);
+    BuilderJitter.AddInt32(-123);
+    BuilderJitter.AddInt64(-9876543210LL);
+    BuilderJitter.AddString(TEXT("PlayerState_Hero"));
+    BuilderJitter.AddName(FName(TEXT("StaticMesh_Sword")));
     BuilderJitter.AddFloatQuantized(12.34502f, 0.001f);
     BuilderJitter.AddVectorQuantized(FVector(10.001, 20.002, 30.001), 0.01f);
     BuilderJitter.AddBytes(RawPayload, sizeof(RawPayload));

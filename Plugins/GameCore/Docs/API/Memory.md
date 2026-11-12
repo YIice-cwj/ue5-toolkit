@@ -52,7 +52,7 @@ Arena.Reset();
 
 ## 2. 定长微块侵入式空闲链表分配器 `TFixedBlockAllocator`
 
-头文件：`#include "Memory/TFixedBlockAllocator.h"`
+头文件：`#include "Memory/TFixedBlockAllocator.h"` / `#include "Memory/TFixedSizePool.h"`
 
 ### 适用场景与性能优势
 - **极速微块复用**：针对高频创建、删除的微小对象（如节点、事件包、投射物实体元数据）；
@@ -85,7 +85,7 @@ NodePool.Free(Node);
 
 ## 3. 零拷贝连续内存二进制切片流 `FByteSpanWriter` / `FByteSpanReader`
 
-头文件：`#include "Memory/FByteSpanStream.h"`
+头文件：`#include "Memory/FByteSpanWriter.h"` / `#include "Memory/FByteSpanReader.h"`
 
 ### 核心特性
 - **绝对零堆分配**：全程基于连续内存切片（`TArrayView<uint8>` 或 `TArrayView<const uint8>`）进行就地序列化；
@@ -129,7 +129,7 @@ if (Reader.Peek(Magic) && Magic == 0x55AA) {
 
 ## 4. 单帧局部刮擦分配器 `FScopedFrameScratchpad` 与 `TScratchArray<T>`
 
-头文件：`#include "Memory/FScopedFrameScratchpad.h"`
+头文件：`#include "Memory/FScopedFrameScratchpad.h"` / `#include "Containers/TScratchArray.h"`
 
 ### 核心设计与使用规范
 - **线程局部单例（TLS）**：`FScopedFrameScratchpad::GetThreadLocalArena()` 为每个工作线程分配专属的高速单帧线性栈，避免跨线程锁竞态；

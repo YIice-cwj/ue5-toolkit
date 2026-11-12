@@ -5,7 +5,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "Components/SceneComponent.h"
-#include "Pool/IGamePoolable.h"
+#include "ObjectPool/IGamePoolable.h"
 
 #include "GamePoolableTestActor.generated.h"
 

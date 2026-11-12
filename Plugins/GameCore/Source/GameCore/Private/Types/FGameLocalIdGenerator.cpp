@@ -1,9 +1,6 @@
-/**
- * @file FGameLocalId.cpp
- * @brief 极速原子无锁本地唯一 ID 生成器实现
- */
+// Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "Types/FGameLocalId.h"
+#include "Types/FGameLocalIdGenerator.h"
 #include <atomic>
 
 namespace {

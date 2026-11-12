@@ -145,7 +145,9 @@ bool FTimeSlicedSubsystemWeakOwnerAndCancelTest::RunTest([[maybe_unused]] const 
     Subsystem.ClearAllTasks();
     Subsystem.SetFrameBudgetMilliseconds(5.0);
 
-    TestFalse(TEXT("失效宿主入队返回空句柄"), Subsystem.EnqueueTask(nullptr, []() { return false; }).IsActive());
+    UGameInstance* StaleOwner = NewObject<UGameInstance>();
+    StaleOwner->MarkAsGarbage();
+    TestFalse(TEXT("失效宿主入队返回空句柄"), Subsystem.EnqueueTask(StaleOwner, []() { return false; }).IsActive());
     TestFalse(TEXT("空回调全局任务入队返回空句柄"), Subsystem.EnqueueTask(nullptr).IsActive());
     TestFalse(TEXT("取消无效 ID 0 返回 false"), Subsystem.GetScheduler().CancelTask(0ULL));
     TestFalse(TEXT("取消不存在 ID 返回 false"), Subsystem.GetScheduler().CancelTask(999999ULL));
