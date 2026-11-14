@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ObjectPool/ActorPoolManager.h"
+#include "ObjectPool/ObjectPoolStats.h"
 #include "ObjectPool/ObjectPoolSubsystem.h"
 #include "ObjectPool/PooledActorResetter.h"
 #include "Components/PrimitiveComponent.h"
@@ -68,7 +69,9 @@ bool FActorPoolManager::SpawnIdleActorToPool(TSubclassOf<AActor> ActorClass) {
     DeactivateActorForPool(SpawnedActor);
     FPoolBucket& Bucket = PoolMap.FindOrAdd(ActorClass);
     Bucket.IdleActors.Add(SpawnedActor);
+    Bucket.IdleReturnTimestamps.Add(FPlatformTime::Seconds());
     Bucket.IdleActorSet.Add(SpawnedActor);
+    INC_DWORD_STAT(STAT_GamePool_IdleActors);
     return true;
 }
 
@@ -88,7 +91,11 @@ void FActorPoolManager::SetMaxPoolCapacity(TSubclassOf<AActor> ActorClass, int32
         const int32 TrimCount = Bucket.IdleActors.Num() - InMaxIdleCount;
         for (int32 Index = 0; Index < TrimCount; ++Index) {
             TObjectPtr<AActor> ActorToDestroy = Bucket.IdleActors.Pop();
+            if (Bucket.IdleReturnTimestamps.Num() > 0) {
+                Bucket.IdleReturnTimestamps.Pop();
+            }
             Bucket.IdleActorSet.Remove(ActorToDestroy);
+            DEC_DWORD_STAT(STAT_GamePool_IdleActors);
             if (GenerationTracker != nullptr) {
                 GenerationTracker->InvalidateGeneration(ActorToDestroy);
             }
@@ -125,6 +132,89 @@ EPoolResetFlags FActorPoolManager::GetPoolResetFlags(TSubclassOf<AActor> ActorCl
 }
 
 /**
+ * @brief 配置指定 Actor 类别的闲置弹性缩容与淘汰策略
+ * @param ActorClass 目标 Actor 类
+ * @param InSettings 淘汰策略配置
+ */
+void FActorPoolManager::SetPoolEvictionSettings(TSubclassOf<AActor> ActorClass, const FPoolEvictionSettings& InSettings) {
+    if (!ActorClass) {
+        return;
+    }
+    PoolMap.FindOrAdd(ActorClass).EvictionSettings = InSettings;
+}
+
+/**
+ * @brief 查询指定 Actor 类别的闲置弹性缩容与淘汰策略
+ * @param ActorClass 目标 Actor 类
+ * @return 当前配置的淘汰策略
+ */
+FPoolEvictionSettings FActorPoolManager::GetPoolEvictionSettings(TSubclassOf<AActor> ActorClass) const {
+    if (const FPoolBucket* Bucket = PoolMap.Find(ActorClass)) {
+        return Bucket->EvictionSettings;
+    }
+    return FPoolEvictionSettings();
+}
+
+/**
+ * @brief 执行超时冷实例淘汰
+ * @param NowSeconds 当前单调硬件时间戳（秒）
+ * @param MaxEvictCount 单次最大销毁配额（防止单步 GC 顿卡）
+ * @return 实际销毁的冷实例总数
+ */
+int32 FActorPoolManager::EvictExpiredActors(const double NowSeconds, const int32 MaxEvictCount) {
+    SCOPE_CYCLE_COUNTER(STAT_GamePool_EvictStep);
+    TRACE_CPUPROFILER_EVENT_SCOPE(GamePool_EvictActors);
+
+    if (MaxEvictCount <= 0) {
+        return 0;
+    }
+
+    int32 TotalEvicted = 0;
+    for (auto& Pair : PoolMap) {
+        FPoolBucket& Bucket = Pair.Value;
+        if (!Bucket.EvictionSettings.bEnableEviction) {
+            continue;
+        }
+
+        const float Ttl = Bucket.EvictionSettings.IdleTimeToLiveSeconds;
+        const int32 MinPreserved = FMath::Max(0, Bucket.EvictionSettings.MinPreservedCount);
+
+        while (TotalEvicted < MaxEvictCount &&
+               Bucket.IdleActors.Num() > MinPreserved &&
+               Bucket.IdleReturnTimestamps.Num() > 0) {
+            const double IdleTime = NowSeconds - Bucket.IdleReturnTimestamps[0];
+            if (IdleTime < Ttl) {
+                break;
+            }
+
+            TObjectPtr<AActor> ActorToDestroy = Bucket.IdleActors[0];
+            Bucket.IdleActors.RemoveAt(0);
+            Bucket.IdleReturnTimestamps.RemoveAt(0);
+            Bucket.IdleActorSet.Remove(ActorToDestroy);
+            DEC_DWORD_STAT(STAT_GamePool_IdleActors);
+
+            if (AActor* RawActor = ActorToDestroy.Get()) {
+                if (GenerationTracker != nullptr) {
+                    GenerationTracker->InvalidateGeneration(RawActor);
+                }
+                if (IsValid(RawActor)) {
+                    if (SubsystemOwner != nullptr) {
+                        RawActor->OnDestroyed.RemoveAll(SubsystemOwner);
+                    }
+                    RawActor->Destroy();
+                }
+            }
+            ++TotalEvicted;
+        }
+
+        if (TotalEvicted >= MaxEvictCount) {
+            break;
+        }
+    }
+    return TotalEvicted;
+}
+
+/**
  * @brief 查询指定 Actor 类别的池容量与活跃统计快照
  * @param ActorClass 目标 Actor 类
  * @return 池状态快照结构体
@@ -148,6 +238,9 @@ FPoolStats FActorPoolManager::GetPoolStats(TSubclassOf<AActor> ActorClass) const
  * @return 成功返回 Actor 原生指针，失败返回 Failure
  */
 TGameStatusResult<AActor*> FActorPoolManager::AcquireActor(TSubclassOf<AActor> ActorClass, const FTransform& SpawnTransform) {
+    SCOPE_CYCLE_COUNTER(STAT_GamePool_AcquireActor);
+    TRACE_CPUPROFILER_EVENT_SCOPE(GamePool_AcquireActor);
+
     if (!ActorClass || ActorClass->HasAnyClassFlags(CLASS_Abstract) || World == nullptr) {
         if constexpr (Game::Config::bEnableLog) {
             UE_LOG(LogGameActorPool, Warning, TEXT("【Actor对象池】借出 Actor 失败：ActorClass 或世界上下文无效。"));
@@ -165,6 +258,9 @@ TGameStatusResult<AActor*> FActorPoolManager::AcquireActor(TSubclassOf<AActor> A
                 break;
             }
             Candidate = Bucket.IdleActors.Pop();
+            if (Bucket.IdleReturnTimestamps.Num() > 0) {
+                Bucket.IdleReturnTimestamps.Pop();
+            }
             Bucket.IdleActorSet.Remove(Candidate);
         }
         if (IsValid(Candidate.Get())) {
@@ -172,6 +268,17 @@ TGameStatusResult<AActor*> FActorPoolManager::AcquireActor(TSubclassOf<AActor> A
             break;
         }
     }
+
+    const bool bReused = (ResultActor != nullptr);
+    if (bReused) {
+        ++CacheHits;
+        INC_DWORD_STAT(STAT_GamePool_Hits);
+        DEC_DWORD_STAT(STAT_GamePool_IdleActors);
+    } else {
+        ++CacheMisses;
+        INC_DWORD_STAT(STAT_GamePool_Misses);
+    }
+    ++TotalAcquires;
 
     if (!ResultActor) {
         FActorSpawnParameters SpawnParams;
@@ -191,6 +298,8 @@ TGameStatusResult<AActor*> FActorPoolManager::AcquireActor(TSubclassOf<AActor> A
         }
         return TGameStatusResult<AActor*>::Failure(5002, TEXT("Failed to spawn Actor"));
     }
+
+    INC_DWORD_STAT(STAT_GamePool_ActiveActors);
 
     const AActor* DefaultActor = ActorClass->GetDefaultObject<AActor>();
     const bool bDefaultCollision = DefaultActor->GetActorEnableCollision();
@@ -238,6 +347,9 @@ TGameStatusResult<AActor*> FActorPoolManager::AcquireActor(TSubclassOf<AActor> A
  * @return 成功归还返回 Success，未借出或已销毁返回 Failure
  */
 TGameStatusResult<void> FActorPoolManager::ReleaseActor(AActor* Actor) {
+    SCOPE_CYCLE_COUNTER(STAT_GamePool_ReleaseActor);
+    TRACE_CPUPROFILER_EVENT_SCOPE(GamePool_ReleaseActor);
+
     if (!IsValid(Actor)) {
         if constexpr (Game::Config::bEnableLog) {
             UE_LOG(LogGameActorPool, Warning, TEXT("【Actor对象池】归还 Actor 失败：Actor 无效。"));
@@ -254,6 +366,7 @@ TGameStatusResult<void> FActorPoolManager::ReleaseActor(AActor* Actor) {
         return TGameStatusResult<void>::Failure(5003, TEXT("Actor is not an active member of this pool"));
     }
     --Bucket->ActiveCount;
+    DEC_DWORD_STAT(STAT_GamePool_ActiveActors);
 
     if (GenerationTracker != nullptr) {
         GenerationTracker->InvalidateGeneration(Actor);
@@ -294,7 +407,9 @@ TGameStatusResult<void> FActorPoolManager::ReleaseActor(AActor* Actor) {
             bDestroyActor = true;
         } else {
             CurrentBucket.IdleActors.Add(Actor);
+            CurrentBucket.IdleReturnTimestamps.Add(FPlatformTime::Seconds());
             CurrentBucket.IdleActorSet.Add(Actor);
+            INC_DWORD_STAT(STAT_GamePool_IdleActors);
         }
     }
     if (bDestroyActor) {
@@ -355,7 +470,13 @@ void FActorPoolManager::OnPooledActorDestroyed(AActor* DestroyedActor) {
     TSubclassOf<AActor> ActorClass = DestroyedActor->GetClass();
     if (FPoolBucket* Bucket = PoolMap.Find(ActorClass)) {
         Bucket->IdleActorSet.Remove(DestroyedActor);
-        Bucket->IdleActors.Remove(DestroyedActor);
+        const int32 Index = Bucket->IdleActors.IndexOfByKey(DestroyedActor);
+        if (Index != INDEX_NONE) {
+            Bucket->IdleActors.RemoveAt(Index);
+            if (Bucket->IdleReturnTimestamps.IsValidIndex(Index)) {
+                Bucket->IdleReturnTimestamps.RemoveAt(Index);
+            }
+        }
         if (Bucket->ActiveActorSet.Remove(DestroyedActor) > 0) {
             --Bucket->ActiveCount;
         }
@@ -381,6 +502,7 @@ void FActorPoolManager::DestroyBucketIdleActors(FPoolBucket& Bucket) {
         }
     }
     Bucket.IdleActors.Empty();
+    Bucket.IdleReturnTimestamps.Empty();
     Bucket.IdleActorSet.Empty();
 }
 
@@ -395,4 +517,37 @@ void FActorPoolManager::DeactivateActorForPool(AActor* Actor) {
     Actor->SetActorHiddenInGame(true);
     Actor->SetActorEnableCollision(false);
     Actor->SetActorTickEnabled(false);
+}
+
+/**
+ * @brief 获取全部类别的活跃 Actor 实例总数
+ * @return 活跃 Actor 实例总数
+ */
+int32 FActorPoolManager::GetTotalActiveCount() const noexcept {
+    int32 Sum = 0;
+    for (const auto& Pair : PoolMap) {
+        Sum += Pair.Value.ActiveCount;
+    }
+    return Sum;
+}
+
+/**
+ * @brief 获取全部类别的空闲 Actor 实例总数
+ * @return 空闲 Actor 实例总数
+ */
+int32 FActorPoolManager::GetTotalIdleCount() const noexcept {
+    int32 Sum = 0;
+    for (const auto& Pair : PoolMap) {
+        Sum += Pair.Value.IdleActors.Num();
+    }
+    return Sum;
+}
+
+/**
+ * @brief 重置遥测统计计数器
+ */
+void FActorPoolManager::ResetTelemetry() noexcept {
+    TotalAcquires = 0;
+    CacheHits = 0;
+    CacheMisses = 0;
 }

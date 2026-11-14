@@ -9,6 +9,7 @@
 #include "GameFramework/MovementComponent.h"
 #include "GameFramework/Pawn.h"
 #include "ObjectPool/IGamePoolable.h"
+#include "ObjectPool/ObjectPoolStats.h"
 #include "Particles/ParticleSystemComponent.h"
 #include "TimerManager.h"
 
@@ -21,6 +22,9 @@ void FPooledActorResetter::ResetActorComponents(AActor* Actor, EPoolResetFlags R
     if (Actor == nullptr || ResetFlags == EPoolResetFlags::None) {
         return;
     }
+
+    SCOPE_CYCLE_COUNTER(STAT_GamePool_ComponentReset);
+    TRACE_CPUPROFILER_EVENT_SCOPE(GamePool_ResetActorComponents);
 
     if (EnumHasAnyFlags(ResetFlags, EPoolResetFlags::Timers)) {
         Actor->GetWorldTimerManager().ClearAllTimersForObject(Actor);

@@ -36,6 +36,28 @@ public:
     void SetMaxCapacity(TSubclassOf<UObject> ObjectClass, int32 InMaxIdleCount);
 
     /**
+     * @brief 配置指定纯 UObject 类别的闲置弹性缩容与淘汰策略
+     * @param ObjectClass 目标类
+     * @param InSettings 淘汰策略配置
+     */
+    void SetPoolEvictionSettings(TSubclassOf<UObject> ObjectClass, const FPoolEvictionSettings& InSettings);
+
+    /**
+     * @brief 查询指定纯 UObject 类别的闲置弹性缩容与淘汰策略
+     * @param ObjectClass 目标类
+     * @return 当前配置的淘汰策略
+     */
+    [[nodiscard]] FPoolEvictionSettings GetPoolEvictionSettings(TSubclassOf<UObject> ObjectClass) const;
+
+    /**
+     * @brief 执行超时冷 UObject 实例淘汰
+     * @param NowSeconds 当前单调硬件时间戳（秒）
+     * @param MaxEvictCount 单次最大销毁配额（防止单步 GC 顿卡）
+     * @return 实际销毁的冷实例总数
+     */
+    int32 EvictExpiredObjects(double NowSeconds, int32 MaxEvictCount = 2);
+
+    /**
      * @brief 查询指定纯 UObject 类的池容量与活跃统计快照
      * @param ObjectClass 目标类
      * @return 池状态统计结构体
@@ -96,6 +118,47 @@ public:
     }
 
     /**
+     * @brief 获取累计借出总次数
+     * @return 借出总数
+     */
+    [[nodiscard]] int64 GetTotalAcquires() const noexcept {
+        return TotalAcquires;
+    }
+
+    /**
+     * @brief 获取累计借出复用命中次数
+     * @return 命中总数
+     */
+    [[nodiscard]] int64 GetCacheHits() const noexcept {
+        return CacheHits;
+    }
+
+    /**
+     * @brief 获取累计穿透新生成次数
+     * @return 穿透总数
+     */
+    [[nodiscard]] int64 GetCacheMisses() const noexcept {
+        return CacheMisses;
+    }
+
+    /**
+     * @brief 获取全部类别的活跃 UObject 实例总数
+     * @return 活跃 UObject 实例总数
+     */
+    [[nodiscard]] int32 GetTotalActiveCount() const noexcept;
+
+    /**
+     * @brief 获取全部类别的空闲 UObject 实例总数
+     * @return 空闲 UObject 实例总数
+     */
+    [[nodiscard]] int32 GetTotalIdleCount() const noexcept;
+
+    /**
+     * @brief 重置遥测统计计数器
+     */
+    void ResetTelemetry() noexcept;
+
+    /**
      * @brief 查找指定类的 UObject 存储桶指针
      * @param RawClass 目标 UClass
      * @return 存储桶指针，不存在返回 nullptr
@@ -117,4 +180,8 @@ private:
     UObject* OuterObject = nullptr;
     FPoolGenerationTracker* GenerationTracker = nullptr;
     TMap<TObjectPtr<UClass>, FObjectPoolBucket> ObjectPoolMap;
+
+    int64 TotalAcquires = 0;
+    int64 CacheHits = 0;
+    int64 CacheMisses = 0;
 };

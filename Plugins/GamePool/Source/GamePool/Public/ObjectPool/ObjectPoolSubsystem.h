@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Engine/TimerHandle.h"
 #include "GameFramework/Actor.h"
 #include "ObjectPool/ActorPoolManager.h"
 #include "ObjectPool/IGamePoolable.h"
@@ -383,6 +384,60 @@ public:
     void ClearObjectPool(TSubclassOf<UObject> ObjectClass);
 
     /**
+     * @brief 配置指定 Actor 类的闲置弹性缩容与淘汰策略
+     * @param ActorClass 目标 Actor 类
+     * @param Settings 淘汰配置
+     */
+    UFUNCTION(BlueprintCallable, Category = "GamePool|Eviction")
+    void SetActorPoolEvictionSettings(TSubclassOf<AActor> ActorClass, const FPoolEvictionSettings& Settings);
+
+    /**
+     * @brief 查询指定 Actor 类的闲置弹性缩容与淘汰策略
+     * @param ActorClass 目标 Actor 类
+     * @return 当前淘汰配置
+     */
+    UFUNCTION(BlueprintPure, Category = "GamePool|Eviction")
+    [[nodiscard]] FPoolEvictionSettings GetActorPoolEvictionSettings(TSubclassOf<AActor> ActorClass) const;
+
+    /**
+     * @brief 配置指定纯 UObject 类的闲置弹性缩容与淘汰策略
+     * @param ObjectClass 目标 UObject 类
+     * @param Settings 淘汰配置
+     */
+    UFUNCTION(BlueprintCallable, Category = "GamePool|Eviction")
+    void SetObjectPoolEvictionSettings(TSubclassOf<UObject> ObjectClass, const FPoolEvictionSettings& Settings);
+
+    /**
+     * @brief 查询指定纯 UObject 类的闲置弹性缩容与淘汰策略
+     * @param ObjectClass 目标 UObject 类
+     * @return 当前淘汰配置
+     */
+    UFUNCTION(BlueprintPure, Category = "GamePool|Eviction")
+    [[nodiscard]] FPoolEvictionSettings GetObjectPoolEvictionSettings(TSubclassOf<UObject> ObjectClass) const;
+
+    /**
+     * @brief 强制触发一次全部池的超时冷实例淘汰（支持显式指定时间戳与配额，便于测试与切图时批量清退）
+     * @param MaxEvictionsPerStep 单次最大销毁配额（<=0 使用默认值 32）
+     * @param CustomNowSeconds 自定义时间戳（<=0 使用当前硬件时间）
+     * @return 实际销毁的冷实例总数
+     */
+    UFUNCTION(BlueprintCallable, Category = "GamePool|Eviction")
+    int32 ForceEvictExpired(int32 MaxEvictionsPerStep = 32, double CustomNowSeconds = 0.0);
+
+    /**
+     * @brief 获取当前对象池运行时的全景遥测快照（包含命中率、活跃/空闲统计）
+     * @return 全景遥测快照结构体
+     */
+    UFUNCTION(BlueprintPure, Category = "GamePool|Telemetry")
+    [[nodiscard]] FPoolTelemetrySnapshot GetTelemetrySnapshot() const;
+
+    /**
+     * @brief 重置对象池遥测统计计数器（借出、命中、未命中）
+     */
+    UFUNCTION(BlueprintCallable, Category = "GamePool|Telemetry")
+    void ResetTelemetry();
+
+    /**
      * @brief 清空并回收所有非 Actor UObject 类别的空闲实例
      */
     UFUNCTION(BlueprintCallable, Category = "GamePool|ObjectPool")
@@ -447,11 +502,18 @@ public:
     UFUNCTION()
     void OnPooledActorDestroyed(AActor* DestroyedActor);
 
+    UFUNCTION()
+    void OnEvictionTimerTick();
+
+    void StartEvictionTimer(float IntervalSeconds = 5.0f);
+    void StopEvictionTimer();
+
 private:
     FPoolGenerationTracker GenerationTracker;
     FActorPoolManager ActorManager;
     FUObjectPoolManager ObjectManager;
     TLockFreeRingBuffer<TWeakObjectPtr<AActor>, 1024> DeferredReleaseBuffer;
+    FTimerHandle EvictionTimerHandle;
 };
 
 template <typename T>

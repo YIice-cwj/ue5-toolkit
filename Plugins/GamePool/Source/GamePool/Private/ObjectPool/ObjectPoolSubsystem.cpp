@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ObjectPool/ObjectPoolSubsystem.h"
+#include "ObjectPool/ObjectPoolStats.h"
 #include "Async/FGameCoroAwaiters.h"
 #include "Config/GameCompileSwitches.h"
 #include "Engine/AssetManager.h"
@@ -52,12 +53,14 @@ void UObjectPoolSubsystem::Initialize(FSubsystemCollectionBase& Collection) {
     Super::Initialize(Collection);
     ActorManager.Initialize(GetWorld(), &GenerationTracker, this);
     ObjectManager.Initialize(this, &GenerationTracker);
+    StartEvictionTimer(5.0f);
 }
 
 /**
  * @brief 世界销毁生命周期回调
  */
 void UObjectPoolSubsystem::Deinitialize() {
+    StopEvictionTimer();
     ProcessDeferredReleases(1024);
     if constexpr (Game::Config::bEnableLog) {
         UE_LOG(LogGameObjectPool, Log, TEXT("【对象池】子系统注销，清空 %d 个 Actor 池与 %d 个 UObject 池。"),
@@ -109,7 +112,13 @@ TGameCoroTask<int32> UObjectPoolSubsystem::PrewarmAsync(
             break;
         }
 
-        if (!SpawnIdleActorToPool(ActorClass)) {
+        bool bSpawnSuccess = false;
+        {
+            SCOPE_CYCLE_COUNTER(STAT_GamePool_PrewarmStep);
+            TRACE_CPUPROFILER_EVENT_SCOPE(GamePool_PrewarmStep);
+            bSpawnSuccess = SpawnIdleActorToPool(ActorClass);
+        }
+        if (!bSpawnSuccess) {
             break;
         }
 
@@ -259,6 +268,8 @@ bool UObjectPoolSubsystem::ReleaseActorDeferred(AActor* Actor) {
  * @return 实际成功收割归还的实例数
  */
 int32 UObjectPoolSubsystem::ProcessDeferredReleases(int32 MaxProcessCount) {
+    TRACE_CPUPROFILER_EVENT_SCOPE(GamePool_ProcessDeferredReleases);
+
     if (!IsInGameThread()) {
         return 0;
     }
@@ -450,4 +461,116 @@ bool UObjectPoolSubsystem::SpawnIdleActorToPool(TSubclassOf<AActor> ActorClass) 
  */
 void UObjectPoolSubsystem::OnPooledActorDestroyed(AActor* DestroyedActor) {
     ActorManager.OnPooledActorDestroyed(DestroyedActor);
+}
+
+/**
+ * @brief 配置指定 Actor 类的闲置弹性缩容与淘汰策略
+ * @param ActorClass 目标 Actor 类
+ * @param Settings 淘汰配置
+ */
+void UObjectPoolSubsystem::SetActorPoolEvictionSettings(TSubclassOf<AActor> ActorClass, const FPoolEvictionSettings& Settings) {
+    ActorManager.SetPoolEvictionSettings(ActorClass, Settings);
+    if (Settings.bEnableEviction && !EvictionTimerHandle.IsValid()) {
+        StartEvictionTimer(Settings.CheckIntervalSeconds);
+    }
+}
+
+/**
+ * @brief 查询指定 Actor 类的闲置弹性缩容与淘汰策略
+ * @param ActorClass 目标 Actor 类
+ * @return 当前淘汰配置
+ */
+FPoolEvictionSettings UObjectPoolSubsystem::GetActorPoolEvictionSettings(TSubclassOf<AActor> ActorClass) const {
+    return ActorManager.GetPoolEvictionSettings(ActorClass);
+}
+
+/**
+ * @brief 配置指定纯 UObject 类的闲置弹性缩容与淘汰策略
+ * @param ObjectClass 目标 UObject 类
+ * @param Settings 淘汰配置
+ */
+void UObjectPoolSubsystem::SetObjectPoolEvictionSettings(TSubclassOf<UObject> ObjectClass, const FPoolEvictionSettings& Settings) {
+    ObjectManager.SetPoolEvictionSettings(ObjectClass, Settings);
+    if (Settings.bEnableEviction && !EvictionTimerHandle.IsValid()) {
+        StartEvictionTimer(Settings.CheckIntervalSeconds);
+    }
+}
+
+/**
+ * @brief 查询指定纯 UObject 类的闲置弹性缩容与淘汰策略
+ * @param ObjectClass 目标 UObject 类
+ * @return 当前淘汰配置
+ */
+FPoolEvictionSettings UObjectPoolSubsystem::GetObjectPoolEvictionSettings(TSubclassOf<UObject> ObjectClass) const {
+    return ObjectManager.GetPoolEvictionSettings(ObjectClass);
+}
+
+/**
+ * @brief 强制触发一次全部池的超时冷实例淘汰
+ * @param MaxEvictionsPerStep 单次最大销毁配额
+ * @param CustomNowSeconds 自定义时间戳
+ * @return 实际销毁的冷实例总数
+ */
+int32 UObjectPoolSubsystem::ForceEvictExpired(const int32 MaxEvictionsPerStep, const double CustomNowSeconds) {
+    const double NowSeconds = (CustomNowSeconds > 0.0) ? CustomNowSeconds : FPlatformTime::Seconds();
+    const int32 Quota = (MaxEvictionsPerStep > 0) ? MaxEvictionsPerStep : 32;
+    const int32 EvictedActors = ActorManager.EvictExpiredActors(NowSeconds, Quota);
+    const int32 EvictedObjects = ObjectManager.EvictExpiredObjects(NowSeconds, Quota);
+    return EvictedActors + EvictedObjects;
+}
+
+/**
+ * @brief 获取当前对象池运行时的全景遥测快照
+ * @return 全景遥测快照结构体
+ */
+FPoolTelemetrySnapshot UObjectPoolSubsystem::GetTelemetrySnapshot() const {
+    FPoolTelemetrySnapshot Snapshot;
+    Snapshot.CacheHits = ActorManager.GetCacheHits() + ObjectManager.GetCacheHits();
+    Snapshot.CacheMisses = ActorManager.GetCacheMisses() + ObjectManager.GetCacheMisses();
+    Snapshot.TotalAcquires = ActorManager.GetTotalAcquires() + ObjectManager.GetTotalAcquires();
+    Snapshot.TotalActiveCount = ActorManager.GetTotalActiveCount() + ObjectManager.GetTotalActiveCount();
+    Snapshot.TotalIdleCount = ActorManager.GetTotalIdleCount() + ObjectManager.GetTotalIdleCount();
+    return Snapshot;
+}
+
+/**
+ * @brief 重置对象池遥测统计计数器
+ */
+void UObjectPoolSubsystem::ResetTelemetry() {
+    ActorManager.ResetTelemetry();
+    ObjectManager.ResetTelemetry();
+}
+
+/**
+ * @brief 周期性后台心跳触发平滑淘汰回调
+ */
+void UObjectPoolSubsystem::OnEvictionTimerTick() {
+    const double NowSeconds = FPlatformTime::Seconds();
+    ActorManager.EvictExpiredActors(NowSeconds, 2);
+    ObjectManager.EvictExpiredObjects(NowSeconds, 2);
+}
+
+/**
+ * @brief 启动后台闲置淘汰心跳定时器
+ * @param IntervalSeconds 检测周期（秒）
+ */
+void UObjectPoolSubsystem::StartEvictionTimer(const float IntervalSeconds) {
+    if (UWorld* World = GetWorld()) {
+        World->GetTimerManager().SetTimer(
+            EvictionTimerHandle,
+            this,
+            &UObjectPoolSubsystem::OnEvictionTimerTick,
+            FMath::Max(0.1f, IntervalSeconds),
+            true
+        );
+    }
+}
+
+/**
+ * @brief 终止后台闲置淘汰心跳定时器
+ */
+void UObjectPoolSubsystem::StopEvictionTimer() {
+    if (UWorld* World = GetWorld()) {
+        World->GetTimerManager().ClearTimer(EvictionTimerHandle);
+    }
 }

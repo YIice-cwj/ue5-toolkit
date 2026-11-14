@@ -165,6 +165,22 @@ public:
     template <typename T>
     TGameStatusResult<void> ReleaseObject(const TPooledObjectHandle<T>& Handle);
 
+    // ==================== 弹性缩容与冷数据淘汰 (TTL) ====================
+    UFUNCTION(BlueprintCallable, Category = "GamePool|Eviction")
+    void SetActorPoolEvictionSettings(TSubclassOf<AActor> ActorClass, const FPoolEvictionSettings& Settings);
+
+    UFUNCTION(BlueprintPure, Category = "GamePool|Eviction")
+    [[nodiscard]] FPoolEvictionSettings GetActorPoolEvictionSettings(TSubclassOf<AActor> ActorClass) const;
+
+    UFUNCTION(BlueprintCallable, Category = "GamePool|Eviction")
+    void SetObjectPoolEvictionSettings(TSubclassOf<UObject> ObjectClass, const FPoolEvictionSettings& Settings);
+
+    UFUNCTION(BlueprintPure, Category = "GamePool|Eviction")
+    [[nodiscard]] FPoolEvictionSettings GetObjectPoolEvictionSettings(TSubclassOf<UObject> ObjectClass) const;
+
+    UFUNCTION(BlueprintCallable, Category = "GamePool|Eviction")
+    int32 ForceEvictExpired(int32 MaxEvictionsPerStep = 32, double CustomNowSeconds = 0.0);
+
     // ==================== 统计与清空 ====================
     UFUNCTION(BlueprintPure, Category = "GamePool|ObjectPool")
     [[nodiscard]] FPoolStats GetPoolStats(TSubclassOf<AActor> ActorClass) const;
@@ -185,7 +201,105 @@ public:
 
 ---
 
-## 4. 原生 C++ 结构体与高频数据内存池 `TStructPool<T>`
+## 4. 弹性缩容与冷数据淘汰数据结构 (`FPoolEvictionSettings`)
+
+```cpp
+USTRUCT(BlueprintType)
+struct GAMEPOOL_API FPoolEvictionSettings {
+    GENERATED_BODY()
+
+    /** 是否启用闲置超时自动淘汰（默认关闭） */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GamePool|Eviction")
+    bool bEnableEviction = false;
+
+    /** 实例闲置生存期（秒）。超过此时间未被借出的实例将被平滑淘汰（默认 60.0s） */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GamePool|Eviction", meta = (ClampMin = "0.1"))
+    float IdleTimeToLiveSeconds = 60.0f;
+
+    /** 保底保留的最小空闲实例数（防止全部淘汰导致下次借出时冷启动，默认 0） */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GamePool|Eviction", meta = (ClampMin = "0"))
+    int32 MinPreservedCount = 0;
+
+    /** 自动检测与平滑淘汰心跳周期（秒，默认 5.0s） */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GamePool|Eviction", meta = (ClampMin = "0.1"))
+    float CheckIntervalSeconds = 5.0f;
+
+    /** 单步平滑销毁最大实例配额（默认每步销毁 2 个，防止单步 GC 尖刺） */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GamePool|Eviction", meta = (ClampMin = "1"))
+    int32 MaxEvictionsPerStep = 2;
+};
+```
+
+---
+
+## 5. 运行期可观测性与遥测监控 (`FPoolTelemetrySnapshot` & `stat GamePool`)
+
+### 5.1 控制台命令与 UE Stats 监控组
+在编辑器或非 Shipping 构建控制台中输入：
+```bash
+stat GamePool
+```
+可在屏幕上实时显示 GamePool 的运行期耗时（Cycle Stats）与实例数量/命中统计（Counter Stats）：
+
+| 统计指标 | 类型 | 含义说明 |
+|---|---|---|
+| `Acquire Actor Total` | Cycle Stat | 借出 Actor 实例耗时（含复用唤醒与新生成） |
+| `Release Actor Total` | Cycle Stat | 归还 Actor 实例耗时 |
+| `Acquire UObject Total` | Cycle Stat | 借出纯 UObject 实例耗时 |
+| `Release UObject Total` | Cycle Stat | 归还纯 UObject 实例耗时 |
+| `Component Deep Reset` | Cycle Stat | 归还时执行的组件自动深层重置耗时 |
+| `Prewarm Step Time` | Cycle Stat | 协程流式分帧预热单步耗时 |
+| `Eviction Step Time` | Cycle Stat | TTL 冷实例平滑淘汰单步耗时 |
+| `Active Actors` | Counter | 当前处于借出激活态的 Actor 实例总数 |
+| `Idle Actors` | Counter | 当前处于池内休眠待复用的 Actor 实例总数 |
+| `Active UObjects` | Counter | 当前处于借出激活态的 UObject 实例总数 |
+| `Idle UObjects` | Counter | 当前处于池内休眠待复用的 UObject 实例总数 |
+| `Pool Cache Hits` | Counter | 借出复用命中次数（直接复用池中闲置对象） |
+| `Pool Cache Misses` | Counter | 借出穿透新生成次数（池空触发动态实例化） |
+
+> **零开销设计**：所有 `STATGROUP_GamePool` 与 `TRACE_CPUPROFILER_EVENT_SCOPE` 宏在 Shipping 构建下均被引擎自动编译剔除，达成 0 额外 CPU/内存开销。
+
+### 5.2 运行时遥测数据结构 (`FPoolTelemetrySnapshot`)
+```cpp
+USTRUCT(BlueprintType)
+struct GAMEPOOL_API FPoolTelemetrySnapshot {
+    GENERATED_BODY()
+
+    UPROPERTY(BlueprintReadOnly, Category = "GamePool|Telemetry")
+    int64 TotalAcquires = 0;      // 累计借出请求总次数
+
+    UPROPERTY(BlueprintReadOnly, Category = "GamePool|Telemetry")
+    int64 CacheHits = 0;          // 累计命中复用次数
+
+    UPROPERTY(BlueprintReadOnly, Category = "GamePool|Telemetry")
+    int64 CacheMisses = 0;        // 累计穿透新生成次数
+
+    UPROPERTY(BlueprintReadOnly, Category = "GamePool|Telemetry")
+    int32 TotalActiveCount = 0;   // 当前全池活跃实例总数
+
+    UPROPERTY(BlueprintReadOnly, Category = "GamePool|Telemetry")
+    int32 TotalIdleCount = 0;     // 当前全池空闲实例总数
+
+    /** 计算缓存命中率（百分比 0.0 ~ 100.0%） */
+    [[nodiscard]] float GetHitRatePercentage() const noexcept;
+};
+```
+
+### 5.3 获取与重置遥测快照接口
+```cpp
+// C++ 获取遥测快照
+FPoolTelemetrySnapshot Snapshot = PoolSubsystem->GetTelemetrySnapshot();
+float HitRate = Snapshot.GetHitRatePercentage();
+UE_LOG(LogTemp, Log, TEXT("Pool Hit Rate: %.2f%%, Active: %d, Idle: %d"),
+    HitRate, Snapshot.TotalActiveCount, Snapshot.TotalIdleCount);
+
+// 重置计数器（测试基准或关卡切换时）
+PoolSubsystem->ResetTelemetry();
+```
+
+---
+
+## 6. 原生 C++ 结构体与高频数据内存池 `TStructPool<T>`
 
 针对非 UObject 的高频事件、网络解包结构、几何射线查询结果等，采用基于 GameCore `TFixedBlockAllocator` 构建的泛型结构体池：
 
@@ -213,7 +327,7 @@ EventPool.Release(Evt); // 析构并纳秒级回收至空闲链表
 
 ---
 
-## 5. 核心行为细节与安全保障
+## 7. 核心行为细节与安全保障
 
 1. **按位可裁剪深层状态重置 (`EPoolResetFlags`)**：
    - `ReleaseActor` 时支持以下掩码位：

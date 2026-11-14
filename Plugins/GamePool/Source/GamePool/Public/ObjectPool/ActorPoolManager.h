@@ -59,6 +59,28 @@ public:
     [[nodiscard]] EPoolResetFlags GetPoolResetFlags(TSubclassOf<AActor> ActorClass) const;
 
     /**
+     * @brief 配置指定 Actor 类别的闲置弹性缩容与淘汰策略
+     * @param ActorClass 目标 Actor 类
+     * @param InSettings 淘汰策略配置
+     */
+    void SetPoolEvictionSettings(TSubclassOf<AActor> ActorClass, const FPoolEvictionSettings& InSettings);
+
+    /**
+     * @brief 查询指定 Actor 类别的闲置弹性缩容与淘汰策略
+     * @param ActorClass 目标 Actor 类
+     * @return 当前配置的淘汰策略
+     */
+    [[nodiscard]] FPoolEvictionSettings GetPoolEvictionSettings(TSubclassOf<AActor> ActorClass) const;
+
+    /**
+     * @brief 执行超时冷实例淘汰
+     * @param NowSeconds 当前单调硬件时间戳（秒）
+     * @param MaxEvictCount 单次最大销毁配额（防止单步 GC 顿卡）
+     * @return 实际销毁的冷实例总数
+     */
+    int32 EvictExpiredActors(double NowSeconds, int32 MaxEvictCount = 2);
+
+    /**
      * @brief 查询指定 Actor 类别的池容量与活跃统计快照
      * @param ActorClass 目标 Actor 类
      * @return 池状态快照结构体
@@ -129,6 +151,47 @@ public:
         return PoolMap.Num();
     }
 
+    /**
+     * @brief 获取累计借出总次数
+     * @return 借出总数
+     */
+    [[nodiscard]] int64 GetTotalAcquires() const noexcept {
+        return TotalAcquires;
+    }
+
+    /**
+     * @brief 获取累计借出复用命中次数
+     * @return 命中总数
+     */
+    [[nodiscard]] int64 GetCacheHits() const noexcept {
+        return CacheHits;
+    }
+
+    /**
+     * @brief 获取累计穿透新生成次数
+     * @return 穿透总数
+     */
+    [[nodiscard]] int64 GetCacheMisses() const noexcept {
+        return CacheMisses;
+    }
+
+    /**
+     * @brief 获取全部类别的活跃 Actor 实例总数
+     * @return 活跃 Actor 实例总数
+     */
+    [[nodiscard]] int32 GetTotalActiveCount() const noexcept;
+
+    /**
+     * @brief 获取全部类别的空闲 Actor 实例总数
+     * @return 空闲 Actor 实例总数
+     */
+    [[nodiscard]] int32 GetTotalIdleCount() const noexcept;
+
+    /**
+     * @brief 重置遥测统计计数器
+     */
+    void ResetTelemetry() noexcept;
+
 private:
     static void DeactivateActorForPool(AActor* Actor);
 
@@ -136,4 +199,8 @@ private:
     FPoolGenerationTracker* GenerationTracker = nullptr;
     UObjectPoolSubsystem* SubsystemOwner = nullptr;
     TMap<TSubclassOf<AActor>, FPoolBucket> PoolMap;
+
+    int64 TotalAcquires = 0;
+    int64 CacheHits = 0;
+    int64 CacheMisses = 0;
 };

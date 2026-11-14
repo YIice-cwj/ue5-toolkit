@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ObjectPool/UObjectPoolManager.h"
+#include "ObjectPool/ObjectPoolStats.h"
 #include "ObjectPool/PooledActorResetter.h"
 #include "Config/GameCompileSwitches.h"
 #include "GameFramework/Actor.h"
@@ -52,7 +53,9 @@ void FUObjectPoolManager::Prewarm(TSubclassOf<UObject> ObjectClass, int32 Prewar
             break;
         }
         Bucket.IdleObjects.Add(NewInstance);
+        Bucket.IdleReturnTimestamps.Add(FPlatformTime::Seconds());
         Bucket.IdleObjectSet.Add(NewInstance);
+        INC_DWORD_STAT(STAT_GamePool_IdleObjects);
     }
 
     if constexpr (Game::Config::bEnableLog) {
@@ -78,7 +81,11 @@ void FUObjectPoolManager::SetMaxCapacity(TSubclassOf<UObject> ObjectClass, int32
         const int32 TrimCount = Bucket.IdleObjects.Num() - InMaxIdleCount;
         for (int32 Index = 0; Index < TrimCount; ++Index) {
             TObjectPtr<UObject> ObjToDiscard = Bucket.IdleObjects.Pop();
+            if (Bucket.IdleReturnTimestamps.Num() > 0) {
+                Bucket.IdleReturnTimestamps.Pop();
+            }
             Bucket.IdleObjectSet.Remove(ObjToDiscard);
+            DEC_DWORD_STAT(STAT_GamePool_IdleObjects);
             if (GenerationTracker != nullptr) {
                 GenerationTracker->InvalidateGeneration(ObjToDiscard.Get());
             }
@@ -87,6 +94,90 @@ void FUObjectPoolManager::SetMaxCapacity(TSubclassOf<UObject> ObjectClass, int32
             }
         }
     }
+}
+
+/**
+ * @brief 配置指定纯 UObject 类别的闲置弹性缩容与淘汰策略
+ * @param ObjectClass 目标类
+ * @param InSettings 淘汰策略配置
+ */
+void FUObjectPoolManager::SetPoolEvictionSettings(TSubclassOf<UObject> ObjectClass, const FPoolEvictionSettings& InSettings) {
+    UClass* RawClass = ObjectClass.Get();
+    if (RawClass == nullptr) {
+        return;
+    }
+    ObjectPoolMap.FindOrAdd(RawClass).EvictionSettings = InSettings;
+}
+
+/**
+ * @brief 查询指定纯 UObject 类别的闲置弹性缩容与淘汰策略
+ * @param ObjectClass 目标类
+ * @return 当前配置的淘汰策略
+ */
+FPoolEvictionSettings FUObjectPoolManager::GetPoolEvictionSettings(TSubclassOf<UObject> ObjectClass) const {
+    const UClass* RawClass = ObjectClass.Get();
+    if (RawClass != nullptr) {
+        if (const FObjectPoolBucket* Bucket = ObjectPoolMap.Find(RawClass)) {
+            return Bucket->EvictionSettings;
+        }
+    }
+    return FPoolEvictionSettings();
+}
+
+/**
+ * @brief 执行超时冷 UObject 实例淘汰
+ * @param NowSeconds 当前单调硬件时间戳（秒）
+ * @param MaxEvictCount 单次最大销毁配额（防止单步 GC 顿卡）
+ * @return 实际销毁的冷实例总数
+ */
+int32 FUObjectPoolManager::EvictExpiredObjects(const double NowSeconds, const int32 MaxEvictCount) {
+    SCOPE_CYCLE_COUNTER(STAT_GamePool_EvictStep);
+    TRACE_CPUPROFILER_EVENT_SCOPE(GamePool_EvictObjects);
+
+    if (MaxEvictCount <= 0) {
+        return 0;
+    }
+
+    int32 TotalEvicted = 0;
+    for (auto& Pair : ObjectPoolMap) {
+        FObjectPoolBucket& Bucket = Pair.Value;
+        if (!Bucket.EvictionSettings.bEnableEviction) {
+            continue;
+        }
+
+        const float Ttl = Bucket.EvictionSettings.IdleTimeToLiveSeconds;
+        const int32 MinPreserved = FMath::Max(0, Bucket.EvictionSettings.MinPreservedCount);
+
+        while (TotalEvicted < MaxEvictCount &&
+               Bucket.IdleObjects.Num() > MinPreserved &&
+               Bucket.IdleReturnTimestamps.Num() > 0) {
+            const double IdleTime = NowSeconds - Bucket.IdleReturnTimestamps[0];
+            if (IdleTime < Ttl) {
+                break;
+            }
+
+            TObjectPtr<UObject> ObjToDiscard = Bucket.IdleObjects[0];
+            Bucket.IdleObjects.RemoveAt(0);
+            Bucket.IdleReturnTimestamps.RemoveAt(0);
+            Bucket.IdleObjectSet.Remove(ObjToDiscard);
+            DEC_DWORD_STAT(STAT_GamePool_IdleObjects);
+
+            if (UObject* RawObj = ObjToDiscard.Get()) {
+                if (GenerationTracker != nullptr) {
+                    GenerationTracker->InvalidateGeneration(RawObj);
+                }
+                if (IsValid(RawObj)) {
+                    RawObj->MarkAsGarbage();
+                }
+            }
+            ++TotalEvicted;
+        }
+
+        if (TotalEvicted >= MaxEvictCount) {
+            break;
+        }
+    }
+    return TotalEvicted;
 }
 
 /**
@@ -115,6 +206,9 @@ FPoolStats FUObjectPoolManager::GetPoolStats(TSubclassOf<UObject> ObjectClass) c
  * @return 成功返回 UObject 指针，失败返回 Failure
  */
 TGameStatusResult<UObject*> FUObjectPoolManager::AcquireObject(TSubclassOf<UObject> ObjectClass) {
+    SCOPE_CYCLE_COUNTER(STAT_GamePool_AcquireObject);
+    TRACE_CPUPROFILER_EVENT_SCOPE(GamePool_AcquireObject);
+
     UClass* RawClass = ObjectClass.Get();
     if (!IsValidPoolableUObjectClass(RawClass) || OuterObject == nullptr) {
         if constexpr (Game::Config::bEnableLog) {
@@ -132,6 +226,9 @@ TGameStatusResult<UObject*> FUObjectPoolManager::AcquireObject(TSubclassOf<UObje
                 break;
             }
             Candidate = Bucket.IdleObjects.Pop();
+            if (Bucket.IdleReturnTimestamps.Num() > 0) {
+                Bucket.IdleReturnTimestamps.Pop();
+            }
             Bucket.IdleObjectSet.Remove(Candidate);
         }
         if (IsValid(Candidate.Get())) {
@@ -140,12 +237,25 @@ TGameStatusResult<UObject*> FUObjectPoolManager::AcquireObject(TSubclassOf<UObje
         }
     }
 
+    const bool bReused = (ResultObject != nullptr);
+    if (bReused) {
+        ++CacheHits;
+        INC_DWORD_STAT(STAT_GamePool_Hits);
+        DEC_DWORD_STAT(STAT_GamePool_IdleObjects);
+    } else {
+        ++CacheMisses;
+        INC_DWORD_STAT(STAT_GamePool_Misses);
+    }
+    ++TotalAcquires;
+
     if (ResultObject == nullptr) {
         ResultObject = NewObject<UObject>(OuterObject, RawClass);
     }
     if (ResultObject == nullptr) {
         return TGameStatusResult<UObject*>::Failure(5002, TEXT("Failed to instantiate UObject"));
     }
+
+    INC_DWORD_STAT(STAT_GamePool_ActiveObjects);
 
     {
         FObjectPoolBucket& Bucket = ObjectPoolMap.FindOrAdd(RawClass);
@@ -166,12 +276,14 @@ TGameStatusResult<UObject*> FUObjectPoolManager::AcquireObject(TSubclassOf<UObje
         if (Bucket != nullptr && Bucket->ActiveObjectSet.Remove(ResultObject) > 0) {
             --Bucket->ActiveCount;
         }
+        DEC_DWORD_STAT(STAT_GamePool_ActiveObjects);
         return TGameStatusResult<UObject*>::Failure(5002, TEXT("UObject was invalidated during OnAcquireFromPool"));
     }
     if (Bucket == nullptr || !Bucket->ActiveObjectSet.Contains(ResultObject)) {
         if (GenerationTracker != nullptr) {
             GenerationTracker->InvalidateGeneration(ResultObject);
         }
+        DEC_DWORD_STAT(STAT_GamePool_ActiveObjects);
         return TGameStatusResult<UObject*>::Failure(5002, TEXT("UObject was invalidated during OnAcquireFromPool"));
     }
 
@@ -184,6 +296,9 @@ TGameStatusResult<UObject*> FUObjectPoolManager::AcquireObject(TSubclassOf<UObje
  * @return 成功归还返回 Success，未借出或已销毁返回 Failure
  */
 TGameStatusResult<void> FUObjectPoolManager::ReleaseObject(UObject* Object) {
+    SCOPE_CYCLE_COUNTER(STAT_GamePool_ReleaseObject);
+    TRACE_CPUPROFILER_EVENT_SCOPE(GamePool_ReleaseObject);
+
     if (!IsValid(Object)) {
         return TGameStatusResult<void>::Failure(5004, TEXT("Object is invalid or already destroyed"));
     }
@@ -198,6 +313,7 @@ TGameStatusResult<void> FUObjectPoolManager::ReleaseObject(UObject* Object) {
         return TGameStatusResult<void>::Failure(5003, TEXT("Object is not an active member of this pool"));
     }
     --Bucket->ActiveCount;
+    DEC_DWORD_STAT(STAT_GamePool_ActiveObjects);
 
     if (GenerationTracker != nullptr) {
         GenerationTracker->InvalidateGeneration(Object);
@@ -213,7 +329,9 @@ TGameStatusResult<void> FUObjectPoolManager::ReleaseObject(UObject* Object) {
         Object->MarkAsGarbage();
     } else {
         CurrentBucket.IdleObjects.Add(Object);
+        CurrentBucket.IdleReturnTimestamps.Add(FPlatformTime::Seconds());
         CurrentBucket.IdleObjectSet.Add(Object);
+        INC_DWORD_STAT(STAT_GamePool_IdleObjects);
     }
     return TGameStatusResult<void>::Success();
 }
@@ -252,6 +370,7 @@ void FUObjectPoolManager::ClearAllPools() {
 void FUObjectPoolManager::DestroyBucketIdleObjects(FObjectPoolBucket& Bucket) {
     TArray<TObjectPtr<UObject>> IdleObjects = MoveTemp(Bucket.IdleObjects);
     Bucket.IdleObjects.Empty();
+    Bucket.IdleReturnTimestamps.Empty();
     Bucket.IdleObjectSet.Empty();
     for (TObjectPtr<UObject>& IdleObj : IdleObjects) {
         if (IsValid(IdleObj.Get())) {
@@ -273,4 +392,37 @@ void FUObjectPoolManager::AddReferencedObjects(FReferenceCollector& Collector) {
         Collector.AddReferencedObjects(Pair.Value.IdleObjectSet);
         Collector.AddReferencedObjects(Pair.Value.ActiveObjectSet);
     }
+}
+
+/**
+ * @brief 获取全部类别的活跃 UObject 实例总数
+ * @return 活跃 UObject 实例总数
+ */
+int32 FUObjectPoolManager::GetTotalActiveCount() const noexcept {
+    int32 Sum = 0;
+    for (const auto& Pair : ObjectPoolMap) {
+        Sum += Pair.Value.ActiveCount;
+    }
+    return Sum;
+}
+
+/**
+ * @brief 获取全部类别的空闲 UObject 实例总数
+ * @return 空闲 UObject 实例总数
+ */
+int32 FUObjectPoolManager::GetTotalIdleCount() const noexcept {
+    int32 Sum = 0;
+    for (const auto& Pair : ObjectPoolMap) {
+        Sum += Pair.Value.IdleObjects.Num();
+    }
+    return Sum;
+}
+
+/**
+ * @brief 重置遥测统计计数器
+ */
+void FUObjectPoolManager::ResetTelemetry() noexcept {
+    TotalAcquires = 0;
+    CacheHits = 0;
+    CacheMisses = 0;
 }

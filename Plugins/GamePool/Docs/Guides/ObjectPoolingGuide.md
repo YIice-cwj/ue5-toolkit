@@ -180,3 +180,61 @@ void CalculateDamage() {
 - **句柄安全保护**：尽量使用 `TPooledObjectHandle<T>` 代替直接持有裸指针，若对象已在别处被归还或被他人复用，句柄会自动阻断访问，彻底消除隐蔽的数据窜号污染。
 - **工作线程延迟归还**：若在物理子步或 TaskGraph 异步线程完成计算，使用 `Pool.ReleaseActorDeferred(Actor)` 压入无锁环形队列，主线程在帧首统一批量收割归还，避免主线程锁竞争。
 - **深度组件清理**：系统已原生支持骨骼网格体动画重置（`EPoolResetFlags::Animation`）与 Pawn 控制器解绑（`EPoolResetFlags::PawnAndAI`），消除复用时的 T-Pose 闪烁与幽灵控制。
+
+---
+
+## 7. 弹性缩容与冷数据分帧淘汰 (TTL Eviction)
+
+针对爆发性战斗场景（如短时间内发射上百发子弹）脱战后长时间闲置的内存占用，可配置生存期（TTL）与保底留存数量进行平滑缩容：
+
+```cpp
+FPoolEvictionSettings Settings;
+Settings.bEnableEviction = true;              // 启用闲置超时自动淘汰
+Settings.IdleTimeToLiveSeconds = 60.0f;       // 闲置超过 60 秒判定为冷实例
+Settings.MinPreservedCount = 5;               // 保底保留 5 个，防止再次战斗发生冷启动
+Settings.CheckIntervalSeconds = 5.0f;         // 每 5 秒心跳检测一次
+Settings.MaxEvictionsPerStep = 2;             // 单步仅销毁 2 个，彻底杜绝单帧 GC 尖刺
+
+// 应用配置到指定 Actor 或 UObject 池
+Pool.SetActorPoolEvictionSettings(AMyProjectile::StaticClass(), Settings);
+```
+
+- **LIFO 与 FIFO 协同**：借出时遵循栈顶弹出最热实例（最大化 CPU 缓存局部性）；淘汰时遵循先进先出从头部扫描存活最久的冷实例，零额外性能损耗。
+- **平滑销毁保障**：单步销毁严格受 `MaxEvictionsPerStep` 限制，将数百个实例的释放开销平摊在多帧内，消除任何可能的帧率抖动与 GC 尖刺。
+
+---
+
+## 8. 运行时性能监控与可观测性 (Observability)
+
+### 8.1 控制台实时性能面板
+在调试或性能调优过程中，在游戏控制台输入：
+```bash
+stat GamePool
+```
+可在屏幕上直观查看：
+- **实时耗时 (Cycle Stats)**：`Acquire Actor Total`、`Release Actor Total`、`Component Deep Reset`、`Eviction Step Time` 等核心路径开销；
+- **实例容量计数 (Counter Stats)**：`Active Actors` / `Idle Actors`、`Active UObjects` / `Idle UObjects`；
+- **命中与穿透 (Counters)**：`Pool Cache Hits`（命中复用）与 `Pool Cache Misses`（穿透生成）。
+
+### 8.2 Unreal Insights CPU 追踪
+在 Insights 会话中，过滤 `GamePool` 即可捕获高精度 CPU 追踪事件：
+- `GamePool_AcquireActor` / `GamePool_AcquireObject`：借出路径总耗时；
+- `GamePool_ReleaseActor` / `GamePool_ReleaseObject`：归还入池耗时；
+- `GamePool_ResetActorComponents`：组件深度状态清理与重置耗时；
+- `GamePool_PrewarmStep`：分帧预热单步耗时；
+- `GamePool_EvictObjects`：平滑淘汰单步耗时；
+- `GamePool_ProcessDeferredReleases`：延迟收割多线程入池耗时。
+
+### 8.3 运行时遥测快照与命中率
+在蓝图或 C++ 中可随时获取高层遥测快照（`FPoolTelemetrySnapshot`）：
+```cpp
+UObjectPoolSubsystem* PoolSubsystem = UObjectPoolSubsystem::GetPtr(this);
+if (PoolSubsystem != nullptr) {
+    const FPoolTelemetrySnapshot Telemetry = PoolSubsystem->GetTelemetrySnapshot();
+    const float HitRate = Telemetry.GetHitRatePercentage();
+    
+    // 上报 APM 监控或打印诊断
+    UE_LOG(LogTemp, Log, TEXT("GamePool 命中率: %.2f%% (Hits: %lld, Misses: %lld, Active: %d, Idle: %d)"),
+        HitRate, Telemetry.CacheHits, Telemetry.CacheMisses, Telemetry.TotalActiveCount, Telemetry.TotalIdleCount);
+}
+```

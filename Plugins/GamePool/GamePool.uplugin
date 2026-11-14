@@ -1,9 +1,9 @@
 {
     "FileVersion": 3,
-    "Version": 1,
-    "VersionName": "1.0.0",
+    "Version": 2,
+    "VersionName": "2.0.0",
     "FriendlyName": "Game Pool",
-    "Description": "General-purpose Actor and UObject pooling infrastructure with progressive time-sliced prewarming and component state recycling.",
+    "Description": "General-purpose Actor and UObject pooling infrastructure with generational handle safety, coroutine streaming prewarm, TTL idle eviction, and native C++ memory pool.",
     "Category": "Game",
     "CreatedBy": "Taoist Decree Team",
     "CanContainContent": false,
