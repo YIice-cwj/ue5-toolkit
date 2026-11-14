@@ -12,26 +12,9 @@
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "Misc/AutomationTest.h"
+#include "Tests/GamePoolTestUtils.h"
 
-namespace {
-
-/**
- * @brief 获取测试世界指针
- * @return 当前有效的 UWorld 指针，不存在返回 nullptr
- */
-UWorld* GetTestWorld() {
-    if (!GEngine) {
-        return nullptr;
-    }
-    for (const FWorldContext& Context : GEngine->GetWorldContexts()) {
-        if (Context.World()) {
-            return Context.World();
-        }
-    }
-    return nullptr;
-}
-
-}  // namespace
+using Game::Pool::TestUtils::GetTestWorld;
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGamePoolEvictionTTLAndMinPreservedTest,

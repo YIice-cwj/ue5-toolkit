@@ -8,23 +8,9 @@
 
 #include "Engine/Engine.h"
 #include "Misc/AutomationTest.h"
+#include "Tests/GamePoolTestUtils.h"
 
-namespace {
-
-/**
- * @brief 获取测试世界指针
- * @return 当前有效的 UWorld 指针，若不存在则返回 nullptr
- */
-UWorld* GetTestWorld() {
-    for (const FWorldContext& Context : GEngine->GetWorldContexts()) {
-        if (Context.World()) {
-            return Context.World();
-        }
-    }
-    return nullptr;
-}
-
-}  // namespace
+using Game::Pool::TestUtils::GetTestWorld;
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameObjectPoolAcquireAndReleaseTest,

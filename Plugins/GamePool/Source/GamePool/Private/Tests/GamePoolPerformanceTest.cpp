@@ -16,6 +16,9 @@
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "Misc/AutomationTest.h"
+#include "Tests/GamePoolTestUtils.h"
+
+using Game::Pool::TestUtils::GetTestWorld;
 
 namespace {
 
@@ -46,22 +49,6 @@ struct FPerfTestPayload {
     uint64 FieldC = 0;
     uint64 FieldD = 0;
 };
-
-/**
- * @brief 获取自动化测试可用的 UWorld 指针
- * @return 当前有效的 UWorld 指针，不存在时返回 nullptr
- */
-UWorld* GetTestWorld() {
-    if (!GEngine) {
-        return nullptr;
-    }
-    for (const FWorldContext& Context : GEngine->GetWorldContexts()) {
-        if (Context.World()) {
-            return Context.World();
-        }
-    }
-    return nullptr;
-}
 
 /**
  * @brief 执行多轮基准测试，消除预热偏差并统计中位数与离散度 (CV%)
