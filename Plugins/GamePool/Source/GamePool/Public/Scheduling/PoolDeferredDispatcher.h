@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Containers/TLockFreeRingBuffer.h"
+#include "Types/TGameResult.h"
 #include "UObject/WeakObjectPtr.h"
 
 class AActor;
@@ -23,9 +24,9 @@ public:
     /**
      * @brief 异步延时将 Actor 加入归还队列（多线程/并发安全）
      * @param Actor 待归还的目标 Actor 实例
-     * @return 成功入队返回 true，队列已满或 Actor 无效返回 false
+     * @return 成功入队返回 Success，队列已满或 Actor 无效返回 Failure
      */
-    bool EnqueueDeferredRelease(AActor* Actor);
+    [[nodiscard]] TGameStatusResult<void> EnqueueDeferredRelease(AActor* Actor);
 
     /**
      * @brief 分步批量处理延时归还队列中的 Actor

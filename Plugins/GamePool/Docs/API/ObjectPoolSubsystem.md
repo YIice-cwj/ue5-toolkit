@@ -144,9 +144,11 @@ public:
     template <typename T>
     TGameStatusResult<void> ReleaseActor(const TPooledObjectHandle<T>& Handle);
 
-    // ==================== 跨线程无锁延迟回收 ====================
-    bool ReleaseActorDeferred(AActor* Actor);
+    // ==================== 跨线程无锁延迟回收与静默预充 ====================
+    TGameStatusResult<void> ReleaseActorDeferred(AActor* Actor);
     int32 ProcessDeferredReleases(int32 MaxProcessCount = 64);
+    TGameStatusResult<void> SpawnIdleActorToPool(TSubclassOf<AActor> ActorClass, const FTransform& SpawnTransform = FTransform::Identity);
+    TGameStatusResult<void> SpawnIdleObjectToPool(TSubclassOf<UObject> ObjectClass);
 
     // ==================== 纯 UObject 池化 ====================
     void PrewarmObjectPool(TSubclassOf<UObject> ObjectClass, int32 PrewarmCount);

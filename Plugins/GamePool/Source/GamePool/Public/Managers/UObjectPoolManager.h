@@ -92,9 +92,9 @@ public:
     /**
      * @brief 生成单个空闲 UObject 实例并放入空闲池
      * @param ObjectClass 目标类
-     * @return 成功生成并入池返回 true
+     * @return 成功生成并入池返回 Success，失败返回 Failure
      */
-    bool SpawnIdleObjectToPool(TSubclassOf<UObject> ObjectClass);
+    TGameStatusResult<void> SpawnIdleObjectToPool(TSubclassOf<UObject> ObjectClass);
 
     /**
      * @brief 销毁并标记回收指定存储桶中的全部空闲 UObject

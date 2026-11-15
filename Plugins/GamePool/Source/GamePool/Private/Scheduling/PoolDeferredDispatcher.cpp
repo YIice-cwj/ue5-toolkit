@@ -7,13 +7,16 @@
 /**
  * @brief 异步延时将 Actor 加入归还队列（多线程/并发安全）
  * @param Actor 待归还的目标 Actor 实例
- * @return 成功入队返回 true，队列已满或 Actor 无效返回 false
+ * @return 成功入队返回 Success，队列已满或 Actor 无效返回 Failure
  */
-bool FPoolDeferredDispatcher::EnqueueDeferredRelease(AActor* Actor) {
+TGameStatusResult<void> FPoolDeferredDispatcher::EnqueueDeferredRelease(AActor* Actor) {
     if (!IsValid(Actor)) {
-        return false;
+        return TGameStatusResult<void>::Failure(1, TEXT("Actor 无效或为空"));
     }
-    return DeferredReleaseBuffer.Enqueue(TWeakObjectPtr<AActor>(Actor));
+    if (!DeferredReleaseBuffer.Enqueue(TWeakObjectPtr<AActor>(Actor))) {
+        return TGameStatusResult<void>::Failure(2, TEXT("延迟回收缓冲区已满"));
+    }
+    return TGameStatusResult<void>::Success();
 }
 
 /**

@@ -139,9 +139,9 @@ TGameStatusResult<void> UObjectPoolSubsystem::ReleaseActor(AActor* Actor) {
 /**
  * @brief 异步延时将 Actor 加入归还队列
  * @param Actor 待归还的目标 Actor 实例
- * @return 成功入队返回 true，队列已满或 Actor 无效返回 false
+ * @return 成功入队返回 Success，队列已满或 Actor 无效返回 Failure
  */
-bool UObjectPoolSubsystem::ReleaseActorDeferred(AActor* Actor) {
+TGameStatusResult<void> UObjectPoolSubsystem::ReleaseActorDeferred(AActor* Actor) {
     return DeferredDispatcher.EnqueueDeferredRelease(Actor);
 }
 
@@ -415,8 +415,8 @@ void UObjectPoolSubsystem::OnPooledActorDestroyed(AActor* DestroyedActor) {
 /**
  * @brief 向空闲池中填充一个预热生成的 Actor
  * @param ActorClass 目标 Actor 类
- * @return 成功生成入池返回 true
+ * @return 成功生成入池返回 Success，参数无效或生成失败返回 Failure
  */
-bool UObjectPoolSubsystem::SpawnIdleActorToPool(TSubclassOf<AActor> ActorClass) {
+TGameStatusResult<void> UObjectPoolSubsystem::SpawnIdleActorToPool(TSubclassOf<AActor> ActorClass) {
     return ActorManager.SpawnIdleActorToPool(ActorClass);
 }

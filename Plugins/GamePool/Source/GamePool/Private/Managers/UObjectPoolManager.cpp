@@ -31,28 +31,31 @@ void FUObjectPoolManager::Initialize(UObject* InOuter, FPoolGenerationTracker* I
 /**
  * @brief 生成单个空闲 UObject 实例并放入空闲池
  * @param ObjectClass 目标类
- * @return 成功生成并入池返回 true
+ * @return 成功生成并入池返回 Success，失败返回 Failure
  */
-bool FUObjectPoolManager::SpawnIdleObjectToPool(TSubclassOf<UObject> ObjectClass) {
+TGameStatusResult<void> FUObjectPoolManager::SpawnIdleObjectToPool(TSubclassOf<UObject> ObjectClass) {
     UClass* RawClass = ObjectClass.Get();
-    if (!IsValidPoolableUObjectClass(RawClass) || OuterObject == nullptr) {
-        return false;
+    if (!IsValidPoolableUObjectClass(RawClass)) {
+        return TGameStatusResult<void>::Failure(1, TEXT("无效的池化 UObject 类型"));
+    }
+    if (OuterObject == nullptr) {
+        return TGameStatusResult<void>::Failure(2, TEXT("OuterObject 上下文为空"));
     }
 
     FObjectPoolBucket& Bucket = ObjectPoolMap.FindOrAdd(RawClass);
     if (Bucket.MaxIdleCount > 0 && Bucket.IdleObjects.Num() >= Bucket.MaxIdleCount) {
-        return false;
+        return TGameStatusResult<void>::Failure(3, TEXT("已达到 MaxIdleCount 容量上限"));
     }
 
     UObject* NewInstance = NewObject<UObject>(OuterObject, RawClass);
     if (NewInstance == nullptr) {
-        return false;
+        return TGameStatusResult<void>::Failure(4, TEXT("实例化 UObject 失败"));
     }
     Bucket.IdleObjects.Add(NewInstance);
     Bucket.IdleReturnTimestamps.Add(FPlatformTime::Seconds());
     Bucket.IdleObjectSet.Add(NewInstance);
     INC_DWORD_STAT(STAT_GamePool_IdleObjects);
-    return true;
+    return TGameStatusResult<void>::Success();
 }
 
 /**
@@ -74,7 +77,7 @@ void FUObjectPoolManager::Prewarm(TSubclassOf<UObject> ObjectClass, int32 Prewar
         if (Bucket.MaxIdleCount > 0 && Bucket.IdleObjects.Num() >= Bucket.MaxIdleCount) {
             break;
         }
-        if (!SpawnIdleObjectToPool(ObjectClass)) {
+        if (SpawnIdleObjectToPool(ObjectClass).IsFailure()) {
             break;
         }
     }
@@ -231,7 +234,7 @@ TGameStatusResult<UObject*> FUObjectPoolManager::AcquireObject(TSubclassOf<UObje
         if constexpr (Game::Config::bEnableLog) {
             UE_LOG(LogGameUObjectPool, Warning, TEXT("【UObject对象池】借出 UObject 失败：ObjectClass 无效或属于 AActor 派生类。"));
         }
-        return TGameStatusResult<UObject*>::Failure(5001, TEXT("ObjectClass is invalid or is AActor subclass"));
+        return TGameStatusResult<UObject*>::Failure(5001, TEXT("ObjectClass 无效或属于 AActor 派生类"));
     }
 
     UObject* ResultObject = nullptr;
@@ -264,7 +267,7 @@ TGameStatusResult<UObject*> FUObjectPoolManager::AcquireObject(TSubclassOf<UObje
         ResultObject = NewObject<UObject>(OuterObject, RawClass);
     }
     if (ResultObject == nullptr) {
-        return TGameStatusResult<UObject*>::Failure(5002, TEXT("Failed to instantiate UObject"));
+        return TGameStatusResult<UObject*>::Failure(5002, TEXT("实例化 UObject 失败"));
     }
 
     INC_DWORD_STAT(STAT_GamePool_ActiveObjects);
@@ -283,7 +286,7 @@ TGameStatusResult<UObject*> FUObjectPoolManager::AcquireObject(TSubclassOf<UObje
         if (Bucket.ActiveObjectSet.Remove(ResultObject) > 0) {
             DEC_DWORD_STAT(STAT_GamePool_ActiveObjects);
         }
-        return TGameStatusResult<UObject*>::Failure(5002, TEXT("UObject was invalidated during OnAcquireFromPool"));
+        return TGameStatusResult<UObject*>::Failure(5002, TEXT("UObject 在 OnAcquireFromPool 回调中失效"));
     }
 
     return TGameStatusResult<UObject*>::Success(ResultObject);
@@ -299,7 +302,7 @@ TGameStatusResult<void> FUObjectPoolManager::ReleaseObject(UObject* Object) {
     TRACE_CPUPROFILER_EVENT_SCOPE(GamePool_ReleaseObject);
 
     if (!IsValid(Object)) {
-        return TGameStatusResult<void>::Failure(5004, TEXT("Object is invalid or already destroyed"));
+        return TGameStatusResult<void>::Failure(5004, TEXT("Object 无效或已被销毁"));
     }
 
     UClass* RawClass = Object->GetClass();
@@ -309,7 +312,7 @@ TGameStatusResult<void> FUObjectPoolManager::ReleaseObject(UObject* Object) {
             UE_LOG(LogGameUObjectPool, Warning, TEXT("【UObject对象池】归还警告：UObject [%s] 不是当前活跃池属实例，已忽略归还。"),
                 *GetNameSafe(Object));
         }
-        return TGameStatusResult<void>::Failure(5003, TEXT("Object is not an active member of this pool"));
+        return TGameStatusResult<void>::Failure(5003, TEXT("Object 不是此对象池的活跃借出成员"));
     }
     DEC_DWORD_STAT(STAT_GamePool_ActiveObjects);
 

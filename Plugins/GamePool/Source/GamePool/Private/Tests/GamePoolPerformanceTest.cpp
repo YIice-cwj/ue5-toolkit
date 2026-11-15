@@ -34,6 +34,9 @@ constexpr double UObjectPoolBudgetNsPerOp = 5000.0;
 constexpr int32 ActorPoolIterations = 50;
 constexpr double ActorPoolBudgetNsPerOp = 50000.0;
 
+constexpr int32 HandleValidationIterations = 100000;
+constexpr double HandleValidationBudgetNsPerOp = 50.0;
+
 struct FBenchmarkMetrics {
     double MedianNs = 0.0;
     double MeanNs = 0.0;
@@ -340,6 +343,82 @@ bool FGameActorPoolPerfTest::RunTest([[maybe_unused]] const FString& Parameters)
         SpeedupRatio
     ));
 
+    Subsystem->ClearAllPools();
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameHandleValidationPerfTest,
+    "Game.Pool.Perf.HandleValidationVsRaw",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 世代版本受管安全句柄校验开销对比原生裸指针判空微基准
+ * @param Parameters 自动化框架参数（未使用）
+ * @return 句柄校验开销在预算范围内返回 true
+ */
+bool FGameHandleValidationPerfTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UWorld* World = GetTestWorld();
+    TestNotNull(TEXT("测试世界有效"), World);
+    if (!World) {
+        return false;
+    }
+
+    UObjectPoolSubsystem* Subsystem = World->GetSubsystem<UObjectPoolSubsystem>();
+    TestNotNull(TEXT("对象池子系统有效"), Subsystem);
+    if (!Subsystem) {
+        return false;
+    }
+
+    const TGameStatusResult<TPooledObjectHandle<UGamePoolableTestObject>> HandleResult =
+        Subsystem->AcquireObjectHandle<UGamePoolableTestObject>();
+    TestTrue(TEXT("借出安全句柄成功"), HandleResult.IsSuccess());
+
+    const TPooledObjectHandle<UGamePoolableTestObject> ValidHandle = HandleResult.GetValue();
+    UGamePoolableTestObject* RawPtr = ValidHandle.Get();
+    TestNotNull(TEXT("底层原生对象指针非空"), RawPtr);
+
+    volatile bool Sink = false;
+
+    const FBenchmarkMetrics HandleMetrics = RunBenchmark(
+        DefaultWarmupRounds,
+        DefaultSampleRounds,
+        HandleValidationIterations,
+        [&ValidHandle, &Sink](const int32 Iterations) {
+            for (int32 Index = 0; Index < Iterations; ++Index) {
+                Sink = ValidHandle.IsValid();
+            }
+        }
+    );
+
+    const FBenchmarkMetrics RawMetrics = RunBenchmark(
+        DefaultWarmupRounds,
+        DefaultSampleRounds,
+        HandleValidationIterations,
+        [&RawPtr, &Sink](const int32 Iterations) {
+            for (int32 Index = 0; Index < Iterations; ++Index) {
+                Sink = (RawPtr != nullptr);
+            }
+        }
+    );
+
+    TestTrue(
+        FString::Printf(TEXT("Handle.IsValid() 耗时 %.1f ns/op 应低于预算 %.0f ns/op"), HandleMetrics.MedianNs, HandleValidationBudgetNsPerOp),
+        HandleMetrics.MedianNs < HandleValidationBudgetNsPerOp
+    );
+
+    AddInfo(FString::Printf(
+        TEXT("Handle Validation: %.1f ns/op (CV: %.2f%%, %.1f Mops/s) | Raw Pointer Check: %.1f ns/op (CV: %.2f%%) | Overhead: +%.1f ns"),
+        HandleMetrics.MedianNs,
+        HandleMetrics.CvPercent,
+        HandleMetrics.OpsPerSec / 1.0e6,
+        RawMetrics.MedianNs,
+        RawMetrics.CvPercent,
+        FMath::Max(0.0, HandleMetrics.MedianNs - RawMetrics.MedianNs)
+    ));
+
+    Subsystem->ReleaseObject(ValidHandle);
     Subsystem->ClearAllPools();
     return true;
 }

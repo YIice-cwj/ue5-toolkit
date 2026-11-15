@@ -10,6 +10,31 @@
 
 class UObjectPoolSubsystem;
 
+namespace Game::Pool::Private {
+/**
+ * @brief 校验受管句柄的世代版本是否与对象池子系统记录一致
+ * @param Subsystem 对象池子系统指针
+ * @param Object 目标对象指针
+ * @param Generation 句柄持有的世代序号
+ * @return 世代匹配且有效返回 true
+ */
+GAMEPOOL_API bool ValidatePooledHandle(const UObjectPoolSubsystem* Subsystem, const UObject* Object, uint32 Generation);
+
+/**
+ * @brief 将受管 Actor 归还给对象池子系统
+ * @param Subsystem 对象池子系统指针
+ * @param Actor 待归还 Actor
+ */
+GAMEPOOL_API void ReleasePooledActor(UObjectPoolSubsystem* Subsystem, AActor* Actor);
+
+/**
+ * @brief 将受管 UObject 归还给对象池子系统
+ * @param Subsystem 对象池子系统指针
+ * @param Object 待归还 UObject
+ */
+GAMEPOOL_API void ReleasePooledObject(UObjectPoolSubsystem* Subsystem, UObject* Object);
+}  // namespace Game::Pool::Private
+
 /**
  * @brief 带世代版本防悬空检查的池化对象受管安全句柄
  * @tparam T 对象具体类型（AActor 派生类或 UObject 派生类）
@@ -226,3 +251,25 @@ public:
 private:
     TPooledObjectHandle<T> Handle;
 };
+
+template <typename T>
+bool TPooledObjectHandle<T>::IsValid() const {
+    if (!ObjectPtr.IsValid() || !SubsystemPtr.IsValid()) {
+        return false;
+    }
+    return Game::Pool::Private::ValidatePooledHandle(SubsystemPtr.Get(), ObjectPtr.Get(), Generation);
+}
+
+template <typename T>
+void TScopedPoolRental<T>::EarlyRelease() {
+    if (Handle.IsValid()) {
+        if (UObjectPoolSubsystem* Subsystem = Handle.GetSubsystem()) {
+            if constexpr (std::is_base_of_v<AActor, T>) {
+                Game::Pool::Private::ReleasePooledActor(Subsystem, Handle.Get());
+            } else {
+                Game::Pool::Private::ReleasePooledObject(Subsystem, Handle.Get());
+            }
+        }
+        Handle.Reset();
+    }
+}

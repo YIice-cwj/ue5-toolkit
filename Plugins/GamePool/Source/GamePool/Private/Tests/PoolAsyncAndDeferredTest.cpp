@@ -188,7 +188,7 @@ bool FGameObjectPoolDeferredReleaseTest::RunTest([[maybe_unused]] const FString&
         return false;
     }
 
-    TestTrue(TEXT("无锁延迟入队归还成功"), Pool->ReleaseActorDeferred(Actor));
+    TestTrue(TEXT("无锁延迟入队归还成功"), Pool->ReleaseActorDeferred(Actor).IsSuccess());
 
     const FPoolStats PreHarvestStats = Pool->GetPoolStats(ActorClass);
     TestEqual(TEXT("收割前仍处于活跃状态"), PreHarvestStats.ActiveCount, 1);

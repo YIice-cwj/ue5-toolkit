@@ -205,7 +205,7 @@ public:
     template <typename T>
     TGameStatusResult<void> ReleaseActor(const TPooledObjectHandle<T>& Handle) {
         if (!Handle.IsValid()) {
-            return TGameStatusResult<void>::Failure(5002, TEXT("Handle is invalid or expired"));
+            return TGameStatusResult<void>::Failure(5002, TEXT("句柄无效或已过期"));
         }
         return ReleaseActor(Handle.Get());
     }
@@ -213,9 +213,9 @@ public:
     /**
      * @brief 异步延时将 Actor 加入归还队列（并发/多线程安全）
      * @param Actor 待归还的目标 Actor 实例
-     * @return 成功入队返回 true
+     * @return 成功入队返回 Success，队列已满或 Actor 无效返回 Failure
      */
-    bool ReleaseActorDeferred(AActor* Actor);
+    TGameStatusResult<void> ReleaseActorDeferred(AActor* Actor);
 
     /**
      * @brief 处理延时归还队列中的待归还 Actor
@@ -387,7 +387,7 @@ public:
     template <typename T>
     TGameStatusResult<void> ReleaseObject(const TPooledObjectHandle<T>& Handle) {
         if (!Handle.IsValid()) {
-            return TGameStatusResult<void>::Failure(5002, TEXT("Handle is invalid or expired"));
+            return TGameStatusResult<void>::Failure(5002, TEXT("句柄无效或已过期"));
         }
         return ReleaseObject(Handle.Get());
     }
@@ -533,9 +533,9 @@ public:
     /**
      * @brief 向空闲池中填充一个预热生成的 Actor
      * @param ActorClass 目标 Actor 类
-     * @return 成功生成入池返回 true
+     * @return 成功生成入池返回 Success，参数无效或生成失败返回 Failure
      */
-    bool SpawnIdleActorToPool(TSubclassOf<AActor> ActorClass);
+    TGameStatusResult<void> SpawnIdleActorToPool(TSubclassOf<AActor> ActorClass);
 
 private:
     TGameStatusResult<AActor*> AcquireActorInternal(TSubclassOf<AActor> ActorClass, const FTransform& SpawnTransform);
@@ -550,31 +550,6 @@ private:
 };
 
 template <typename T>
-bool TPooledObjectHandle<T>::IsValid() const {
-    if (!ObjectPtr.IsValid()) {
-        return false;
-    }
-    if (!SubsystemPtr.IsValid()) {
-        return false;
-    }
-    return SubsystemPtr->ValidateHandleGeneration(ObjectPtr.Get(), Generation);
-}
-
-template <typename T>
-void TScopedPoolRental<T>::EarlyRelease() {
-    if (Handle.IsValid()) {
-        if (UObjectPoolSubsystem* Subsystem = Handle.GetSubsystem()) {
-            if constexpr (std::is_base_of_v<AActor, T>) {
-                Subsystem->ReleaseActor(Handle.Get());
-            } else {
-                Subsystem->ReleaseObject(Handle.Get());
-            }
-        }
-        Handle.Reset();
-    }
-}
-
-template <typename T>
 TGameStatusResult<T*> UObjectPoolSubsystem::AcquireActor(TSubclassOf<AActor> ActorClass, const FTransform& SpawnTransform) {
     const TGameStatusResult<AActor*> RawResult = AcquireActorInternal(ActorClass, SpawnTransform);
     if (RawResult.IsFailure()) {
@@ -582,7 +557,7 @@ TGameStatusResult<T*> UObjectPoolSubsystem::AcquireActor(TSubclassOf<AActor> Act
     }
     T* Casted = Cast<T>(RawResult.GetValue());
     if (Casted == nullptr) {
-        return TGameStatusResult<T*>::Failure(5001, TEXT("Cast to requested Actor class failed"));
+        return TGameStatusResult<T*>::Failure(5001, TEXT("转换至目标 Actor 类型失败"));
     }
     return TGameStatusResult<T*>::Success(Casted);
 }
@@ -652,7 +627,7 @@ TGameStatusResult<T*> UObjectPoolSubsystem::AcquireObject(TSubclassOf<UObject> O
     }
     T* Casted = Cast<T>(RawResult.GetValue());
     if (Casted == nullptr) {
-        return TGameStatusResult<T*>::Failure(5001, TEXT("Cast to requested UObject class failed"));
+        return TGameStatusResult<T*>::Failure(5001, TEXT("转换至目标 UObject 类型失败"));
     }
     return TGameStatusResult<T*>::Success(Casted);
 }

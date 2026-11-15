@@ -97,7 +97,7 @@ TGameCoroTask<int32> FPoolAsyncLoader::PrewarmActorsAsync(
         {
             SCOPE_CYCLE_COUNTER(STAT_GamePool_PrewarmStep);
             TRACE_CPUPROFILER_EVENT_SCOPE(GamePool_PrewarmStep);
-            bSpawnSuccess = ActorManager.SpawnIdleActorToPool(ActorClass);
+            bSpawnSuccess = ActorManager.SpawnIdleActorToPool(ActorClass).IsSuccess();
         }
         if (!bSpawnSuccess) {
             break;
@@ -192,7 +192,7 @@ TGameCoroTask<int32> FPoolAsyncLoader::PrewarmObjectsAsync(
         {
             SCOPE_CYCLE_COUNTER(STAT_GamePool_PrewarmStep);
             TRACE_CPUPROFILER_EVENT_SCOPE(GamePool_PrewarmObjectStep);
-            bSpawnSuccess = ObjectManager.SpawnIdleObjectToPool(ObjectClass);
+            bSpawnSuccess = ObjectManager.SpawnIdleObjectToPool(ObjectClass).IsSuccess();
         }
         if (!bSpawnSuccess) {
             break;

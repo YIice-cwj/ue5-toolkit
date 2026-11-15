@@ -432,7 +432,7 @@ bool FGamePoolTelemetryScopedAndDeferredTest::RunTest([[maybe_unused]] const FSt
     TestEqual(TEXT("借出后活跃实例为1"), BeforeDeferred.TotalActiveCount, 1);
     TestEqual(TEXT("借出后空闲实例为1"), BeforeDeferred.TotalIdleCount, 1);
 
-    const bool bEnqueued = Subsystem->ReleaseActorDeferred(AcqDeferred.GetValue());
+    const bool bEnqueued = Subsystem->ReleaseActorDeferred(AcqDeferred.GetValue()).IsSuccess();
     TestTrue(TEXT("成功压入无锁延迟归还队列"), bEnqueued);
 
     const int32 Processed = Subsystem->ProcessDeferredReleases(64);

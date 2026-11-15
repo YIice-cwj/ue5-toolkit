@@ -33,9 +33,9 @@ public:
     /**
      * @brief 生成单个空闲 Actor 实例并放入空闲池
      * @param ActorClass 目标 Actor 类
-     * @return 成功生成并入池返回 true
+     * @return 成功生成并入池返回 Success，失败返回 Failure
      */
-    bool SpawnIdleActorToPool(TSubclassOf<AActor> ActorClass);
+    TGameStatusResult<void> SpawnIdleActorToPool(TSubclassOf<AActor> ActorClass);
 
     /**
      * @brief 设置指定 Actor 类的最大空闲缓存容量

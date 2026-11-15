@@ -52,18 +52,24 @@ void FActorPoolManager::Prewarm(TSubclassOf<AActor> ActorClass, int32 PrewarmCou
 /**
  * @brief 生成单个空闲 Actor 实例并放入空闲池
  * @param ActorClass 目标 Actor 类
- * @return 成功生成并入池返回 true
+ * @return 成功生成并入池返回 Success，失败返回 Failure
  */
-bool FActorPoolManager::SpawnIdleActorToPool(TSubclassOf<AActor> ActorClass) {
-    if (!ActorClass || ActorClass->HasAnyClassFlags(CLASS_Abstract) || World == nullptr) {
-        return false;
+TGameStatusResult<void> FActorPoolManager::SpawnIdleActorToPool(TSubclassOf<AActor> ActorClass) {
+    if (!ActorClass) {
+        return TGameStatusResult<void>::Failure(1, TEXT("ActorClass 为空"));
+    }
+    if (ActorClass->HasAnyClassFlags(CLASS_Abstract)) {
+        return TGameStatusResult<void>::Failure(2, TEXT("ActorClass 为抽象类"));
+    }
+    if (World == nullptr) {
+        return TGameStatusResult<void>::Failure(3, TEXT("World 上下文为空"));
     }
 
     FActorSpawnParameters SpawnParams;
     SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
     AActor* SpawnedActor = World->SpawnActor<AActor>(ActorClass, FTransform::Identity, SpawnParams);
     if (!SpawnedActor) {
-        return false;
+        return TGameStatusResult<void>::Failure(4, TEXT("生成 Actor 实例失败"));
     }
 
     DeactivateActorForPool(SpawnedActor);
@@ -72,7 +78,7 @@ bool FActorPoolManager::SpawnIdleActorToPool(TSubclassOf<AActor> ActorClass) {
     Bucket.IdleReturnTimestamps.Add(FPlatformTime::Seconds());
     Bucket.IdleActorSet.Add(SpawnedActor);
     INC_DWORD_STAT(STAT_GamePool_IdleActors);
-    return true;
+    return TGameStatusResult<void>::Success();
 }
 
 /**
@@ -241,7 +247,7 @@ TGameStatusResult<AActor*> FActorPoolManager::AcquireActor(TSubclassOf<AActor> A
         if constexpr (Game::Config::bEnableLog) {
             UE_LOG(LogGameActorPool, Warning, TEXT("【Actor对象池】借出 Actor 失败：ActorClass 或世界上下文无效。"));
         }
-        return TGameStatusResult<AActor*>::Failure(5001, TEXT("ActorClass or World is invalid"));
+        return TGameStatusResult<AActor*>::Failure(5001, TEXT("ActorClass 或 World 上下文无效"));
     }
 
     AActor* ResultActor = nullptr;
@@ -286,7 +292,7 @@ TGameStatusResult<AActor*> FActorPoolManager::AcquireActor(TSubclassOf<AActor> A
         if constexpr (Game::Config::bEnableLog) {
             UE_LOG(LogGameActorPool, Error, TEXT("【Actor对象池】生成 Actor 实例失败：类=[%s]"), *ActorClass->GetName());
         }
-        return TGameStatusResult<AActor*>::Failure(5002, TEXT("Failed to spawn Actor"));
+        return TGameStatusResult<AActor*>::Failure(5002, TEXT("生成 Actor 实例失败"));
     }
 
     INC_DWORD_STAT(STAT_GamePool_ActiveActors);
@@ -319,7 +325,7 @@ TGameStatusResult<AActor*> FActorPoolManager::AcquireActor(TSubclassOf<AActor> A
         if (Bucket.ActiveActorSet.Remove(ResultActor) > 0) {
             DEC_DWORD_STAT(STAT_GamePool_ActiveActors);
         }
-        return TGameStatusResult<AActor*>::Failure(5002, TEXT("Actor was invalidated during OnAcquireFromPool"));
+        return TGameStatusResult<AActor*>::Failure(5002, TEXT("Actor 在 OnAcquireFromPool 回调中失效"));
     }
 
     if constexpr (Game::Config::bEnableLog) {
@@ -342,7 +348,7 @@ TGameStatusResult<void> FActorPoolManager::ReleaseActor(AActor* Actor) {
         if constexpr (Game::Config::bEnableLog) {
             UE_LOG(LogGameActorPool, Warning, TEXT("【Actor对象池】归还 Actor 失败：Actor 无效。"));
         }
-        return TGameStatusResult<void>::Failure(5004, TEXT("Actor is invalid or already destroyed"));
+        return TGameStatusResult<void>::Failure(5004, TEXT("Actor 无效或已被销毁"));
     }
 
     TSubclassOf<AActor> ActorClass = Actor->GetClass();
@@ -351,7 +357,7 @@ TGameStatusResult<void> FActorPoolManager::ReleaseActor(AActor* Actor) {
         if constexpr (Game::Config::bEnableLog) {
             UE_LOG(LogGameActorPool, Warning, TEXT("【Actor对象池】归还警告：Actor [%s] 不是当前活跃池属实例，已忽略归还。"), *GetNameSafe(Actor));
         }
-        return TGameStatusResult<void>::Failure(5003, TEXT("Actor is not an active member of this pool"));
+        return TGameStatusResult<void>::Failure(5003, TEXT("Actor 不是此对象池的活跃借出成员"));
     }
     DEC_DWORD_STAT(STAT_GamePool_ActiveActors);
 

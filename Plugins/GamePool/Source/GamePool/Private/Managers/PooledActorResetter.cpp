@@ -97,22 +97,17 @@ void FPooledActorResetter::InvokePoolableCallback(UObject* TargetObject, bool bA
         return;
     }
 
-    IGamePoolable* NativePoolable = static_cast<IGamePoolable*>(
-        TargetObject->GetNativeInterfaceAddress(UGamePoolable::StaticClass())
-    );
-    const bool bUseNative = NativePoolable != nullptr && TargetObject->GetClass()->HasAnyClassFlags(CLASS_Native);
-
-    if (bAcquire) {
-        if (bUseNative) {
+    if (IGamePoolable* NativePoolable = Cast<IGamePoolable>(TargetObject)) {
+        if (bAcquire) {
             NativePoolable->OnAcquireFromPool_Implementation();
         } else {
-            IGamePoolable::Execute_OnAcquireFromPool(TargetObject);
+            NativePoolable->OnReleaseToPool_Implementation();
         }
         return;
     }
 
-    if (bUseNative) {
-        NativePoolable->OnReleaseToPool_Implementation();
+    if (bAcquire) {
+        IGamePoolable::Execute_OnAcquireFromPool(TargetObject);
     } else {
         IGamePoolable::Execute_OnReleaseToPool(TargetObject);
     }
