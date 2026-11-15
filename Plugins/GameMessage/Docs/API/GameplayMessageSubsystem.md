@@ -46,18 +46,20 @@ public:
 
     /**
      * @brief 广播强类型消息（主线程同步派发，内部采用栈内联数组 + TSharedPtr 零闭包拷贝快照）
-     * @tparam FMessageStructType 必须是带有 USTRUCT() 的反射结构体
+     * @tparam TMessageStructType 必须是带有 USTRUCT() 的反射结构体
      * @param Channel 寻址通道 GameplayTag
      * @param Message 消息结构体实例
+     * @return 派发状态结果（通道无效或未指定反射结构体时返回失败）
      */
-    template <typename FMessageStructType>
-    void BroadcastMessage(FGameplayTag Channel, const FMessageStructType& Message);
+    template <typename TMessageStructType>
+    TGameStatusResult<void> BroadcastMessage(FGameplayTag Channel, const TMessageStructType& Message);
 
     /**
      * @brief 跨线程安全异步入队强类型消息（可在任意后台工作线程调用，经无锁 MPSC 队列合并投递回 GameThread 串行派发）
+     * @return 入队状态结果
      */
-    template <typename FMessageStructType>
-    void EnqueueMessage(FGameplayTag Channel, FMessageStructType Message);
+    template <typename TMessageStructType>
+    TGameStatusResult<void> EnqueueMessage(FGameplayTag Channel, TMessageStructType Message);
 
     /**
      * @brief 在主线程立即排空并派发所有待处理的跨线程消息
@@ -67,39 +69,40 @@ public:
     /**
      * @brief 注册成员函数监听器（仅接收通道与载荷）
      */
-    template <typename FMessageStructType, typename TOwner>
+    template <typename TMessageStructType, typename TOwner>
     [[nodiscard]] FGameplayMessageListenerHandle RegisterListener(
         FGameplayTag Channel,
         TOwner* ListenerObject,
-        void (TOwner::*CallbackMethod)(FGameplayTag, const FMessageStructType&),
+        void (TOwner::*CallbackMethod)(FGameplayTag, const TMessageStructType&),
         EGameplayMessageMatch MatchRule = EGameplayMessageMatch::ExactMatch
     );
 
     /**
      * @brief 注册成员函数监听器（仅接收载荷）
      */
-    template <typename FMessageStructType, typename TOwner>
+    template <typename TMessageStructType, typename TOwner>
     [[nodiscard]] FGameplayMessageListenerHandle RegisterListener(
         FGameplayTag Channel,
         TOwner* ListenerObject,
-        void (TOwner::*CallbackMethod)(const FMessageStructType&),
+        void (TOwner::*CallbackMethod)(const TMessageStructType&),
         EGameplayMessageMatch MatchRule = EGameplayMessageMatch::ExactMatch
     );
 
     /**
      * @brief 注册通用 Lambda / TFunction 监听器
      */
-    template <typename FMessageStructType>
+    template <typename TMessageStructType>
     [[nodiscard]] FGameplayMessageListenerHandle RegisterListener(
         FGameplayTag Channel,
-        TFunction<void(FGameplayTag, const FMessageStructType&)> Callback,
+        TFunction<void(FGameplayTag, const TMessageStructType&)> Callback,
         EGameplayMessageMatch MatchRule = EGameplayMessageMatch::ExactMatch
     );
 
     /**
      * @brief 手动注销指定通道上的监听器 ID（升级 64 位整型，防止长时间运行符号溢出）
+     * @return 注销状态结果（通道无效或未找到监听器时返回对应错误）
      */
-    void UnregisterListener(FGameplayTag Channel, int64 ListenerId);
+    TGameStatusResult<void> UnregisterListener(FGameplayTag Channel, int64 ListenerId);
 
     /**
      * @brief 检查指定通道是否存在任何监听器

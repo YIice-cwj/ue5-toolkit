@@ -1,4 +1,4 @@
-# GameCore 消息通信实战指南
+# GameMessage 消息通信与选型实战指南
 
 本文指导在实际游戏开发中，如何在 `UGameplayMessageSubsystem`、`FValueObserver` 与 `FListenerHub` 之间做出正确的技术选型，并提供完整的模块间解耦通信实战代码。
 

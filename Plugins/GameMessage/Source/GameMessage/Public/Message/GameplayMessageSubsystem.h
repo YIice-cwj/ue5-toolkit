@@ -9,6 +9,7 @@
 #include "GameplayTagContainer.h"
 #include "Message/GameplayMessageTypes.h"
 #include "Subsystems/GameInstanceSubsystem.h"
+#include "Types/TGameResult.h"
 
 #include "GameplayMessageSubsystem.generated.h"
 
@@ -59,18 +60,20 @@ public:
      * @tparam TMessageStructType 载荷结构体类型（需为 USTRUCT）
      * @param Channel 目标广播通道 GameplayTag
      * @param Message 消息载荷实例
+     * @return 广播成功返回 Success，通道无效或类型错误返回 Failure
      */
     template <typename TMessageStructType>
-    void BroadcastMessage(FGameplayTag Channel, const TMessageStructType& Message);
+    TGameStatusResult<void> BroadcastMessage(FGameplayTag Channel, const TMessageStructType& Message);
 
     /**
      * @brief 线程安全异步入队强类型消息（支持任意工作线程调用，自动合并投递至 GameThread 串行派发）
      * @tparam TMessageStructType 载荷结构体类型（需为可移动或可拷贝 USTRUCT）
      * @param Channel 目标广播通道 GameplayTag
      * @param Message 消息载荷实例（按值移动捕获）
+     * @return 成功入队返回 Success，通道无效或子系统注销返回 Failure
      */
     template <typename TMessageStructType>
-    void EnqueueMessage(FGameplayTag Channel, TMessageStructType Message);
+    TGameStatusResult<void> EnqueueMessage(FGameplayTag Channel, TMessageStructType Message);
 
     /**
      * @brief 在主线程立即排空并派发所有跨线程待处理消息队列
@@ -133,8 +136,9 @@ public:
      * @brief 手动注销指定通道上的监听器 ID
      * @param Channel 目标通道
      * @param ListenerId 监听器唯一 ID
+     * @return 成功注销返回 Success，未找到对应监听器返回 Failure
      */
-    void UnregisterListener(FGameplayTag Channel, int64 ListenerId);
+    TGameStatusResult<void> UnregisterListener(FGameplayTag Channel, int64 ListenerId);
 
     /**
      * @brief 查询当前已注册的监听器总数（供测试或诊断使用）
@@ -166,7 +170,7 @@ private:
         EGameplayMessageMatch MatchRule
     );
 
-    void BroadcastMessageInternal(
+    TGameStatusResult<void> BroadcastMessageInternal(
         FGameplayTag Channel,
         const UScriptStruct* StructType,
         const void* Payload
@@ -177,27 +181,32 @@ private:
 private:
     TMap<FGameplayTag, FChannelListenerList> ListenerMap;
     int64 NextListenerId = 0;
+    int32 PartialMatchListenerCount = 0;
     TMpscQueue<TUniqueFunction<void()>> PendingMessageQueue;
     std::atomic<bool> bDrainScheduled{false};
     std::atomic<bool> bIsShuttingDown{false};
 };
 
 template <typename TMessageStructType>
-void UGameplayMessageSubsystem::BroadcastMessage(FGameplayTag Channel, const TMessageStructType& Message) {
+TGameStatusResult<void> UGameplayMessageSubsystem::BroadcastMessage(FGameplayTag Channel, const TMessageStructType& Message) {
     const UScriptStruct* StructType = TBaseStructure<TMessageStructType>::Get();
-    BroadcastMessageInternal(Channel, StructType, &Message);
+    return BroadcastMessageInternal(Channel, StructType, &Message);
 }
 
 template <typename TMessageStructType>
-void UGameplayMessageSubsystem::EnqueueMessage(FGameplayTag Channel, TMessageStructType Message) {
-    if (!Channel.IsValid() || bIsShuttingDown.load(std::memory_order_acquire)) {
-        return;
+TGameStatusResult<void> UGameplayMessageSubsystem::EnqueueMessage(FGameplayTag Channel, TMessageStructType Message) {
+    if (!Channel.IsValid()) {
+        return TGameStatusResult<void>::Failure(1, TEXT("消息通道标签无效"));
+    }
+    if (bIsShuttingDown.load(std::memory_order_acquire)) {
+        return TGameStatusResult<void>::Failure(2, TEXT("子系统正在关闭"));
     }
     EnqueuePendingBroadcast(
         [this, Channel, CapturedMessage = MoveTemp(Message)]() {
             BroadcastMessage(Channel, CapturedMessage);
         }
     );
+    return TGameStatusResult<void>::Success();
 }
 
 template <typename TMessageStructType, typename TOwner>
@@ -207,7 +216,10 @@ FGameplayMessageListenerHandle UGameplayMessageSubsystem::RegisterListener(
     void (TOwner::*CallbackMethod)(FGameplayTag, const TMessageStructType&),
     EGameplayMessageMatch MatchRule
 ) {
-    check(ListenerObject != nullptr);
+    static_assert(std::is_base_of_v<UObject, TOwner>, "TOwner must derive from UObject for weak pointer lifecycle tracking.");
+    if (!ListenerObject) {
+        return FGameplayMessageListenerHandle();
+    }
     TWeakObjectPtr<TOwner> WeakListener(ListenerObject);
     return RegisterListener<TMessageStructType>(
         Channel,
@@ -227,7 +239,10 @@ FGameplayMessageListenerHandle UGameplayMessageSubsystem::RegisterListener(
     void (TOwner::*CallbackMethod)(const TMessageStructType&),
     EGameplayMessageMatch MatchRule
 ) {
-    check(ListenerObject != nullptr);
+    static_assert(std::is_base_of_v<UObject, TOwner>, "TOwner must derive from UObject for weak pointer lifecycle tracking.");
+    if (!ListenerObject) {
+        return FGameplayMessageListenerHandle();
+    }
     TWeakObjectPtr<TOwner> WeakListener(ListenerObject);
     return RegisterListener<TMessageStructType>(
         Channel,

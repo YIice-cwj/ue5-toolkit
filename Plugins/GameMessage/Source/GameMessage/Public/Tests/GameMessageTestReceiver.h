@@ -40,6 +40,27 @@ public:
         LastChannel = ActualChannel;
     }
 
+    /**
+     * @brief 成员函数监听回调（带通道与载荷）
+     * @param ActualChannel 实际接收到消息的 GameplayTag 通道
+     * @param Payload 强类型载荷引用
+     */
+    void OnTypedMessageReceived(FGameplayTag ActualChannel, const FTestGameplayMessage& Payload) {
+        ++ReceivedCount;
+        LastChannel = ActualChannel;
+        LastPayloadValue = Payload.Value;
+    }
+
+    /**
+     * @brief 成员函数监听回调（仅带载荷）
+     * @param Payload 强类型载荷引用
+     */
+    void OnPayloadOnlyReceived(const FTestGameplayMessage& Payload) {
+        ++ReceivedCount;
+        LastPayloadValue = Payload.Value;
+    }
+
     int32 ReceivedCount = 0;
+    int32 LastPayloadValue = 0;
     FGameplayTag LastChannel;
 };

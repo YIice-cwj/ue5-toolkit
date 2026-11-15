@@ -51,9 +51,47 @@ public:
      */
     void SetReadyToDestroy() override;
 
+    /**
+     * @brief 手动终止并清理异步动作节点（供蓝图调用）
+     */
+    UFUNCTION(BlueprintCallable, Category = "GameMessage|Message", meta = (DisplayName = "Cancel Message Listener"))
+    void Cancel();
+
+    /**
+     * @brief 提取上一次接收到的强类型载荷结构体（蓝图通配符引脚）
+     * @param OutPayload 接收载荷的结构体变量引用
+     * @return 成功提取且类型匹配返回 true，类型不匹配或无载荷返回 false
+     */
+    UFUNCTION(BlueprintCallable, CustomThunk, Category = "GameMessage|Message", meta = (CustomStructureParam = "OutPayload"))
+    bool GetPayload(UPARAM(ref) int32& OutPayload);
+    DECLARE_FUNCTION(execGetPayload);
+
+    /**
+     * @brief C++ 辅助方法：从上一次收到的消息中提取强类型载荷结构体
+     * @tparam TMessageStructType 目标载荷结构体类型
+     * @param OutPayload 接收载荷的结构体引用
+     * @return 成功提取且类型匹配返回 true，类型不匹配或无载荷返回 false
+     */
+    template <typename TMessageStructType>
+    bool GetPayloadTyped(TMessageStructType& OutPayload) const {
+        const UScriptStruct* TargetStruct = TBaseStructure<TMessageStructType>::Get();
+        if (TargetStruct == nullptr) {
+            TargetStruct = TMessageStructType::StaticStruct();
+        }
+        if (ReceivedPayloadStructType.IsValid() && ReceivedPayloadStructType.Get() == TargetStruct && ReceivedPayloadData.Num() > 0) {
+            TargetStruct->CopyScriptStruct(&OutPayload, ReceivedPayloadData.GetData());
+            return true;
+        }
+        return false;
+    }
+
 private:
+    void ClearReceivedPayload();
+
     TWeakObjectPtr<UObject> WorldContextObjectWeak;
     FGameplayTag TargetChannel;
     EGameplayMessageMatch TargetMatchRule = EGameplayMessageMatch::ExactMatch;
     FGameplayMessageListenerHandle ListenerHandle;
+    TWeakObjectPtr<const UScriptStruct> ReceivedPayloadStructType;
+    TArray<uint8> ReceivedPayloadData;
 };
