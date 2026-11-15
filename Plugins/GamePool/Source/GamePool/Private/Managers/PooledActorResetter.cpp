@@ -1,6 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "ObjectPool/PooledActorResetter.h"
+#include "Managers/PooledActorResetter.h"
 
 #include "Components/AudioComponent.h"
 #include "Components/PrimitiveComponent.h"
@@ -8,8 +8,8 @@
 #include "GameFramework/Controller.h"
 #include "GameFramework/MovementComponent.h"
 #include "GameFramework/Pawn.h"
-#include "ObjectPool/IGamePoolable.h"
-#include "ObjectPool/ObjectPoolStats.h"
+#include "Core/IGamePoolable.h"
+#include "Telemetry/ObjectPoolStats.h"
 #include "Particles/ParticleSystemComponent.h"
 #include "TimerManager.h"
 

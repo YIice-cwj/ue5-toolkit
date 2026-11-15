@@ -1,6 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "ObjectPool/ObjectPoolSubsystem.h"
+#include "Subsystem/ObjectPoolSubsystem.h"
 
 #include "Tests/GamePoolableTestActor.h"
 #include "Tests/UGamePoolableTestObject.h"

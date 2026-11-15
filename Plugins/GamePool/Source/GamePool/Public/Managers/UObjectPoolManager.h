@@ -3,8 +3,8 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "ObjectPool/ObjectPoolTypes.h"
-#include "ObjectPool/PoolGenerationTracker.h"
+#include "Core/ObjectPoolTypes.h"
+#include "Handle/PoolGenerationTracker.h"
 #include "Types/TGameResult.h"
 #include "UObject/GCObject.h"
 #include "UObject/Object.h"
@@ -90,10 +90,24 @@ public:
     void ClearAllPools();
 
     /**
+     * @brief 生成单个空闲 UObject 实例并放入空闲池
+     * @param ObjectClass 目标类
+     * @return 成功生成并入池返回 true
+     */
+    bool SpawnIdleObjectToPool(TSubclassOf<UObject> ObjectClass);
+
+    /**
      * @brief 销毁并标记回收指定存储桶中的全部空闲 UObject
      * @param Bucket 目标存储桶
      */
     void DestroyBucketIdleObjects(FObjectPoolBucket& Bucket);
+
+    /**
+     * @brief 泄洪销毁所有类别的空闲 UObject 实例
+     * @param bPreserveMinCount 是否保留各池配置的保底留存数量
+     * @return 实际销毁的实例数
+     */
+    int32 FlushIdleObjects(bool bPreserveMinCount = false);
 
     /**
      * @brief FGCObject 引用收集回调（保证池内空闲与活跃 UObject 绝不被 GC 误杀）

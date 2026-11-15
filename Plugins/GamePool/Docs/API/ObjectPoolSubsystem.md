@@ -3,11 +3,12 @@
 `UObjectPoolSubsystem` 是一个世界子系统（`UWorldSubsystem`），负责 `AActor`、非 Actor 纯 `UObject` 的复用、休眠、唤醒、分帧预热与生命周期管理，并配合 `TStructPool<T>` 覆盖非 UObject 纯 C++ 结构体的高性能内存池化，旨在彻底消除高频生成/销毁对象导致的 GC 顿卡、堆碎片与主线程尖峰。
 
 头文件：
-- `#include "ObjectPool/ObjectPoolSubsystem.h"`
-- `#include "ObjectPool/ObjectPoolTypes.h"`
-- `#include "ObjectPool/PooledObjectHandle.h"`
-- `#include "ObjectPool/IGamePoolable.h"`
-- `#include "MemoryPool/StructPool.h"`
+- `#include "GamePool.h"`（推荐，一站式汇聚全量池化与生命周期契约接口）
+- `#include "Subsystem/ObjectPoolSubsystem.h"`（世界子系统外观门面）
+- `#include "Core/ObjectPoolTypes.h"`（配置、统计与基础存储桶类型）
+- `#include "Core/IGamePoolable.h"`（生命周期契约接口）
+- `#include "Handle/PooledObjectHandle.h"`（防悬空安全代数句柄）
+- `#include "Memory/StructPool.h"`（定长裸结构体内存池）
 
 ---
 
@@ -149,6 +150,19 @@ public:
 
     // ==================== 纯 UObject 池化 ====================
     void PrewarmObjectPool(TSubclassOf<UObject> ObjectClass, int32 PrewarmCount);
+    
+    TGameCoroTask<int32> PrewarmObjectPoolAsync(
+        TSubclassOf<UObject> ObjectClass,
+        int32 PrewarmCount,
+        int32 MaxSpawnsPerStep = 4,
+        FCancellationToken CancellationToken = FCancellationToken::None());
+
+    TGameCoroTask<int32> PrewarmObjectPoolByPathAsync(
+        const FSoftObjectPath& ObjectClassPath,
+        int32 PrewarmCount,
+        int32 MaxSpawnsPerStep = 4,
+        FCancellationToken CancellationToken = FCancellationToken::None());
+
     void SetMaxObjectPoolCapacity(TSubclassOf<UObject> ObjectClass, int32 InMaxIdleCount);
 
     template <typename T = UObject>
@@ -180,6 +194,16 @@ public:
 
     UFUNCTION(BlueprintCallable, Category = "GamePool|Eviction")
     int32 ForceEvictExpired(int32 MaxEvictionsPerStep = 32, double CustomNowSeconds = 0.0);
+
+    // ==================== 弹性抗压与系统内存修剪响应 ====================
+    UFUNCTION(BlueprintCallable, Category = "GamePool|Resilience")
+    int32 FlushAllIdleInstances(bool bPreserveMinCount = false);
+
+    UFUNCTION(BlueprintCallable, Category = "GamePool|Resilience")
+    void SetLowMemoryAutoFlushEnabled(bool bEnable);
+
+    UFUNCTION(BlueprintPure, Category = "GamePool|Resilience")
+    [[nodiscard]] bool IsLowMemoryAutoFlushEnabled() const noexcept;
 
     // ==================== 统计与清空 ====================
     UFUNCTION(BlueprintPure, Category = "GamePool|ObjectPool")

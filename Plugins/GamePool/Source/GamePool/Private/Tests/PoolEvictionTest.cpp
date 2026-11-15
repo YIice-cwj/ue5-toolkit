@@ -3,7 +3,7 @@
  * @brief GamePool 弹性缩容与冷数据分帧淘汰 (TTL Eviction) 单元测试
  */
 
-#include "ObjectPool/ObjectPoolSubsystem.h"
+#include "Subsystem/ObjectPoolSubsystem.h"
 #include "Tests/GamePoolableTestActor.h"
 #include "Tests/UGamePoolableTestObject.h"
 

@@ -1,6 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "MemoryPool/StructPool.h"
+#include "Memory/StructPool.h"
 
 #if WITH_AUTOMATION_TESTS
 

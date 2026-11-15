@@ -6,7 +6,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "ObjectPool/IGamePoolable.h"
+#include "Core/IGamePoolable.h"
 #include "UObject/Object.h"
 
 #include "UGamePoolableTestObject.generated.h"

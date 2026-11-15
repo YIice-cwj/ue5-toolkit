@@ -131,7 +131,13 @@ struct GAMEPOOL_API FPoolBucket {
     UPROPERTY()
     TSet<TObjectPtr<AActor>> ActiveActorSet;
 
-    int32 ActiveCount = 0;
+    /**
+     * @brief 获取当前存储桶的活跃实例总数
+     * @return 活跃实例数
+     */
+    [[nodiscard]] int32 GetActiveCount() const noexcept {
+        return ActiveActorSet.Num();
+    }
 
     /**
      * @brief 单类对象池最大空闲缓存数（<=0 表示不限制容量，默认 100）
@@ -168,7 +174,13 @@ struct GAMEPOOL_API FObjectPoolBucket {
     UPROPERTY()
     TSet<TObjectPtr<UObject>> ActiveObjectSet;
 
-    int32 ActiveCount = 0;
+    /**
+     * @brief 获取当前存储桶的活跃实例总数
+     * @return 活跃实例数
+     */
+    [[nodiscard]] int32 GetActiveCount() const noexcept {
+        return ActiveObjectSet.Num();
+    }
 
     /**
      * @brief 单类对象池最大空闲缓存数（<=0 表示不限制容量，默认 100）

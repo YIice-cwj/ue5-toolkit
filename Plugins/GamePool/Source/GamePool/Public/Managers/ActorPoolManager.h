@@ -4,8 +4,8 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
-#include "ObjectPool/ObjectPoolTypes.h"
-#include "ObjectPool/PoolGenerationTracker.h"
+#include "Core/ObjectPoolTypes.h"
+#include "Handle/PoolGenerationTracker.h"
 #include "Types/TGameResult.h"
 
 class UObjectPoolSubsystem;
@@ -124,6 +124,13 @@ public:
      * @param Bucket 目标 Actor 存储桶
      */
     void DestroyBucketIdleActors(FPoolBucket& Bucket);
+
+    /**
+     * @brief 泄洪销毁所有类别的空闲 Actor 实例
+     * @param bPreserveMinCount 是否保留各池配置的保底留存数量
+     * @return 实际销毁的实例数
+     */
+    int32 FlushIdleActors(bool bPreserveMinCount = false);
 
     /**
      * @brief 查找指定 Actor 类的存储桶指针

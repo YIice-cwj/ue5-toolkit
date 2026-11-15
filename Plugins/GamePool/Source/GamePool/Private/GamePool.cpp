@@ -2,14 +2,16 @@
 
 #include "GamePool.h"
 
-#define LOCTEXT_NAMESPACE "FGamePoolModule"
-
+/**
+ * @brief 模块加载启动生命周期
+ */
 void FGamePoolModule::StartupModule() {
 }
 
+/**
+ * @brief 模块卸载生命周期
+ */
 void FGamePoolModule::ShutdownModule() {
 }
-
-#undef LOCTEXT_NAMESPACE
 
 IMPLEMENT_MODULE(FGamePoolModule, GamePool)

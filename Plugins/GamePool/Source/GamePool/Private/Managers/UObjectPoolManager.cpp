@@ -1,8 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "ObjectPool/UObjectPoolManager.h"
-#include "ObjectPool/ObjectPoolStats.h"
-#include "ObjectPool/PooledActorResetter.h"
+#include "Managers/UObjectPoolManager.h"
+#include "Telemetry/ObjectPoolStats.h"
+#include "Managers/PooledActorResetter.h"
 #include "Config/GameCompileSwitches.h"
 #include "GameFramework/Actor.h"
 
@@ -29,6 +29,33 @@ void FUObjectPoolManager::Initialize(UObject* InOuter, FPoolGenerationTracker* I
 }
 
 /**
+ * @brief 生成单个空闲 UObject 实例并放入空闲池
+ * @param ObjectClass 目标类
+ * @return 成功生成并入池返回 true
+ */
+bool FUObjectPoolManager::SpawnIdleObjectToPool(TSubclassOf<UObject> ObjectClass) {
+    UClass* RawClass = ObjectClass.Get();
+    if (!IsValidPoolableUObjectClass(RawClass) || OuterObject == nullptr) {
+        return false;
+    }
+
+    FObjectPoolBucket& Bucket = ObjectPoolMap.FindOrAdd(RawClass);
+    if (Bucket.MaxIdleCount > 0 && Bucket.IdleObjects.Num() >= Bucket.MaxIdleCount) {
+        return false;
+    }
+
+    UObject* NewInstance = NewObject<UObject>(OuterObject, RawClass);
+    if (NewInstance == nullptr) {
+        return false;
+    }
+    Bucket.IdleObjects.Add(NewInstance);
+    Bucket.IdleReturnTimestamps.Add(FPlatformTime::Seconds());
+    Bucket.IdleObjectSet.Add(NewInstance);
+    INC_DWORD_STAT(STAT_GamePool_IdleObjects);
+    return true;
+}
+
+/**
  * @brief 同步预热指定纯 UObject 类别
  * @param ObjectClass 目标 UObject 类
  * @param PrewarmCount 预热数量
@@ -47,15 +74,9 @@ void FUObjectPoolManager::Prewarm(TSubclassOf<UObject> ObjectClass, int32 Prewar
         if (Bucket.MaxIdleCount > 0 && Bucket.IdleObjects.Num() >= Bucket.MaxIdleCount) {
             break;
         }
-
-        UObject* NewInstance = NewObject<UObject>(OuterObject, RawClass);
-        if (NewInstance == nullptr) {
+        if (!SpawnIdleObjectToPool(ObjectClass)) {
             break;
         }
-        Bucket.IdleObjects.Add(NewInstance);
-        Bucket.IdleReturnTimestamps.Add(FPlatformTime::Seconds());
-        Bucket.IdleObjectSet.Add(NewInstance);
-        INC_DWORD_STAT(STAT_GamePool_IdleObjects);
     }
 
     if constexpr (Game::Config::bEnableLog) {
@@ -87,7 +108,7 @@ void FUObjectPoolManager::SetMaxCapacity(TSubclassOf<UObject> ObjectClass, int32
             Bucket.IdleObjectSet.Remove(ObjToDiscard);
             DEC_DWORD_STAT(STAT_GamePool_IdleObjects);
             if (GenerationTracker != nullptr) {
-                GenerationTracker->InvalidateGeneration(ObjToDiscard.Get());
+                GenerationTracker->RemoveGeneration(ObjToDiscard.Get());
             }
             if (IsValid(ObjToDiscard.Get())) {
                 ObjToDiscard->MarkAsGarbage();
@@ -164,17 +185,13 @@ int32 FUObjectPoolManager::EvictExpiredObjects(const double NowSeconds, const in
 
             if (UObject* RawObj = ObjToDiscard.Get()) {
                 if (GenerationTracker != nullptr) {
-                    GenerationTracker->InvalidateGeneration(RawObj);
+                    GenerationTracker->RemoveGeneration(RawObj);
                 }
                 if (IsValid(RawObj)) {
                     RawObj->MarkAsGarbage();
                 }
             }
             ++TotalEvicted;
-        }
-
-        if (TotalEvicted >= MaxEvictCount) {
-            break;
         }
     }
     return TotalEvicted;
@@ -194,7 +211,7 @@ FPoolStats FUObjectPoolManager::GetPoolStats(TSubclassOf<UObject> ObjectClass) c
 
     if (const FObjectPoolBucket* Bucket = ObjectPoolMap.Find(RawClass)) {
         Stats.IdleCount = Bucket->IdleObjects.Num();
-        Stats.ActiveCount = Bucket->ActiveCount;
+        Stats.ActiveCount = Bucket->GetActiveCount();
         Stats.TotalCount = Stats.IdleCount + Stats.ActiveCount;
     }
     return Stats;
@@ -218,19 +235,14 @@ TGameStatusResult<UObject*> FUObjectPoolManager::AcquireObject(TSubclassOf<UObje
     }
 
     UObject* ResultObject = nullptr;
-    while (true) {
-        TObjectPtr<UObject> Candidate;
-        {
-            FObjectPoolBucket& Bucket = ObjectPoolMap.FindOrAdd(RawClass);
-            if (Bucket.IdleObjects.IsEmpty()) {
-                break;
-            }
-            Candidate = Bucket.IdleObjects.Pop();
-            if (Bucket.IdleReturnTimestamps.Num() > 0) {
-                Bucket.IdleReturnTimestamps.Pop();
-            }
-            Bucket.IdleObjectSet.Remove(Candidate);
+    FObjectPoolBucket& Bucket = ObjectPoolMap.FindOrAdd(RawClass);
+
+    while (!Bucket.IdleObjects.IsEmpty()) {
+        TObjectPtr<UObject> Candidate = Bucket.IdleObjects.Pop();
+        if (Bucket.IdleReturnTimestamps.Num() > 0) {
+            Bucket.IdleReturnTimestamps.Pop();
         }
+        Bucket.IdleObjectSet.Remove(Candidate);
         if (IsValid(Candidate.Get())) {
             ResultObject = Candidate.Get();
             break;
@@ -257,33 +269,20 @@ TGameStatusResult<UObject*> FUObjectPoolManager::AcquireObject(TSubclassOf<UObje
 
     INC_DWORD_STAT(STAT_GamePool_ActiveObjects);
 
-    {
-        FObjectPoolBucket& Bucket = ObjectPoolMap.FindOrAdd(RawClass);
-        Bucket.ActiveObjectSet.Add(ResultObject);
-        ++Bucket.ActiveCount;
-    }
+    Bucket.ActiveObjectSet.Add(ResultObject);
 
     if (GenerationTracker != nullptr) {
         GenerationTracker->GetOrIncrementGeneration(ResultObject);
     }
 
     FPooledActorResetter::InvokePoolableCallback(ResultObject, true);
-    FObjectPoolBucket* Bucket = ObjectPoolMap.Find(RawClass);
-    if (!IsValid(ResultObject)) {
+    if (!IsValid(ResultObject) || !Bucket.ActiveObjectSet.Contains(ResultObject)) {
         if (GenerationTracker != nullptr) {
-            GenerationTracker->InvalidateGeneration(ResultObject);
+            GenerationTracker->RemoveGeneration(ResultObject);
         }
-        if (Bucket != nullptr && Bucket->ActiveObjectSet.Remove(ResultObject) > 0) {
-            --Bucket->ActiveCount;
+        if (Bucket.ActiveObjectSet.Remove(ResultObject) > 0) {
+            DEC_DWORD_STAT(STAT_GamePool_ActiveObjects);
         }
-        DEC_DWORD_STAT(STAT_GamePool_ActiveObjects);
-        return TGameStatusResult<UObject*>::Failure(5002, TEXT("UObject was invalidated during OnAcquireFromPool"));
-    }
-    if (Bucket == nullptr || !Bucket->ActiveObjectSet.Contains(ResultObject)) {
-        if (GenerationTracker != nullptr) {
-            GenerationTracker->InvalidateGeneration(ResultObject);
-        }
-        DEC_DWORD_STAT(STAT_GamePool_ActiveObjects);
         return TGameStatusResult<UObject*>::Failure(5002, TEXT("UObject was invalidated during OnAcquireFromPool"));
     }
 
@@ -312,7 +311,6 @@ TGameStatusResult<void> FUObjectPoolManager::ReleaseObject(UObject* Object) {
         }
         return TGameStatusResult<void>::Failure(5003, TEXT("Object is not an active member of this pool"));
     }
-    --Bucket->ActiveCount;
     DEC_DWORD_STAT(STAT_GamePool_ActiveObjects);
 
     if (GenerationTracker != nullptr) {
@@ -324,13 +322,15 @@ TGameStatusResult<void> FUObjectPoolManager::ReleaseObject(UObject* Object) {
         return TGameStatusResult<void>::Success();
     }
 
-    FObjectPoolBucket& CurrentBucket = ObjectPoolMap.FindOrAdd(RawClass);
-    if (CurrentBucket.MaxIdleCount > 0 && CurrentBucket.IdleObjects.Num() >= CurrentBucket.MaxIdleCount) {
+    if (Bucket->MaxIdleCount > 0 && Bucket->IdleObjects.Num() >= Bucket->MaxIdleCount) {
+        if (GenerationTracker != nullptr) {
+            GenerationTracker->RemoveGeneration(Object);
+        }
         Object->MarkAsGarbage();
     } else {
-        CurrentBucket.IdleObjects.Add(Object);
-        CurrentBucket.IdleReturnTimestamps.Add(FPlatformTime::Seconds());
-        CurrentBucket.IdleObjectSet.Add(Object);
+        Bucket->IdleObjects.Add(Object);
+        Bucket->IdleReturnTimestamps.Add(FPlatformTime::Seconds());
+        Bucket->IdleObjectSet.Add(Object);
         INC_DWORD_STAT(STAT_GamePool_IdleObjects);
     }
     return TGameStatusResult<void>::Success();
@@ -354,12 +354,8 @@ void FUObjectPoolManager::ClearPool(TSubclassOf<UObject> ObjectClass) {
  * @brief 清空并回收所有纯 UObject 类别的空闲实例
  */
 void FUObjectPoolManager::ClearAllPools() {
-    TArray<TObjectPtr<UClass>> ObjectClasses;
-    ObjectPoolMap.GenerateKeyArray(ObjectClasses);
-    for (const TObjectPtr<UClass>& ObjectClass : ObjectClasses) {
-        if (FObjectPoolBucket* Bucket = ObjectPoolMap.Find(ObjectClass)) {
-            DestroyBucketIdleObjects(*Bucket);
-        }
+    for (auto& Pair : ObjectPoolMap) {
+        DestroyBucketIdleObjects(Pair.Value);
     }
 }
 
@@ -375,11 +371,46 @@ void FUObjectPoolManager::DestroyBucketIdleObjects(FObjectPoolBucket& Bucket) {
     for (TObjectPtr<UObject>& IdleObj : IdleObjects) {
         if (IsValid(IdleObj.Get())) {
             if (GenerationTracker != nullptr) {
-                GenerationTracker->InvalidateGeneration(IdleObj.Get());
+                GenerationTracker->RemoveGeneration(IdleObj.Get());
             }
             IdleObj->MarkAsGarbage();
         }
     }
+}
+
+/**
+ * @brief 泄洪销毁所有类别的空闲 UObject 实例
+ * @param bPreserveMinCount 是否保留各池配置的保底留存数量
+ * @return 实际销毁的实例数
+ */
+int32 FUObjectPoolManager::FlushIdleObjects(const bool bPreserveMinCount) {
+    int32 TotalFlushed = 0;
+    for (auto& Pair : ObjectPoolMap) {
+        FObjectPoolBucket& Bucket = Pair.Value;
+        const int32 PreservedLimit = (bPreserveMinCount && Bucket.EvictionSettings.bEnableEviction)
+            ? FMath::Max(0, Bucket.EvictionSettings.MinPreservedCount)
+            : 0;
+
+        while (Bucket.IdleObjects.Num() > PreservedLimit) {
+            TObjectPtr<UObject> ObjPtr = Bucket.IdleObjects.Pop();
+            if (Bucket.IdleReturnTimestamps.Num() > 0) {
+                Bucket.IdleReturnTimestamps.Pop();
+            }
+            Bucket.IdleObjectSet.Remove(ObjPtr);
+            DEC_DWORD_STAT(STAT_GamePool_IdleObjects);
+
+            if (UObject* RawObj = ObjPtr.Get()) {
+                if (GenerationTracker != nullptr) {
+                    GenerationTracker->RemoveGeneration(RawObj);
+                }
+                if (IsValid(RawObj)) {
+                    RawObj->MarkAsGarbage();
+                }
+            }
+            ++TotalFlushed;
+        }
+    }
+    return TotalFlushed;
 }
 
 /**
@@ -401,7 +432,7 @@ void FUObjectPoolManager::AddReferencedObjects(FReferenceCollector& Collector) {
 int32 FUObjectPoolManager::GetTotalActiveCount() const noexcept {
     int32 Sum = 0;
     for (const auto& Pair : ObjectPoolMap) {
-        Sum += Pair.Value.ActiveCount;
+        Sum += Pair.Value.GetActiveCount();
     }
     return Sum;
 }

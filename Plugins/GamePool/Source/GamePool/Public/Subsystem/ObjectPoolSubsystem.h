@@ -3,74 +3,59 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Engine/TimerHandle.h"
-#include "GameFramework/Actor.h"
-#include "ObjectPool/ActorPoolManager.h"
-#include "ObjectPool/IGamePoolable.h"
-#include "ObjectPool/ObjectPoolTypes.h"
-#include "ObjectPool/PoolGenerationTracker.h"
-#include "ObjectPool/PooledObjectHandle.h"
-#include "ObjectPool/UObjectPoolManager.h"
+#include "Core/IGamePoolable.h"
+#include "Core/ObjectPoolTypes.h"
+#include "Handle/PoolGenerationTracker.h"
+#include "Handle/PooledObjectHandle.h"
+#include "Managers/ActorPoolManager.h"
+#include "Managers/UObjectPoolManager.h"
+#include "Scheduling/PoolDeferredDispatcher.h"
+#include "Scheduling/PoolEvictionScheduler.h"
+#include "Scheduling/PoolAsyncLoader.h"
+#include "Resilience/PoolResilienceController.h"
+#include "Telemetry/ObjectPoolStats.h"
 #include "Types/TGameResult.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "Async/FCancellationToken.h"
 #include "Async/TGameCoroTask.h"
-#include "Containers/TLockFreeRingBuffer.h"
 #include "Templates/SubclassOf.h"
 #include "UObject/SoftObjectPath.h"
 
 #include "ObjectPoolSubsystem.generated.h"
 
 /**
- * @brief 世界级通用对象池子系统（支持 Actor 与纯 UObject 复用、分帧预热、软引用协程预热、代数安全句柄与防 GC 顿卡）
+ * @brief 对象池子系统（World 级别单例外观门面，组合底层容器、调度器与弹性控制器）
  */
 UCLASS()
 class GAMEPOOL_API UObjectPoolSubsystem : public UWorldSubsystem {
     GENERATED_BODY()
 
 public:
-    UObjectPoolSubsystem();
-    virtual ~UObjectPoolSubsystem() override;
-
     /**
-     * @brief 获取对象池子系统引用（不存在时断言失败）
-     * @param WorldContextObject 关联的世界上下文对象
-     * @return 子系统引用
-     */
-    static UObjectPoolSubsystem& Get(const UObject* WorldContextObject);
-
-    /**
-     * @brief 安全获取对象池子系统指针（上下文无效返回 nullptr）
-     * @param WorldContextObject 关联的世界上下文对象
-     * @return 子系统指针，未就绪时返回 nullptr
-     */
-    static UObjectPoolSubsystem* GetPtr(const UObject* WorldContextObject);
-
-    /**
-     * @brief 世界子系统初始化生命周期
-     * @param Collection 子系统依赖集合
+     * @brief 初始化对象池子系统，设置 Actor 与 UObject 池管理器上下文及调度器
+     * @param Collection 子系统集合引用
      */
     virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 
     /**
-     * @brief 世界销毁生命周期回调：清空并销毁全部缓存的空闲 Actor 与 UObject 实例
+     * @brief 反初始化对象池子系统，清空所有池中对象、调度器与控制器
      */
     virtual void Deinitialize() override;
 
     /**
-     * @brief 同步预热指定类别的 Actor 对象池
+     * @brief 同步预热指定数量的 Actor 到对象池
      * @param ActorClass 目标 Actor 类
-     * @param PrewarmCount 预热生成的空闲实例数量
+     * @param PrewarmCount 预热生成的实例数量
      */
     UFUNCTION(BlueprintCallable, Category = "GamePool|ObjectPool")
     void Prewarm(TSubclassOf<AActor> ActorClass, int32 PrewarmCount);
 
     /**
-     * @brief C++20 协程分帧渐进预热 Actor 对象池（按帧预算平滑切片，支持协作式取消与生命周期自毁熔断）
+     * @brief 基于 C++20 协程的分步异步预热 Actor
      * @param ActorClass 目标 Actor 类
      * @param PrewarmCount 预热生成的空闲实例总数量
-     * @param MaxSpawnsPerStep 单步最大生成实例数（默认每步 1 个）
-     * @param CancellationToken 协作式取消令牌（可选）
+     * @param MaxSpawnsPerStep 单步最大生成实例数（防帧率尖刺）
+     * @param CancellationToken 协作式取消令牌
      * @return 实际成功预热生成的实例总数异步协程任务
      */
     TGameCoroTask<int32> PrewarmAsync(
@@ -81,11 +66,11 @@ public:
     );
 
     /**
-     * @brief 基于软引用的 C++20 协程流式异步预热（支持软引用异步流式加载、帧预算切片与取消熔断）
+     * @brief 基于软对象路径的 C++20 协程流式异步预热
      * @param ActorClassPath 目标 Actor 类的软对象路径
      * @param PrewarmCount 预热生成的空闲实例总数量
-     * @param MaxSpawnsPerStep 单步最大生成实例数（默认每步 1 个）
-     * @param CancellationToken 协作式取消令牌（可选）
+     * @param MaxSpawnsPerStep 单步最大生成实例数
+     * @param CancellationToken 协作式取消令牌
      * @return 实际成功预热生成的实例总数异步协程任务
      */
     TGameCoroTask<int32> PrewarmAsync(
@@ -96,7 +81,7 @@ public:
     );
 
     /**
-     * @brief 设置指定 Actor 类别的最大空闲实例缓存容量（防长期闲置内存膨胀）
+     * @brief 设置指定 Actor 类别的最大空闲实例缓存容量
      * @param ActorClass 目标 Actor 类
      * @param InMaxIdleCount 最大空闲数（<=0 表示无限制）
      */
@@ -106,133 +91,136 @@ public:
     /**
      * @brief 配置指定 Actor 类别归还入池时的组件自动重置策略掩码
      * @param ActorClass 目标 Actor 类
-     * @param InResetFlags 组件重置位掩码（默认 EPoolResetFlags::All）
+     * @param InResetFlags 重置位掩码
      */
     void SetPoolResetFlags(TSubclassOf<AActor> ActorClass, EPoolResetFlags InResetFlags);
 
     /**
      * @brief 查询指定 Actor 类别当前的组件自动重置策略掩码
      * @param ActorClass 目标 Actor 类
-     * @return 当前配置的组件重置位掩码（未显式配置时返回 EPoolResetFlags::All）
+     * @return 当前配置的组件重置策略掩码
      */
     [[nodiscard]] EPoolResetFlags GetPoolResetFlags(TSubclassOf<AActor> ActorClass) const;
 
     /**
-     * @brief 从池中借出或生成 Actor 实例（蓝图轻量门面）
-     * @param ActorClass 目标类
+     * @brief 从池中借出或生成 Actor 实例（蓝图专用外观方法）
+     * @param ActorClass 目标 Actor 类
      * @param SpawnTransform 初始空间变换
-     * @return 激活的 Actor 实例指针；失败返回 nullptr
+     * @return 借出的 Actor 原生指针，失败返回 nullptr
      */
     UFUNCTION(BlueprintCallable, Category = "GamePool|ObjectPool", meta = (DisplayName = "Acquire Actor", DeterminesOutputType = "ActorClass"))
     AActor* K2_AcquireActor(TSubclassOf<AActor> ActorClass, const FTransform& SpawnTransform);
 
     /**
-     * @brief 从池中借出或生成 Actor 实例（泛型强类型契约）
-     * @tparam T 返回的 Actor 具体派生类型
-     * @param ActorClass 目标类
+     * @brief 从池中借出或生成强类型 Actor 实例
+     * @tparam T 具体的 AActor 派生类
+     * @param ActorClass 目标 Actor 类
      * @param SpawnTransform 初始空间变换
-     * @return 成功返回派生类指针，失败返回 Failure(5001/5002)
+     * @return 包含目标 Actor 指针的强类型状态结果
      */
     template <typename T = AActor>
-    [[nodiscard]] TGameStatusResult<T*> AcquireActor(TSubclassOf<AActor> ActorClass, const FTransform& SpawnTransform = FTransform::Identity);
-
-    /**
-     * @brief 从池中借出或生成 Actor 实例并注入初始业务载荷
-     * @tparam T 返回的 Actor 具体派生类型
-     * @tparam TPayload 业务载荷结构体类型
-     * @param ActorClass 目标类
-     * @param SpawnTransform 初始空间变换
-     * @param Payload 业务初始化载荷
-     * @return 成功返回派生类指针，失败返回 Failure(5001/5002)
-     */
-    template <typename T = AActor, typename TPayload>
-    [[nodiscard]] TGameStatusResult<T*> AcquireActorWithPayload(
-        TSubclassOf<AActor> ActorClass,
-        const FTransform& SpawnTransform,
-        const TPayload& Payload
-    );
-
-    /**
-     * @brief 从池中借出 Actor 并获取带世代防悬空校验的安全句柄
-     * @tparam T 返回的 Actor 具体派生类型
-     * @param ActorClass 目标类
-     * @param SpawnTransform 初始空间变换
-     * @return 成功返回安全受管句柄
-     */
-    template <typename T = AActor>
-    [[nodiscard]] TGameStatusResult<TPooledObjectHandle<T>> AcquireActorHandle(
-        TSubclassOf<AActor> ActorClass,
+    TGameStatusResult<T*> AcquireActor(
+        TSubclassOf<AActor> ActorClass = T::StaticClass(),
         const FTransform& SpawnTransform = FTransform::Identity
     );
 
     /**
-     * @brief 从池中借出 Actor 注入载荷并获取带世代防悬空校验的安全句柄
-     * @tparam T 返回的 Actor 具体派生类型
+     * @brief 从池中借出 Actor 实例并传递业务载荷
+     * @tparam T 具体的 AActor 派生类
      * @tparam TPayload 业务载荷类型
-     * @param ActorClass 目标类
+     * @param ActorClass 目标 Actor 类
      * @param SpawnTransform 初始空间变换
-     * @param Payload 业务初始化载荷
-     * @return 成功返回安全受管句柄
+     * @param Payload 业务载荷引用
+     * @return 包含目标 Actor 指针的强类型状态结果
      */
     template <typename T = AActor, typename TPayload>
-    [[nodiscard]] TGameStatusResult<TPooledObjectHandle<T>> AcquireActorHandleWithPayload(
+    TGameStatusResult<T*> AcquireActorWithPayload(
         TSubclassOf<AActor> ActorClass,
         const FTransform& SpawnTransform,
         const TPayload& Payload
     );
 
     /**
-     * @brief 从池中借出 Actor 并包装为作用域 RAII 自动归还租约
-     * @tparam T 返回的 Actor 具体派生类型
-     * @param ActorClass 目标类
+     * @brief 从池中借出 Actor 并包装为带代数防悬空的安全句柄
+     * @tparam T 具体的 AActor 派生类
+     * @param ActorClass 目标 Actor 类
      * @param SpawnTransform 初始空间变换
-     * @return 成功返回租约卫士
+     * @return 包含安全句柄的强类型状态结果
      */
     template <typename T = AActor>
-    [[nodiscard]] TGameStatusResult<TScopedPoolRental<T>> AcquireScopedActor(
-        TSubclassOf<AActor> ActorClass,
+    TGameStatusResult<TPooledObjectHandle<T>> AcquireActorHandle(
+        TSubclassOf<AActor> ActorClass = T::StaticClass(),
         const FTransform& SpawnTransform = FTransform::Identity
     );
 
     /**
-     * @brief 将已借出的 Actor 归还回池休眠（蓝图轻量门面）
-     * @param Actor 待归还的实例
+     * @brief 从池中借出 Actor 并传递载荷，包装为带代数防悬空的安全句柄
+     * @tparam T 具体的 AActor 派生类
+     * @tparam TPayload 业务载荷类型
+     * @param ActorClass 目标 Actor 类
+     * @param SpawnTransform 初始空间变换
+     * @param Payload 业务载荷引用
+     * @return 包含安全句柄的强类型状态结果
+     */
+    template <typename T = AActor, typename TPayload>
+    TGameStatusResult<TPooledObjectHandle<T>> AcquireActorHandleWithPayload(
+        TSubclassOf<AActor> ActorClass,
+        const FTransform& SpawnTransform,
+        const TPayload& Payload
+    );
+
+    /**
+     * @brief 借出 RAII 作用域自动归还租约卫士
+     * @tparam T 具体的 AActor 派生类
+     * @param ActorClass 目标 Actor 类
+     * @param SpawnTransform 初始空间变换
+     * @return 包含作用域租约卫士的强类型状态结果
+     */
+    template <typename T = AActor>
+    TGameStatusResult<TScopedPoolRental<T>> AcquireScopedActor(
+        TSubclassOf<AActor> ActorClass = T::StaticClass(),
+        const FTransform& SpawnTransform = FTransform::Identity
+    );
+
+    /**
+     * @brief 将已借出的 Actor 归还回池缓存（蓝图专用外观方法）
+     * @param Actor 待归还的 Actor 实例
      */
     UFUNCTION(BlueprintCallable, Category = "GamePool|ObjectPool", meta = (DisplayName = "Release Actor"))
     void K2_ReleaseActor(AActor* Actor);
 
     /**
-     * @brief 将已借出的 Actor 归还回池休眠（强类型契约）
-     * @param Actor 待归还的实例
-     * @return 成功归还返回 Success，未借出或已销毁返回 Failure(5003/5004)
+     * @brief 将已借出的 Actor 归还回池缓存
+     * @param Actor 待归还的 Actor 实例
+     * @return 归还状态结果
      */
     TGameStatusResult<void> ReleaseActor(AActor* Actor);
 
     /**
-     * @brief 通过安全受管句柄归还 Actor 回池
-     * @tparam T 具体类型
-     * @param Handle 安全句柄
-     * @return 成功归还返回 Success，句柄失效返回 Failure
+     * @brief 通过安全句柄归还 Actor 回池
+     * @tparam T 具体的 AActor 派生类
+     * @param Handle 待归还的受管句柄引用
+     * @return 归还状态结果
      */
     template <typename T>
     TGameStatusResult<void> ReleaseActor(const TPooledObjectHandle<T>& Handle) {
         if (!Handle.IsValid()) {
-            return TGameStatusResult<void>::Failure(5003, TEXT("Handle is invalid or expired"));
+            return TGameStatusResult<void>::Failure(5002, TEXT("Handle is invalid or expired"));
         }
         return ReleaseActor(Handle.Get());
     }
 
     /**
-     * @brief 在工作线程或异步任务中以无锁方式安全将 Actor 压入延迟归还队列
-     * @param Actor 待归还的实例
-     * @return 成功压入返回 true，队列已满返回 false
+     * @brief 异步延时将 Actor 加入归还队列（并发/多线程安全）
+     * @param Actor 待归还的目标 Actor 实例
+     * @return 成功入队返回 true
      */
     bool ReleaseActorDeferred(AActor* Actor);
 
     /**
-     * @brief 主线程批量收割并完成延迟队列中的 Actor 归还
-     * @param MaxProcessCount 单次最大处理实例数
-     * @return 实际成功收割归还的实例数
+     * @brief 处理延时归还队列中的待归还 Actor
+     * @param MaxProcessCount 本次单步最大处理配额
+     * @return 实际成功归还入池的 Actor 数量
      */
     int32 ProcessDeferredReleases(int32 MaxProcessCount = 64);
 
@@ -242,28 +230,64 @@ public:
      * @return 池状态统计结构体
      */
     UFUNCTION(BlueprintPure, Category = "GamePool|ObjectPool")
-    [[nodiscard]] FPoolStats GetPoolStats(TSubclassOf<AActor> ActorClass) const;
+    FPoolStats GetPoolStats(TSubclassOf<AActor> ActorClass) const;
 
     /**
-     * @brief 清空并销毁指定 Actor 类别的所有空闲实例
-     * @param ActorClass 目标类
+     * @brief 清空指定 Actor 类别的所有空闲实例并释放资源
+     * @param ActorClass 目标 Actor 类
      */
     UFUNCTION(BlueprintCallable, Category = "GamePool|ObjectPool")
     void ClearPool(TSubclassOf<AActor> ActorClass);
 
     /**
-     * @brief 清空并销毁所有类别的空闲实例（同时清理 Actor 池与非 Actor UObject 池）
+     * @brief 清空所有 Actor 类别池中的全部空闲实例
+     */
+    UFUNCTION(BlueprintCallable, Category = "GamePool|ObjectPool")
+    void ClearAllActorPools();
+
+    /**
+     * @brief 清空所有池类别（Actor 与纯 UObject）中的全部空闲实例
      */
     UFUNCTION(BlueprintCallable, Category = "GamePool|ObjectPool")
     void ClearAllPools();
 
     /**
-     * @brief 同步预热指定非 Actor UObject 类别的对象池
-     * @param ObjectClass 目标 UObject 派生类（不可为抽象类或 AActor 派生类）
-     * @param PrewarmCount 预热生成的空闲实例数量
+     * @brief 同步预热指定数量的纯 UObject 到对象池
+     * @param ObjectClass 目标 UObject 类
+     * @param PrewarmCount 预热生成的实例数量
      */
     UFUNCTION(BlueprintCallable, Category = "GamePool|ObjectPool")
     void PrewarmObjectPool(TSubclassOf<UObject> ObjectClass, int32 PrewarmCount);
+
+    /**
+     * @brief 基于 C++20 协程的分步异步预热纯 UObject 对象池
+     * @param ObjectClass 目标 UObject 类
+     * @param PrewarmCount 预热生成的总空闲实例数
+     * @param MaxSpawnsPerStep 单步最大生成实例数
+     * @param CancellationToken 协作式取消令牌
+     * @return 异步协程任务，返回实际成功实例化的数量
+     */
+    TGameCoroTask<int32> PrewarmObjectPoolAsync(
+        TSubclassOf<UObject> ObjectClass,
+        int32 PrewarmCount,
+        int32 MaxSpawnsPerStep = 4,
+        FCancellationToken CancellationToken = FCancellationToken::None()
+    );
+
+    /**
+     * @brief 基于软引用的 C++20 协程流式异步预热纯 UObject 对象池
+     * @param ObjectClassPath 目标 UObject 类的软对象路径
+     * @param PrewarmCount 预热生成的总空闲实例数
+     * @param MaxSpawnsPerStep 单步最大生成实例数
+     * @param CancellationToken 协作式取消令牌
+     * @return 异步协程任务，返回实际成功实例化的数量
+     */
+    TGameCoroTask<int32> PrewarmObjectPoolByPathAsync(
+        const FSoftObjectPath& ObjectClassPath,
+        int32 PrewarmCount,
+        int32 MaxSpawnsPerStep = 4,
+        FCancellationToken CancellationToken = FCancellationToken::None()
+    );
 
     /**
      * @brief 设置指定非 Actor UObject 类别的最大空闲缓存容量
@@ -274,135 +298,141 @@ public:
     void SetMaxObjectPoolCapacity(TSubclassOf<UObject> ObjectClass, int32 InMaxIdleCount);
 
     /**
-     * @brief 从池中借出或构建非 Actor UObject 实例（蓝图轻量门面）
-     * @param ObjectClass 目标 UObject 派生类（不可为抽象类或 AActor 派生类）
-     * @return 激活的 UObject 实例指针；失败返回 nullptr
+     * @brief 从池中借出或构建非 Actor UObject 实例（蓝图专用外观方法）
+     * @param ObjectClass 目标 UObject 派生类
+     * @return 激活的 UObject 实例指针，失败返回 nullptr
      */
     UFUNCTION(BlueprintCallable, Category = "GamePool|ObjectPool", meta = (DisplayName = "Acquire Object", DeterminesOutputType = "ObjectClass"))
     UObject* K2_AcquireObject(TSubclassOf<UObject> ObjectClass);
 
     /**
-     * @brief 从池中借出或构建非 Actor UObject 实例（泛型强类型契约）
-     * @tparam T 返回的 UObject 具体派生类型
-     * @param ObjectClass 目标类（默认使用 T::StaticClass()）
-     * @return 成功返回派生类指针，失败返回 Failure(5001/5002)
+     * @brief 从池中借出或构建强类型非 Actor UObject 实例
+     * @tparam T 具体的 UObject 派生类
+     * @param ObjectClass 目标类
+     * @return 包含对象指针的强类型状态结果
      */
     template <typename T = UObject>
-    [[nodiscard]] TGameStatusResult<T*> AcquireObject(TSubclassOf<UObject> ObjectClass = T::StaticClass());
+    TGameStatusResult<T*> AcquireObject(TSubclassOf<UObject> ObjectClass = T::StaticClass());
 
     /**
-     * @brief 从池中借出或构建非 Actor UObject 实例并注入初始业务载荷
-     * @tparam T 返回的 UObject 具体派生类型
-     * @tparam TPayload 业务载荷结构体类型
-     * @param ObjectClass 目标类
-     * @param Payload 业务初始化载荷
-     * @return 成功返回派生类指针，失败返回 Failure(5001/5002)
-     */
-    template <typename T = UObject, typename TPayload>
-    [[nodiscard]] TGameStatusResult<T*> AcquireObjectWithPayload(
-        TSubclassOf<UObject> ObjectClass,
-        const TPayload& Payload
-    );
-
-    /**
-     * @brief 从池中借出 UObject 并获取带世代防悬空校验的安全句柄
-     * @tparam T 返回的 UObject 具体类型
-     * @param ObjectClass 目标类
-     * @return 成功返回安全受管句柄
-     */
-    template <typename T = UObject>
-    [[nodiscard]] TGameStatusResult<TPooledObjectHandle<T>> AcquireObjectHandle(
-        TSubclassOf<UObject> ObjectClass = T::StaticClass()
-    );
-
-    /**
-     * @brief 从池中借出 UObject 注入载荷并获取带世代防悬空校验的安全句柄
-     * @tparam T 返回的 UObject 具体类型
+     * @brief 从池中借出纯 UObject 实例并传递业务载荷
+     * @tparam T 具体的 UObject 派生类
      * @tparam TPayload 业务载荷类型
      * @param ObjectClass 目标类
-     * @param Payload 业务初始化载荷
-     * @return 成功返回安全受管句柄
+     * @param Payload 业务载荷引用
+     * @return 包含对象指针的强类型状态结果
      */
     template <typename T = UObject, typename TPayload>
-    [[nodiscard]] TGameStatusResult<TPooledObjectHandle<T>> AcquireObjectHandleWithPayload(
+    TGameStatusResult<T*> AcquireObjectWithPayload(
         TSubclassOf<UObject> ObjectClass,
         const TPayload& Payload
     );
 
     /**
-     * @brief 从池中借出 UObject 并包装为作用域 RAII 自动归还租约
-     * @tparam T 返回的 UObject 具体类型
+     * @brief 从池中借出纯 UObject 并包装为带代数防悬空的安全句柄
+     * @tparam T 具体的 UObject 派生类
      * @param ObjectClass 目标类
-     * @return 成功返回租约卫士
+     * @return 包含安全句柄的强类型状态结果
      */
     template <typename T = UObject>
-    [[nodiscard]] TGameStatusResult<TScopedPoolRental<T>> AcquireScopedObject(
+    TGameStatusResult<TPooledObjectHandle<T>> AcquireObjectHandle(
         TSubclassOf<UObject> ObjectClass = T::StaticClass()
     );
 
     /**
-     * @brief 将已借出的非 Actor UObject 归还回池缓存（蓝图轻量门面）
+     * @brief 从池中借出纯 UObject 并传递载荷，包装为带代数防悬空的安全句柄
+     * @tparam T 具体的 UObject 派生类
+     * @tparam TPayload 业务载荷类型
+     * @param ObjectClass 目标类
+     * @param Payload 业务载荷引用
+     * @return 包含安全句柄的强类型状态结果
+     */
+    template <typename T = UObject, typename TPayload>
+    TGameStatusResult<TPooledObjectHandle<T>> AcquireObjectHandleWithPayload(
+        TSubclassOf<UObject> ObjectClass,
+        const TPayload& Payload
+    );
+
+    /**
+     * @brief 借出纯 UObject 的 RAII 作用域自动归还租约卫士
+     * @tparam T 具体的 UObject 派生类
+     * @param ObjectClass 目标类
+     * @return 包含作用域租约卫士的强类型状态结果
+     */
+    template <typename T = UObject>
+    TGameStatusResult<TScopedPoolRental<T>> AcquireScopedObject(
+        TSubclassOf<UObject> ObjectClass = T::StaticClass()
+    );
+
+    /**
+     * @brief 将已借出的非 Actor UObject 归还回池缓存（蓝图专用外观方法）
      * @param Object 待归还的 UObject 实例
      */
     UFUNCTION(BlueprintCallable, Category = "GamePool|ObjectPool", meta = (DisplayName = "Release Object"))
     void K2_ReleaseObject(UObject* Object);
 
     /**
-     * @brief 将已借出的非 Actor UObject 归还回池缓存（强类型契约）
+     * @brief 将已借出的非 Actor UObject 归还回池缓存
      * @param Object 待归还的 UObject 实例
-     * @return 成功归还返回 Success，未借出或已销毁返回 Failure(5003/5004)
+     * @return 归还状态结果
      */
     TGameStatusResult<void> ReleaseObject(UObject* Object);
 
     /**
-     * @brief 通过安全受管句柄归还 UObject 回池
-     * @tparam T 具体类型
-     * @param Handle 安全句柄
-     * @return 成功归还返回 Success，句柄失效返回 Failure
+     * @brief 通过安全句柄归还非 Actor UObject 回池
+     * @tparam T 具体的 UObject 派生类
+     * @param Handle 待归还的受管句柄引用
+     * @return 归还状态结果
      */
     template <typename T>
     TGameStatusResult<void> ReleaseObject(const TPooledObjectHandle<T>& Handle) {
         if (!Handle.IsValid()) {
-            return TGameStatusResult<void>::Failure(5003, TEXT("Handle is invalid or expired"));
+            return TGameStatusResult<void>::Failure(5002, TEXT("Handle is invalid or expired"));
         }
         return ReleaseObject(Handle.Get());
     }
 
     /**
-     * @brief 查询指定非 Actor UObject 类别的池容量与活跃统计快照
-     * @param ObjectClass 目标 UObject 派生类
+     * @brief 查询指定纯 UObject 类的池容量与活跃统计快照
+     * @param ObjectClass 目标类
      * @return 池状态统计结构体
      */
     UFUNCTION(BlueprintPure, Category = "GamePool|ObjectPool")
-    [[nodiscard]] FPoolStats GetObjectPoolStats(TSubclassOf<UObject> ObjectClass) const;
+    FPoolStats GetObjectPoolStats(TSubclassOf<UObject> ObjectClass) const;
 
     /**
-     * @brief 清空并回收指定非 Actor UObject 类别的所有空闲实例
-     * @param ObjectClass 目标 UObject 派生类
+     * @brief 清空指定纯 UObject 类别的所有空闲实例并释放垃圾回收引用
+     * @param ObjectClass 目标类
      */
     UFUNCTION(BlueprintCallable, Category = "GamePool|ObjectPool")
     void ClearObjectPool(TSubclassOf<UObject> ObjectClass);
 
     /**
-     * @brief 配置指定 Actor 类的闲置弹性缩容与淘汰策略
+     * @brief 清空所有非 Actor 纯 UObject 类别池中的全部空闲实例
+     */
+    UFUNCTION(BlueprintCallable, Category = "GamePool|ObjectPool")
+    void ClearAllObjectPools();
+
+    /**
+     * @brief 配置指定 Actor 类别的闲置弹性缩容与淘汰策略
      * @param ActorClass 目标 Actor 类
-     * @param Settings 淘汰配置
+     * @param Settings 淘汰策略配置
      */
     UFUNCTION(BlueprintCallable, Category = "GamePool|Eviction")
     void SetActorPoolEvictionSettings(TSubclassOf<AActor> ActorClass, const FPoolEvictionSettings& Settings);
 
     /**
-     * @brief 查询指定 Actor 类的闲置弹性缩容与淘汰策略
+     * @brief 查询指定 Actor 类别的闲置弹性缩容与淘汰策略
      * @param ActorClass 目标 Actor 类
      * @return 当前淘汰配置
      */
     UFUNCTION(BlueprintPure, Category = "GamePool|Eviction")
-    [[nodiscard]] FPoolEvictionSettings GetActorPoolEvictionSettings(TSubclassOf<AActor> ActorClass) const;
+    FPoolEvictionSettings GetActorPoolEvictionSettings(TSubclassOf<AActor> ActorClass) const;
 
     /**
-     * @brief 配置指定纯 UObject 类的闲置弹性缩容与淘汰策略
+     * @brief 配置指定纯 UObject 类别的闲置弹性缩容与淘汰策略
      * @param ObjectClass 目标 UObject 类
-     * @param Settings 淘汰配置
+     * @param Settings 淘汰策略配置
      */
     UFUNCTION(BlueprintCallable, Category = "GamePool|Eviction")
     void SetObjectPoolEvictionSettings(TSubclassOf<UObject> ObjectClass, const FPoolEvictionSettings& Settings);
@@ -413,112 +443,118 @@ public:
      * @return 当前淘汰配置
      */
     UFUNCTION(BlueprintPure, Category = "GamePool|Eviction")
-    [[nodiscard]] FPoolEvictionSettings GetObjectPoolEvictionSettings(TSubclassOf<UObject> ObjectClass) const;
+    FPoolEvictionSettings GetObjectPoolEvictionSettings(TSubclassOf<UObject> ObjectClass) const;
 
     /**
-     * @brief 强制触发一次全部池的超时冷实例淘汰（支持显式指定时间戳与配额，便于测试与切图时批量清退）
-     * @param MaxEvictionsPerStep 单次最大销毁配额（<=0 使用默认值 32）
-     * @param CustomNowSeconds 自定义时间戳（<=0 使用当前硬件时间）
+     * @brief 强制触发一次全部池的超时冷实例淘汰
+     * @param MaxEvictionsPerStep 单次最大销毁配额
+     * @param CustomNowSeconds 自定义时间戳
      * @return 实际销毁的冷实例总数
      */
     UFUNCTION(BlueprintCallable, Category = "GamePool|Eviction")
     int32 ForceEvictExpired(int32 MaxEvictionsPerStep = 32, double CustomNowSeconds = 0.0);
 
     /**
-     * @brief 获取当前对象池运行时的全景遥测快照（包含命中率、活跃/空闲统计）
+     * @brief 获取当前对象池运行时的全景遥测快照
      * @return 全景遥测快照结构体
      */
     UFUNCTION(BlueprintPure, Category = "GamePool|Telemetry")
-    [[nodiscard]] FPoolTelemetrySnapshot GetTelemetrySnapshot() const;
+    FPoolTelemetrySnapshot GetTelemetrySnapshot() const;
 
     /**
-     * @brief 重置对象池遥测统计计数器（借出、命中、未命中）
+     * @brief 重置对象池遥测统计计数器
      */
     UFUNCTION(BlueprintCallable, Category = "GamePool|Telemetry")
     void ResetTelemetry();
 
     /**
-     * @brief 清空并回收所有非 Actor UObject 类别的空闲实例
+     * @brief 强制释放当前所有池中的全部闲置空闲实例
+     * @param bPreserveMinCount 是否保留各池配置的最小保底实例数
+     * @return 实际销毁并释放的空闲实例总数
      */
-    UFUNCTION(BlueprintCallable, Category = "GamePool|ObjectPool")
-    void ClearAllObjectPools();
+    UFUNCTION(BlueprintCallable, Category = "GamePool|Resilience")
+    int32 FlushAllIdleInstances(bool bPreserveMinCount = false);
 
     /**
-     * @brief 校验 Actor 实例句柄记录的世代是否与池内活跃代数一致
+     * @brief 设置是否启用在操作系统/引擎内存紧张时自动紧急泄洪缩容
+     * @param bEnable true 为开启（默认开启）
+     */
+    UFUNCTION(BlueprintCallable, Category = "GamePool|Resilience")
+    void SetLowMemoryAutoFlushEnabled(bool bEnable);
+
+    /**
+     * @brief 查询当前低内存自动泄洪保护是否开启
+     * @return 若开启返回 true
+     */
+    UFUNCTION(BlueprintPure, Category = "GamePool|Resilience")
+    bool IsLowMemoryAutoFlushEnabled() const noexcept;
+
+    /**
+     * @brief 响应操作系统或引擎低内存修剪警报的回调
+     */
+    UFUNCTION(BlueprintCallable, Category = "GamePool|Resilience")
+    void OnMemoryTrim();
+
+    /**
+     * @brief 查询指定 Actor 当前的世代代数
      * @param Actor 目标 Actor 实例
-     * @param InGeneration 待校验世代
-     * @return 活跃且世代一致返回 true
+     * @return 当前世代序号
      */
-    [[nodiscard]] bool ValidateHandleGeneration(const AActor* Actor, uint32 InGeneration) const;
+    [[nodiscard]] uint32 GetActorGeneration(const AActor* Actor) const {
+        return GenerationTracker.FindGeneration(Actor);
+    }
 
     /**
-     * @brief 校验 UObject 实例句柄记录的世代是否与池内活跃代数一致
-     * @param Object 目标 UObject 实例
-     * @param InGeneration 待校验世代
-     * @return 活跃且世代一致返回 true
+     * @brief 查询指定 UObject 当前的世代代数
+     * @param Object 目标对象实例
+     * @return 当前世代序号
      */
-    [[nodiscard]] bool ValidateHandleGeneration(const UObject* Object, uint32 InGeneration) const;
+    [[nodiscard]] uint32 GetObjectGeneration(const UObject* Object) const {
+        return GenerationTracker.FindGeneration(Object);
+    }
 
     /**
-     * @brief 获取 Actor 实例当前的有效借出世代代数
-     * @param Actor 目标 Actor 实例
-     * @return 世代代数
+     * @brief 校验指定对象的句柄代数是否依然处于有效借出状态
+     * @param Object 目标对象实例
+     * @param ExpectedGeneration 预期借出世代代数
+     * @return 活跃且代数匹配返回 true
      */
-    [[nodiscard]] uint32 GetActorGeneration(const AActor* Actor) const;
+    [[nodiscard]] bool ValidateHandleGeneration(const UObject* Object, const uint32 ExpectedGeneration) const {
+        return GenerationTracker.ValidateGeneration(Object, ExpectedGeneration);
+    }
 
     /**
-     * @brief 获取 UObject 实例当前的有效借出世代代数
-     * @param Object 目标 UObject 实例
-     * @return 世代代数
-     */
-    [[nodiscard]] uint32 GetObjectGeneration(const UObject* Object) const;
-
-    /**
-     * @brief 内部借出或生成 Actor 实例核心实现
-     * @param ActorClass 目标类
-     * @param SpawnTransform 初始空间变换
-     * @return 成功返回 Actor 指针，失败返回 Failure
-     */
-    TGameStatusResult<AActor*> AcquireActorInternal(TSubclassOf<AActor> ActorClass, const FTransform& SpawnTransform);
-
-    /**
-     * @brief 内部借出或构建非 Actor UObject 实例核心实现
-     * @param ObjectClass 目标 UObject 派生类
-     * @return 成功返回 UObject 指针，失败返回 Failure
-     */
-    TGameStatusResult<UObject*> AcquireObjectInternal(TSubclassOf<UObject> ObjectClass);
-
-    /**
-     * @brief 生成单个空闲 Actor 实例并放入空闲池
-     * @param ActorClass 目标 Actor 类
-     * @return 成功生成并入池返回 true
-     */
-    bool SpawnIdleActorToPool(TSubclassOf<AActor> ActorClass);
-
-    /**
-     * @brief 响应池化 Actor 外部意外销毁的回调
-     * @param DestroyedActor 被销毁的 Actor 实例
+     * @brief 监听已借出 Actor 被外部强制 Destroy 时的清理委托
+     * @param DestroyedActor 被外部销毁的目标 Actor
      */
     UFUNCTION()
     void OnPooledActorDestroyed(AActor* DestroyedActor);
 
-    UFUNCTION()
-    void OnEvictionTimerTick();
-
-    void StartEvictionTimer(float IntervalSeconds = 5.0f);
-    void StopEvictionTimer();
+    /**
+     * @brief 向空闲池中填充一个预热生成的 Actor
+     * @param ActorClass 目标 Actor 类
+     * @return 成功生成入池返回 true
+     */
+    bool SpawnIdleActorToPool(TSubclassOf<AActor> ActorClass);
 
 private:
+    TGameStatusResult<AActor*> AcquireActorInternal(TSubclassOf<AActor> ActorClass, const FTransform& SpawnTransform);
+    TGameStatusResult<UObject*> AcquireObjectInternal(TSubclassOf<UObject> ObjectClass);
+
     FPoolGenerationTracker GenerationTracker;
     FActorPoolManager ActorManager;
     FUObjectPoolManager ObjectManager;
-    TLockFreeRingBuffer<TWeakObjectPtr<AActor>, 1024> DeferredReleaseBuffer;
-    FTimerHandle EvictionTimerHandle;
+    FPoolDeferredDispatcher DeferredDispatcher;
+    FPoolEvictionScheduler EvictionScheduler;
+    FPoolResilienceController ResilienceController;
 };
 
 template <typename T>
 bool TPooledObjectHandle<T>::IsValid() const {
-    if (!ObjectPtr.IsValid() || !SubsystemPtr.IsValid()) {
+    if (!ObjectPtr.IsValid()) {
+        return false;
+    }
+    if (!SubsystemPtr.IsValid()) {
         return false;
     }
     return SubsystemPtr->ValidateHandleGeneration(ObjectPtr.Get(), Generation);

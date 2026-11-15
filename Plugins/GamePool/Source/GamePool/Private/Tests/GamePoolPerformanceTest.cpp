@@ -6,8 +6,8 @@
  * 预算用于防御数量级性能退化。
  */
 
-#include "MemoryPool/StructPool.h"
-#include "ObjectPool/ObjectPoolSubsystem.h"
+#include "Memory/StructPool.h"
+#include "Subsystem/ObjectPoolSubsystem.h"
 #include "Tests/GamePoolableTestActor.h"
 #include "Tests/UGamePoolableTestObject.h"
 

@@ -5,7 +5,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "Components/SceneComponent.h"
-#include "ObjectPool/IGamePoolable.h"
+#include "Core/IGamePoolable.h"
 
 #include "GamePoolableTestActor.generated.h"
 
@@ -41,7 +41,6 @@ public:
     }
 
     void OnAcquireFromPoolWithPayload(const void* InPayload) override {
-        OnAcquireFromPool_Implementation();
         if (InPayload != nullptr) {
             LastReceivedPayloadValue = *reinterpret_cast<const int32*>(InPayload);
         }

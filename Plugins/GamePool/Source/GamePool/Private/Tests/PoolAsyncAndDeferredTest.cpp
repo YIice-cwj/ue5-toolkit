@@ -1,6 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "ObjectPool/ObjectPoolSubsystem.h"
+#include "Subsystem/ObjectPoolSubsystem.h"
 
 #include "Async/FCancellationTokenSource.h"
 #include "Async/UTimeSlicedTaskSubsystem.h"

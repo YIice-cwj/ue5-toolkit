@@ -3,7 +3,7 @@
  * @brief GamePool 运行期可观测性与遥测监控 (stat GamePool & Telemetry) 单元测试
  */
 
-#include "ObjectPool/ObjectPoolSubsystem.h"
+#include "Subsystem/ObjectPoolSubsystem.h"
 #include "Tests/GamePoolableTestActor.h"
 #include "Tests/UGamePoolableTestObject.h"
 

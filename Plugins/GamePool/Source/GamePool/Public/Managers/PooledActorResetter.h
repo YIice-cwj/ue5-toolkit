@@ -4,7 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
-#include "ObjectPool/ObjectPoolTypes.h"
+#include "Core/ObjectPoolTypes.h"
 
 /**
  * @brief 池化 Actor 深度组件状态重置与清洗工具

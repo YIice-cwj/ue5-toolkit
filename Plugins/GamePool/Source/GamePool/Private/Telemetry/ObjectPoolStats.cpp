@@ -1,6 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "ObjectPool/ObjectPoolStats.h"
+#include "Telemetry/ObjectPoolStats.h"
 
 DEFINE_STAT(STAT_GamePool_AcquireActor);
 DEFINE_STAT(STAT_GamePool_ReleaseActor);

@@ -27,12 +27,11 @@ public:
     virtual void OnAcquireFromPool_Implementation() {}
 
     /**
-     * @brief 从对象池借出并携带业务载荷时调用（纯 C++ 零堆分配接口，默认转发至无参虚方法）
+     * @brief 从对象池借出并携带业务载荷时调用（纯 C++ 零堆分配接口，默认无额外操作）
      * @param InPayload 业务载荷不可变指针
      */
     virtual void OnAcquireFromPoolWithPayload(const void* InPayload) {
         (void)InPayload;
-        OnAcquireFromPool_Implementation();
     }
 
     /**

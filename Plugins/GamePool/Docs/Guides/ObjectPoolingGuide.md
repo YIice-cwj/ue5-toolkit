@@ -13,7 +13,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
-#include "ObjectPool/IGamePoolable.h"
+#include "Core/IGamePoolable.h"
 #include "MyProjectile.generated.h"
 
 UCLASS()
@@ -80,7 +80,7 @@ void AMyProjectile::OnReleaseToPool_Implementation()
 
 ### 模式 A：RAII 作用域租约（强烈推荐用于短生命周期对象）
 ```cpp
-#include "ObjectPool/ObjectPoolSubsystem.h"
+#include "Subsystem/ObjectPoolSubsystem.h"
 #include "MyProjectile.h"
 
 void AMyWeapon::SpawnTransientHitBox()
@@ -154,7 +154,7 @@ TGameCoroTask<void> AMyWeapon::PrewarmAmmoAsync(FSoftObjectPath AmmoClassPath)
 针对网络数据包反序列化、战斗伤害结算上下文、空间射线查询包等，无需任何 UObject 开销：
 
 ```cpp
-#include "MemoryPool/StructPool.h"
+#include "Memory/StructPool.h"
 
 struct FDamageContext {
     int32 AttackerId = 0;
@@ -237,4 +237,29 @@ if (PoolSubsystem != nullptr) {
     UE_LOG(LogTemp, Log, TEXT("GamePool 命中率: %.2f%% (Hits: %lld, Misses: %lld, Active: %d, Idle: %d)"),
         HitRate, Telemetry.CacheHits, Telemetry.CacheMisses, Telemetry.TotalActiveCount, Telemetry.TotalIdleCount);
 }
+```
+
+---
+
+## 9. 纯 UObject 协程分帧预热与低内存应急泄洪 (Resilience & Async UObject)
+
+### 9.1 纯 UObject C++20 协程分帧渐进预热
+对非 Actor 纯 UObject（如战斗数值计算载荷、AI 决策树节点、UI 数据模型），同样支持流式/分帧渐进预热与取消打断，彻底杜绝帧率尖刺：
+```cpp
+// 基于类型或软对象路径分帧预热 50 个纯 UObject 实例，每帧生成 4 个
+TGameCoroTask<int32> PrewarmTask = PoolSubsystem->PrewarmObjectPoolAsync(
+    UMyDamagePayload::StaticClass(),
+    50,
+    4,
+    CancellationToken
+);
+```
+
+### 9.2 系统内存修剪广播与应急泄洪
+- **引擎委托绑定**：子系统初始化时自动注册 `FCoreDelegates::GetMemoryTrimDelegate()`。当移动端或主机收到系统级低内存警告（Low Memory Trim）时，自动触发应急泄洪，安全销毁无保底的全部闲置实例；
+- **保底留存机制**：若业务配置了 `MinPreservedCount`，内存修剪时将优先保留保底实例，防止次帧彻底冷启动；
+- **主动全量泄洪**：关卡卸载、场景切换或大地图流送时，可主动调用清空所有空闲对象：
+```cpp
+// 主动释放所有闲置实例（bPreserveMinCount = false 彻底清零）
+const int32 FlushedCount = PoolSubsystem->FlushAllIdleInstances(false);
 ```
