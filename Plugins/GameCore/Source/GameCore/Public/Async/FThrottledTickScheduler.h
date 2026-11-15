@@ -137,6 +137,7 @@ public:
 
 private:
     TArray<FThrottledEntry> Entries;
+    TArray<FThrottledEntry> PendingAdditions;
     uint64 NextHandleId = 1ULL;
     bool bIsIterating = false;
 };

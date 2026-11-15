@@ -10,6 +10,8 @@
 #include "Templates/SharedPointer.h"
 #include "Listener/FGameTypeFingerprint.h"
 
+GAMECORE_API DECLARE_LOG_CATEGORY_EXTERN(LogGameServiceLocator, Log, All);
+
 /**
  * @brief 纯 C++ 线程安全服务定位器
  *
@@ -17,7 +19,8 @@
  * 1. 纯接口依赖倒置，解耦模块间物理依赖；
  * 2. 基于 64 位无 RTTI 编译期类型指纹，消除虚函数反射与 RTTI 依赖；
  * 3. 支持类型隐式解析与显式 FName 命名服务双重寻址；
- * 4. 读写分离锁（FRWLock）保护高频并发只读解析。
+ * 4. 具名服务强类型指纹守卫，杜绝错误接口强转引发的未定义行为；
+ * 5. 读写分离锁（FRWLock）保护高频并发只读解析。
  */
 class GAMECORE_API FGameServiceLocator {
 public:
@@ -46,39 +49,44 @@ public:
     ) {
         TSharedPtr<TInterface, ESPMode::ThreadSafe> TypedPtr = ServiceInstance;
         TSharedPtr<void, ESPMode::ThreadSafe> VoidPtr = StaticCastSharedPtr<void>(TypedPtr);
+        const uint64 ServiceId = Game::Core::GetTypeFingerprint<TInterface>();
         FWriteScopeLock WriteLock(Lock);
         if (ServiceName.IsNone()) {
-            const uint64 ServiceId = Game::Core::GetTypeFingerprint<TInterface>();
             TypeServices.Add(ServiceId, MoveTemp(VoidPtr));
         } else {
-            NamedServices.Add(ServiceName, MoveTemp(VoidPtr));
+            NamedServices.Add(ServiceName, FNamedServiceEntry{ServiceId, MoveTemp(VoidPtr)});
         }
     }
 
     /**
-     * @brief 获取已注册的类型单例或具名服务
+     * @brief 获取已注册的类型单例或具名服务（具名服务严格校验类型指纹）
      * @tparam TInterface 抽象接口类型
      * @param ServiceName 可选具名服务标识（为 NAME_None 时按类型解析）
-     * @return 存在返回共享指针，未注册返回 nullptr
+     * @return 存在且类型匹配返回共享指针，未注册或类型不匹配返回 nullptr
      */
     template <typename TInterface>
     [[nodiscard]] TSharedPtr<TInterface, ESPMode::ThreadSafe> Resolve(FName ServiceName = NAME_None) const {
+        const uint64 ServiceId = Game::Core::GetTypeFingerprint<TInterface>();
         FReadScopeLock ReadLock(Lock);
         if (ServiceName.IsNone()) {
-            const uint64 ServiceId = Game::Core::GetTypeFingerprint<TInterface>();
             if (const auto* Found = TypeServices.Find(ServiceId)) {
                 return StaticCastSharedPtr<TInterface>(*Found);
             }
         } else {
             if (const auto* Found = NamedServices.Find(ServiceName)) {
-                return StaticCastSharedPtr<TInterface>(*Found);
+                if (Found->TypeId == ServiceId) {
+                    return StaticCastSharedPtr<TInterface>(Found->Instance);
+                }
+                UE_LOG(LogGameServiceLocator, Warning,
+                    TEXT("FGameServiceLocator: 具名服务 [%s] 类型指纹不匹配！期望指纹=%llu, 实际指纹=%llu"),
+                    *ServiceName.ToString(), ServiceId, Found->TypeId);
             }
         }
         return nullptr;
     }
 
     /**
-     * @brief 获取已注册的强引用服务（未注册时触发断言，适用于系统关键依赖）
+     * @brief 获取已注册的强引用服务（未注册或类型不匹配时触发断言，适用于系统关键依赖）
      * @tparam TInterface 抽象接口类型
      * @param ServiceName 可选具名服务标识
      * @return 线程安全共享引用
@@ -86,7 +94,10 @@ public:
     template <typename TInterface>
     [[nodiscard]] TSharedRef<TInterface, ESPMode::ThreadSafe> ResolveRequired(FName ServiceName = NAME_None) const {
         TSharedPtr<TInterface, ESPMode::ThreadSafe> Resolved = Resolve<TInterface>(ServiceName);
-        checkf(Resolved.IsValid(), TEXT("FGameServiceLocator: Failed to resolve required service [%s]"), *ServiceName.ToString());
+        const uint64 ServiceId = Game::Core::GetTypeFingerprint<TInterface>();
+        checkf(Resolved.IsValid(),
+            TEXT("FGameServiceLocator: 无法解析必需的服务 [%s] (类型指纹: %llu)"),
+            *ServiceName.ToString(), ServiceId);
         return Resolved.ToSharedRef();
     }
 
@@ -165,7 +176,12 @@ public:
     int32 GetNamedServiceNames(TArray<FName>& OutNames) const;
 
 private:
+    struct FNamedServiceEntry {
+        uint64 TypeId = 0ULL;
+        TSharedPtr<void, ESPMode::ThreadSafe> Instance;
+    };
+
     mutable FRWLock Lock;
     TMap<uint64, TSharedPtr<void, ESPMode::ThreadSafe>> TypeServices;
-    TMap<FName, TSharedPtr<void, ESPMode::ThreadSafe>> NamedServices;
+    TMap<FName, FNamedServiceEntry> NamedServices;
 };

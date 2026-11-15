@@ -12,7 +12,7 @@
 void FThrottledTickScheduler::Tick(float DeltaTime) {
     checkf(IsInGameThread(), TEXT("FThrottledTickScheduler::Tick must be called on GameThread"));
 
-    if (Entries.IsEmpty() || bIsIterating) {
+    if ((Entries.IsEmpty() && PendingAdditions.IsEmpty()) || bIsIterating) {
         return;
     }
 
@@ -29,9 +29,8 @@ void FThrottledTickScheduler::Tick(float DeltaTime) {
         }
 
         if (Entries[Index].Interval <= 0.0f) {
-            FThrottledTickCallback CallbackCopy = Entries[Index].Callback;
-            if (CallbackCopy) {
-                CallbackCopy(DeltaTime);
+            if (Entries[Index].Callback) {
+                Entries[Index].Callback(DeltaTime);
             }
             continue;
         }
@@ -40,9 +39,8 @@ void FThrottledTickScheduler::Tick(float DeltaTime) {
         if (Entries[Index].Elapsed >= Entries[Index].Interval) {
             const float ActualElapsed = Entries[Index].Elapsed;
             Entries[Index].Elapsed = FMath::Fmod(Entries[Index].Elapsed, Entries[Index].Interval);
-            FThrottledTickCallback CallbackCopy = Entries[Index].Callback;
-            if (CallbackCopy) {
-                CallbackCopy(ActualElapsed);
+            if (Entries[Index].Callback) {
+                Entries[Index].Callback(ActualElapsed);
             }
         }
     }
@@ -51,6 +49,11 @@ void FThrottledTickScheduler::Tick(float DeltaTime) {
     Entries.RemoveAll([](const FThrottledEntry& E) {
         return E.bPendingRemoval;
     });
+
+    if (!PendingAdditions.IsEmpty()) {
+        Entries.Append(MoveTemp(PendingAdditions));
+        PendingAdditions.Reset();
+    }
 }
 
 /**
@@ -98,7 +101,11 @@ uint64 FThrottledTickScheduler::RegisterIntervalTick(
         NewEntry.Elapsed = 0.0f;
     }
 
-    Entries.Add(MoveTemp(NewEntry));
+    if (bIsIterating) {
+        PendingAdditions.Add(MoveTemp(NewEntry));
+    } else {
+        Entries.Add(MoveTemp(NewEntry));
+    }
     return AllocatedId;
 }
 
@@ -156,6 +163,14 @@ bool FThrottledTickScheduler::UnregisterTick(uint64 HandleId) {
             return true;
         }
     }
+
+    for (int32 Index = 0; Index < PendingAdditions.Num(); ++Index) {
+        if (PendingAdditions[Index].HandleId == HandleId) {
+            PendingAdditions.RemoveAt(Index);
+            return true;
+        }
+    }
+
     return false;
 }
 
@@ -210,6 +225,16 @@ bool FThrottledTickScheduler::IsTickActive(uint64 HandleId) const {
             return true;
         }
     }
+
+    for (const FThrottledEntry& Entry : PendingAdditions) {
+        if (Entry.HandleId == HandleId && !Entry.bPendingRemoval) {
+            if (Entry.bHasOwner && Entry.OwnerValidator && !Entry.OwnerValidator()) {
+                return false;
+            }
+            return true;
+        }
+    }
+
     return false;
 }
 
@@ -226,6 +251,11 @@ int32 FThrottledTickScheduler::GetRegisteredCount() const {
             ++ActiveCount;
         }
     }
+    for (const FThrottledEntry& Entry : PendingAdditions) {
+        if (!Entry.bPendingRemoval) {
+            ++ActiveCount;
+        }
+    }
     return ActiveCount;
 }
 
@@ -235,6 +265,7 @@ int32 FThrottledTickScheduler::GetRegisteredCount() const {
 void FThrottledTickScheduler::ClearAll() {
     checkf(IsInGameThread(), TEXT("FThrottledTickScheduler::ClearAll must be called on GameThread"));
 
+    PendingAdditions.Empty();
     if (bIsIterating) {
         for (FThrottledEntry& Entry : Entries) {
             Entry.bPendingRemoval = true;

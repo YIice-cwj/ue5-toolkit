@@ -28,6 +28,12 @@ public:
     static void RegisterAll(UGameInstance* InGameInstance = nullptr);
 
     /**
+     * @brief 注销注册项（统一接口签名；配置项为进程级/会话级幂等资源，无需破坏性注销）
+     * @param InGameInstance 当前 GameInstance
+     */
+    static void UnregisterAll(UGameInstance* InGameInstance = nullptr);
+
+    /**
      * @brief 注册某业务域的缓存策略默认键（Cache.{Domain}.*，幂等；Domain 为 None 时记录 Warning 并忽略）
      * @param Domain 业务域名称（由游戏层提供，框架层不感知具体域名）
      */

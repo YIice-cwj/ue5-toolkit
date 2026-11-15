@@ -294,6 +294,10 @@ bool FGameThreadTaskRunner::FlushInFlightTasks(double TimeoutSeconds) {
         FPlatformProcess::Sleep(0.001f);
     }
 
+    if (IsInGameThread()) {
+        FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);
+    }
+
     {
         FScopeLock Lock(&GActiveTasksLock);
         GActiveTasks.RemoveAllSwap([](const UE::Tasks::FTask& Existing) {

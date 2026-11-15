@@ -115,6 +115,10 @@ bool FGameServiceLocatorTypeAndNamedTest::RunTest([[maybe_unused]] const FString
     TestNotNull(TEXT("成功解析覆盖更新后的 North"), ResolvedUpdatedNorth.Get());
     TestEqual(TEXT("更新后区域值匹配"), ResolvedUpdatedNorth->GetRegion(), TEXT("NorthAmericaUpdated"));
 
+    TSharedPtr<ITestAudioService, ESPMode::ThreadSafe> MismatchedService =
+        Locator.Resolve<ITestAudioService>(RegionNorth);
+    TestNull(TEXT("具名服务类型不匹配时强契约防御返回空指针"), MismatchedService.Get());
+
     TestTrue(TEXT("注销类型服务成功"), Locator.UnregisterService<ITestAudioService>());
     TestFalse(TEXT("再次查询类型服务已不存在"), Locator.HasService<ITestAudioService>());
 

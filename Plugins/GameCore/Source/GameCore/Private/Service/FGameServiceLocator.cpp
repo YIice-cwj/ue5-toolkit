@@ -5,6 +5,8 @@
 
 #include "Service/FGameServiceLocator.h"
 
+DEFINE_LOG_CATEGORY(LogGameServiceLocator);
+
 /**
  * @brief 获取全局单例服务定位器
  * @return 引用实例
