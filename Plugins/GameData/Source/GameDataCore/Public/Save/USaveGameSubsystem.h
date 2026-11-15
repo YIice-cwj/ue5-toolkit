@@ -10,6 +10,7 @@
 #include "Save/GameSaveArchive.h"
 #include "Save/FSaveGameFileIO.h"
 #include "Save/FSaveGameSegmentRegistry.h"
+#include "Types/TGameResult.h"
 
 #include "USaveGameSubsystem.generated.h"
 
@@ -41,18 +42,18 @@ public:
     USaveGameSubsystem();
 
     /**
-     * @brief 获取指定槽位的正式文件绝对路径
-     * @param SlotName 存档槽位名称
-     * @return 正式存档文件绝对路径
+     * @brief 获取当前上下文的存档子系统指针（支持 UWorld, UGameInstance, AActor 等任意上下文）
+     * @param WorldContextObject 世界或游戏实例上下文对象
+     * @return 存档子系统指针；未就绪时返回 nullptr
      */
-    static FString GetSaveSlotFilePath(const FString& SlotName);
+    [[nodiscard]] static USaveGameSubsystem* GetPtr(const UObject* WorldContextObject);
 
     /**
-     * @brief 获取指定槽位的临时写入文件绝对路径（.sav.tmp）
-     * @param SlotName 存档槽位名称
-     * @return 临时写入文件绝对路径
+     * @brief 获取当前上下文的存档子系统引用（断言子系统有效）
+     * @param WorldContextObject 世界或游戏实例上下文对象
+     * @return 存档子系统强引用
      */
-    static FString GetSaveSlotTempFilePath(const FString& SlotName);
+    [[nodiscard]] static USaveGameSubsystem& Get(const UObject* WorldContextObject);
 
     /**
      * @brief 异步保存完成事件多播广播
@@ -101,12 +102,19 @@ public:
     bool IsSlotNameAllowed(const FString& SlotName) const;
 
     /**
-     * @brief 同步保存全部已注册段至指定槽位
+     * @brief 同步保存全部已注册段至指定槽位（蓝图专用外观方法）
      * @param SlotName 目标存档槽位名称
      * @return 保存成功返回 true，发生异常或被白名单拦截返回 false
      */
-    UFUNCTION(BlueprintCallable, Category = "GameData|Save")
-    bool SaveGameToSlot(const FString& SlotName);
+    UFUNCTION(BlueprintCallable, Category = "GameData|Save", meta = (DisplayName = "Save Game To Slot"))
+    bool K2_SaveGameToSlot(const FString& SlotName);
+
+    /**
+     * @brief 同步保存全部已注册段至指定槽位
+     * @param SlotName 目标存档槽位名称
+     * @return 成功返回 Success，失败返回 Failure
+     */
+    [[nodiscard]] TGameStatusResult<void> SaveGameToSlot(const FString& SlotName);
 
     /**
      * @brief 异步保存全部已注册段至指定槽位（主线程捕获与序列化，后台仅写文件，完成后回主线程广播）
@@ -117,12 +125,19 @@ public:
     bool SaveGameToSlotAsync(const FString& SlotName);
 
     /**
-     * @brief 同步从指定槽位读取分段归档并逐段应用至已注册段
+     * @brief 同步从指定槽位读取分段归档并逐段应用至已注册段（蓝图专用外观方法）
      * @param SlotName 目标存档槽位名称
      * @return 加载与反序列化成功返回 true，槽位不存在或数据损坏返回 false
      */
-    UFUNCTION(BlueprintCallable, Category = "GameData|Save")
-    bool LoadGameFromSlot(const FString& SlotName);
+    UFUNCTION(BlueprintCallable, Category = "GameData|Save", meta = (DisplayName = "Load Game From Slot"))
+    bool K2_LoadGameFromSlot(const FString& SlotName);
+
+    /**
+     * @brief 同步从指定槽位读取分段归档并逐段应用至已注册段
+     * @param SlotName 目标存档槽位名称
+     * @return 成功返回 Success，失败返回 Failure
+     */
+    [[nodiscard]] TGameStatusResult<void> LoadGameFromSlot(const FString& SlotName);
 
     /**
      * @brief 异步从指定槽位读取分段归档（后台读文件，主线程仅应用最新请求）
@@ -135,23 +150,59 @@ public:
     bool LoadGameFromSlotAsync(const FString& SlotName);
 
     /**
-     * @brief 将任意 USaveGame 对象同步保存至指定槽位（标准原子落盘）
+     * @brief 将任意 USaveGame 对象同步保存至指定槽位（蓝图专用外观方法）
      * @param SlotName 目标存档槽位名称
      * @param SaveGameObject 待保存的 USaveGame 对象指针
      * @return 保存成功返回 true，否则返回 false
      */
-    UFUNCTION(BlueprintCallable, Category = "GameData|Save")
-    bool SaveObjectToSlot(const FString& SlotName, USaveGame* SaveGameObject);
+    UFUNCTION(BlueprintCallable, Category = "GameData|Save", meta = (DisplayName = "Save Object To Slot"))
+    bool K2_SaveObjectToSlot(const FString& SlotName, USaveGame* SaveGameObject);
 
     /**
-     * @brief 从指定槽位同步加载任意派生自 USaveGame 的对象
+     * @brief 将任意 USaveGame 对象同步保存至指定槽位（标准原子落盘）
+     * @param SlotName 目标存档槽位名称
+     * @param SaveGameObject 待保存的 USaveGame 对象指针
+     * @return 成功返回 Success，失败返回 Failure
+     */
+    [[nodiscard]] TGameStatusResult<void> SaveObjectToSlot(const FString& SlotName, USaveGame* SaveGameObject);
+
+    /**
+     * @brief 从指定槽位同步加载任意派生自 USaveGame 的对象（蓝图专用外观方法）
      * @param SlotName 目标存档槽位名称
      * @param SaveGameClassToLoad 目标加载的 USaveGame 类别
      * @param OutSaveGame 输出加载并反序列化完成的对象引用
      * @return 加载成功返回 true，否则返回 false
      */
-    UFUNCTION(BlueprintCallable, Category = "GameData|Save")
-    bool LoadObjectFromSlot(const FString& SlotName, TSubclassOf<USaveGame> SaveGameClassToLoad, USaveGame*& OutSaveGame);
+    UFUNCTION(BlueprintCallable, Category = "GameData|Save", meta = (DisplayName = "Load Object From Slot"))
+    bool K2_LoadObjectFromSlot(const FString& SlotName, TSubclassOf<USaveGame> SaveGameClassToLoad, USaveGame*& OutSaveGame);
+
+    /**
+     * @brief 从指定槽位同步加载任意派生自 USaveGame 的对象
+     * @param SlotName 目标存档槽位名称
+     * @param SaveGameClassToLoad 目标加载的 USaveGame 类别
+     * @return 成功返回加载对象的强类型指针，失败返回含错误原因的 Failure
+     */
+    [[nodiscard]] TGameResult<USaveGame*, FGameError> LoadObjectFromSlot(const FString& SlotName, TSubclassOf<USaveGame> SaveGameClassToLoad);
+
+    /**
+     * @brief 从指定槽位同步加载指定类型的 USaveGame 对象（强类型模板版本）
+     * @tparam TSaveGameClass 目标存档类型
+     * @param SlotName 目标存档槽位名称
+     * @return 成功返回泛型指针，失败返回含错误原因的 Failure
+     */
+    template <typename TSaveGameClass>
+    [[nodiscard]] TGameResult<TSaveGameClass*, FGameError> LoadObjectFromSlot(const FString& SlotName) {
+        TGameResult<USaveGame*, FGameError> BaseResult = LoadObjectFromSlot(SlotName, TSaveGameClass::StaticClass());
+        if (BaseResult.IsFailure()) {
+            return TGameResult<TSaveGameClass*, FGameError>::Failure(BaseResult.GetError());
+        }
+        TSaveGameClass* TypedObj = Cast<TSaveGameClass>(BaseResult.GetValue());
+        if (TypedObj == nullptr) {
+            return TGameResult<TSaveGameClass*, FGameError>::Failure(
+                FGameError(FString::Printf(TEXT("加载的存档对象类型不匹配目标类型 %s"), *TSaveGameClass::StaticClass()->GetName())));
+        }
+        return TGameResult<TSaveGameClass*, FGameError>::Success(TypedObj);
+    }
 
     /**
      * @brief 检查指定槽位的存档文件是否存在
@@ -162,12 +213,19 @@ public:
     bool DoesSaveSlotExist(const FString& SlotName) const;
 
     /**
-     * @brief 彻底删除指定槽位的存档物理文件，并使该槽位在途异步加载失效
+     * @brief 彻底删除指定槽位的存档物理文件，并使该槽位在途异步加载失效（蓝图专用外观方法）
      * @param SlotName 目标存档槽位名称
      * @return 删除成功返回 true，未找到或删除失败返回 false
      */
-    UFUNCTION(BlueprintCallable, Category = "GameData|Save")
-    bool DeleteSaveSlot(const FString& SlotName);
+    UFUNCTION(BlueprintCallable, Category = "GameData|Save", meta = (DisplayName = "Delete Save Slot"))
+    bool K2_DeleteSaveSlot(const FString& SlotName);
+
+    /**
+     * @brief 彻底删除指定槽位的存档物理文件，并使该槽位在途异步加载失效
+     * @param SlotName 目标存档槽位名称
+     * @return 成功删除返回 Success，未找到或删除失败返回 Failure
+     */
+    [[nodiscard]] TGameStatusResult<void> DeleteSaveSlot(const FString& SlotName);
 
     /**
      * @brief 注册（或覆盖）具名存档段契约
@@ -178,9 +236,9 @@ public:
     /**
      * @brief 注销指定名称的存档段契约
      * @param SegmentName 目标存档段名称
-     * @return 成功注销返回 true，未找到返回 false
+     * @return 成功注销返回 Success，未找到返回 Failure
      */
-    bool UnregisterSegment(FName SegmentName);
+    TGameStatusResult<void> UnregisterSegment(FName SegmentName);
 
     /**
      * @brief 查询指定名称的存档段是否已注册

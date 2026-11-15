@@ -23,7 +23,7 @@ REGISTRATION_SOURCE = "FStaticDataRegistration.cpp"
 
 WATCHER_HEADER_INCLUDE = "Generated/Data/StaticData/FStaticDataHotReloadWatcher.h"
 REGISTRATION_HEADER_INCLUDE = "Generated/Registration/FStaticDataRegistration.h"
-DIRECTORY_WATCHER_INCLUDE = "IO/FDirectoryChangeWatcher.h"
+DIRECTORY_WATCHER_INCLUDE = "Utils/FDirectoryChangeWatcher.h"
 
 
 def commandlet_class_name(cfg: Any) -> str:

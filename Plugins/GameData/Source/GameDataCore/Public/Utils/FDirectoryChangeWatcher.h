@@ -112,6 +112,10 @@ private:
      */
     [[nodiscard]] static FDateTime PerformScan(const FString& WatchDirectory, const FString& Extension, bool bRecursive);
 
+    /**
+     * @brief 轮询间隔配置动态变更响应回调
+     * @param NewInterval 新的轮询间隔秒数
+     */
     void OnIntervalConfigChanged(float NewInterval);
 
 private:

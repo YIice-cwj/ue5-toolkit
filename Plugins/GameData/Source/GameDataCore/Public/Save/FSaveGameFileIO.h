@@ -7,6 +7,7 @@
 
 #include "CoreMinimal.h"
 #include "Save/GameSaveArchive.h"
+#include "Types/TGameResult.h"
 
 class USaveGame;
 
@@ -47,17 +48,16 @@ public:
     /**
      * @brief 删除指定槽位的正式文件与临时文件，并写入保存代次删除墓碑
      * @param SlotName 存档槽位名称
-     * @return 发现至少一个文件且全部删除成功返回 true，否则返回 false
+     * @return 成功删除返回 Success，未找到对应文件或删除失败返回 Failure
      */
-    static bool DeleteSaveSlot(const FString& SlotName);
+    static TGameStatusResult<void> DeleteSaveSlot(const FString& SlotName);
 
     /**
      * @brief 将 USaveGame 对象序列化为二进制内存字节数组
      * @param SaveGameObject 待序列化的存档对象指针
-     * @param OutBytes 输出的二进制字节数组
-     * @return 序列化成功返回 true，对象无效或序列化异常返回 false
+     * @return 成功返回二进制字节数组，对象无效或序列化异常返回 Failure
      */
-    static bool SerializeObject(USaveGame* SaveGameObject, TArray<uint8>& OutBytes);
+    static TGameResult<TArray<uint8>, FGameError> SerializeObject(USaveGame* SaveGameObject);
 
     /**
      * @brief 生成并签发槽位递增的写入代次序号（防止异步并发保存乱序覆写）
@@ -77,17 +77,16 @@ public:
      * @param SlotName 存档槽位名称
      * @param Bytes 待落盘的二进制字节数组
      * @param SaveGeneration 签发的代次序号（非 0 时校验过期性）
-     * @return 写入与原子重命名成功返回 true；过期写被安全吸收也返回 true，其余失败返回 false
+     * @return 成功返回 Success，失败返回含错误描述的 Failure
      */
-    static bool WriteSlotBytes(const FString& SlotName, const TArray<uint8>& Bytes, uint64 SaveGeneration = 0);
+    static TGameStatusResult<void> WriteSlotBytes(const FString& SlotName, const TArray<uint8>& Bytes, uint64 SaveGeneration = 0);
 
     /**
      * @brief 读取指定槽位的二进制字节（正式文件损坏或缺失时自动自 .tmp 临时文件抢救恢复）
      * @param SlotName 存档槽位名称
-     * @param OutBytes 输出的二进制字节数组（读取失败或恢复换入失败时保证清空重置）
-     * @return 读取到有效正式档，或有效临时档成功换入正式档时返回 true，否则返回 false
+     * @return 成功返回包含二进制数组的 Result，失败返回含错误描述的 Failure
      */
-    static bool ReadSlotBytes(const FString& SlotName, TArray<uint8>& OutBytes);
+    static TGameResult<TArray<uint8>, FGameError> ReadSlotBytes(const FString& SlotName);
 
     /**
      * @brief 校验二进制头部魔数与结构是否为合法的 USaveGame 格式

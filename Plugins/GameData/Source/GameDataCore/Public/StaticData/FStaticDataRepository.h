@@ -14,7 +14,10 @@
 #include "CoreMinimal.h"
 #include "UObject/Class.h"
 #include "StaticData/FStaticDataRepositoryTypes.h"
+#include "StaticData/FStaticDataBinCodec.h"
 #include "Types/TGameResult.h"
+
+#include <atomic>
 
 class FMemoryReader;
 
@@ -30,6 +33,11 @@ public:
 
 public:
     FStaticDataRepository() = default;
+    ~FStaticDataRepository() = default;
+    FStaticDataRepository(const FStaticDataRepository& Other);
+    FStaticDataRepository& operator=(const FStaticDataRepository& Other);
+    FStaticDataRepository(FStaticDataRepository&& Other) noexcept;
+    FStaticDataRepository& operator=(FStaticDataRepository&& Other) noexcept;
 
     /**
      * @brief 登记某行结构的生成式负载读写器（同结构重复登记即覆盖）
@@ -42,39 +50,21 @@ public:
      * @brief 写入一表（同结构重复写入即整体覆盖）
      * @tparam TRowType 行结构体类型（其结构名须已登记负载读写器）
      * @param InRows 待写入行表（RowName -> 行结构体）
-     * @return 成功返回 true；未登记读写器或任一行序列化失败返回 false（置错误码，且不改变已装载数据）
+     * @return 成功返回 Success；未登记读写器或任一行序列化失败返回 Failure
      *
      * 实现思路：结构名取自 TRowType::StaticStruct()->GetName()；负载由登记读写器生成，
      * 故 FArchive 的 FString/FName/bool 运算符仅有非 const 重载，此处对行做一次只读的 const 去除。
      */
     template <typename TRowType>
-    [[nodiscard]] bool AddTable(const TMap<FName, TRowType>& InRows);
+    [[nodiscard]] TGameStatusResult<void> AddTable(const TMap<FName, TRowType>& InRows);
 
     /**
-     * @brief 提取一表（表不存在返回 false；成功时整体覆盖输出表，失败时输出表保持不变）
+     * @brief 提取一表
      * @tparam TRowType 行结构体类型（以 StaticStruct 名匹配仓库内镜像）
-     * @param OutRows 输出行表
-     * @return 成功返回 true；表不存在、未登记读写器或任一行反序列化失败返回 false（并置错误码）
-     */
-    template <typename TRowType>
-    [[nodiscard]] bool ExtractTable(TMap<FName, TRowType>& OutRows) const;
-
-    /**
-     * @brief 写入一表（强类型契约版本）
-     * @tparam TRowType 行结构体类型
-     * @param InRows 待写入行表
-     * @return 成功返回 Success，失败返回 Failure
-     */
-    template <typename TRowType>
-    [[nodiscard]] TGameStatusResult<void> TryAddTable(const TMap<FName, TRowType>& InRows);
-
-    /**
-     * @brief 提取一表（强类型契约版本）
-     * @tparam TRowType 行结构体类型
      * @return 成功返回包含行表的 Result，失败返回错误枚举
      */
     template <typename TRowType>
-    [[nodiscard]] TGameResult<TMap<FName, TRowType>, EStaticDataBinError> TryExtractTable() const;
+    [[nodiscard]] TGameResult<TMap<FName, TRowType>, EStaticDataBinError> ExtractTable() const;
 
     /**
      * @brief 查询当前装载表数
@@ -90,16 +80,16 @@ public:
     /**
      * @brief 导出全部装载表至 .bin 文件（脱机导出，Cook 前置；字节编码委托 FStaticDataBinCodec）
      * @param FilePath 目标文件绝对路径
-     * @return 成功返回 true；编码或写盘失败返回 false（置 IoFailure）
+     * @return 成功返回 Success；编码或写盘失败返回 Failure
      */
-    [[nodiscard]] bool ExportToFile(const FString& FilePath) const;
+    [[nodiscard]] TGameStatusResult<void> ExportToFile(const FString& FilePath) const;
 
     /**
      * @brief 自 .bin 文件装载全部表（校验 Magic / 版本 / CRC，失败保持原状）
      * @param FilePath 源文件绝对路径
-     * @return 成功返回 true；读取或解码失败返回 false（置对应错误码，已装载数据零触碰）
+     * @return 成功返回包含装载表数的 Result，失败返回错误枚举
      */
-    [[nodiscard]] bool ImportFromFile(const FString& FilePath);
+    [[nodiscard]] TGameResult<int32, EStaticDataBinError> ImportFromFile(const FString& FilePath);
 
     /**
      * @brief 获取最近一次失败的错误码
@@ -121,77 +111,65 @@ private:
      * @param StructName 行结构名（须已登记读写器）
      * @param RowPtr 行数据指针（读写器只读，不修改行数据）
      * @param OutPayload 输出二进制负载
-     * @return 序列化成功返回 true；未登记读写器或归档写出失败返回 false（并置错误码）
+     * @param OutError 输出错误枚举
+     * @return 序列化成功返回 true；未登记读写器或归档写出失败返回 false
      */
-    bool SerializeRowToPayload(const FName& StructName, void* RowPtr, TArray<uint8>& OutPayload) const;
+    bool SerializeRowToPayload(const FName& StructName, void* RowPtr, TArray<uint8>& OutPayload, EStaticDataBinError& OutError) const;
 
     /**
      * @brief 行二进制负载反序列化（越界/损坏经 FMemoryReader::IsError 检出）
      * @param StructName 行结构名（须已登记读写器）
      * @param InPayload 输入二进制负载
      * @param OutRowPtr 输出行数据缓冲
-     * @return 反序列化成功返回 true；未登记读写器或负载损坏返回 false（并置错误码）
+     * @param OutError 输出错误枚举
+     * @return 反序列化成功返回 true；未登记读写器或负载损坏返回 false
      */
-    bool DeserializeRowFromPayload(const FName& StructName, const TArray<uint8>& InPayload, void* OutRowPtr) const;
+    bool DeserializeRowFromPayload(const FName& StructName, const TArray<uint8>& InPayload, void* OutRowPtr, EStaticDataBinError& OutError) const;
 
     TMap<FName, FStaticDataBinaryTable> Tables;
     TMap<FName, FRowPayloadFunc> RowPayloadFuncs;
-    mutable EStaticDataBinError LastError = EStaticDataBinError::None;
+    mutable std::atomic<EStaticDataBinError> LastError{EStaticDataBinError::None};
 };
 
 template <typename TRowType>
-bool FStaticDataRepository::AddTable(const TMap<FName, TRowType>& InRows) {
+TGameStatusResult<void> FStaticDataRepository::AddTable(const TMap<FName, TRowType>& InRows) {
     const FName StructName(TRowType::StaticStruct()->GetName());
     FStaticDataBinaryTable Table;
     Table.StructName = StructName.ToString();
     Table.Rows.Reserve(InRows.Num());
     for (const TPair<FName, TRowType>& Pair : InRows) {
         TArray<uint8>& Payload = Table.Rows.Emplace(Pair.Key);
-        if (!SerializeRowToPayload(StructName, const_cast<TRowType*>(&Pair.Value), Payload)) {
-            return false;
+        EStaticDataBinError ErrorCode = EStaticDataBinError::None;
+        if (!SerializeRowToPayload(StructName, const_cast<TRowType*>(&Pair.Value), Payload, ErrorCode)) {
+            LastError.store(ErrorCode, std::memory_order_relaxed);
+            return TGameStatusResult<void>::Failure(static_cast<int32>(ErrorCode), FStaticDataBinCodec::DescribeError(ErrorCode));
         }
     }
     Tables.Add(StructName, MoveTemp(Table));
-    LastError = EStaticDataBinError::None;
-    return true;
+    LastError.store(EStaticDataBinError::None, std::memory_order_relaxed);
+    return TGameStatusResult<void>::Success();
 }
 
 template <typename TRowType>
-bool FStaticDataRepository::ExtractTable(TMap<FName, TRowType>& OutRows) const {
+TGameResult<TMap<FName, TRowType>, EStaticDataBinError> FStaticDataRepository::ExtractTable() const {
     const FName StructName(TRowType::StaticStruct()->GetName());
     const FStaticDataBinaryTable* Table = Tables.Find(StructName);
     if (Table == nullptr) {
-        LastError = EStaticDataBinError::TableNotFound;
-        return false;
+        LastError.store(EStaticDataBinError::TableNotFound, std::memory_order_relaxed);
+        return TGameResult<TMap<FName, TRowType>, EStaticDataBinError>::Failure(EStaticDataBinError::TableNotFound);
     }
 
     TMap<FName, TRowType> Built;
     Built.Reserve(Table->Rows.Num());
     for (const TPair<FName, TArray<uint8>>& Pair : Table->Rows) {
         TRowType Row;
-        if (!DeserializeRowFromPayload(StructName, Pair.Value, &Row)) {
-            return false;
+        EStaticDataBinError ErrorCode = EStaticDataBinError::None;
+        if (!DeserializeRowFromPayload(StructName, Pair.Value, &Row, ErrorCode)) {
+            LastError.store(ErrorCode, std::memory_order_relaxed);
+            return TGameResult<TMap<FName, TRowType>, EStaticDataBinError>::Failure(ErrorCode);
         }
         Built.Add(Pair.Key, MoveTemp(Row));
     }
-    OutRows = MoveTemp(Built);
-    LastError = EStaticDataBinError::None;
-    return true;
-}
-
-template <typename TRowType>
-TGameStatusResult<void> FStaticDataRepository::TryAddTable(const TMap<FName, TRowType>& InRows) {
-    if (AddTable(InRows)) {
-        return TGameStatusResult<void>::Success();
-    }
-    return TGameStatusResult<void>::Failure(static_cast<int32>(GetLastError()), TEXT("Failed to add table"));
-}
-
-template <typename TRowType>
-TGameResult<TMap<FName, TRowType>, EStaticDataBinError> FStaticDataRepository::TryExtractTable() const {
-    TMap<FName, TRowType> OutRows;
-    if (ExtractTable(OutRows)) {
-        return TGameResult<TMap<FName, TRowType>, EStaticDataBinError>::Success(MoveTemp(OutRows));
-    }
-    return TGameResult<TMap<FName, TRowType>, EStaticDataBinError>::Failure(GetLastError());
+    LastError.store(EStaticDataBinError::None, std::memory_order_relaxed);
+    return TGameResult<TMap<FName, TRowType>, EStaticDataBinError>::Success(MoveTemp(Built));
 }

@@ -32,7 +32,12 @@ public:
             : InJsonDir;
 
         bool bAllSuccess = true;
-        bAllSuccess &= FDataTableLoaderUtils::LoadTableFromJson(BaseDir / TEXT("DT_ShopGoods.json"), GoodsMap);
+        auto LoadRes_Goods = FDataTableLoaderUtils::LoadTableFromJson<FShopGoodsRow>(BaseDir / TEXT("DT_ShopGoods.json"));
+        if (LoadRes_Goods.IsSuccess()) {
+            GoodsMap = LoadRes_Goods.ExtractValue();
+        } else {
+            bAllSuccess = false;
+        }
         return bAllSuccess;
     }
 
@@ -43,7 +48,12 @@ public:
      */
     bool LoadAllFromRepository(const FStaticDataRepository& Repository) {
         bool bAllSuccess = true;
-        bAllSuccess &= Repository.ExtractTable(GoodsMap);
+        auto ExtractRes_Goods = Repository.ExtractTable<FShopGoodsRow>();
+        if (ExtractRes_Goods.IsSuccess()) {
+            GoodsMap = ExtractRes_Goods.ExtractValue();
+        } else {
+            bAllSuccess = false;
+        }
         return bAllSuccess;
     }
 
@@ -54,7 +64,7 @@ public:
      */
     bool AddAllToRepository(FStaticDataRepository& Repository) const {
         bool bAllSuccess = true;
-        bAllSuccess &= Repository.AddTable(GoodsMap);
+        bAllSuccess &= Repository.AddTable(GoodsMap).IsSuccess();
         return bAllSuccess;
     }
 

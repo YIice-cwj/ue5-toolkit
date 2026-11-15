@@ -7,6 +7,7 @@
 
 #include "CoreMinimal.h"
 #include "Save/GameSaveArchive.h"
+#include "Types/TGameResult.h"
 
 /**
  * @brief 存档分段注册表
@@ -24,9 +25,9 @@ public:
     /**
      * @brief 注销指定名称的存档段
      * @param SegmentName 目标存档段名称
-     * @return 若成功注销返回 true，未找到指定段返回 false
+     * @return 成功注销返回 Success，未找到指定段返回 Failure
      */
-    bool UnregisterSegment(FName SegmentName);
+    TGameStatusResult<void> UnregisterSegment(FName SegmentName);
 
     /**
      * @brief 检查指定名称的存档段是否已注册
@@ -39,17 +40,17 @@ public:
      * @brief 驱动所有已注册段序列化数据，组装为目标归档对象
      * @param SlotName 存档槽位名称
      * @param OutArchive 输出的归档对象引用
-     * @return 组装成功返回 true，发生异常返回 false
+     * @return 组装成功返回 Success，发生异常返回 Failure
      */
-    bool BuildArchive(const FString& SlotName, UGameSaveArchive& OutArchive) const;
+    TGameStatusResult<void> BuildArchive(const FString& SlotName, UGameSaveArchive& OutArchive) const;
 
     /**
      * @brief 校验版本并向各已注册段反序列化分发归档数据（未知段自动保留）
      * @param SlotName 存档槽位名称
      * @param Archive 待读取的归档对象引用
-     * @return 全部已注册段反序列化成功返回 true，版本不兼容或损坏返回 false
+     * @return 全部已注册段反序列化成功返回 Success，版本不兼容或损坏返回 Failure
      */
-    bool ApplyArchive(const FString& SlotName, const UGameSaveArchive& Archive);
+    TGameStatusResult<void> ApplyArchive(const FString& SlotName, const UGameSaveArchive& Archive);
 
     /**
      * @brief 移除并清理指定槽位缓存的未知保留段数据

@@ -158,6 +158,10 @@ float FDirectoryChangeWatcher::ResolveIntervalSeconds() const {
     return FMath::Max(FConfigRegistry::Get().GetConfig<float>(MakeConfigKey(TEXT("IntervalSeconds")), 2.0f), MinIntervalSeconds);
 }
 
+/**
+ * @brief 轮询间隔配置动态变更响应回调
+ * @param NewInterval 新的轮询间隔秒数
+ */
 void FDirectoryChangeWatcher::OnIntervalConfigChanged(float NewInterval) {
     if (TickerHandle.IsValid()) {
         FTSTicker::GetCoreTicker().RemoveTicker(TickerHandle);
@@ -189,7 +193,8 @@ bool FDirectoryChangeWatcher::Tick([[maybe_unused]] float DeltaTime) {
     const FString Extension = ScanConfig->Extension;
     const bool bRecursive = ScanConfig->bRecursive;
 
-    Async(EAsyncExecution::ThreadPool, [CapturedContext = Context, this, WatchDirectory, Extension, bRecursive]() {
+    TWeakPtr<std::atomic<bool>> WeakToken = AliveToken;
+    Async(EAsyncExecution::ThreadPool, [CapturedContext = Context, WeakToken, this, WatchDirectory, Extension, bRecursive]() {
         if (CapturedContext->bIsStopped.load(std::memory_order_acquire)) {
             CapturedContext->bIsScanning.store(false, std::memory_order_release);
             return;
@@ -197,19 +202,23 @@ bool FDirectoryChangeWatcher::Tick([[maybe_unused]] float DeltaTime) {
 
         const FDateTime ScannedTimestamp = PerformScan(WatchDirectory, Extension, bRecursive);
 
-        AsyncTask(ENamedThreads::GameThread, [CapturedContext, this, ScannedTimestamp]() {
+        AsyncTask(ENamedThreads::GameThread, [CapturedContext, WeakToken, this, ScannedTimestamp]() {
             CapturedContext->bIsScanning.store(false, std::memory_order_release);
             if (CapturedContext->bIsStopped.load(std::memory_order_acquire)) {
                 return;
             }
-            if (ScannedTimestamp > LastObservedTimestamp) {
-                LastObservedTimestamp = ScannedTimestamp;
-                ++ChangeCount;
-                if constexpr (Game::Config::bEnableLog) {
-                    UE_LOG(LogGameDirectoryWatcher, Log, TEXT("【目录监听】检测到文件变更 [%s]: 变更计数值=%u"),
-                        *WatcherName.ToString(), ChangeCount);
+            if (TSharedPtr<std::atomic<bool>> Pinned = WeakToken.Pin()) {
+                if (Pinned->load(std::memory_order_acquire)) {
+                    if (ScannedTimestamp > LastObservedTimestamp) {
+                        LastObservedTimestamp = ScannedTimestamp;
+                        ++ChangeCount;
+                        if constexpr (Game::Config::bEnableLog) {
+                            UE_LOG(LogGameDirectoryWatcher, Log, TEXT("【目录监听】检测到文件变更 [%s]: 变更计数值=%u"),
+                                *WatcherName.ToString(), ChangeCount);
+                        }
+                        ChangeObserver.Set(ChangeCount);
+                    }
                 }
-                ChangeObserver.Set(ChangeCount);
             }
         });
     });

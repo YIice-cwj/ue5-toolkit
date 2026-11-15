@@ -32,7 +32,12 @@ public:
             : InJsonDir;
 
         bool bAllSuccess = true;
-        bAllSuccess &= FDataTableLoaderUtils::LoadTableFromJson(BaseDir / TEXT("DT_Item.json"), ItemMap);
+        auto LoadRes_Item = FDataTableLoaderUtils::LoadTableFromJson<FItemRow>(BaseDir / TEXT("DT_Item.json"));
+        if (LoadRes_Item.IsSuccess()) {
+            ItemMap = LoadRes_Item.ExtractValue();
+        } else {
+            bAllSuccess = false;
+        }
         return bAllSuccess;
     }
 
@@ -43,7 +48,12 @@ public:
      */
     bool LoadAllFromRepository(const FStaticDataRepository& Repository) {
         bool bAllSuccess = true;
-        bAllSuccess &= Repository.ExtractTable(ItemMap);
+        auto ExtractRes_Item = Repository.ExtractTable<FItemRow>();
+        if (ExtractRes_Item.IsSuccess()) {
+            ItemMap = ExtractRes_Item.ExtractValue();
+        } else {
+            bAllSuccess = false;
+        }
         return bAllSuccess;
     }
 
@@ -54,7 +64,7 @@ public:
      */
     bool AddAllToRepository(FStaticDataRepository& Repository) const {
         bool bAllSuccess = true;
-        bAllSuccess &= Repository.AddTable(ItemMap);
+        bAllSuccess &= Repository.AddTable(ItemMap).IsSuccess();
         return bAllSuccess;
     }
 

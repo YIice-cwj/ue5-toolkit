@@ -12,17 +12,34 @@
  */
 UENUM(BlueprintType)
 enum class EGameCloudSaveResult : uint8 {
-    /** 成功完成操作 */
+    /**
+     * @brief 成功完成操作
+     */
     Success,
-    /** 网络连接未就绪、断线或请求超时 */
+
+    /**
+     * @brief 网络连接未就绪、断线或请求超时
+     */
     NetworkError,
-    /** 指定槽位在本地或云端不存在 */
+
+    /**
+     * @brief 指定槽位在本地或云端不存在
+     */
     SlotNotFound,
-    /** 归档数据损坏或头部校验不通过 */
+
+    /**
+     * @brief 归档数据损坏或头部校验不通过
+     */
     CorruptedData,
-    /** 归档版本不兼容 */
+
+    /**
+     * @brief 归档版本不兼容
+     */
     VersionMismatch,
-    /** 操作被上层主动取消 */
+
+    /**
+     * @brief 操作被上层主动取消
+     */
     Cancelled
 };
 

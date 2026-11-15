@@ -90,7 +90,7 @@ bool BuildSourceRepository(FStaticDataRepository& OutRepository) {
     TMap<FName, FRepositoryTestRowB> RowsB;
     RowsB.Add(FName(TEXT("First")), FRepositoryTestRowB{TEXT("首行"), {1, 2, 3}, true});
     RowsB.Add(FName(TEXT("Second")), FRepositoryTestRowB{TEXT("次行"), {}, false});
-    return OutRepository.AddTable(RowsA) && OutRepository.AddTable(RowsB);
+    return OutRepository.AddTable(RowsA).IsSuccess() && OutRepository.AddTable(RowsB).IsSuccess();
 }
 
 /**
@@ -142,18 +142,22 @@ bool FRepositoryRoundTripTest::RunTest([[maybe_unused]] const FString& Parameter
     TestTrue(TEXT("源仓库两表写入成功"), BuildSourceRepository(Source));
     TestEqual(TEXT("写入两表后表数正确"), Source.TableCount(), 2);
 
-    TestTrue(TEXT("脱机导出成功"), Source.ExportToFile(FilePath));
+    TestTrue(TEXT("脱机导出成功"), Source.ExportToFile(FilePath).IsSuccess());
 
     FStaticDataRepository Loaded;
-    TestTrue(TEXT("再装载成功"), Loaded.ImportFromFile(FilePath));
+    auto ImportRes = Loaded.ImportFromFile(FilePath);
+    TestTrue(TEXT("再装载成功"), ImportRes.IsSuccess());
     TestEqual(TEXT("装载后错误码 None"), Loaded.GetLastError(), EStaticDataBinError::None);
     TestEqual(TEXT("装载后表数与源一致"), Loaded.TableCount(), Source.TableCount());
 
     RegisterTestRowSerializers(Loaded);
-    TMap<FName, FRepositoryTestRowA> RowsA;
-    TMap<FName, FRepositoryTestRowB> RowsB;
-    TestTrue(TEXT("提取 A 表成功"), Loaded.ExtractTable(RowsA));
-    TestTrue(TEXT("提取 B 表成功"), Loaded.ExtractTable(RowsB));
+    auto ExtractARes = Loaded.ExtractTable<FRepositoryTestRowA>();
+    TestTrue(TEXT("提取 A 表成功"), ExtractARes.IsSuccess());
+    TMap<FName, FRepositoryTestRowA> RowsA = ExtractARes.IsSuccess() ? ExtractARes.ExtractValue() : TMap<FName, FRepositoryTestRowA>();
+
+    auto ExtractBRes = Loaded.ExtractTable<FRepositoryTestRowB>();
+    TestTrue(TEXT("提取 B 表成功"), ExtractBRes.IsSuccess());
+    TMap<FName, FRepositoryTestRowB> RowsB = ExtractBRes.IsSuccess() ? ExtractBRes.ExtractValue() : TMap<FName, FRepositoryTestRowB>();
     TestEqual(TEXT("A 表行数一致"), RowsA.Num(), 3);
     TestEqual(TEXT("B 表行数一致"), RowsB.Num(), 2);
 
@@ -189,7 +193,7 @@ bool FRepositoryCorruptionTest::RunTest([[maybe_unused]] const FString& Paramete
     const FString FilePath = FPaths::ProjectSavedDir() / UnitTestBinPath;
     FStaticDataRepository Source;
     TestTrue(TEXT("源仓库两表写入成功"), BuildSourceRepository(Source));
-    TestTrue(TEXT("基线导出成功"), Source.ExportToFile(FilePath));
+    TestTrue(TEXT("基线导出成功"), Source.ExportToFile(FilePath).IsSuccess());
 
     TArray<uint8> BaseBytes;
     TestTrue(TEXT("基线字节读取成功"), LoadTestBinBytes(BaseBytes));
@@ -200,14 +204,14 @@ bool FRepositoryCorruptionTest::RunTest([[maybe_unused]] const FString& Paramete
 
     Tampered[0] ^= 0xFF;
     TestTrue(TEXT("magic 篡改档写盘成功"), SaveTestBinBytes(Tampered));
-    TestFalse(TEXT("magic 篡改档装载被拒"), Loaded.ImportFromFile(FilePath));
+    TestTrue(TEXT("magic 篡改档装载被拒"), Loaded.ImportFromFile(FilePath).IsFailure());
     TestEqual(TEXT("magic 篡改错误码 MagicMismatch"), Loaded.GetLastError(), EStaticDataBinError::MagicMismatch);
 
     Tampered = BaseBytes;
     const int32 LastIndex = Tampered.Num() - 1;
     Tampered[LastIndex] ^= 0xFF;
     TestTrue(TEXT("CRC 篡改档写盘成功"), SaveTestBinBytes(Tampered));
-    TestFalse(TEXT("CRC 篡改档装载被拒"), Loaded.ImportFromFile(FilePath));
+    TestTrue(TEXT("CRC 篡改档装载被拒"), Loaded.ImportFromFile(FilePath).IsFailure());
     TestEqual(TEXT("CRC 篡改错误码 ChecksumMismatch"), Loaded.GetLastError(), EStaticDataBinError::ChecksumMismatch);
 
     Tampered = BaseBytes;
@@ -219,20 +223,20 @@ bool FRepositoryCorruptionTest::RunTest([[maybe_unused]] const FString& Paramete
     const uint32 VersionCrc = FCrc::MemCrc32(Tampered.GetData() + sizeof(uint32), Tampered.Num() - sizeof(uint32) * 2);
     FMemory::Memcpy(Tampered.GetData() + Tampered.Num() - sizeof(uint32), &VersionCrc, sizeof(VersionCrc));
     TestTrue(TEXT("版本升级档写盘成功"), SaveTestBinBytes(Tampered));
-    TestFalse(TEXT("高版本档装载被拒"), Loaded.ImportFromFile(FilePath));
+    TestTrue(TEXT("高版本档装载被拒"), Loaded.ImportFromFile(FilePath).IsFailure());
     TestEqual(TEXT("版本升级错误码 UnsupportedVersion"), Loaded.GetLastError(), EStaticDataBinError::UnsupportedVersion);
 
     TestTrue(TEXT("结构截断档写盘成功"), SaveTestBinBytes(TArray<uint8>(BaseBytes.GetData(), BaseBytes.Num() / 2)));
-    TestFalse(TEXT("结构截断档装载被拒"), Loaded.ImportFromFile(FilePath));
+    TestTrue(TEXT("结构截断档装载被拒"), Loaded.ImportFromFile(FilePath).IsFailure());
     TestTrue(TEXT("截断错误码为 IoFailure 或 ChecksumMismatch"),
         Loaded.GetLastError() == EStaticDataBinError::IoFailure
         || Loaded.GetLastError() == EStaticDataBinError::ChecksumMismatch);
 
-    TestFalse(TEXT("缺失文件导入被拒"), Loaded.ImportFromFile(FPaths::ProjectSavedDir() / TEXT("NonExistent_StaticData.bin")));
+    TestTrue(TEXT("缺失文件导入被拒"), Loaded.ImportFromFile(FPaths::ProjectSavedDir() / TEXT("NonExistent_StaticData.bin")).IsFailure());
     TestEqual(TEXT("缺失文件错误码 IoFailure"), Loaded.GetLastError(), EStaticDataBinError::IoFailure);
 
     AddExpectedErrorPlain(TEXT("写盘 I/O 错误"), EAutomationExpectedErrorFlags::Contains, 1);
-    TestFalse(TEXT("非法路径导出被拒"), Source.ExportToFile(TEXT("/NonExistentDirectory/Forbidden/Test.bin")));
+    TestTrue(TEXT("非法路径导出被拒"), Source.ExportToFile(TEXT("/NonExistentDirectory/Forbidden/Test.bin")).IsFailure());
     TestEqual(TEXT("非法路径导出错误码 IoFailure"), Source.GetLastError(), EStaticDataBinError::IoFailure);
 
     CleanupTestBinFile();
@@ -252,42 +256,42 @@ bool FRepositorySemanticsTest::RunTest([[maybe_unused]] const FString& Parameter
     RegisterTestRowSerializers(Repository);
     TMap<FName, FRepositoryTestRowA> Initial;
     Initial.Add(FName(TEXT("Only")), FRepositoryTestRowA{1, 0.5f});
-    TestTrue(TEXT("首表写入成功"), Repository.AddTable(Initial));
+    TestTrue(TEXT("首表写入成功"), Repository.AddTable(Initial).IsSuccess());
 
     TMap<FName, FRepositoryTestRowA> Override;
     Override.Add(FName(TEXT("Replaced")), FRepositoryTestRowA{9, 9.0f});
-    TestTrue(TEXT("同结构重复写入成功"), Repository.AddTable(Override));
+    TestTrue(TEXT("同结构重复写入成功"), Repository.AddTable(Override).IsSuccess());
     TestEqual(TEXT("同结构重复写入不增表数"), Repository.TableCount(), 1);
 
-    TMap<FName, FRepositoryTestRowA> OutRows;
-    TestTrue(TEXT("覆盖后提取成功"), Repository.ExtractTable(OutRows));
-    TestEqual(TEXT("覆盖后行内容为末次写入"), OutRows.Num(), 1);
-    TestTrue(TEXT("覆盖后旧键被替换"), OutRows.Contains(FName(TEXT("Replaced"))) && !OutRows.Contains(FName(TEXT("Only"))));
+    auto ExtractRes = Repository.ExtractTable<FRepositoryTestRowA>();
+    TestTrue(TEXT("覆盖后提取成功"), ExtractRes.IsSuccess());
+    if (ExtractRes.IsSuccess()) {
+        const auto& OutRows = ExtractRes.GetValue();
+        TestEqual(TEXT("覆盖后行内容为末次写入"), OutRows.Num(), 1);
+        TestTrue(TEXT("覆盖后旧键被替换"), OutRows.Contains(FName(TEXT("Replaced"))) && !OutRows.Contains(FName(TEXT("Only"))));
+    }
 
-    TMap<FName, FRepositoryTestRowB> MissingOut;
-    TestFalse(TEXT("未知表提取被拒"), Repository.ExtractTable(MissingOut));
+    TestTrue(TEXT("未知表提取被拒"), Repository.ExtractTable<FRepositoryTestRowB>().IsFailure());
     TestEqual(TEXT("未知表错误码 TableNotFound"), Repository.GetLastError(), EStaticDataBinError::TableNotFound);
 
     FStaticDataRepository Unregistered;
     TMap<FName, FRepositoryTestRowA> UnregisteredRows;
     UnregisteredRows.Add(FName(TEXT("Ghost")), FRepositoryTestRowA{5, 1.0f});
-    TestFalse(TEXT("未登记读写器的结构写入被拒"), Unregistered.AddTable(UnregisteredRows));
+    TestTrue(TEXT("未登记读写器的结构写入被拒"), Unregistered.AddTable(UnregisteredRows).IsFailure());
     TestEqual(TEXT("未登记读写器错误码 SerializerNotFound"), Unregistered.GetLastError(), EStaticDataBinError::SerializerNotFound);
     TestEqual(TEXT("被拒写入不产生表"), Unregistered.TableCount(), 0);
 
-    TMap<FName, FRepositoryTestRowA> UnregisteredOut;
-    TestFalse(TEXT("未登记读写器的结构提取被拒"), Unregistered.ExtractTable(UnregisteredOut));
+    TestTrue(TEXT("未登记读写器的结构提取被拒"), Unregistered.ExtractTable<FRepositoryTestRowA>().IsFailure());
 
     FStaticDataRepository FailSerializerRepo;
     FailSerializerRepo.RegisterRowSerializer(FName(FRepositoryTestRowA::StaticStruct()->GetName()), &HandleFailingSerialize);
-    TestFalse(TEXT("序列化器失败导致写入被拒"), FailSerializerRepo.AddTable(Initial));
+    TestTrue(TEXT("序列化器失败导致写入被拒"), FailSerializerRepo.AddTable(Initial).IsFailure());
     TestEqual(TEXT("序列化器失败错误码 IoFailure"), FailSerializerRepo.GetLastError(), EStaticDataBinError::IoFailure);
 
     FStaticDataRepository FailDeserializeRepo;
     FailDeserializeRepo.RegisterRowSerializer(FName(FRepositoryTestRowA::StaticStruct()->GetName()), &HandleFailingDeserialize);
-    TestTrue(TEXT("反序列化测试源表写入成功"), FailDeserializeRepo.AddTable(Initial));
-    TMap<FName, FRepositoryTestRowA> FailDeserializeOut;
-    TestFalse(TEXT("反序列化器失败导致提取被拒"), FailDeserializeRepo.ExtractTable(FailDeserializeOut));
+    TestTrue(TEXT("反序列化测试源表写入成功"), FailDeserializeRepo.AddTable(Initial).IsSuccess());
+    TestTrue(TEXT("反序列化器失败导致提取被拒"), FailDeserializeRepo.ExtractTable<FRepositoryTestRowA>().IsFailure());
     TestEqual(TEXT("反序列化器失败错误码 RowDeserializeFailed"), FailDeserializeRepo.GetLastError(), EStaticDataBinError::RowDeserializeFailed);
 
     FStaticDataRepository Forward;
@@ -296,7 +300,7 @@ bool FRepositorySemanticsTest::RunTest([[maybe_unused]] const FString& Parameter
     ForwardRows.Add(FName(TEXT("Alpha")), FRepositoryTestRowA{1, 1.0f});
     ForwardRows.Add(FName(TEXT("Beta")), FRepositoryTestRowA{2, 2.0f});
     ForwardRows.Add(FName(TEXT("Gamma")), FRepositoryTestRowA{3, 3.0f});
-    TestTrue(TEXT("正序写入成功"), Forward.AddTable(ForwardRows));
+    TestTrue(TEXT("正序写入成功"), Forward.AddTable(ForwardRows).IsSuccess());
 
     FStaticDataRepository Reverse;
     RegisterTestRowSerializers(Reverse);
@@ -304,7 +308,7 @@ bool FRepositorySemanticsTest::RunTest([[maybe_unused]] const FString& Parameter
     ReverseRows.Add(FName(TEXT("Gamma")), FRepositoryTestRowA{3, 3.0f});
     ReverseRows.Add(FName(TEXT("Beta")), FRepositoryTestRowA{2, 2.0f});
     ReverseRows.Add(FName(TEXT("Alpha")), FRepositoryTestRowA{1, 1.0f});
-    TestTrue(TEXT("逆序写入成功"), Reverse.AddTable(ReverseRows));
+    TestTrue(TEXT("逆序写入成功"), Reverse.AddTable(ReverseRows).IsSuccess());
 
     FStaticDataRepository Modified;
     RegisterTestRowSerializers(Modified);
@@ -312,7 +316,7 @@ bool FRepositorySemanticsTest::RunTest([[maybe_unused]] const FString& Parameter
     ModifiedRows.Add(FName(TEXT("Alpha")), FRepositoryTestRowA{1, 1.0f});
     ModifiedRows.Add(FName(TEXT("Beta")), FRepositoryTestRowA{2, 2.5f});
     ModifiedRows.Add(FName(TEXT("Gamma")), FRepositoryTestRowA{3, 3.0f});
-    TestTrue(TEXT("差异样本写入成功"), Modified.AddTable(ModifiedRows));
+    TestTrue(TEXT("差异样本写入成功"), Modified.AddTable(ModifiedRows).IsSuccess());
 
     const FStaticDataContentDigest ForwardDigest = Forward.ComputeContentDigest();
     const FStaticDataContentDigest ReverseDigest = Reverse.ComputeContentDigest();
@@ -325,20 +329,10 @@ bool FRepositorySemanticsTest::RunTest([[maybe_unused]] const FString& Parameter
     Repository.Reset();
     TestEqual(TEXT("Reset 后表数归零"), Repository.TableCount(), 0);
     TestEqual(TEXT("Reset 后错误码 None"), Repository.GetLastError(), EStaticDataBinError::None);
-    TestTrue(TEXT("Reset 不影响已登记读写器"), Repository.AddTable(Initial));
+    TestTrue(TEXT("Reset 不影响已登记读写器"), Repository.AddTable(Initial).IsSuccess());
 
-    FStaticDataRepository ResultRepo;
-    RegisterTestRowSerializers(ResultRepo);
-    const TGameStatusResult<void> TryAddRes = ResultRepo.TryAddTable(Initial);
-    TestTrue(TEXT("TryAddTable 返回 Success"), TryAddRes.IsSuccess());
-
-    const TGameResult<TMap<FName, FRepositoryTestRowA>, EStaticDataBinError> TryExtractRes = ResultRepo.TryExtractTable<FRepositoryTestRowA>();
-    TestTrue(TEXT("TryExtractTable 返回 Success"), TryExtractRes.IsSuccess());
-    TestEqual(TEXT("TryExtractTable 提取行数一致"), TryExtractRes.GetValue().Num(), 1);
-    TestTrue(TEXT("TryExtractTable 包含预期行键"), TryExtractRes.GetValue().Contains(FName(TEXT("Only"))));
-
-    const TGameResult<TMap<FName, FRepositoryTestRowB>, EStaticDataBinError> MissingRes = ResultRepo.TryExtractTable<FRepositoryTestRowB>();
-    TestTrue(TEXT("TryExtractTable 未注册表返回 Failure"), MissingRes.IsFailure());
+    auto MissingRes = Repository.ExtractTable<FRepositoryTestRowB>();
+    TestTrue(TEXT("未知表提取返回 Failure"), MissingRes.IsFailure());
     TestEqual(TEXT("错误码为 TableNotFound"), MissingRes.GetError(), EStaticDataBinError::TableNotFound);
 
     return true;

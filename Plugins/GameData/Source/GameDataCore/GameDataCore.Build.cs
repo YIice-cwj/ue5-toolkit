@@ -14,9 +14,6 @@ public class GameDataCore : ModuleRules {
             "Json",
             "JsonUtilities",
             "GameLogging",
-        });
-
-        PrivateDependencyModuleNames.AddRange(new string[] {
             "GameCore",
         });
     }

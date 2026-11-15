@@ -7,6 +7,7 @@
 
 #include "CoreMinimal.h"
 #include "StaticData/FStaticDataRepositoryTypes.h"
+#include "Types/TGameResult.h"
 
 class FMemoryReader;
 
@@ -18,21 +19,16 @@ public:
     /**
      * @brief 将表集合编码为完整文件字节流（Magic + 格式版本 + 表集合 + CRC32）
      * @param InTables 表集合
-     * @param OutFileBytes 输出的完整文件字节流
-     * @return 内存写入器未出错返回 true
+     * @return 成功返回完整文件字节流，失败返回具体错误码
      */
-    [[nodiscard]] static bool Encode(const TMap<FName, FStaticDataBinaryTable>& InTables, TArray<uint8>& OutFileBytes);
+    [[nodiscard]] static TGameResult<TArray<uint8>, EStaticDataBinError> Encode(const TMap<FName, FStaticDataBinaryTable>& InTables);
 
     /**
      * @brief 解码完整文件字节流为表集合
      * @param InFileBytes 完整文件字节流
-     * @param OutTables 输出的表集合；解码失败时保持不变
-     * @return 成功返回 None，否则返回具体错误码
+     * @return 成功返回解码后的表集合，失败返回具体错误码
      */
-    [[nodiscard]] static EStaticDataBinError Decode(
-        const TArray<uint8>& InFileBytes,
-        TMap<FName, FStaticDataBinaryTable>& OutTables
-    );
+    [[nodiscard]] static TGameResult<TMap<FName, FStaticDataBinaryTable>, EStaticDataBinError> Decode(const TArray<uint8>& InFileBytes);
 
     /**
      * @brief 计算与装载顺序无关的内容摘要

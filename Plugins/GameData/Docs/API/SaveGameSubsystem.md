@@ -75,30 +75,51 @@ public:
 ```cpp
 UCLASS(BlueprintType)
 class GAMEDATACORE_API USaveGameSubsystem : public UGameInstanceSubsystem {
+    GENERATED_BODY()
+
 public:
     void SetSaveGameClass(TSubclassOf<UGameSaveArchive> InSaveGameClass);
     TSubclassOf<UGameSaveArchive> GetSaveGameClass() const;
 
     void RegisterSegment(const FGameSaveSegment& Segment);
-    bool UnregisterSegment(FName SegmentName);
+    TGameStatusResult<void> UnregisterSegment(FName SegmentName);
     bool HasSegment(FName SegmentName) const;
 
     void SetAllowedSlotNames(const TArray<FString>& InAllowedSlotNames);
     bool IsSlotNameAllowed(const FString& SlotName) const;
 
-    bool SaveGameToSlot(const FString& SlotName);
+    // C++ 强契约主接口
+    [[nodiscard]] TGameStatusResult<void> SaveGameToSlot(const FString& SlotName);
+    [[nodiscard]] TGameStatusResult<void> LoadGameFromSlot(const FString& SlotName);
+    [[nodiscard]] TGameStatusResult<void> SaveObjectToSlot(const FString& SlotName, USaveGame* SaveGameObject);
+    [[nodiscard]] TGameResult<USaveGame*, FGameError> LoadObjectFromSlot(const FString& SlotName, TSubclassOf<USaveGame> SaveGameClassToLoad);
+    template <typename TSaveGameClass>
+    [[nodiscard]] TGameResult<TSaveGameClass*, FGameError> LoadObjectFromSlot(const FString& SlotName);
+    [[nodiscard]] TGameStatusResult<void> DeleteSaveSlot(const FString& SlotName);
+
+    // 蓝图反射外观方法（内部转发并返回 bool）
+    UFUNCTION(BlueprintCallable, Category = "GameData|Save", meta = (DisplayName = "Save Game To Slot"))
+    bool K2_SaveGameToSlot(const FString& SlotName);
+
+    UFUNCTION(BlueprintCallable, Category = "GameData|Save", meta = (DisplayName = "Load Game From Slot"))
+    bool K2_LoadGameFromSlot(const FString& SlotName);
+
+    UFUNCTION(BlueprintCallable, Category = "GameData|Save", meta = (DisplayName = "Save Object To Slot"))
+    bool K2_SaveObjectToSlot(const FString& SlotName, USaveGame* SaveGameObject);
+
+    UFUNCTION(BlueprintCallable, Category = "GameData|Save", meta = (DisplayName = "Load Object From Slot"))
+    bool K2_LoadObjectFromSlot(const FString& SlotName, TSubclassOf<USaveGame> SaveGameClassToLoad, USaveGame*& OutSaveGame);
+
+    UFUNCTION(BlueprintCallable, Category = "GameData|Save", meta = (DisplayName = "Delete Save Slot"))
+    bool K2_DeleteSaveSlot(const FString& SlotName);
+
+    // 异步分段任务接口
     bool SaveGameToSlotAsync(const FString& SlotName);
-    bool LoadGameFromSlot(const FString& SlotName);
     bool LoadGameFromSlotAsync(const FString& SlotName);
-
-    bool SaveObjectToSlot(const FString& SlotName, USaveGame* SaveGameObject);
-    bool LoadObjectFromSlot(const FString& SlotName, TSubclassOf<USaveGame> SaveGameClass, USaveGame*& OutSaveGame);
-
     bool DoesSaveSlotExist(const FString& SlotName) const;
-    bool DeleteSaveSlot(const FString& SlotName);
 
-    static FString GetSaveSlotFilePath(const FString& SlotName);
-    static FString GetSaveSlotTempFilePath(const FString& SlotName);
+    [[nodiscard]] static USaveGameSubsystem* GetPtr(const UObject* WorldContextObject);
+    [[nodiscard]] static USaveGameSubsystem& Get(const UObject* WorldContextObject);
 
     FOnAsyncSaveComplete OnSaveComplete;
     FOnAsyncLoadComplete OnLoadComplete;
@@ -115,15 +136,15 @@ public:
 
     static bool IsSlotNameAllowed(const FString& SlotName, const TSet<FString>& AllowedSlotNames);
     static bool DoesSaveSlotExist(const FString& SlotName);
-    static bool DeleteSaveSlot(const FString& SlotName);
+    static TGameStatusResult<void> DeleteSaveSlot(const FString& SlotName);
 
-    static bool SerializeObject(USaveGame* SaveGameObject, TArray<uint8>& OutBytes);
+    static TGameResult<TArray<uint8>, FGameError> SerializeObject(USaveGame* SaveGameObject);
 
     static uint64 IssueSlotSaveGeneration(const FString& SlotName);
     static void InvalidateSlotSaveGeneration(const FString& SlotName);
 
-    static bool WriteSlotBytes(const FString& SlotName, const TArray<uint8>& Bytes, uint64 SaveGeneration = 0);
-    static bool ReadSlotBytes(const FString& SlotName, TArray<uint8>& OutBytes);
+    static TGameStatusResult<void> WriteSlotBytes(const FString& SlotName, const TArray<uint8>& Bytes, uint64 SaveGeneration = 0);
+    static TGameResult<TArray<uint8>, FGameError> ReadSlotBytes(const FString& SlotName);
     static bool HasValidSaveGameHeader(const TArray<uint8>& Bytes, const FString& SlotName);
 };
 ```
@@ -134,11 +155,11 @@ public:
 class GAMEDATACORE_API FSaveGameSegmentRegistry {
 public:
     void RegisterSegment(const FGameSaveSegment& Segment);
-    bool UnregisterSegment(FName SegmentName);
+    TGameStatusResult<void> UnregisterSegment(FName SegmentName);
     [[nodiscard]] bool HasSegment(FName SegmentName) const;
 
-    bool BuildArchive(const FString& SlotName, UGameSaveArchive& OutArchive) const;
-    bool ApplyArchive(const FString& SlotName, const UGameSaveArchive& Archive);
+    [[nodiscard]] TGameStatusResult<void> BuildArchive(const FString& SlotName, UGameSaveArchive& OutArchive) const;
+    [[nodiscard]] TGameStatusResult<void> ApplyArchive(const FString& SlotName, const UGameSaveArchive& Archive);
     void ClearPreservedSegmentsForSlot(const FString& SlotName);
     void Reset();
 };

@@ -54,7 +54,7 @@ flowchart TD
 | 静态数据子系统 | 冷启动同步确定性加载、热重载后台预热、快照原子发布、数据版本观察者 | 生成于 `Generated/Data/StaticData/UStaticDataSubsystem.h` |
 | 不可变快照 | 每次提交生成全新 `FStaticDataSnapshot`，读者持有期间内容绝对稳定 | `Generated/Data/StaticData/FStaticDataSnapshot.h` |
 | 域查询与聚合缓存 | 每表生成 `F{Stem}Query::FindByKey`（返回持快照所有权的行共享指针）、`F{Domain}StaticDataInterface` 聚合缓存 | `Generated/Data/StaticData/{Domain}/` |
-| 目录监听热更 | 复用 `GameCore` 的 `FDirectoryChangeWatcher`，多会话引用计数保护 | `Generated/Data/StaticData/FStaticDataHotReloadWatcher.h` |
+| 目录监听热更 | 复用 `GameDataCore` 的 `FDirectoryChangeWatcher`，多会话引用计数保护 | `Generated/Data/StaticData/FStaticDataHotReloadWatcher.h` |
 | 通用分段存档 | `FGameSaveSegment` 段注册、段版本迁移、未知段保留回写、SlotName 白名单 | `GameDataCore/.../USaveGameSubsystem.h`<br>`GameDataCore/.../FSaveGameSegmentRegistry.h` |
 | 原子 I/O 与并发写保护 | `.sav.tmp` 原子替换、断电抢救恢复、高水位单调代次（严格防旧写穿透与 ABA 复活） | `GameDataCore/.../FSaveGameFileIO.h`<br>`GameDataCore/.../GameSaveArchive.h` |
 | 任意存档逃生口 | `SaveObjectToSlot` / `LoadObjectFromSlot` 可存取任意 `USaveGame` | `GameDataCore/.../USaveGameSubsystem.h` |

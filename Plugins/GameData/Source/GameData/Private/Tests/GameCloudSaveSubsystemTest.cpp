@@ -2,6 +2,7 @@
 
 #include "Cloud/GameCloudSaveSubsystem.h"
 
+#include "Async/FGameThreadTaskRunner.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Message/GameNetworkMessageTypes.h"
@@ -154,7 +155,7 @@ bool FGameCloudSaveSubsystemTest::RunTest([[maybe_unused]] const FString& Parame
     SaveSys->RegisterSegment(ProgressSegment);
 
     const FString TestSlot(TEXT("CloudSyncSlot"));
-    TestTrue(TEXT("本地同步保存应成功"), SaveSys->SaveGameToSlot(TestSlot));
+    TestTrue(TEXT("本地同步保存应成功"), SaveSys->SaveGameToSlot(TestSlot).IsSuccess());
     TestTrue(TEXT("本地存档文件应存在"), SaveSys->DoesSaveSlotExist(TestSlot));
 
     EGameCloudSaveResult UploadResult = EGameCloudSaveResult::NetworkError;
@@ -167,7 +168,9 @@ bool FGameCloudSaveSubsystemTest::RunTest([[maybe_unused]] const FString& Parame
             UploadRsp = Rsp;
         }
     );
+    FGameThreadTaskRunner::FlushInFlightTasks();
     NetService.Tick(0.05f);
+    FGameThreadTaskRunner::FlushInFlightTasks();
 
     TestEqual(TEXT("上传结果应为 Success"), UploadResult, EGameCloudSaveResult::Success);
     TestTrue(TEXT("云端响应字段 bSuccess 应为 true"), UploadRsp.bSuccess);
@@ -190,7 +193,7 @@ bool FGameCloudSaveSubsystemTest::RunTest([[maybe_unused]] const FString& Parame
     TestTrue(TEXT("云端数据大小应大于 0"), QueryRsp.SaveSizeBytes > 0);
 
     RuntimeGold = 0;
-    TestTrue(TEXT("删除本地物理存档文件"), SaveSys->DeleteSaveSlot(TestSlot));
+    TestTrue(TEXT("删除本地物理存档文件"), SaveSys->DeleteSaveSlot(TestSlot).IsSuccess());
     TestFalse(TEXT("本地存档应已被彻底移除"), SaveSys->DoesSaveSlotExist(TestSlot));
 
     EGameCloudSaveResult DownloadResult = EGameCloudSaveResult::NetworkError;
@@ -204,7 +207,9 @@ bool FGameCloudSaveSubsystemTest::RunTest([[maybe_unused]] const FString& Parame
             DownloadRsp = Rsp;
         }
     );
+    FGameThreadTaskRunner::FlushInFlightTasks();
     NetService.Tick(0.05f);
+    FGameThreadTaskRunner::FlushInFlightTasks();
 
     TestEqual(TEXT("下载结果应为 Success"), DownloadResult, EGameCloudSaveResult::Success);
     TestTrue(TEXT("云端响应字段 bSuccess 应为 true"), DownloadRsp.bSuccess);
@@ -220,7 +225,9 @@ bool FGameCloudSaveSubsystemTest::RunTest([[maybe_unused]] const FString& Parame
             NonexistentResult = Result;
         }
     );
+    FGameThreadTaskRunner::FlushInFlightTasks();
     NetService.Tick(0.05f);
+    FGameThreadTaskRunner::FlushInFlightTasks();
     TestEqual(TEXT("下载不存在槽位应返回 SlotNotFound"), NonexistentResult, EGameCloudSaveResult::SlotNotFound);
 
     MockCloudStorage.Find(TestSlot)->SaveBytes = {0x00, 0x01, 0x02, 0x03};
@@ -233,8 +240,38 @@ bool FGameCloudSaveSubsystemTest::RunTest([[maybe_unused]] const FString& Parame
             CorruptResult = Result;
         }
     );
+    FGameThreadTaskRunner::FlushInFlightTasks();
     NetService.Tick(0.05f);
+    FGameThreadTaskRunner::FlushInFlightTasks();
     TestEqual(TEXT("云端坏包应在落盘前被拦截并报告 CorruptedData"), CorruptResult, EGameCloudSaveResult::CorruptedData);
+
+    UGameSaveArchive* IncompatibleArchive = NewObject<UGameSaveArchive>();
+    IncompatibleArchive->Metadata.SlotName = TestSlot;
+    IncompatibleArchive->Metadata.ArchiveVersion = UGameSaveArchive::CurrentArchiveVersion;
+    FGameSaveSegmentPayload HighVerPayload;
+    HighVerPayload.SegmentVersion = 99;
+    IncompatibleArchive->Segments.Add(FName(TEXT("PlayerEconomy")), HighVerPayload);
+
+    auto IncompatSerializeRes = FSaveGameFileIO::SerializeObject(IncompatibleArchive);
+    TestTrue(TEXT("序列化高版本测试存档成功"), IncompatSerializeRes.IsSuccess());
+    MockCloudStorage.Find(TestSlot)->SaveBytes = IncompatSerializeRes.IsSuccess() ? IncompatSerializeRes.ExtractValue() : TArray<uint8>();
+
+    AddExpectedErrorPlain(TEXT("高于当前段版本"), EAutomationExpectedErrorFlags::Contains, 1);
+    AddExpectedErrorPlain(TEXT("同步装载槽位段应用失败"), EAutomationExpectedErrorFlags::Contains, 1);
+
+    EGameCloudSaveResult IncompatibleResult = EGameCloudSaveResult::Success;
+    CloudSave.DownloadSlotAsync(
+        TestSlot,
+        true,
+        5.0f,
+        [&IncompatibleResult](EGameCloudSaveResult Result, const FGameCloudSaveDownloadRsp&) {
+            IncompatibleResult = Result;
+        }
+    );
+    FGameThreadTaskRunner::FlushInFlightTasks();
+    NetService.Tick(0.05f);
+    FGameThreadTaskRunner::FlushInFlightTasks();
+    TestEqual(TEXT("高版本段应用失败应正确报告 VersionMismatch 且阻断虚假成功"), IncompatibleResult, EGameCloudSaveResult::VersionMismatch);
 
     EGameCloudSaveResult InvalidSlotResult = EGameCloudSaveResult::Success;
     CloudSave.UploadSlotAsync(

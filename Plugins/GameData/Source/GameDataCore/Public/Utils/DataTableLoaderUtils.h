@@ -10,6 +10,7 @@
 #include "Misc/Paths.h"
 #include "Serialization/JsonSerializer.h"
 #include "JsonObjectConverter.h"
+#include "Types/TGameResult.h"
 
 #include "Logging/GameLogCategories.h"
 
@@ -24,37 +25,33 @@ public:
      * @brief 从指定 JSON 文件反序列化加载数据至 TMap 映射表中
      * @tparam TRowType 数据行结构体类型（必须为 USTRUCT）
      * @param FilePath JSON 文件的绝对路径
-     * @param OutMap 输出的目标映射表（RowName -> RowStruct）；失败时会被清空，不残留半填充数据
-     * @return 是否成功读取并反序列化出数据
-     *
-     * 实现思路：读取 JSON 文本，通过 FJsonSerializer 反序列化数组，提取 RowName/Name 作为主键并通过 FJsonObjectConverter 反序列化行结构体
+     * @return 成功返回映射表，失败返回包含错误原因的 StatusResult
      */
     template <typename TRowType>
-    [[nodiscard]] static bool LoadTableFromJson(const FString& FilePath, TMap<FName, TRowType>& OutMap);
+    [[nodiscard]] static TGameStatusResult<TMap<FName, TRowType>> LoadTableFromJson(const FString& FilePath);
 };
 
 template <typename TRowType>
-bool FDataTableLoaderUtils::LoadTableFromJson(const FString& FilePath, TMap<FName, TRowType>& OutMap) {
-    OutMap.Empty();
-
+TGameStatusResult<TMap<FName, TRowType>> FDataTableLoaderUtils::LoadTableFromJson(const FString& FilePath) {
     if (!FPaths::FileExists(FilePath)) {
         GAME_LOG(Warning, TEXT("【数据表加载】JSON 文件不存在: %s"), *FilePath);
-        return false;
+        return TGameStatusResult<TMap<FName, TRowType>>::Failure(1, FString::Printf(TEXT("文件未找到: %s"), *FilePath));
     }
 
     FString JsonString;
     if (!FFileHelper::LoadFileToString(JsonString, *FilePath)) {
         GAME_LOG(Warning, TEXT("【数据表加载】无法读取文件内容: %s"), *FilePath);
-        return false;
+        return TGameStatusResult<TMap<FName, TRowType>>::Failure(2, FString::Printf(TEXT("读取文件失败: %s"), *FilePath));
     }
 
     TArray<TSharedPtr<FJsonValue>> JsonParsed;
     TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonString);
     if (!FJsonSerializer::Deserialize(Reader, JsonParsed)) {
         GAME_LOG(Warning, TEXT("【数据表加载】JSON 格式解析失败: %s"), *FilePath);
-        return false;
+        return TGameStatusResult<TMap<FName, TRowType>>::Failure(3, FString::Printf(TEXT("JSON 格式解析失败: %s"), *FilePath));
     }
 
+    TMap<FName, TRowType> OutMap;
     OutMap.Reserve(JsonParsed.Num());
     int32 LoadedCount = 0;
     int32 FailedCount = 0;
@@ -88,29 +85,31 @@ bool FDataTableLoaderUtils::LoadTableFromJson(const FString& FilePath, TMap<FNam
         }
 
         TRowType RowData;
-        if (FJsonObjectConverter::JsonObjectToUStruct(JsonObject.ToSharedRef(), TRowType::StaticStruct(), &RowData)) {
+        FText FailReason;
+        if (FJsonObjectConverter::JsonObjectToUStruct(JsonObject.ToSharedRef(), TRowType::StaticStruct(), &RowData, 0, 0, false, &FailReason)) {
             OutMap.Add(RowKey, MoveTemp(RowData));
             ++LoadedCount;
         } else {
             ++FailedCount;
-            GAME_LOG(Error, TEXT("【数据表加载错误】%s 第 %d 条记录 [%s] 反序列化失败！请检查字段类型与拼写是否匹配。"),
-                *FPaths::GetCleanFilename(FilePath), RowIndex, *RowNameStr);
+            const FString ReasonStr = FailReason.IsEmpty() ? TEXT("字段类型或拼写不匹配") : FailReason.ToString();
+            GAME_LOG(Error, TEXT("【数据表加载错误】%s 第 %d 条记录 [%s] 反序列化失败！原因: %s。"),
+                *FPaths::GetCleanFilename(FilePath), RowIndex, *RowNameStr, *ReasonStr);
         }
     }
 
     if (FailedCount > 0) {
         GAME_LOG(Error, TEXT("【数据表加载】%s 加载存在异常！成功: %d, 失败: %d。"),
             *FPaths::GetCleanFilename(FilePath), LoadedCount, FailedCount);
-        OutMap.Empty();
-        return false;
+        return TGameStatusResult<TMap<FName, TRowType>>::Failure(4,
+            FString::Printf(TEXT("%s 加载失败: 共 %d 行中有 %d 处错误"), *FPaths::GetCleanFilename(FilePath), RowIndex, FailedCount));
     }
 
     if (LoadedCount == 0) {
         GAME_LOG(Warning, TEXT("【数据表加载】%s 为合法空表（0 条记录），视为加载成功。"),
             *FPaths::GetCleanFilename(FilePath));
-        return true;
+        return TGameStatusResult<TMap<FName, TRowType>>::Success(MoveTemp(OutMap));
     }
 
     GAME_LOG(Log, TEXT("【数据表加载】成功从 %s 加载全部 %d 条数据"), *FPaths::GetCleanFilename(FilePath), LoadedCount);
-    return true;
+    return TGameStatusResult<TMap<FName, TRowType>>::Success(MoveTemp(OutMap));
 }

@@ -46,7 +46,7 @@ void FStaticDataSnapshotStore::Publish(TSharedPtr<const FStaticDataSnapshot> Nex
 TGameStatusResult<void> FStaticDataSnapshotStore::TryBeginReload() {
     bool bExpected = false;
     if (!bReloadInProgress.compare_exchange_strong(bExpected, true)) {
-        return TGameStatusResult<void>::Failure(7001, TEXT("Reload is already in progress"));
+        return TGameStatusResult<void>::Failure(7001, TEXT("已有重载进行中"));
     }
     return TGameStatusResult<void>::Success();
 }

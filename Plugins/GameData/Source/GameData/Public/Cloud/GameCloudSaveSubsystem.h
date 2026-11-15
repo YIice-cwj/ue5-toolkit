@@ -123,7 +123,8 @@ private:
     /**
      * @brief 将下载落盘成功的存档安全热应用至本地已注册内存段
      * @param SlotName 目标存档槽位名称
+     * @return 成功应用返回 true，版本不兼容或应用失败返回 false
      */
-    void ApplySlotToSubsystem(const FString& SlotName) const;
+    bool ApplySlotToSubsystem(const FString& SlotName) const;
 };
 

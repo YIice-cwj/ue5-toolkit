@@ -20,9 +20,14 @@ int64 RemainingBytes(FMemoryReader& Reader) {
     return Reader.TotalSize() - Reader.Tell();
 }
 
-}
+}  // namespace
 
-bool FStaticDataBinCodec::Encode(const TMap<FName, FStaticDataBinaryTable>& InTables, TArray<uint8>& OutFileBytes) {
+/**
+ * @brief 将表集合编码为完整文件字节流（Magic + 格式版本 + 表集合 + CRC32）
+ * @param InTables 表集合
+ * @return 成功返回完整文件字节流，失败返回具体错误码
+ */
+TGameResult<TArray<uint8>, EStaticDataBinError> FStaticDataBinCodec::Encode(const TMap<FName, FStaticDataBinaryTable>& InTables) {
     TArray<uint8> PayloadBytes;
     FMemoryWriter PayloadWriter(PayloadBytes, false, true);
     uint32 FormatVersion = StaticDataBinFormatVersion;
@@ -44,31 +49,33 @@ bool FStaticDataBinCodec::Encode(const TMap<FName, FStaticDataBinaryTable>& InTa
         }
     }
     if (PayloadWriter.IsError()) {
-        return false;
+        return TGameResult<TArray<uint8>, EStaticDataBinError>::Failure(EStaticDataBinError::IoFailure);
     }
 
-    OutFileBytes.Reset();
+    TArray<uint8> OutFileBytes;
     OutFileBytes.Reserve(sizeof(StaticDataBinMagic) + PayloadBytes.Num() + sizeof(uint32));
     OutFileBytes.Append(reinterpret_cast<const uint8*>(&StaticDataBinMagic), sizeof(StaticDataBinMagic));
     OutFileBytes.Append(PayloadBytes);
     const uint32 PayloadCrc = FCrc::MemCrc32(PayloadBytes.GetData(), PayloadBytes.Num());
     OutFileBytes.Append(reinterpret_cast<const uint8*>(&PayloadCrc), sizeof(PayloadCrc));
-    return true;
+    return TGameResult<TArray<uint8>, EStaticDataBinError>::Success(MoveTemp(OutFileBytes));
 }
 
-EStaticDataBinError FStaticDataBinCodec::Decode(
-    const TArray<uint8>& InFileBytes,
-    TMap<FName, FStaticDataBinaryTable>& OutTables
-) {
+/**
+ * @brief 解码完整文件字节流为表集合
+ * @param InFileBytes 完整文件字节流
+ * @return 成功返回解码后的表集合，失败返回具体错误码
+ */
+TGameResult<TMap<FName, FStaticDataBinaryTable>, EStaticDataBinError> FStaticDataBinCodec::Decode(const TArray<uint8>& InFileBytes) {
     constexpr int32 MinFileSize = sizeof(StaticDataBinMagic) + sizeof(uint32) * 3;
     if (InFileBytes.Num() < MinFileSize) {
-        return EStaticDataBinError::IoFailure;
+        return TGameResult<TMap<FName, FStaticDataBinaryTable>, EStaticDataBinError>::Failure(EStaticDataBinError::IoFailure);
     }
 
     uint32 Magic = 0;
     FMemory::Memcpy(&Magic, InFileBytes.GetData(), sizeof(Magic));
     if (Magic != StaticDataBinMagic) {
-        return EStaticDataBinError::MagicMismatch;
+        return TGameResult<TMap<FName, FStaticDataBinaryTable>, EStaticDataBinError>::Failure(EStaticDataBinError::MagicMismatch);
     }
 
     const uint8* PayloadStart = InFileBytes.GetData() + sizeof(Magic);
@@ -76,7 +83,7 @@ EStaticDataBinError FStaticDataBinCodec::Decode(
     uint32 StoredCrc = 0;
     FMemory::Memcpy(&StoredCrc, PayloadStart + PayloadLength, sizeof(StoredCrc));
     if (FCrc::MemCrc32(PayloadStart, PayloadLength) != StoredCrc) {
-        return EStaticDataBinError::ChecksumMismatch;
+        return TGameResult<TMap<FName, FStaticDataBinaryTable>, EStaticDataBinError>::Failure(EStaticDataBinError::ChecksumMismatch);
     }
 
     FMemoryReader PayloadReader(InFileBytes);
@@ -84,20 +91,29 @@ EStaticDataBinError FStaticDataBinCodec::Decode(
     uint32 FormatVersion = 0;
     PayloadReader << FormatVersion;
     if (PayloadReader.IsError()) {
-        return EStaticDataBinError::IoFailure;
+        return TGameResult<TMap<FName, FStaticDataBinaryTable>, EStaticDataBinError>::Failure(EStaticDataBinError::IoFailure);
     }
     if (FormatVersion > StaticDataBinFormatVersion) {
-        return EStaticDataBinError::UnsupportedVersion;
+        return TGameResult<TMap<FName, FStaticDataBinaryTable>, EStaticDataBinError>::Failure(EStaticDataBinError::UnsupportedVersion);
     }
 
     TMap<FName, FStaticDataBinaryTable> IncomingTables;
     if (!ParseTables(PayloadReader, IncomingTables)) {
-        return EStaticDataBinError::IoFailure;
+        return TGameResult<TMap<FName, FStaticDataBinaryTable>, EStaticDataBinError>::Failure(EStaticDataBinError::IoFailure);
     }
-    OutTables = MoveTemp(IncomingTables);
-    return EStaticDataBinError::None;
+
+    if (RemainingBytes(PayloadReader) != static_cast<int64>(sizeof(uint32))) {
+        return TGameResult<TMap<FName, FStaticDataBinaryTable>, EStaticDataBinError>::Failure(EStaticDataBinError::IoFailure);
+    }
+
+    return TGameResult<TMap<FName, FStaticDataBinaryTable>, EStaticDataBinError>::Success(MoveTemp(IncomingTables));
 }
 
+/**
+ * @brief 计算与装载顺序无关的内容摘要
+ * @param InTables 表集合
+ * @return 表数、总行数与摘要；空集合返回 SHA-1 空输入摘要
+ */
 FStaticDataContentDigest FStaticDataBinCodec::ComputeDigest(const TMap<FName, FStaticDataBinaryTable>& InTables) {
     TArray<FName> SortedStructNames;
     InTables.GetKeys(SortedStructNames);
@@ -139,6 +155,11 @@ FStaticDataContentDigest FStaticDataBinCodec::ComputeDigest(const TMap<FName, FS
     return Result;
 }
 
+/**
+ * @brief 获取错误码的诊断描述
+ * @param InError 错误码
+ * @return 中文诊断文本
+ */
 FString FStaticDataBinCodec::DescribeError(EStaticDataBinError InError) {
     switch (InError) {
         case EStaticDataBinError::None:
@@ -161,6 +182,12 @@ FString FStaticDataBinCodec::DescribeError(EStaticDataBinError InError) {
     return TEXT("未知错误");
 }
 
+/**
+ * @brief 解析负载区为表集合（临时装载，供解码成功时原子换入）
+ * @param PayloadReader 已消费 Magic 与版本、定位到表数量字段的读取器
+ * @param OutTables 输出表集合
+ * @return 解析成功返回 true
+ */
 bool FStaticDataBinCodec::ParseTables(
     FMemoryReader& PayloadReader,
     TMap<FName, FStaticDataBinaryTable>& OutTables
@@ -173,6 +200,9 @@ bool FStaticDataBinCodec::ParseTables(
     for (int32 TableIndex = 0; TableIndex < TableCount; ++TableIndex) {
         FStaticDataBinaryTable Table;
         PayloadReader << Table.StructName;
+        if (Table.StructName.IsEmpty()) {
+            return false;
+        }
 
         int32 RowCount = 0;
         PayloadReader << RowCount;
@@ -183,6 +213,9 @@ bool FStaticDataBinCodec::ParseTables(
         for (int32 RowIndex = 0; RowIndex < RowCount; ++RowIndex) {
             FString RowKey;
             PayloadReader << RowKey;
+            if (RowKey.IsEmpty()) {
+                return false;
+            }
 
             int32 PayloadLength = 0;
             PayloadReader << PayloadLength;

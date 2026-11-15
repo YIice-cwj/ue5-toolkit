@@ -46,7 +46,9 @@ bool FSaveGameSegmentRegistryTest::RunTest([[maybe_unused]] const FString& Param
     Registry.RegisterSegment(InvalidNoLoad);
     TestFalse(TEXT("空加载委托段注册被拒"), Registry.HasSegment(FName(TEXT("NoLoad"))));
 
-    TestFalse(TEXT("未注册段注销返回 false"), Registry.UnregisterSegment(FName(TEXT("Missing"))));
+    auto MissingUnreg = Registry.UnregisterSegment(FName(TEXT("Missing")));
+    TestTrue(TEXT("未注册段注销返回 failure"), MissingUnreg.IsFailure());
+    TestTrue(TEXT("未找到指定的存档段中文提示一致"), MissingUnreg.GetError().Message.StartsWith(TEXT("未找到指定的存档段")));
     TestFalse(TEXT("未注册段查询返回 false"), Registry.HasSegment(FName(TEXT("Missing"))));
 
     int32 SourceValue = 42;
@@ -68,10 +70,10 @@ bool FSaveGameSegmentRegistryTest::RunTest([[maybe_unused]] const FString& Param
 
     const FString SlotName = TEXT("Slot_RegistryTest");
     UGameSaveArchive* Archive = NewObject<UGameSaveArchive>();
-    TestTrue(TEXT("归档构建成功"), Registry.BuildArchive(SlotName, *Archive));
+    TestTrue(TEXT("归档构建成功"), Registry.BuildArchive(SlotName, *Archive).IsSuccess());
     TestTrue(TEXT("归档包含目标段"), Archive->Segments.Contains(SegmentName));
 
-    TestTrue(TEXT("归档应用成功"), Registry.ApplyArchive(SlotName, *Archive));
+    TestTrue(TEXT("归档应用成功"), Registry.ApplyArchive(SlotName, *Archive).IsSuccess());
     TestEqual(TEXT("反序列化值一致"), LoadedValue, 42);
 
     UGameSaveArchive* FutureArchive = NewObject<UGameSaveArchive>();
@@ -83,7 +85,7 @@ bool FSaveGameSegmentRegistryTest::RunTest([[maybe_unused]] const FString& Param
     FutureArchive->Segments.Add(SegmentName, MoveTemp(FuturePayload));
 
     AddExpectedErrorPlain(TEXT("高于当前段版本"), EAutomationExpectedErrorFlags::Contains, 1);
-    TestFalse(TEXT("高版本段拒绝应用"), Registry.ApplyArchive(SlotName, *FutureArchive));
+    TestTrue(TEXT("高版本段拒绝应用"), Registry.ApplyArchive(SlotName, *FutureArchive).IsFailure());
 
     UGameSaveArchive* UnknownArchive = NewObject<UGameSaveArchive>();
     const FName UnknownSegmentName(TEXT("UnknownModule"));
@@ -94,18 +96,18 @@ bool FSaveGameSegmentRegistryTest::RunTest([[maybe_unused]] const FString& Param
     UnknownWriter << UnknownData;
     UnknownArchive->Segments.Add(UnknownSegmentName, MoveTemp(UnknownPayload));
 
-    TestTrue(TEXT("包含未知段归档应用成功"), Registry.ApplyArchive(SlotName, *UnknownArchive));
+    TestTrue(TEXT("包含未知段归档应用成功"), Registry.ApplyArchive(SlotName, *UnknownArchive).IsSuccess());
 
     UGameSaveArchive* RebuiltArchive = NewObject<UGameSaveArchive>();
-    TestTrue(TEXT("重新构建归档成功"), Registry.BuildArchive(SlotName, *RebuiltArchive));
+    TestTrue(TEXT("重新构建归档成功"), Registry.BuildArchive(SlotName, *RebuiltArchive).IsSuccess());
     TestTrue(TEXT("重新构建归档保留了未知段"), RebuiltArchive->Segments.Contains(UnknownSegmentName));
 
     Registry.ClearPreservedSegmentsForSlot(SlotName);
     UGameSaveArchive* ClearedArchive = NewObject<UGameSaveArchive>();
-    TestTrue(TEXT("清理保留段后重新构建归档成功"), Registry.BuildArchive(SlotName, *ClearedArchive));
+    TestTrue(TEXT("清理保留段后重新构建归档成功"), Registry.BuildArchive(SlotName, *ClearedArchive).IsSuccess());
     TestFalse(TEXT("清理保留段后未知段不再输出"), ClearedArchive->Segments.Contains(UnknownSegmentName));
 
-    TestTrue(TEXT("注销段成功"), Registry.UnregisterSegment(SegmentName));
+    TestTrue(TEXT("注销段成功"), Registry.UnregisterSegment(SegmentName).IsSuccess());
     TestFalse(TEXT("注销后段不存在"), Registry.HasSegment(SegmentName));
 
     Registry.RegisterSegment(ValidSegment);

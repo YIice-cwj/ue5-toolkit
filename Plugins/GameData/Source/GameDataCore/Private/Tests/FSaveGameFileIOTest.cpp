@@ -38,6 +38,19 @@ bool FSaveGameFileIOTest::RunTest([[maybe_unused]] const FString& Parameters) {
     const TSet<FString> EmptyAllowedSet;
     TestTrue(TEXT("空白名单时合法槽位放行"), FSaveGameFileIO::IsSlotNameAllowed(TEXT("AnyNormalSlot"), EmptyAllowedSet));
 
+    auto NullSerializeRes = FSaveGameFileIO::SerializeObject(nullptr);
+    TestTrue(TEXT("空对象序列化失败"), NullSerializeRes.IsFailure());
+    TestEqual(TEXT("空对象序列化中文提示一致"), NullSerializeRes.GetError().Message, TEXT("SaveGameObject 为空"));
+
+    const FString NonExistentSlot = TEXT("NonExistentSlot_99999");
+    auto NonExistentReadRes = FSaveGameFileIO::ReadSlotBytes(NonExistentSlot);
+    TestTrue(TEXT("不存在槽位读取失败"), NonExistentReadRes.IsFailure());
+    TestTrue(TEXT("不存在槽位中文提示一致"), NonExistentReadRes.GetError().Message.StartsWith(TEXT("未找到存档槽位文件")));
+
+    auto NonExistentDelRes = FSaveGameFileIO::DeleteSaveSlot(NonExistentSlot);
+    TestTrue(TEXT("不存在槽位删除失败"), NonExistentDelRes.IsFailure());
+    TestTrue(TEXT("不存在槽位删除中文提示一致"), NonExistentDelRes.GetError().Message.StartsWith(TEXT("删除槽位失败或槽位不存在")));
+
     const FString TestSlot = TEXT("UnitTest_DirectFileIO");
     const FString FinalPath = FSaveGameFileIO::GetSaveSlotFilePath(TestSlot);
     const FString TempPath = FSaveGameFileIO::GetSaveSlotTempFilePath(TestSlot);
@@ -47,32 +60,33 @@ bool FSaveGameFileIOTest::RunTest([[maybe_unused]] const FString& Parameters) {
     Archive->Value = 12345;
     Archive->Label = TEXT("DirectFileIO");
 
-    TArray<uint8> ValidBytes;
-    TestTrue(TEXT("测试对象内存序列化成功"), FSaveGameFileIO::SerializeObject(Archive, ValidBytes));
+    auto SerializeResult = FSaveGameFileIO::SerializeObject(Archive);
+    TestTrue(TEXT("测试对象内存序列化成功"), SerializeResult.IsSuccess());
+    TArray<uint8> ValidBytes = SerializeResult.IsSuccess() ? SerializeResult.ExtractValue() : TArray<uint8>();
     TestTrue(TEXT("序列化产物满足最小头要求"), ValidBytes.Num() >= 64);
 
-    TestTrue(TEXT("0 纪元强制写入成功"), FSaveGameFileIO::WriteSlotBytes(TestSlot, ValidBytes, 0));
+    TestTrue(TEXT("0 纪元强制写入成功"), FSaveGameFileIO::WriteSlotBytes(TestSlot, ValidBytes, 0).IsSuccess());
     TestTrue(TEXT("写入后正式文件存在"), FPaths::FileExists(FinalPath));
     TestFalse(TEXT("写入后临时文件不残留"), FPaths::FileExists(TempPath));
     TestTrue(TEXT("槽位存在性检测为 true"), FSaveGameFileIO::DoesSaveSlotExist(TestSlot));
 
-    TArray<uint8> ReadBytes;
-    TestTrue(TEXT("读取有效存档字节成功"), FSaveGameFileIO::ReadSlotBytes(TestSlot, ReadBytes));
-    TestTrue(TEXT("读取数据与写入数据完全一致"), ReadBytes == ValidBytes);
+    auto ReadResult = FSaveGameFileIO::ReadSlotBytes(TestSlot);
+    TestTrue(TEXT("读取有效存档字节成功"), ReadResult.IsSuccess());
+    if (ReadResult.IsSuccess()) {
+        TestTrue(TEXT("读取数据与写入数据完全一致"), ReadResult.GetValue() == ValidBytes);
+    }
 
     TArray<uint8> MagicCorrupted64Bytes;
     MagicCorrupted64Bytes.Init(0, 64);
     TestTrue(TEXT("写入 Magic 损坏档成功"), FFileHelper::SaveArrayToFile(MagicCorrupted64Bytes, *FinalPath));
-    TestFalse(TEXT("Magic 损坏档读取被拒"), FSaveGameFileIO::ReadSlotBytes(TestSlot, ReadBytes));
-    TestEqual(TEXT("读取失败时输出缓冲区清空"), ReadBytes.Num(), 0);
+    TestTrue(TEXT("Magic 损坏档读取被拒"), FSaveGameFileIO::ReadSlotBytes(TestSlot).IsFailure());
 
     TArray<uint8> CorruptedTmp10Bytes;
     CorruptedTmp10Bytes.Init(0, 10);
     TestTrue(TEXT("写入损坏临时档成功"), FFileHelper::SaveArrayToFile(CorruptedTmp10Bytes, *TempPath));
-    TestFalse(TEXT("正式与临时档均损坏时读取被拒"), FSaveGameFileIO::ReadSlotBytes(TestSlot, ReadBytes));
-    TestEqual(TEXT("读取失败时输出缓冲区清空"), ReadBytes.Num(), 0);
+    TestTrue(TEXT("正式与临时档均损坏时读取被拒"), FSaveGameFileIO::ReadSlotBytes(TestSlot).IsFailure());
 
-    TestTrue(TEXT("清理测试槽位成功"), FSaveGameFileIO::DeleteSaveSlot(TestSlot));
+    TestTrue(TEXT("清理测试槽位成功"), FSaveGameFileIO::DeleteSaveSlot(TestSlot).IsSuccess());
     TestFalse(TEXT("清理后正式文件不存在"), FPaths::FileExists(FinalPath));
     TestFalse(TEXT("清理后临时文件不存在"), FPaths::FileExists(TempPath));
     TestFalse(TEXT("清理后槽位存在性为 false"), FSaveGameFileIO::DoesSaveSlotExist(TestSlot));

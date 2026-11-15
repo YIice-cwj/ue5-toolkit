@@ -64,16 +64,16 @@ public:
     void RegisterRowSerializer(const FName& StructName, FRowPayloadFunc PayloadFunc);
 
     template<typename RowType>
-    [[nodiscard]] bool AddTable(const TMap<FName, RowType>& InRows);
+    [[nodiscard]] TGameStatusResult<void> AddTable(const TMap<FName, RowType>& InRows);
 
     template<typename RowType>
-    [[nodiscard]] bool ExtractTable(TMap<FName, RowType>& OutRows) const;
+    [[nodiscard]] TGameResult<TMap<FName, RowType>, EStaticDataBinError> ExtractTable() const;
 
     [[nodiscard]] int32 TableCount() const noexcept;
     void Reset() noexcept;
 
-    [[nodiscard]] bool ExportToFile(const FString& FilePath) const;
-    [[nodiscard]] bool ImportFromFile(const FString& FilePath);
+    [[nodiscard]] TGameStatusResult<void> ExportToFile(const FString& FilePath) const;
+    [[nodiscard]] TGameResult<int32, EStaticDataBinError> ImportFromFile(const FString& FilePath);
 
     [[nodiscard]] EStaticDataBinError GetLastError() const noexcept;
     [[nodiscard]] FStaticDataContentDigest ComputeContentDigest() const;
@@ -85,8 +85,8 @@ public:
 ```cpp
 class GAMEDATACORE_API FStaticDataBinCodec {
 public:
-    [[nodiscard]] static bool Encode(const TMap<FName, FStaticDataBinaryTable>& InTables, TArray<uint8>& OutFileBytes);
-    [[nodiscard]] static EStaticDataBinError Decode(const TArray<uint8>& InFileBytes, TMap<FName, FStaticDataBinaryTable>& OutTables);
+    [[nodiscard]] static TGameResult<TArray<uint8>, EStaticDataBinError> Encode(const TMap<FName, FStaticDataBinaryTable>& InTables);
+    [[nodiscard]] static TGameResult<TMap<FName, FStaticDataBinaryTable>, EStaticDataBinError> Decode(const TArray<uint8>& InFileBytes);
     [[nodiscard]] static FStaticDataContentDigest ComputeDigest(const TMap<FName, FStaticDataBinaryTable>& InTables);
     [[nodiscard]] static FString DescribeError(EStaticDataBinError InError);
 };
@@ -100,7 +100,7 @@ public:
     FDataTableLoaderUtils() = delete;
 
     template <typename TRowType>
-    [[nodiscard]] static bool LoadTableFromJson(const FString& FilePath, TMap<FName, TRowType>& OutMap);
+    [[nodiscard]] static TGameStatusResult<TMap<FName, TRowType>> LoadTableFromJson(const FString& FilePath);
 };
 ```
 

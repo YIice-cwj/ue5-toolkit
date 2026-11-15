@@ -66,10 +66,16 @@ def generate_static_data_header(cfg: Any, cat_folder: str, tables: list) -> str:
     lines.append("        bool bAllSuccess = true;")
     for item in tables:
         stem = item["stem"]
+        struct_name = item["struct_name"]
         field_name = to_field_name(stem, cat_folder)
         map_name = f"{field_name}Map"
         json_file = item["json_filename"]
-        lines.append(f'        bAllSuccess &= FDataTableLoaderUtils::LoadTableFromJson(BaseDir / TEXT("{json_file}"), {map_name});')
+        lines.append(f'        auto LoadRes_{field_name} = FDataTableLoaderUtils::LoadTableFromJson<{struct_name}>(BaseDir / TEXT("{json_file}"));')
+        lines.append(f"        if (LoadRes_{field_name}.IsSuccess()) {{")
+        lines.append(f"            {map_name} = LoadRes_{field_name}.ExtractValue();")
+        lines.append("        } else {")
+        lines.append("            bAllSuccess = false;")
+        lines.append("        }")
     lines.append("        return bAllSuccess;")
     lines.append("    }")
     lines.append("")
@@ -82,8 +88,15 @@ def generate_static_data_header(cfg: Any, cat_folder: str, tables: list) -> str:
     lines.append("    bool LoadAllFromRepository(const FStaticDataRepository& Repository) {")
     lines.append("        bool bAllSuccess = true;")
     for item in tables:
+        struct_name = item["struct_name"]
         field_name = to_field_name(item["stem"], cat_folder)
-        lines.append(f"        bAllSuccess &= Repository.ExtractTable({field_name}Map);")
+        map_name = f"{field_name}Map"
+        lines.append(f"        auto ExtractRes_{field_name} = Repository.ExtractTable<{struct_name}>();")
+        lines.append(f"        if (ExtractRes_{field_name}.IsSuccess()) {{")
+        lines.append(f"            {map_name} = ExtractRes_{field_name}.ExtractValue();")
+        lines.append("        } else {")
+        lines.append("            bAllSuccess = false;")
+        lines.append("        }")
     lines.append("        return bAllSuccess;")
     lines.append("    }")
     lines.append("")
@@ -97,7 +110,7 @@ def generate_static_data_header(cfg: Any, cat_folder: str, tables: list) -> str:
     lines.append("        bool bAllSuccess = true;")
     for item in tables:
         field_name = to_field_name(item["stem"], cat_folder)
-        lines.append(f"        bAllSuccess &= Repository.AddTable({field_name}Map);")
+        lines.append(f"        bAllSuccess &= Repository.AddTable({field_name}Map).IsSuccess();")
     lines.append("        return bAllSuccess;")
     lines.append("    }")
     lines.append("")

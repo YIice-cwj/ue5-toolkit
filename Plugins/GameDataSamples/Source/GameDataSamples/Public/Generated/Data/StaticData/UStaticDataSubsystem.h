@@ -12,6 +12,7 @@
 #include "Generated/Data/StaticData/FStaticDataSnapshot.h"
 #include "Generated/Data/StaticData/FStaticDataSnapshotStore.h"
 #include "Listener/FValueObserver.h"
+#include "Types/TGameResult.h"
 
 #include "UStaticDataSubsystem.generated.h"
 

@@ -55,12 +55,14 @@ bool FStaticDataBinCodecTest::RunTest([[maybe_unused]] const FString& Parameters
     SourceTables.Add(FName(TEXT("CodecTestRow")), Table);
     SourceTables.Add(FName(TEXT("CodecTestRowEmpty")), EmptyTable);
 
-    TArray<uint8> FileBytes;
-    TestTrue(TEXT("编码表集合成功"), FStaticDataBinCodec::Encode(SourceTables, FileBytes));
+    auto EncodeResult = FStaticDataBinCodec::Encode(SourceTables);
+    TestTrue(TEXT("编码表集合成功"), EncodeResult.IsSuccess());
+    TArray<uint8> FileBytes = EncodeResult.IsSuccess() ? EncodeResult.ExtractValue() : TArray<uint8>();
     TestTrue(TEXT("文件字节流包含完整头与 CRC"), FileBytes.Num() > 16);
 
-    TMap<FName, FStaticDataBinaryTable> DecodedTables;
-    TestTrue(TEXT("解码成功"), FStaticDataBinCodec::Decode(FileBytes, DecodedTables) == EStaticDataBinError::None);
+    auto DecodeResult = FStaticDataBinCodec::Decode(FileBytes);
+    TestTrue(TEXT("解码成功"), DecodeResult.IsSuccess());
+    TMap<FName, FStaticDataBinaryTable> DecodedTables = DecodeResult.IsSuccess() ? DecodeResult.ExtractValue() : TMap<FName, FStaticDataBinaryTable>();
     TestEqual(TEXT("解码后的表数量一致"), DecodedTables.Num(), 2);
 
     const FStaticDataBinaryTable* DecodedRow = DecodedTables.Find(FName(TEXT("CodecTestRow")));
@@ -75,15 +77,14 @@ bool FStaticDataBinCodecTest::RunTest([[maybe_unused]] const FString& Parameters
 
     TArray<uint8> MagicCorrupted = FileBytes;
     MagicCorrupted[0] ^= 0xFF;
-    TestTrue(TEXT("Magic 损坏返回对应错误码"),
-        FStaticDataBinCodec::Decode(MagicCorrupted, DecodedTables) == EStaticDataBinError::MagicMismatch);
+    TestEqual(TEXT("Magic 损坏返回对应错误码"),
+        FStaticDataBinCodec::Decode(MagicCorrupted).GetError(), EStaticDataBinError::MagicMismatch);
 
     TArray<uint8> PayloadCorrupted = FileBytes;
     PayloadCorrupted[FileBytes.Num() / 2] ^= 0xFF;
-    TestTrue(TEXT("负载损坏返回 CRC 错误码"),
-        FStaticDataBinCodec::Decode(PayloadCorrupted, DecodedTables) == EStaticDataBinError::ChecksumMismatch);
+    TestEqual(TEXT("负载损坏返回 CRC 错误码"),
+        FStaticDataBinCodec::Decode(PayloadCorrupted).GetError(), EStaticDataBinError::ChecksumMismatch);
 
-    TArray<uint8> EmptyFileBytes;
     TMap<FName, FStaticDataBinaryTable> EmptyTables;
     const FStaticDataContentDigest EmptyDigest = FStaticDataBinCodec::ComputeDigest(EmptyTables);
     TestEqual(TEXT("空集合摘要表数为零"), EmptyDigest.TableCount, 0);
@@ -93,7 +94,9 @@ bool FStaticDataBinCodecTest::RunTest([[maybe_unused]] const FString& Parameters
         EmptyDigest.Digest,
         FString(TEXT("da39a3ee5e6b4b0d3255bfef95601890afd80709"))
     );
-    TestTrue(TEXT("编码空表集合成功"), FStaticDataBinCodec::Encode(EmptyTables, EmptyFileBytes));
+    auto EmptyEncodeResult = FStaticDataBinCodec::Encode(EmptyTables);
+    TestTrue(TEXT("编码空表集合成功"), EmptyEncodeResult.IsSuccess());
+    TArray<uint8> EmptyFileBytes = EmptyEncodeResult.IsSuccess() ? EmptyEncodeResult.ExtractValue() : TArray<uint8>();
 
     TArray<uint8> BadVersionBytes = EmptyFileBytes;
     BadVersionBytes[4] = 0xFF;
@@ -102,17 +105,15 @@ bool FStaticDataBinCodecTest::RunTest([[maybe_unused]] const FString& Parameters
         BadVersionBytes.GetData() + sizeof(uint32),
         BadVersionBytes.Num() - sizeof(uint32) * 2);
     FMemory::Memcpy(BadVersionBytes.GetData() + BadVersionBytes.Num() - sizeof(uint32), &RecomputedCrc, sizeof(uint32));
-    TestTrue(TEXT("版本过高返回对应错误码"),
-        FStaticDataBinCodec::Decode(BadVersionBytes, DecodedTables) == EStaticDataBinError::UnsupportedVersion);
+    TestEqual(TEXT("版本过高返回对应错误码"),
+        FStaticDataBinCodec::Decode(BadVersionBytes).GetError(), EStaticDataBinError::UnsupportedVersion);
 
     TArray<uint8> TruncatedBytes{1, 2, 3};
-    TestTrue(TEXT("文件长度不足返回 IO 错误码"),
-        FStaticDataBinCodec::Decode(TruncatedBytes, DecodedTables) == EStaticDataBinError::IoFailure);
+    TestEqual(TEXT("文件长度不足返回 IO 错误码"),
+        FStaticDataBinCodec::Decode(TruncatedBytes).GetError(), EStaticDataBinError::IoFailure);
 
-    TMap<FName, FStaticDataBinaryTable> PreservedTables;
-    PreservedTables.Add(FName(TEXT("Preserved")), Table);
-    FStaticDataBinCodec::Decode(TruncatedBytes, PreservedTables);
-    TestEqual(TEXT("解码失败时输出集合保持不变"), PreservedTables.Num(), 1);
+    auto FailedDecodeRes = FStaticDataBinCodec::Decode(TruncatedBytes);
+    TestTrue(TEXT("解码失败返回 Failure"), FailedDecodeRes.IsFailure());
 
     TestEqual(TEXT("DescribeError: None"), FStaticDataBinCodec::DescribeError(EStaticDataBinError::None), FString(TEXT("无错误")));
     TestEqual(TEXT("DescribeError: IoFailure"), FStaticDataBinCodec::DescribeError(EStaticDataBinError::IoFailure), FString(TEXT("文件读取失败或数据结构截断")));
@@ -131,8 +132,8 @@ bool FStaticDataBinCodecTest::RunTest([[maybe_unused]] const FString& Parameters
     BadTableWriter << BadVersion;
     BadTableWriter << NegativeTableCount;
     TArray<uint8> BadTableBytes = BuildFileBytesFromPayload(BadTableCountPayload);
-    TestTrue(TEXT("负数表数返回 IO 错误码"),
-        FStaticDataBinCodec::Decode(BadTableBytes, DecodedTables) == EStaticDataBinError::IoFailure);
+    TestEqual(TEXT("负数表数返回 IO 错误码"),
+        FStaticDataBinCodec::Decode(BadTableBytes).GetError(), EStaticDataBinError::IoFailure);
 
     TArray<uint8> DupTablePayload;
     FMemoryWriter DupTableWriter(DupTablePayload);
@@ -144,8 +145,8 @@ bool FStaticDataBinCodecTest::RunTest([[maybe_unused]] const FString& Parameters
     DupTableWriter << SameTableName << ZeroRows;
     DupTableWriter << SameTableName << ZeroRows;
     TArray<uint8> DupTableBytes = BuildFileBytesFromPayload(DupTablePayload);
-    TestTrue(TEXT("重复表名返回 IO 错误码"),
-        FStaticDataBinCodec::Decode(DupTableBytes, DecodedTables) == EStaticDataBinError::IoFailure);
+    TestEqual(TEXT("重复表名返回 IO 错误码"),
+        FStaticDataBinCodec::Decode(DupTableBytes).GetError(), EStaticDataBinError::IoFailure);
 
     TArray<uint8> DupRowPayload;
     FMemoryWriter DupRowWriter(DupRowPayload);
@@ -160,8 +161,8 @@ bool FStaticDataBinCodecTest::RunTest([[maybe_unused]] const FString& Parameters
     DupRowWriter << SameRowKey << EmptyPayloadLen;
     DupRowWriter << SameRowKey << EmptyPayloadLen;
     TArray<uint8> DupRowBytes = BuildFileBytesFromPayload(DupRowPayload);
-    TestTrue(TEXT("同表重复行主键返回 IO 错误码"),
-        FStaticDataBinCodec::Decode(DupRowBytes, DecodedTables) == EStaticDataBinError::IoFailure);
+    TestEqual(TEXT("同表重复行主键返回 IO 错误码"),
+        FStaticDataBinCodec::Decode(DupRowBytes).GetError(), EStaticDataBinError::IoFailure);
 
     const FStaticDataContentDigest DigestA = FStaticDataBinCodec::ComputeDigest(SourceTables);
     TMap<FName, FStaticDataBinaryTable> ReorderedTables;

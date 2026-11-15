@@ -83,7 +83,8 @@ bool TryLoadStagingFromBin(const FString& InBinPath, FItemStaticData& OutItemDat
     FStaticDataRepository Repository;
     RegisterGameStaticDataRowSerializers(Repository);
 
-    if (!Repository.ImportFromFile(InBinPath)) {
+    const auto ImportResult = Repository.ImportFromFile(InBinPath);
+    if (ImportResult.IsFailure()) {
         GAME_LOG(Warning, TEXT("【静态数据子系统】.bin 通道装载失败（错误码 %d），已回落 JSON 通道。"), static_cast<int32>(Repository.GetLastError()));
         return false;
     }
@@ -304,7 +305,8 @@ bool UStaticDataSubsystem::ExportStaticDataBin() {
 
     const FString BinPath = GetStaticDataBinPath();
     IFileManager::Get().MakeDirectory(*FPaths::GetPath(BinPath), true);
-    if (!Repository.ExportToFile(BinPath)) {
+    const auto ExportResult = Repository.ExportToFile(BinPath);
+    if (ExportResult.IsFailure()) {
         GAME_LOG(Error, TEXT("【静态数据二进制导出】失败：写盘失败（错误码 %d）: %s"), static_cast<int32>(Repository.GetLastError()), *BinPath);
         return false;
     }
@@ -343,7 +345,7 @@ TGameStatusResult<void> UStaticDataSubsystem::BeginReloadFlow(bool bPreferBin, b
     if (!bStagingLoaded) {
         GAME_LOG(Warning, TEXT("【静态数据子系统】静态数据加载失败，在线数据保持原状。"));
         SnapshotStore.EndReload();
-        return TGameStatusResult<void>::Failure(7003, TEXT("Failed to load static data staging from both bin and json"));
+        return TGameStatusResult<void>::Failure(7003, TEXT("从 .bin 与 JSON 加载静态数据暂存均失败"));
     }
 
     if (!bAsync) {
