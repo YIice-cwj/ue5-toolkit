@@ -23,6 +23,10 @@
         {
             "Name": "GameLogging",
             "Enabled": true
+        },
+        {
+            "Name": "GamePool",
+            "Enabled": true
         }
     ]
 }

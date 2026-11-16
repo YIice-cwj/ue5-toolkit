@@ -8,6 +8,7 @@
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "GameplayTagContainer.h"
+#include "Core/IGamePoolable.h"
 
 #include "UGameVitalComponent.generated.h"
 
@@ -39,7 +40,7 @@ DECLARE_MULTICAST_DELEGATE_TwoParams(
  * @brief 实体生命与存活状态组件
  */
 UCLASS(ClassGroup = (Game), meta = (BlueprintSpawnableComponent))
-class GAMEGAMEPLAYCORE_API UGameVitalComponent : public UActorComponent {
+class GAMEGAMEPLAYCORE_API UGameVitalComponent : public UActorComponent, public IGamePoolable {
     GENERATED_BODY()
 
     friend class FGameVitalRepAliveForwardBroadcastTest;
@@ -55,6 +56,16 @@ public:
      * @param OutLifetimeProps 输出的生命周期属性数组
      */
     void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
+    /**
+     * @brief 从对象池出库激活回调
+     */
+    void OnAcquireFromPool_Implementation() override;
+
+    /**
+     * @brief 归还对象池休眠回调：重置存活状态并回满主生命
+     */
+    void OnReleaseToPool_Implementation() override;
 
     /**
      * @brief 组件初始化生命周期回调：若未显式绑定数值组件，尝试从 Owner 自动发现并挂接

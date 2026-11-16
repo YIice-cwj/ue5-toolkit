@@ -6,6 +6,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Containers/TSortedVectorMap.h"
 #include "GameplayTagContainer.h"
 #include "Stat/FGameStatTypes.h"
 
@@ -56,5 +57,5 @@ struct GAMEGAMEPLAYCORE_API FGameStatAcknowledgedDiff {
     void Reset();
 
 private:
-    TMap<FGameplayTag, FGameStatValue> Acknowledged;
+    TSortedVectorMap<FGameplayTag, FGameStatValue, 8> Acknowledged;
 };

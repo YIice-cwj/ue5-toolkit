@@ -207,4 +207,40 @@ bool FGameStatOwnerSubscriptionTargetedReplayTest::RunTest([[maybe_unused]] cons
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameStatUnregisterSubscriptionCleanupTest,
+    "Game.GameplayCore.Stat.UnregisterSubscriptionCleanup",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证注销属性时同步清除该标签下的全部订阅者，重新注册后旧订阅不复生
+ * @param Parameters 自动化测试参数
+ * @return 测试是否通过
+ */
+bool FGameStatUnregisterSubscriptionCleanupTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UGameStatComponent* Comp = NewObject<UGameStatComponent>();
+    const FGameplayTag TempTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Attribute.Subscribe.TempCleanup")));
+    Comp->RegisterStat(TempTag, 50.0f, 50.0f, 0.0f);
+
+    int32 CallbackCount = 0;
+    Comp->SubscribeStatChanged(
+        TempTag,
+        FOnGameStatChangedNative::FDelegate::CreateLambda(
+            [&CallbackCount](const FGameplayTag&, float, float, float) {
+                ++CallbackCount;
+            }
+        )
+    );
+    TestEqual(TEXT("初次订阅回放 1 次"), CallbackCount, 1);
+
+    const TGameStatusResult<void> UnregResult = Comp->UnregisterStat(TempTag);
+    TestTrue(TEXT("成功注销属性"), UnregResult.IsSuccess());
+
+    Comp->RegisterStat(TempTag, 100.0f, 100.0f, 0.0f);
+    TestEqual(TEXT("重新注册后旧订阅已被清空，不应触发回调"), CallbackCount, 1);
+
+    return true;
+}
+
 #endif

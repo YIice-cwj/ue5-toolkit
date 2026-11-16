@@ -61,6 +61,12 @@ public:
     void PurgeExpiredOwnerSubscriptions(const FGameplayTag& InStatTag);
 
     /**
+     * @brief 清除指定属性标签下的全部订阅者（含原生委托与生命周期绑定条目）
+     * @param InStatTag 目标属性标签
+     */
+    void ClearTagSubscriptions(const FGameplayTag& InStatTag);
+
+    /**
      * @brief 重置全部订阅
      */
     void Reset();

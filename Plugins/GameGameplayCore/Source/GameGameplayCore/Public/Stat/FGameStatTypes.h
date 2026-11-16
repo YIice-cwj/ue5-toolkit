@@ -34,6 +34,17 @@ struct GAMEGAMEPLAYCORE_API FGameStatValue {
         const float Range = Max - Min;
         return (Range > 0.0f) ? FMath::Clamp((Current - Min) / Range, 0.0f, 1.0f) : 0.0f;
     }
+
+    /**
+     * @brief 数值相等性比较（浮点近似）
+     * @param Other 待比较的属性数值结构
+     * @return 若当前值、上限与下限均近似相等返回 true
+     */
+    [[nodiscard]] bool operator==(const FGameStatValue& Other) const noexcept {
+        return FMath::IsNearlyEqual(Current, Other.Current)
+            && FMath::IsNearlyEqual(Max, Other.Max)
+            && FMath::IsNearlyEqual(Min, Other.Min);
+    }
 };
 
 /**

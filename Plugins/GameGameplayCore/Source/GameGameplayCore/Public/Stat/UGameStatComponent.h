@@ -15,6 +15,7 @@
 #include "Components/ActorComponent.h"
 #include "GameplayTagContainer.h"
 #include "Types/TGameResult.h"
+#include "Core/IGamePoolable.h"
 
 #include "Stat/FGameStatTypes.h"
 #include "Stat/FGameStatAcknowledgedDiff.h"
@@ -27,7 +28,7 @@
  * @brief 通用数值管理组件
  */
 UCLASS(ClassGroup = (Game), meta = (BlueprintSpawnableComponent))
-class GAMEGAMEPLAYCORE_API UGameStatComponent : public UActorComponent {
+class GAMEGAMEPLAYCORE_API UGameStatComponent : public UActorComponent, public IGamePoolable {
     GENERATED_BODY()
 
     friend class FGameStatReplicationTest;
@@ -44,6 +45,16 @@ public:
      * @param OutLifetimeProps 输出的生命周期属性数组
      */
     void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
+    /**
+     * @brief 从对象池出库激活回调
+     */
+    void OnAcquireFromPool_Implementation() override;
+
+    /**
+     * @brief 归还对象池休眠回调：重置所有修饰器并将当前值回满
+     */
+    void OnReleaseToPool_Implementation() override;
 
 public:
     /**

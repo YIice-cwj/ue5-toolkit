@@ -65,6 +65,17 @@ bool FGameDamageChannelTest::RunTest([[maybe_unused]] const FString& Parameters)
     TestFalse(TEXT("重复移除不存在通道返回 false"), FGameDamageChannel::RemoveExact(Channels, SlashTag));
     TestEqual(TEXT("移除后剩余通道数正确"), Channels.Num(), 2);
 
+    const FGameplayTag EmptyTag;
+    TestNull(TEXT("无效 Tag 查找返回 nullptr"), FGameDamageChannel::FindExact(Channels, EmptyTag));
+    TestNull(TEXT("无效 Tag 可变查找返回 nullptr"), FGameDamageChannel::FindExactMutable(Channels, EmptyTag));
+    TestEqual(TEXT("无效 Tag 获取数值返回默认值"), FGameDamageChannel::GetExact(Channels, EmptyTag, 99.0f), 99.0f);
+    TestEqual(TEXT("无效 Tag 求和返回 0"), FGameDamageChannel::GetSum(Channels, EmptyTag), 0.0f);
+    FGameDamageChannel::SetExact(Channels, EmptyTag, 100.0f);
+    TestEqual(TEXT("设置无效 Tag 不改变数组大小"), Channels.Num(), 2);
+    FGameDamageChannel::AddExact(Channels, EmptyTag, 100.0f);
+    TestEqual(TEXT("累加无效 Tag 不改变数组大小"), Channels.Num(), 2);
+    TestFalse(TEXT("移除无效 Tag 返回 false"), FGameDamageChannel::RemoveExact(Channels, EmptyTag));
+
     return true;
 }
 

@@ -10,12 +10,21 @@
 #include "Logging/GameLogCategories.h"
 #include "Net/UnrealNetwork.h"
 
+/**
+ * @brief 构造函数：启用 Tick（默认关闭）、开启组件网络复制
+ */
 UGameBuffComponent::UGameBuffComponent() {
     PrimaryComponentTick.bCanEverTick = true;
     PrimaryComponentTick.bStartWithTickEnabled = false;
     SetIsReplicatedByDefault(true);
 }
 
+/**
+ * @brief 每帧推进到期计时：权威端移除到期实例并回滚修正器，非权威端仅执行本地倒计时
+ * @param DeltaTime 帧时间间隔（秒）
+ * @param TickType Tick 类型
+ * @param ThisTickFunction Tick 函数指针
+ */
 void UGameBuffComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) {
     Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
@@ -66,22 +75,36 @@ void UGameBuffComponent::TickComponent(float DeltaTime, ELevelTick TickType, FAc
     }
 }
 
+/**
+ * @brief 网络属性复制规则注册
+ * @param OutLifetimeProps 输出的生命周期属性数组
+ */
 void UGameBuffComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const {
     Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
     DOREPLIFETIME(UGameBuffComponent, ActiveBuffs);
 }
 
+/**
+ * @brief 属性初始化后生命周期回调：初始化 FastArray 对本组件的反向引用
+ */
 void UGameBuffComponent::PostInitProperties() {
     Super::PostInitProperties();
     ActiveBuffs.OwnerComponent = this;
 }
 
+/**
+ * @brief 组件注册生命周期回调：确保 FastArray 反向引用指针始终绑定当前组件实例
+ */
 void UGameBuffComponent::OnRegister() {
     Super::OnRegister();
     ActiveBuffs.OwnerComponent = this;
 }
 
+/**
+ * @brief 组件结束运行生命周期回调：从原数值组件回滚全部 Buff 修正器
+ * @param EndPlayReason 结束运行的原因
+ */
 void UGameBuffComponent::EndPlay(const EEndPlayReason::Type EndPlayReason) {
     if (UGameStatComponent* StatComponent = BoundStatComponent.Get()) {
         ModifierBridge.ClearAll(*StatComponent);
@@ -92,6 +115,35 @@ void UGameBuffComponent::EndPlay(const EEndPlayReason::Type EndPlayReason) {
     Super::EndPlay(EndPlayReason);
 }
 
+/**
+ * @brief 从对象池出库激活回调
+ */
+void UGameBuffComponent::OnAcquireFromPool_Implementation() {
+    RefreshTickState();
+}
+
+/**
+ * @brief 归还对象池休眠回调：清空所有 Buff 实例并回滚修正器
+ */
+void UGameBuffComponent::OnReleaseToPool_Implementation() {
+    if (UGameStatComponent* StatComponent = BoundStatComponent.Get()) {
+        ModifierBridge.ClearAll(*StatComponent);
+    } else {
+        ModifierBridge.Reset();
+    }
+
+    ActiveBuffs.Items.Reset();
+    ActiveBuffs.MarkArrayDirty();
+    SetComponentTickEnabled(false);
+    NextInstanceId = 1;
+    AcknowledgedStacks.Reset();
+    GAME_LOG(Log, TEXT("【Buff 组件】宿主 [%s] 归还对象池，已清空并重置全部 Buff 状态。"), *GetNameSafe(GetOwner()));
+}
+
+/**
+ * @brief 显式绑定数值组件，回滚旧组件修正器并将全部活跃 Buff 迁移至新组件
+ * @param InStatComponent 目标数值组件指针；为空时仅解绑并回滚
+ */
 void UGameBuffComponent::BindStatComponent(UGameStatComponent* InStatComponent) {
     if (BoundStatComponent.Get() == InStatComponent) {
         return;
@@ -113,11 +165,21 @@ void UGameBuffComponent::BindStatComponent(UGameStatComponent* InStatComponent) 
     }
 }
 
+/**
+ * @brief 施加 Buff（蓝图轻量门面）
+ * @param InSpec Buff 完整描述配置
+ * @return 成功生成或刷新的运行实例 ID；若操作被拒绝则返回 0
+ */
 int32 UGameBuffComponent::K2_ApplyBuff(const FGameBuffSpec& InSpec) {
     const TGameStatusResult<int32> Result = ApplyBuff(InSpec);
     return Result.IsSuccess() ? Result.GetValue() : 0;
 }
 
+/**
+ * @brief 施加 Buff（强类型契约）
+ * @param InSpec Buff 完整描述配置
+ * @return 成功返回实例 ID，非权威返回 Failure(8002)，参数非法/达上限返回 Failure(8003)
+ */
 TGameStatusResult<int32> UGameBuffComponent::ApplyBuff(const FGameBuffSpec& InSpec) {
     if (!InSpec.BuffTag.IsValid()) {
         GAME_LOG(Warning, TEXT("【Buff 组件】拒绝施加无身份标签的 Buff。"));
@@ -184,10 +246,22 @@ TGameStatusResult<int32> UGameBuffComponent::ApplyBuff(const FGameBuffSpec& InSp
     return TGameStatusResult<int32>::Success(Added.InstanceId);
 }
 
+/**
+ * @brief 按 Buff 身份标签移除实例（蓝图轻量门面）
+ * @param InBuffTag 目标 Buff 身份标签
+ * @param bRemoveAllInstances 是否移除该标签下的全部实例（若为 false 则仅移除一个实例）
+ * @return 成功移除至少一个实例返回 true，未找到匹配实例返回 false
+ */
 bool UGameBuffComponent::K2_RemoveBuff(FGameplayTag InBuffTag, bool bRemoveAllInstances) {
     return RemoveBuff(InBuffTag, bRemoveAllInstances).IsSuccess();
 }
 
+/**
+ * @brief 按 Buff 身份标签移除实例（强类型契约）
+ * @param InBuffTag 目标 Buff 身份标签
+ * @param bRemoveAllInstances 是否移除该标签下的全部实例（若为 false 则仅移除一个实例）
+ * @return 成功移除返回 Success，非权威返回 Failure(8002)，未找到返回 Failure(8004)
+ */
 TGameStatusResult<void> UGameBuffComponent::RemoveBuff(FGameplayTag InBuffTag, bool bRemoveAllInstances) {
     if (!InBuffTag.IsValid()) {
         return TGameStatusResult<void>::Failure(8003, TEXT("Invalid BuffTag"));
@@ -223,10 +297,22 @@ TGameStatusResult<void> UGameBuffComponent::RemoveBuff(FGameplayTag InBuffTag, b
     return TGameStatusResult<void>::Failure(8004, TEXT("Buff not found"));
 }
 
+/**
+ * @brief 按 Buff 身份标签扣减指定层数（蓝图轻量门面）
+ * @param InBuffTag 目标 Buff 身份标签
+ * @param StacksToRemove 扣减层数（默认 1 层）
+ * @return 成功扣减返回 true，实例不存在或扣减失败返回 false
+ */
 bool UGameBuffComponent::K2_RemoveBuffStacks(FGameplayTag InBuffTag, int32 StacksToRemove) {
     return RemoveBuffStacks(InBuffTag, StacksToRemove).IsSuccess();
 }
 
+/**
+ * @brief 按 Buff 身份标签扣减指定层数（强类型契约）
+ * @param InBuffTag 目标 Buff 身份标签
+ * @param StacksToRemove 扣减层数（默认 1 层）
+ * @return 成功扣减返回 Success，参数非法返回 Failure(8003)，非权威端返回 Failure(8002)，未找到返回 Failure(8004)
+ */
 TGameStatusResult<void> UGameBuffComponent::RemoveBuffStacks(FGameplayTag InBuffTag, int32 StacksToRemove) {
     if (!InBuffTag.IsValid() || StacksToRemove <= 0) {
         return TGameStatusResult<void>::Failure(8003, TEXT("Invalid parameter"));
@@ -272,10 +358,20 @@ TGameStatusResult<void> UGameBuffComponent::RemoveBuffStacks(FGameplayTag InBuff
     return TGameStatusResult<void>::Failure(8004, TEXT("Buff not found"));
 }
 
+/**
+ * @brief 按运行实例 ID 精确移除单个 Buff 实例（蓝图轻量门面）
+ * @param InInstanceId 运行实例唯一 ID
+ * @return 成功移除返回 true，未找到匹配实例返回 false
+ */
 bool UGameBuffComponent::K2_RemoveBuffInstance(int32 InInstanceId) {
     return RemoveBuffInstance(InInstanceId).IsSuccess();
 }
 
+/**
+ * @brief 按运行实例 ID 精确移除单个 Buff 实例（强类型契约）
+ * @param InInstanceId 运行实例唯一 ID
+ * @return 成功移除返回 Success，非权威端返回 Failure(8002)，未找到返回 Failure(8004)
+ */
 TGameStatusResult<void> UGameBuffComponent::RemoveBuffInstance(int32 InInstanceId) {
     if (!IsApplyAllowed()) {
         GAME_LOG(Warning, TEXT("【Buff 组件】非权威端拒绝移除 Buff 实例: %d"), InInstanceId);
@@ -300,11 +396,24 @@ TGameStatusResult<void> UGameBuffComponent::RemoveBuffInstance(int32 InInstanceI
     return TGameStatusResult<void>::Failure(8004, TEXT("Buff instance not found"));
 }
 
+/**
+ * @brief 检查是否持有指定身份标签的 Buff
+ * @param InBuffTag 目标 Buff 身份标签
+ * @return 若存在至少一个有效实例返回 true，否则返回 false
+ */
 bool UGameBuffComponent::HasBuff(FGameplayTag InBuffTag) const {
     return FindInstanceIndex(InBuffTag) != INDEX_NONE;
 }
 
+/**
+ * @brief 获取指定 Buff 标签的当前聚合总层数
+ * @param InBuffTag 目标 Buff 身份标签
+ * @return 聚合层数数值；未激活返回 0
+ */
 int32 UGameBuffComponent::GetBuffStacks(FGameplayTag InBuffTag) const {
+    if (!InBuffTag.IsValid()) {
+        return 0;
+    }
     int32 TotalStacks = 0;
     for (const FGameBuffInstance& Instance : ActiveBuffs.Items) {
         if (Instance.Spec.BuffTag.MatchesTagExact(InBuffTag)) {
@@ -314,7 +423,15 @@ int32 UGameBuffComponent::GetBuffStacks(FGameplayTag InBuffTag) const {
     return TotalStacks;
 }
 
+/**
+ * @brief 获取指定 Buff 标签的最大剩余持续时间（秒）
+ * @param InBuffTag 目标 Buff 身份标签
+ * @return 剩余秒数；永久生效或未激活返回 0.0f
+ */
 float UGameBuffComponent::GetBuffRemainingTime(FGameplayTag InBuffTag) const {
+    if (!InBuffTag.IsValid()) {
+        return 0.0f;
+    }
     float Remaining = 0.0f;
     for (const FGameBuffInstance& Instance : ActiveBuffs.Items) {
         if (Instance.Spec.BuffTag.MatchesTagExact(InBuffTag)) {
@@ -324,6 +441,10 @@ float UGameBuffComponent::GetBuffRemainingTime(FGameplayTag InBuffTag) const {
     return Remaining;
 }
 
+/**
+ * @brief 获取当前全部激活的 Buff 身份标签列表（自动去重）
+ * @param OutTags 输出的标签数组
+ */
 void UGameBuffComponent::GetActiveBuffTags(TArray<FGameplayTag>& OutTags) const {
     OutTags.Reset();
     OutTags.Reserve(ActiveBuffs.Items.Num());
@@ -332,6 +453,10 @@ void UGameBuffComponent::GetActiveBuffTags(TArray<FGameplayTag>& OutTags) const 
     }
 }
 
+/**
+ * @brief 获取当前全部激活 Buff 赋予的聚合状态标签集合
+ * @param OutTags 输出的状态标签容器
+ */
 void UGameBuffComponent::GetGrantedTags(FGameplayTagContainer& OutTags) const {
     OutTags.Reset();
     for (const FGameBuffInstance& Instance : ActiveBuffs.Items) {
@@ -339,11 +464,19 @@ void UGameBuffComponent::GetGrantedTags(FGameplayTagContainer& OutTags) const {
     }
 }
 
+/**
+ * @brief 根据宿主网络权限判断当前端是否允许施加或移除 Buff
+ * @return 允许操作返回 true，否则返回 false
+ */
 bool UGameBuffComponent::IsApplyAllowed() const {
     const AActor* OwnerActor = GetOwner();
     return OwnerActor == nullptr || OwnerActor->HasAuthority() || !bRequireAuthority;
 }
 
+/**
+ * @brief 返回绑定的数值组件，未绑定时从宿主查找并缓存
+ * @return 关联的数值组件指针；未找到时返回 nullptr
+ */
 UGameStatComponent* UGameBuffComponent::ResolveStatComponent() {
     if (BoundStatComponent.IsValid()) {
         return BoundStatComponent.Get();
@@ -357,17 +490,33 @@ UGameStatComponent* UGameBuffComponent::ResolveStatComponent() {
     return nullptr;
 }
 
+/**
+ * @brief 将指定实例的修正器挂接到数值组件
+ * @param InInstance 待挂接的 Buff 实例
+ */
 void UGameBuffComponent::RegisterInstanceModifiers(const FGameBuffInstance& InInstance) {
     if (UGameStatComponent* StatComponent = ResolveStatComponent()) {
         ModifierBridge.Register(InInstance.InstanceId, InInstance, *StatComponent);
     }
 }
 
+/**
+ * @brief 从数值组件注销指定实例的全部修正器
+ * @param InInstance 待注销的 Buff 实例
+ */
 void UGameBuffComponent::UnregisterInstanceModifiers(const FGameBuffInstance& InInstance) {
     ModifierBridge.Unregister(InInstance.InstanceId, ResolveStatComponent());
 }
 
+/**
+ * @brief 查找首个匹配指定 Buff 标签的实例下标
+ * @param InBuffTag 目标 Buff 身份标签
+ * @return 数组下标；未找到返回 INDEX_NONE
+ */
 int32 UGameBuffComponent::FindInstanceIndex(const FGameplayTag& InBuffTag) const {
+    if (!InBuffTag.IsValid()) {
+        return INDEX_NONE;
+    }
     for (int32 Index = 0; Index < ActiveBuffs.Items.Num(); ++Index) {
         if (ActiveBuffs.Items[Index].Spec.BuffTag.MatchesTagExact(InBuffTag)) {
             return Index;
@@ -376,6 +525,9 @@ int32 UGameBuffComponent::FindInstanceIndex(const FGameplayTag& InBuffTag) const
     return INDEX_NONE;
 }
 
+/**
+ * @brief 依据当前是否有带倒计时的实例动态启闭组件 Tick
+ */
 void UGameBuffComponent::RefreshTickState() {
     bool bHasTimedInstance = false;
     for (const FGameBuffInstance& Instance : ActiveBuffs.Items) {
@@ -387,6 +539,12 @@ void UGameBuffComponent::RefreshTickState() {
     SetComponentTickEnabled(bHasTimedInstance);
 }
 
+/**
+ * @brief 客户端在 FastArray 复制后计算层数差分并精准触发变更或移除委托
+ * @param InItems 最新复制的实例列表
+ * @param ExcludedIndices 暂未完成删除的排除条目下标视图
+ * @param ForcedChangedTags 强制要求广播变更的标签视图
+ */
 void UGameBuffComponent::PublishReplicatedDiff(
     const TArray<FGameBuffInstance>& InItems,
     TArrayView<const int32> ExcludedIndices,
@@ -422,6 +580,10 @@ void UGameBuffComponent::PublishReplicatedDiff(
     }
 }
 
+/**
+ * @brief 在条目被移除后判断该标签是否仍有剩余实例并广播相应状态
+ * @param InBuffTag 目标 Buff 身份标签
+ */
 void UGameBuffComponent::BroadcastTagStateAfterRemoval(const FGameplayTag& InBuffTag) {
     if (FindInstanceIndex(InBuffTag) != INDEX_NONE) {
         BroadcastBuffChanged(InBuffTag, GetBuffStacks(InBuffTag));
@@ -430,15 +592,23 @@ void UGameBuffComponent::BroadcastTagStateAfterRemoval(const FGameplayTag& InBuf
     }
 }
 
+/**
+ * @brief 更新已确认层数并向动态与原生委托广播 Buff 变更
+ * @param InBuffTag 目标 Buff 身份标签
+ * @param InStacks 最新层数
+ */
 void UGameBuffComponent::BroadcastBuffChanged(const FGameplayTag& InBuffTag, int32 InStacks) {
     AcknowledgedStacks.FindOrAdd(InBuffTag) = InStacks;
     OnBuffChanged.Broadcast(InBuffTag, InStacks);
     OnBuffChangedNative.Broadcast(InBuffTag, InStacks);
 }
 
+/**
+ * @brief 从已确认表中移除并向动态与原生委托广播 Buff 完全移除
+ * @param InBuffTag 目标 Buff 身份标签
+ */
 void UGameBuffComponent::BroadcastBuffRemoved(const FGameplayTag& InBuffTag) {
     AcknowledgedStacks.Remove(InBuffTag);
     OnBuffRemoved.Broadcast(InBuffTag);
     OnBuffRemovedNative.Broadcast(InBuffTag);
 }
-

@@ -13,6 +13,7 @@
 #include "Buff/FGameBuffTypes.h"
 #include "Buff/FGameActiveBuffArray.h"
 #include "Buff/FGameBuffModifierBridge.h"
+#include "Core/IGamePoolable.h"
 
 #include "UGameBuffComponent.generated.h"
 
@@ -22,7 +23,7 @@ class UGameStatComponent;
  * @brief 通用 Buff / 状态组件
  */
 UCLASS(ClassGroup = (Game), meta = (BlueprintSpawnableComponent))
-class GAMEGAMEPLAYCORE_API UGameBuffComponent : public UActorComponent {
+class GAMEGAMEPLAYCORE_API UGameBuffComponent : public UActorComponent, public IGamePoolable {
     GENERATED_BODY()
 
     friend class FGameBuffReplicationCallbacksTest;
@@ -63,6 +64,16 @@ public:
      * @param EndPlayReason 结束运行的原因
      */
     void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+
+    /**
+     * @brief 从对象池出库激活回调
+     */
+    void OnAcquireFromPool_Implementation() override;
+
+    /**
+     * @brief 归还对象池休眠回调：清空所有 Buff 实例并回滚修正器
+     */
+    void OnReleaseToPool_Implementation() override;
 
 public:
     /**

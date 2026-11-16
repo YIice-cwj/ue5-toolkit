@@ -14,6 +14,7 @@ public class GameGameplayCore : ModuleRules {
             "Engine",
             "GameplayTags",
             "GameCore",
+            "GamePool",
             "NetCore",
         });
 

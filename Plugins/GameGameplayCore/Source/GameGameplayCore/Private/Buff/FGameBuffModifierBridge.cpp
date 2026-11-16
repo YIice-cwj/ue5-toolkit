@@ -7,6 +7,12 @@
 
 #include "Stat/UGameStatComponent.h"
 
+/**
+ * @brief 按层数缩放后挂接实例的全部修正器，并记录句柄供回滚
+ * @param InInstanceId 运行实例唯一 ID
+ * @param InInstance 运行实例（只读，提供 Spec 与层数）
+ * @param InStatComponent 目标数值组件
+ */
 void FGameBuffModifierBridge::Register(int32 InInstanceId, const FGameBuffInstance& InInstance, UGameStatComponent& InStatComponent) {
     Unregister(InInstanceId, &InStatComponent);
 
@@ -33,6 +39,11 @@ void FGameBuffModifierBridge::Register(int32 InInstanceId, const FGameBuffInstan
     }
 }
 
+/**
+ * @brief 回滚实例已挂接的全部修正器并移除句柄映射
+ * @param InInstanceId 运行实例唯一 ID
+ * @param InStatComponent 目标数值组件；为空时仅清理映射并跳过回滚
+ */
 void FGameBuffModifierBridge::Unregister(int32 InInstanceId, UGameStatComponent* InStatComponent) {
     TArray<FGameBuffAppliedModifier> Handles;
     if (!HandlesByInstance.RemoveAndCopyValue(InInstanceId, Handles)) {
@@ -48,6 +59,10 @@ void FGameBuffModifierBridge::Unregister(int32 InInstanceId, UGameStatComponent*
     }
 }
 
+/**
+ * @brief 从指定数值组件回滚全部已记录修正器并清空句柄映射
+ * @param InStatComponent 原挂接的数值组件
+ */
 void FGameBuffModifierBridge::ClearAll(UGameStatComponent& InStatComponent) {
     for (const TPair<int32, TArray<FGameBuffAppliedModifier>>& Pair : HandlesByInstance) {
         for (const FGameBuffAppliedModifier& Applied : Pair.Value) {
@@ -57,6 +72,9 @@ void FGameBuffModifierBridge::ClearAll(UGameStatComponent& InStatComponent) {
     Reset();
 }
 
+/**
+ * @brief 清空全部句柄映射（仅在原数值组件已不可用时使用，不执行回滚）
+ */
 void FGameBuffModifierBridge::Reset() {
     HandlesByInstance.Reset();
 }

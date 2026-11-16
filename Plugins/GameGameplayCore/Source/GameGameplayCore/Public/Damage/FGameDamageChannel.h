@@ -34,6 +34,9 @@ public:
      * @return 匹配的条目只读指针；未命中返回 nullptr
      */
     [[nodiscard]] static const FGameDamageChannel* FindExact(const TArray<FGameDamageChannel>& InChannels, const FGameplayTag& InTag) noexcept {
+        if (!InTag.IsValid()) {
+            return nullptr;
+        }
         return InChannels.FindByPredicate([&InTag](const FGameDamageChannel& Item) {
             return Item.ChannelTag.MatchesTagExact(InTag);
         });
@@ -46,6 +49,9 @@ public:
      * @return 匹配的条目可变指针；未命中返回 nullptr
      */
     [[nodiscard]] static FGameDamageChannel* FindExactMutable(TArray<FGameDamageChannel>& InChannels, const FGameplayTag& InTag) noexcept {
+        if (!InTag.IsValid()) {
+            return nullptr;
+        }
         return InChannels.FindByPredicate([&InTag](const FGameDamageChannel& Item) {
             return Item.ChannelTag.MatchesTagExact(InTag);
         });
@@ -70,6 +76,9 @@ public:
      * @return 匹配到的所有通道数值之和
      */
     [[nodiscard]] static float GetSum(const TArray<FGameDamageChannel>& InChannels, const FGameplayTag& InTag) noexcept {
+        if (!InTag.IsValid()) {
+            return 0.0f;
+        }
         float Sum = 0.0f;
         for (const FGameDamageChannel& Item : InChannels) {
             if (Item.ChannelTag.MatchesTag(InTag)) {
@@ -86,6 +95,9 @@ public:
      * @param InMagnitude 赋予的通道数值
      */
     static void SetExact(TArray<FGameDamageChannel>& InChannels, const FGameplayTag& InTag, float InMagnitude) {
+        if (!InTag.IsValid()) {
+            return;
+        }
         if (FGameDamageChannel* Found = FindExactMutable(InChannels, InTag)) {
             Found->Magnitude = InMagnitude;
         } else {
@@ -100,6 +112,9 @@ public:
      * @param InDelta 累加的增量数值
      */
     static void AddExact(TArray<FGameDamageChannel>& InChannels, const FGameplayTag& InTag, float InDelta) {
+        if (!InTag.IsValid()) {
+            return;
+        }
         if (FGameDamageChannel* Found = FindExactMutable(InChannels, InTag)) {
             Found->Magnitude += InDelta;
         } else {
@@ -114,6 +129,9 @@ public:
      * @return 成功移除至少一个条目返回 true，未命中返回 false
      */
     static bool RemoveExact(TArray<FGameDamageChannel>& InChannels, const FGameplayTag& InTag) {
+        if (!InTag.IsValid()) {
+            return false;
+        }
         const int32 Removed = InChannels.RemoveAll([&InTag](const FGameDamageChannel& Item) {
             return Item.ChannelTag.MatchesTagExact(InTag);
         });

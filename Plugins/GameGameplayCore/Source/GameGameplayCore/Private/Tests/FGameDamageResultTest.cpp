@@ -62,19 +62,24 @@ bool FGameDamageResultTest::RunTest([[maybe_unused]] const FString& Parameters) 
 
     TestFalse(TEXT("空通道容器返回无效主通道"), Result.GetDominantActualChannel().IsValid());
 
-    FGameDamageChannel::SetExact(Result.ActualChannels, BluntTag, 50.0f);
-    FGameDamageChannel::SetExact(Result.ActualChannels, SlashTag, 100.0f);
+    Result.SetActualChannelDamage(BluntTag, 50.0f);
+    Result.SetActualChannelDamage(SlashTag, 100.0f);
     TestEqual(TEXT("主通道选择最大实际伤害通道"), Result.GetDominantActualChannel(), SlashTag);
     TestEqual(TEXT("精确读取实际通道伤害正确"), Result.GetActualChannelDamageExact(SlashTag), 100.0f);
     TestEqual(TEXT("层级求和读取实际通道伤害正确"), Result.GetActualChannelDamage(PhysTag), 150.0f);
+
+    Result.AddActualChannelDamage(SlashTag, 20.0f);
+    TestEqual(TEXT("累加实际通道伤害正确"), Result.GetActualChannelDamageExact(SlashTag), 120.0f);
+    Result.SetActualChannelDamage(SlashTag, 100.0f);
+
     TestTrue(TEXT("精确移除实际伤害通道成功"), Result.RemoveActualChannel(SlashTag));
     TestEqual(TEXT("移除后实际通道数减少"), Result.ActualChannels.Num(), 1);
     TestEqual(TEXT("移除后主通道迁移至剩余通道"), Result.GetDominantActualChannel(), BluntTag);
     TestFalse(TEXT("重复移除未存在通道返回 false"), Result.RemoveActualChannel(SlashTag));
 
     FGameDamageResult NegativeResult;
-    FGameDamageChannel::SetExact(NegativeResult.ActualChannels, SlashTag, -20.0f);
-    FGameDamageChannel::SetExact(NegativeResult.ActualChannels, BluntTag, -5.0f);
+    NegativeResult.SetActualChannelDamage(SlashTag, -20.0f);
+    NegativeResult.SetActualChannelDamage(BluntTag, -5.0f);
     TestEqual(TEXT("负值通道仍按数值最大者选择"), NegativeResult.GetDominantActualChannel(), BluntTag);
 
     return true;

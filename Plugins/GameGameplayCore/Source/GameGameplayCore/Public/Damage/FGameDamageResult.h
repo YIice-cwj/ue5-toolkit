@@ -41,6 +41,24 @@ public:
     }
 
     /**
+     * @brief 设置或覆盖指定通道实际生效伤害记录
+     * @param InChannelTag 目标通道标签
+     * @param InMagnitude 赋予的实际伤害数值
+     */
+    void SetActualChannelDamage(const FGameplayTag& InChannelTag, float InMagnitude) {
+        FGameDamageChannel::SetExact(ActualChannels, InChannelTag, InMagnitude);
+    }
+
+    /**
+     * @brief 累加指定通道实际生效伤害记录
+     * @param InChannelTag 目标通道标签
+     * @param InDelta 增量数值
+     */
+    void AddActualChannelDamage(const FGameplayTag& InChannelTag, float InDelta) {
+        FGameDamageChannel::AddExact(ActualChannels, InChannelTag, InDelta);
+    }
+
+    /**
      * @brief 精确移除指定通道实际生效伤害记录
      * @param InChannelTag 待移除的通道标签
      * @return 成功移除返回 true，未找到匹配通道返回 false

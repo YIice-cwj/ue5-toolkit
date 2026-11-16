@@ -18,7 +18,7 @@ FGameDamageResult UGameDamageTestTarget::ApplyDamageContext_Implementation(const
     const FGameplayTag SlashTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Damage.Channel.Test.Physical.Slash")));
     const float SlashDamage = Context.GetChannelDamageExact(SlashTag);
     if (SlashDamage > 0.0f) {
-        FGameDamageChannel::SetExact(Result.ActualChannels, SlashTag, SlashDamage * 0.8f);
+        Result.SetActualChannelDamage(SlashTag, SlashDamage * 0.8f);
     }
 
     const FGameplayTag HitStopTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Damage.Feedback.TestHitStop")));
