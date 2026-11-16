@@ -18,7 +18,7 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 
-namespace {
+namespace StaticDataPerf {
 
 constexpr int32 DefaultWarmupRounds = 2;
 constexpr int32 DefaultSampleRounds = 5;
@@ -94,7 +94,7 @@ bool PerfHandleTestRowA(FArchive& Ar, void* RowPtr) {
     return !Ar.IsError();
 }
 
-}  // namespace
+}  // namespace StaticDataPerf
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FStaticDataBinCodecPerfTest,
@@ -108,6 +108,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
  * @return 全部断言通过返回 true
  */
 bool FStaticDataBinCodecPerfTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    using namespace StaticDataPerf;
     TMap<FName, FStaticDataBinaryTable> Tables;
     FStaticDataBinaryTable& Table = Tables.Add(FName(TEXT("PerfRowA")));
     Table.StructName = TEXT("FRepositoryTestRowA");
@@ -176,6 +177,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
  * @return 全部断言通过返回 true
  */
 bool FStaticDataDigestPerfTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    using namespace StaticDataPerf;
     FStaticDataRepository Repository;
     Repository.RegisterRowSerializer(FName(FRepositoryTestRowA::StaticStruct()->GetName()), &PerfHandleTestRowA);
 
@@ -224,6 +226,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
  * @return 全部断言通过返回 true
  */
 bool FStaticDataJsonLoadPerfTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    using namespace StaticDataPerf;
     const FString JsonFilePath = FPaths::ProjectSavedDir() / TEXT("UnitTest_Perf_DT.json");
     const FString JsonContent = TEXT("[{\"RowName\":\"Item_1\",\"Score\":10,\"Weight\":1.5},{\"RowName\":\"Item_2\",\"Score\":20,\"Weight\":2.5}]");
     FFileHelper::SaveStringToFile(JsonContent, *JsonFilePath);

@@ -17,7 +17,7 @@
 #include "Misc/AutomationTest.h"
 #include "Misc/Paths.h"
 
-namespace {
+namespace SaveGamePerf {
 
 constexpr int32 DefaultWarmupRounds = 2;
 constexpr int32 DefaultSampleRounds = 5;
@@ -86,7 +86,7 @@ FBenchmarkMetrics RunBenchmark(
     return Metrics;
 }
 
-}  // namespace
+}  // namespace SaveGamePerf
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FSaveGameSegmentRegistryPerfTest,
@@ -100,6 +100,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
  * @return 全部断言通过返回 true
  */
 bool FSaveGameSegmentRegistryPerfTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    using namespace SaveGamePerf;
     FSaveGameSegmentRegistry Registry;
     constexpr int32 SegmentCount = 16;
     for (int32 i = 0; i < SegmentCount; ++i) {
@@ -161,6 +162,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
  * @return 全部断言通过返回 true
  */
 bool FSaveGameFileIOPerfTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    using namespace SaveGamePerf;
     const FString SlotName = TEXT("Perf_AtomicSave_TestSlot");
     TArray<uint8> FakeSaveBytes;
     FakeSaveBytes.SetNumUninitialized(4096);
