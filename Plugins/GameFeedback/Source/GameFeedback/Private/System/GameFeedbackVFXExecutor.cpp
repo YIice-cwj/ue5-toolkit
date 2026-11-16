@@ -43,7 +43,7 @@ FRotator ResolveVFXRotation(const FGameFeedbackSignal& Signal, EGameFeedbackVFXO
  */
 void SpawnVFX(UWorld* World, const FGameFeedbackSignal& Signal, const FGameFeedbackVFXAction& Action)
 {
-    if (!World || Signal.Magnitude < Action.MinMagnitude || Action.NiagaraSystem.IsNull()) {
+    if (!World || World->GetNetMode() == NM_DedicatedServer || Signal.Magnitude < Action.MinMagnitude || Action.NiagaraSystem.IsNull()) {
         return;
     }
 
@@ -63,10 +63,11 @@ void SpawnVFX(UWorld* World, const FGameFeedbackSignal& Signal, const FGameFeedb
         ? (Signal.Target.IsValid() ? Signal.Target->GetActorLocation() : FVector::ZeroVector)
         : Signal.HitResult.ImpactPoint;
 
-    if (Action.bAttachToHitComponent && Signal.HitResult.GetComponent()) {
+    UPrimitiveComponent* HitComponent = Signal.HitResult.GetComponent();
+    if (Action.bAttachToHitComponent && HitComponent && HitComponent->IsRegistered() && !HitComponent->IsBeingDestroyed()) {
         UNiagaraFunctionLibrary::SpawnSystemAttached(
             System,
-            Signal.HitResult.GetComponent(),
+            HitComponent,
             Signal.HitResult.BoneName,
             Location,
             Rotation,

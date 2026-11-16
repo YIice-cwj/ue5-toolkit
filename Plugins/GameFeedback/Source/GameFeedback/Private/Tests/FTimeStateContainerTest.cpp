@@ -139,7 +139,7 @@ bool FGameTimeDilationMixerTest::RunTest([[maybe_unused]] const FString& Paramet
 
     Mixer.Request(ETimeDilationChannel::SystemPause, 0.0f, 0.0f, 0.0f);
     TestTrue(TEXT("零时长通道持续激活"), Mixer.IsActive(ETimeDilationChannel::SystemPause));
-    TestNearlyEqual(TEXT("零时间缩放立即生效"), Mixer.GetEffectiveDilation(), 0.0f, 0.0001f);
+    TestNearlyEqual(TEXT("零时间缩放安全钳制为 0.0001f"), Mixer.GetEffectiveDilation(), 0.0001f, 0.00001f);
 
     Mixer.ClearAll();
     TestNearlyEqual(TEXT("全部清除后恢复 1.0"), Mixer.GetEffectiveDilation(), 1.0f, 0.0001f);

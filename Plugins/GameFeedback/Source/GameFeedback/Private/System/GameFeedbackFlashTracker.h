@@ -55,6 +55,19 @@ public:
     void Shutdown(UWorld* World);
 
     /**
+     * @brief 清理失效弱引用记录（释放已销毁网格所持有的强引用材质）
+     */
+    void PruneInvalid();
+
+    /**
+     * @brief 获取当前追踪的记录数量（供测试与可观测性）
+     * @return 追踪记录数量
+     */
+    [[nodiscard]] int32 GetTrackedCount() const {
+        return Records.Num();
+    }
+
+    /**
      * @brief 设置时间提供者（用于测试或可控时钟注入）
      * @param InTimeProvider 返回当前时间（秒）的函数对象
      */

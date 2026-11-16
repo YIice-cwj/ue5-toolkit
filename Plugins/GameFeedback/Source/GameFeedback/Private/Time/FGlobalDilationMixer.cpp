@@ -5,18 +5,30 @@
 
 #include "Time/FGlobalDilationMixer.h"
 
-FGlobalDilationMixer::FGlobalDilationMixer() {
+/**
+ * @brief 构造：按通道枚举数量预分配通道状态数组
+ */
+FGlobalDilationMixer::FGlobalDilationMixer()
+{
     ChannelStates.SetNum(static_cast<int32>(ETimeDilationChannel::Count));
 }
 
-void FGlobalDilationMixer::Request(ETimeDilationChannel InChannel, float InDuration, float InTimeDilation, float InBlendOutDuration) {
+/**
+ * @brief 在指定通道请求全局时间膨胀（重复请求整体覆盖该通道既有状态）
+ * @param InChannel 目标通道
+ * @param InDuration 持续时间（秒，<= 0 表示持久有效直至手动清除）
+ * @param InTimeDilation 目标时间缩放（钳制到 [0.0001, 20]）
+ * @param InBlendOutDuration 结束时的平滑淡出时间（秒，负数按 0 处理）
+ */
+void FGlobalDilationMixer::Request(ETimeDilationChannel InChannel, float InDuration, float InTimeDilation, float InBlendOutDuration)
+{
     const int32 Index = static_cast<int32>(InChannel);
     if (!ChannelStates.IsValidIndex(Index)) {
         return;
     }
 
     FGlobalChannelState& State = ChannelStates[Index];
-    State.TargetDilation = FMath::Clamp(InTimeDilation, 0.0f, 20.0f);
+    State.TargetDilation = FMath::Clamp(InTimeDilation, 0.0001f, 20.0f);
     State.CurrentDilation = State.TargetDilation;
     State.TotalDuration = FMath::Max(0.0f, InDuration);
     State.RemainingDuration = State.TotalDuration;
@@ -27,7 +39,12 @@ void FGlobalDilationMixer::Request(ETimeDilationChannel InChannel, float InDurat
     RecomputeEffectiveDilation();
 }
 
-void FGlobalDilationMixer::Clear(ETimeDilationChannel InChannel) {
+/**
+ * @brief 清除指定通道的全局时间膨胀
+ * @param InChannel 目标通道
+ */
+void FGlobalDilationMixer::Clear(ETimeDilationChannel InChannel)
+{
     const int32 Index = static_cast<int32>(InChannel);
     if (!ChannelStates.IsValidIndex(Index) || !ChannelStates[Index].bActive) {
         return;
@@ -37,7 +54,13 @@ void FGlobalDilationMixer::Clear(ETimeDilationChannel InChannel) {
     RecomputeEffectiveDilation();
 }
 
-void FGlobalDilationMixer::ClearWithBlend(ETimeDilationChannel InChannel, float InBlendOutDuration) {
+/**
+ * @brief 清除指定通道的全局时间膨胀并平滑淡出恢复
+ * @param InChannel 目标通道
+ * @param InBlendOutDuration 淡出过渡时间（秒，<= 0 时等价于立即清除）
+ */
+void FGlobalDilationMixer::ClearWithBlend(ETimeDilationChannel InChannel, float InBlendOutDuration)
+{
     const int32 Index = static_cast<int32>(InChannel);
     if (!ChannelStates.IsValidIndex(Index) || !ChannelStates[Index].bActive) {
         return;
@@ -56,7 +79,11 @@ void FGlobalDilationMixer::ClearWithBlend(ETimeDilationChannel InChannel, float 
     RecomputeEffectiveDilation();
 }
 
-void FGlobalDilationMixer::ClearAll() {
+/**
+ * @brief 清除所有通道的全局时间膨胀
+ */
+void FGlobalDilationMixer::ClearAll()
+{
     bool bNeedsUpdate = false;
     for (FGlobalChannelState& State : ChannelStates) {
         if (State.bActive) {
@@ -69,21 +96,43 @@ void FGlobalDilationMixer::ClearAll() {
     }
 }
 
-bool FGlobalDilationMixer::IsActive(ETimeDilationChannel InChannel) const {
+/**
+ * @brief 检查指定通道是否处于激活状态
+ * @param InChannel 目标通道
+ * @return 激活返回 true
+ */
+bool FGlobalDilationMixer::IsActive(ETimeDilationChannel InChannel) const
+{
     const int32 Index = static_cast<int32>(InChannel);
     return ChannelStates.IsValidIndex(Index) ? ChannelStates[Index].bActive : false;
 }
 
-float FGlobalDilationMixer::GetChannelDilation(ETimeDilationChannel InChannel) const {
+/**
+ * @brief 获取指定通道当前的时间缩放值
+ * @param InChannel 目标通道
+ * @return 通道时间缩放值（未激活返回 1.0）
+ */
+float FGlobalDilationMixer::GetChannelDilation(ETimeDilationChannel InChannel) const
+{
     const int32 Index = static_cast<int32>(InChannel);
     return (ChannelStates.IsValidIndex(Index) && ChannelStates[Index].bActive) ? ChannelStates[Index].CurrentDilation : 1.0f;
 }
 
-float FGlobalDilationMixer::GetEffectiveDilation() const {
+/**
+ * @brief 获取当前生效的最终全局时间缩放值
+ * @return 生效时间缩放
+ */
+float FGlobalDilationMixer::GetEffectiveDilation() const
+{
     return EffectiveDilation;
 }
 
-void FGlobalDilationMixer::Advance(float InRealDeltaSeconds) {
+/**
+ * @brief 推进计时与淡出插值，单帧余量在当前通道内连续消费持续与淡出阶段
+ * @param InRealDeltaSeconds 真实流逝秒数
+ */
+void FGlobalDilationMixer::Advance(float InRealDeltaSeconds)
+{
     bool bChannelsChanged = false;
 
     for (FGlobalChannelState& State : ChannelStates) {
@@ -126,7 +175,11 @@ void FGlobalDilationMixer::Advance(float InRealDeltaSeconds) {
     }
 }
 
-void FGlobalDilationMixer::RecomputeEffectiveDilation() {
+/**
+ * @brief 依据通道优先级重算生效时间缩放
+ */
+void FGlobalDilationMixer::RecomputeEffectiveDilation()
+{
     for (const FGlobalChannelState& State : ChannelStates) {
         if (State.bActive) {
             EffectiveDilation = State.CurrentDilation;

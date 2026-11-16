@@ -90,4 +90,37 @@ bool FGameFeedbackAudioExecutorTest::RunTest([[maybe_unused]] const FString& Par
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameFeedbackAudioDedicatedServerTest,
+    "Game.Feedback.AudioDedicatedServer",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证 Dedicated Server 环境下音效执行器直接短路退出
+ * @param Parameters 自动化测试参数
+ * @return 测试是否通过
+ */
+bool FGameFeedbackAudioDedicatedServerTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+    World->SetPlayInEditorInitialNetMode(NM_DedicatedServer);
+
+    FGameFeedbackSignal Signal;
+    Signal.Magnitude = 10.0f;
+
+    FGameFeedbackAudioAction Action;
+    Action.MinMagnitude = 1.0f;
+    USoundWave* Sound = NewObject<USoundWave>(GetTransientPackage());
+    Action.SpatialImpactSound = Sound;
+    Action.AttackerConfirmationSound = Sound;
+
+    GameFeedback::Execution::PlayImpactAudio(World, Signal, Action);
+    GameFeedback::Execution::PlayAttackerConfirmation(World, Signal, Action);
+    TestTrue(TEXT("Dedicated Server 执行无崩溃且直接短路"), true);
+
+    World->DestroyWorld(false);
+    World->RemoveFromRoot();
+    return true;
+}
+
 #endif  // WITH_AUTOMATION_TESTS

@@ -4,44 +4,67 @@
 #include "Engine/World.h"
 #include "Engine/Engine.h"
 #include "GameFramework/WorldSettings.h"
-#include "Config/GameCompileSwitches.h"
+#include "Logging/GameLogCategories.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogGameTimeDilation, Log, All);
-
+/**
+ * @brief 构造函数：顿帧表与膨胀混音器由成员默认构造
+ */
 UTimeDilationSubsystem::UTimeDilationSubsystem() = default;
 
-UTimeDilationSubsystem& UTimeDilationSubsystem::Get(const UObject* WorldContextObject) {
+/**
+ * @brief 获取世界子系统引用（断言有效）
+ * @param WorldContextObject 上下文对象
+ * @return 子系统引用
+ */
+UTimeDilationSubsystem& UTimeDilationSubsystem::Get(const UObject* WorldContextObject)
+{
     UTimeDilationSubsystem* Subsystem = GetPtr(WorldContextObject);
     check(Subsystem != nullptr);
     return *Subsystem;
 }
 
-UTimeDilationSubsystem* UTimeDilationSubsystem::GetPtr(const UObject* WorldContextObject) {
+/**
+ * @brief 安全获取世界子系统指针（静默返回空）
+ * @param WorldContextObject 上下文对象
+ * @return 子系统指针
+ */
+UTimeDilationSubsystem* UTimeDilationSubsystem::GetPtr(const UObject* WorldContextObject)
+{
     if (const UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::ReturnNull)) {
         return World->GetSubsystem<UTimeDilationSubsystem>();
     }
     return nullptr;
 }
 
-void UTimeDilationSubsystem::Initialize(FSubsystemCollectionBase& Collection) {
+/**
+ * @brief 子系统初始化生命周期回调：初始化时间基准、通道状态数组与顿帧表，并注册至全局服务定位器
+ * @param Collection 子系统管理器集合
+ */
+void UTimeDilationSubsystem::Initialize(FSubsystemCollectionBase& Collection)
+{
     Super::Initialize(Collection);
     LastRealTime = FPlatformTime::Seconds();
     LastAppliedWorldDilation = 1.0f;
-    if constexpr (Game::Config::bEnableLog) {
-        UE_LOG(LogGameTimeDilation, Log, TEXT("【时间膨胀】时间膨胀子系统初始化就绪。"));
-    }
+    GAME_LOG(Log, TEXT("【GameFeedback】时间膨胀子系统初始化就绪。"));
 }
 
-void UTimeDilationSubsystem::Deinitialize() {
-    if constexpr (Game::Config::bEnableLog) {
-        UE_LOG(LogGameTimeDilation, Log, TEXT("【时间膨胀】子系统注销，清理所有定格与通道膨胀。"));
-    }
+/**
+ * @brief 子系统销毁生命周期回调：清理全部顿帧记录与全局时间膨胀通道
+ */
+void UTimeDilationSubsystem::Deinitialize()
+{
+    GAME_LOG(Log, TEXT("【GameFeedback】子系统注销，清理所有定格与通道膨胀。"));
     ClearAllHitStops();
     ClearAllGlobalDilations();
     Super::Deinitialize();
 }
 
-void UTimeDilationSubsystem::Tick(float DeltaTime) {
+/**
+ * @brief 每帧推进时间层叠（暂停期间仍刷新 LastRealTime，避免解除暂停时时间突跳）
+ * @param DeltaTime 帧间隔时间（秒）
+ */
+void UTimeDilationSubsystem::Tick(float DeltaTime)
+{
     Super::Tick(DeltaTime);
 
     const double CurrentRealTime = FPlatformTime::Seconds();
@@ -56,62 +79,99 @@ void UTimeDilationSubsystem::Tick(float DeltaTime) {
     AdvanceTime(RealDeltaSeconds);
 }
 
-TStatId UTimeDilationSubsystem::GetStatId() const {
+/**
+ * @brief Tickable 统计 ID（STATGROUP_Tickables）
+ * @return 统计 ID
+ */
+TStatId UTimeDilationSubsystem::GetStatId() const
+{
     RETURN_QUICK_DECLARE_CYCLE_STAT(UTimeDilationSubsystem, STATGROUP_Tickables);
 }
 
-bool UTimeDilationSubsystem::IsTickableWhenPaused() const {
+/**
+ * @brief 暂停期间仍参与 Tick，仅刷新真实时间基准，不推进 HitStop 与通道膨胀
+ * @return 恒为 true
+ */
+bool UTimeDilationSubsystem::IsTickableWhenPaused() const
+{
     return true;
 }
 
-void UTimeDilationSubsystem::RequestHitStop(AActor* Target, float Duration, float TimeDilation) {
+/**
+ * @brief 请求对单个 Actor 施加打击顿帧（Duration <= 0 或 Target 为空时不生效）
+ * @param Target 目标 Actor
+ * @param Duration 顿帧持续真实时间（秒）
+ * @param TimeDilation 顿帧期间局部时间缩放（钳制到 [0.0001, 20]，默认 0.001 即几乎定格）
+ */
+void UTimeDilationSubsystem::RequestHitStop(AActor* Target, float Duration, float TimeDilation)
+{
     if (!Target || Duration <= 0.0f) {
-        if constexpr (Game::Config::bEnableLog) {
-            UE_LOG(LogGameTimeDilation, Warning, TEXT("【时间膨胀】请求定格失败：目标为空或时长 <= 0。"));
-        }
+        GAME_LOG_THROTTLE(1.0, Warning, TEXT("【GameFeedback】请求定格失败：目标为空或时长 <= 0。"));
         return;
     }
 
     HitStopTable.Request(*Target, Duration, TimeDilation);
 
-    if constexpr (Game::Config::bEnableLog) {
-        UE_LOG(LogGameTimeDilation, Log, TEXT("【时间膨胀】请求定格成功: 目标=[%s], 时长=%.3f 秒, 膨胀系数=%.3f"),
-            *GetNameSafe(Target), Duration, Target->CustomTimeDilation);
-    }
+    GAME_LOG_THROTTLE(0.5, Log, TEXT("【GameFeedback】请求定格成功: 目标=[%s], 时长=%.3f 秒, 膨胀系数=%.3f"),
+        *GetNameSafe(Target), Duration, Target->CustomTimeDilation);
 }
 
-void UTimeDilationSubsystem::ClearHitStop(AActor* Target) {
+/**
+ * @brief 清除指定 Actor 的打击顿帧并立即还原时间缩放
+ * @param Target 目标 Actor
+ */
+void UTimeDilationSubsystem::ClearHitStop(AActor* Target)
+{
     if (!Target) {
         return;
     }
 
     HitStopTable.Clear(Target);
 
-    if constexpr (Game::Config::bEnableLog) {
-        UE_LOG(LogGameTimeDilation, Verbose, TEXT("【时间膨胀】恢复定格目标: [%s], 恢复膨胀系数=%.3f"),
-            *GetNameSafe(Target), Target->CustomTimeDilation);
-    }
+    GAME_LOG_THROTTLE(0.5, Verbose, TEXT("【GameFeedback】恢复定格目标: [%s], 恢复膨胀系数=%.3f"),
+        *GetNameSafe(Target), Target->CustomTimeDilation);
 }
 
-bool UTimeDilationSubsystem::IsActorInHitStop(const AActor* Target) const {
+/**
+ * @brief 检查指定 Actor 当前是否正处于打击顿帧中
+ * @param Target 目标 Actor
+ * @return 处于顿帧中返回 true
+ */
+bool UTimeDilationSubsystem::IsActorInHitStop(const AActor* Target) const
+{
     return HitStopTable.IsActive(Target);
 }
 
-void UTimeDilationSubsystem::ClearAllHitStops() {
+/**
+ * @brief 清除所有 Actor 的打击顿帧
+ */
+void UTimeDilationSubsystem::ClearAllHitStops()
+{
     HitStopTable.ClearAll();
 }
 
-void UTimeDilationSubsystem::RequestGlobalDilation(ETimeDilationChannel Channel, float Duration, float TimeDilation, float BlendOutDuration) {
+/**
+ * @brief 在指定通道请求全局时间膨胀（重复请求整体覆盖该通道既有状态）
+ * @param Channel 目标通道
+ * @param Duration 持续时间（秒，<=0 表示持久有效直至手动清除）
+ * @param TimeDilation 目标时间缩放（钳制到 [0, 20]）
+ * @param BlendOutDuration 结束时的平滑淡出时间（秒，负数按 0 处理）
+ */
+void UTimeDilationSubsystem::RequestGlobalDilation(ETimeDilationChannel Channel, float Duration, float TimeDilation, float BlendOutDuration)
+{
     DilationMixer.Request(Channel, Duration, TimeDilation, BlendOutDuration);
     SyncWorldDilation();
 
-    if constexpr (Game::Config::bEnableLog) {
-        UE_LOG(LogGameTimeDilation, Log, TEXT("【时间膨胀】设置全局通道膨胀: 通道=%d, 系数=%.3f, 时长=%.3f 秒, 淡出时长=%.3f 秒"),
-            static_cast<int32>(Channel), DilationMixer.GetChannelDilation(Channel), Duration, BlendOutDuration);
-    }
+    GAME_LOG_THROTTLE(0.5, Log, TEXT("【GameFeedback】设置全局通道膨胀: 通道=%d, 系数=%.3f, 时长=%.3f 秒, 淡出时长=%.3f 秒"),
+        static_cast<int32>(Channel), DilationMixer.GetChannelDilation(Channel), Duration, BlendOutDuration);
 }
 
-void UTimeDilationSubsystem::ClearGlobalDilation(ETimeDilationChannel Channel) {
+/**
+ * @brief 清除指定通道的全局时间膨胀
+ * @param Channel 目标通道
+ */
+void UTimeDilationSubsystem::ClearGlobalDilation(ETimeDilationChannel Channel)
+{
     if (!DilationMixer.IsActive(Channel)) {
         return;
     }
@@ -119,12 +179,16 @@ void UTimeDilationSubsystem::ClearGlobalDilation(ETimeDilationChannel Channel) {
     DilationMixer.Clear(Channel);
     SyncWorldDilation();
 
-    if constexpr (Game::Config::bEnableLog) {
-        UE_LOG(LogGameTimeDilation, Log, TEXT("【时间膨胀】清除全局通道膨胀: 通道=%d"), static_cast<int32>(Channel));
-    }
+    GAME_LOG_THROTTLE(0.5, Log, TEXT("【GameFeedback】清除全局通道膨胀: 通道=%d"), static_cast<int32>(Channel));
 }
 
-void UTimeDilationSubsystem::ClearGlobalDilationWithBlend(ETimeDilationChannel Channel, float BlendOutDuration) {
+/**
+ * @brief 清除指定通道的全局时间膨胀，并支持平滑淡出恢复
+ * @param Channel 目标通道
+ * @param BlendOutDuration 淡出过渡时间（秒，<=0 时等价于立即清除）
+ */
+void UTimeDilationSubsystem::ClearGlobalDilationWithBlend(ETimeDilationChannel Channel, float BlendOutDuration)
+{
     if (!DilationMixer.IsActive(Channel)) {
         return;
     }
@@ -138,24 +202,50 @@ void UTimeDilationSubsystem::ClearGlobalDilationWithBlend(ETimeDilationChannel C
     SyncWorldDilation();
 }
 
-void UTimeDilationSubsystem::ClearAllGlobalDilations() {
+/**
+ * @brief 清除所有通道的全局时间膨胀
+ */
+void UTimeDilationSubsystem::ClearAllGlobalDilations()
+{
     DilationMixer.ClearAll();
     SyncWorldDilation();
 }
 
-float UTimeDilationSubsystem::GetEffectiveGlobalTimeDilation() const {
+/**
+ * @brief 获取当前生效的最终全局时间缩放值
+ * @return 最终全局时间缩放
+ */
+float UTimeDilationSubsystem::GetEffectiveGlobalTimeDilation() const
+{
     return DilationMixer.GetEffectiveDilation();
 }
 
-bool UTimeDilationSubsystem::IsChannelActive(ETimeDilationChannel Channel) const {
+/**
+ * @brief 获取指定通道当前的活跃状态
+ * @param Channel 目标通道
+ * @return 通道是否处于激活状态
+ */
+bool UTimeDilationSubsystem::IsChannelActive(ETimeDilationChannel Channel) const
+{
     return DilationMixer.IsActive(Channel);
 }
 
-float UTimeDilationSubsystem::GetChannelTimeDilation(ETimeDilationChannel Channel) const {
+/**
+ * @brief 获取指定通道当前的时间缩放值
+ * @param Channel 目标通道
+ * @return 通道的时间缩放值（未激活返回 1.0f）
+ */
+float UTimeDilationSubsystem::GetChannelTimeDilation(ETimeDilationChannel Channel) const
+{
     return DilationMixer.GetChannelDilation(Channel);
 }
 
-void UTimeDilationSubsystem::AdvanceTime(float RealDeltaSeconds) {
+/**
+ * @brief 手动推进内部真实时间步长（用于单测或自定义时钟驱动）
+ * @param RealDeltaSeconds 真实流逝秒数
+ */
+void UTimeDilationSubsystem::AdvanceTime(float RealDeltaSeconds)
+{
     if (RealDeltaSeconds <= 0.0f) {
         return;
     }
@@ -165,7 +255,11 @@ void UTimeDilationSubsystem::AdvanceTime(float RealDeltaSeconds) {
     SyncWorldDilation();
 }
 
-void UTimeDilationSubsystem::SyncWorldDilation() {
+/**
+ * @brief 将混音器生效时间缩放写回世界设置（生效值未变化时直接返回）
+ */
+void UTimeDilationSubsystem::SyncWorldDilation()
+{
     const float EffectiveDilation = DilationMixer.GetEffectiveDilation();
     if (FMath::IsNearlyEqual(LastAppliedWorldDilation, EffectiveDilation)) {
         return;

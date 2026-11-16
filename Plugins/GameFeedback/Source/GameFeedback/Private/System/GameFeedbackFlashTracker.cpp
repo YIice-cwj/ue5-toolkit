@@ -57,6 +57,8 @@ void CollectCandidateMeshes(AActor* Target, const FHitResult& HitResult, const F
  */
 void FGameFeedbackFlashTracker::Execute(UWorld* World, AActor* Target, const FHitResult& HitResult, const FGameFeedbackHitFlashAction& Action, float Magnitude)
 {
+    PruneInvalid();
+
     if (!World || !Target || !Action.bEnable || !Action.OverlayMaterial || Magnitude < Action.MinMagnitude) {
         return;
     }
@@ -137,6 +139,18 @@ void FGameFeedbackFlashTracker::Shutdown(UWorld* World)
     }
 
     Records.Empty();
+}
+
+/**
+ * @brief 清理失效弱引用记录（释放已销毁网格所持有的强引用材质）
+ */
+void FGameFeedbackFlashTracker::PruneInvalid()
+{
+    for (auto It = Records.CreateIterator(); It; ++It) {
+        if (!It.Key().IsValid()) {
+            It.RemoveCurrent();
+        }
+    }
 }
 
 /**

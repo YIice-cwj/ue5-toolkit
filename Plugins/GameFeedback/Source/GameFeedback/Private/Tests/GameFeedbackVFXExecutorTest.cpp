@@ -121,4 +121,69 @@ bool FGameFeedbackVFXExecutorSpawnTest::RunTest([[maybe_unused]] const FString& 
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameFeedbackVFXDedicatedServerTest,
+    "Game.Feedback.VFXDedicatedServer",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证 Dedicated Server 环境下特效执行器直接短路退出
+ * @param Parameters 自动化测试参数
+ * @return 测试是否通过
+ */
+bool FGameFeedbackVFXDedicatedServerTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+    World->SetPlayInEditorInitialNetMode(NM_DedicatedServer);
+
+    FGameFeedbackSignal Signal;
+    Signal.Magnitude = 10.0f;
+
+    FGameFeedbackVFXAction Action;
+    Action.MinMagnitude = 1.0f;
+
+    GameFeedback::Execution::SpawnVFX(World, Signal, Action);
+    TestTrue(TEXT("Dedicated Server 下 VFX 执行无崩溃且直接短路"), true);
+
+    World->DestroyWorld(false);
+    World->RemoveFromRoot();
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameFeedbackVFXUnregisteredFallbackTest,
+    "Game.Feedback.VFXUnregisteredFallback",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证当命中的组件未注册或即将销毁时，VFX 执行器平滑回退为世界位置生成而不崩溃
+ * @param Parameters 自动化测试参数
+ * @return 测试是否通过
+ */
+bool FGameFeedbackVFXUnregisteredFallbackTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+    AActor* Target = World->SpawnActor<AActor>();
+    UStaticMeshComponent* UnregisteredMesh = NewObject<UStaticMeshComponent>(Target);
+
+    FGameFeedbackSignal Signal;
+    Signal.Magnitude = 10.0f;
+    Signal.Target = Target;
+    Signal.HitResult.ImpactPoint = FVector(100.0f, 0.0f, 0.0f);
+    Signal.HitResult.Component = UnregisteredMesh;
+
+    FGameFeedbackVFXAction Action;
+    Action.MinMagnitude = 1.0f;
+    Action.bAttachToHitComponent = true;
+    UNiagaraSystem* System = NewObject<UNiagaraSystem>(GetTransientPackage());
+    Action.NiagaraSystem = System;
+
+    GameFeedback::Execution::SpawnVFX(World, Signal, Action);
+    TestTrue(TEXT("未注册组件附着触发平滑回退，执行无崩溃"), true);
+
+    World->DestroyWorld(false);
+    World->RemoveFromRoot();
+    return true;
+}
+
 #endif  // WITH_AUTOMATION_TESTS

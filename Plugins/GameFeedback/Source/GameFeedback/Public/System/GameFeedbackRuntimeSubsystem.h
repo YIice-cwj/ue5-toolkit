@@ -1,4 +1,4 @@
-/**
+    /**
  * @file GameFeedbackRuntimeSubsystem.h
  * @brief 组件装配子系统（仅接线，不含表现逻辑）
  */
@@ -10,6 +10,9 @@
 #include "Subsystems/WorldSubsystem.h"
 
 #include "GameFeedbackRuntimeSubsystem.generated.h"
+
+class AGameModeBase;
+class APlayerController;
 
 /**
  * @brief 为 GameState 与本地 PlayerController 惰性装配表现组件的接线器
@@ -27,22 +30,31 @@ public:
     bool ShouldCreateSubsystem(UObject* Outer) const override;
 
     /**
-     * @brief 世界 BeginPlay：装配现有组件并启动迟到玩家补齐定时器
+     * @brief 世界 BeginPlay：装配现有组件并注册服务端登录事件
      * @param InWorld 当前世界
      */
     void OnWorldBeginPlay(UWorld& InWorld) override;
 
     /**
-     * @brief 注销：停止补齐定时器
+     * @brief 注销：停止定时器并退订服务端登录事件
      */
     void Deinitialize() override;
 
     /**
      * @brief 确保 GameState、PlayerController 及网络组件按 NetMode 正确装配
      * @param World 当前世界
+     * @return 若当前所需组件均已就绪返回 true；若存在待装配对象返回 false
      */
-    void EnsureComponents(UWorld& World);
+    bool EnsureComponents(UWorld& World);
 
 private:
+    /**
+     * @brief 服务端新玩家登录回调：立即装配网络接收组件
+     * @param GameMode 当前游戏模式
+     * @param NewPlayer 新登录的玩家控制器
+     */
+    void OnPostLogin(AGameModeBase* GameMode, APlayerController* NewPlayer);
+
     FTimerHandle EnsureTimer;
+    FDelegateHandle PostLoginDelegateHandle;
 };

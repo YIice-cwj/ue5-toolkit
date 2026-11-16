@@ -21,7 +21,7 @@ struct GAMEFEEDBACK_API FGlobalDilationMixer {
      * @brief 在指定通道请求全局时间膨胀（重复请求整体覆盖该通道既有状态）
      * @param InChannel 目标通道
      * @param InDuration 持续时间（秒，<= 0 表示持久有效直至手动清除）
-     * @param InTimeDilation 目标时间缩放（钳制到 [0, 20]）
+     * @param InTimeDilation 目标时间缩放（钳制到 [0.0001, 20]）
      * @param InBlendOutDuration 结束时的平滑淡出时间（秒，负数按 0 处理）
      */
     void Request(ETimeDilationChannel InChannel, float InDuration, float InTimeDilation, float InBlendOutDuration);

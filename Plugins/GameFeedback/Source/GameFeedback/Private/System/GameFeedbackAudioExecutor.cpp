@@ -17,7 +17,7 @@ namespace GameFeedback::Execution {
  */
 void PlayImpactAudio(UWorld* World, const FGameFeedbackSignal& Signal, const FGameFeedbackAudioAction& Action)
 {
-    if (!World || Signal.Magnitude < Action.MinMagnitude || Action.SpatialImpactSound.IsNull()) {
+    if (!World || World->GetNetMode() == NM_DedicatedServer || Signal.Magnitude < Action.MinMagnitude || Action.SpatialImpactSound.IsNull()) {
         return;
     }
 
@@ -56,7 +56,7 @@ void PlayImpactAudio(UWorld* World, const FGameFeedbackSignal& Signal, const FGa
  */
 void PlayAttackerConfirmation(UWorld* World, const FGameFeedbackSignal& Signal, const FGameFeedbackAudioAction& Action)
 {
-    if (!World || Signal.Magnitude < Action.MinMagnitude || Action.AttackerConfirmationSound.IsNull()) {
+    if (!World || World->GetNetMode() == NM_DedicatedServer || Signal.Magnitude < Action.MinMagnitude || Action.AttackerConfirmationSound.IsNull()) {
         return;
     }
 

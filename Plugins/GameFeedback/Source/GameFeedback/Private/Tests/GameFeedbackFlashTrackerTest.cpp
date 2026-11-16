@@ -112,4 +112,51 @@ bool FGameFeedbackFlashTrackerLifecycleTest::RunTest([[maybe_unused]] const FStr
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameFeedbackFlashTrackerPruneDeadMeshesTest,
+    "Game.Feedback.FlashTrackerPruneDeadMeshes",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证网格体异常销毁后，FlashTracker 能通过 PruneInvalid 自动清理失效弱引用并释放材质强引用
+ * @param Parameters 自动化测试参数
+ * @return 测试是否通过
+ */
+bool FGameFeedbackFlashTrackerPruneDeadMeshesTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+    FGameFeedbackFlashTracker Tracker;
+
+    AActor* Target = World->SpawnActor<AActor>();
+    UStaticMeshComponent* Mesh = NewObject<UStaticMeshComponent>(Target);
+    Target->SetRootComponent(Mesh);
+    Mesh->RegisterComponent();
+
+    UMaterial* OriginalMaterial = NewObject<UMaterial>(GetTransientPackage());
+    UMaterial* FlashMaterial = NewObject<UMaterial>(GetTransientPackage());
+    Mesh->SetOverlayMaterial(OriginalMaterial);
+
+    FGameFeedbackHitFlashAction Action;
+    Action.TargetMode = EGameFeedbackFlashTargetMode::HitComponentOnly;
+    Action.OverlayMaterial = FlashMaterial;
+    Action.Duration = 10.0f;
+    FHitResult HitResult;
+    HitResult.Component = Mesh;
+
+    Tracker.Execute(World, Target, HitResult, Action, 10.0f);
+    TestEqual(TEXT("追踪器初始应持有 1 条网格记录"), Tracker.GetTrackedCount(), 1);
+
+    Target->Destroy();
+    Target = nullptr;
+    Mesh = nullptr;
+
+    Tracker.PruneInvalid();
+    TestEqual(TEXT("网格销毁后调用 PruneInvalid 应成功修剪失效记录"), Tracker.GetTrackedCount(), 0);
+
+    Tracker.Shutdown(World);
+    World->DestroyWorld(false);
+    World->RemoveFromRoot();
+    return true;
+}
+
 #endif  // WITH_AUTOMATION_TESTS
