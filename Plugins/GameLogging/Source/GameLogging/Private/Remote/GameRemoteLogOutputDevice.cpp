@@ -5,37 +5,51 @@
 #include "HAL/PlatformTime.h"
 
 namespace {
-
-struct FRemoteLogReentrancyScope {
-    FRemoteLogReentrancyScope() {
-        bHandling = true;
-    }
-
-    ~FRemoteLogReentrancyScope() {
-        bHandling = false;
-    }
-
-    static thread_local bool bHandling;
-};
-
-thread_local bool FRemoteLogReentrancyScope::bHandling = false;
-
+thread_local bool bThreadIsHandlingRemoteLog = false;
 } // namespace
+
+/**
+ * @brief 构造守卫并记录进入当前线程重入状态
+ */
+FRemoteLogReentrancyScope::FRemoteLogReentrancyScope()
+    : bPreviousState(bThreadIsHandlingRemoteLog) {
+    bThreadIsHandlingRemoteLog = true;
+}
+
+/**
+ * @brief 析构守卫并恢复前序重入状态
+ */
+FRemoteLogReentrancyScope::~FRemoteLogReentrancyScope() {
+    bThreadIsHandlingRemoteLog = bPreviousState;
+}
+
+/**
+ * @brief 查询当前调用线程是否处于日志拦截或派发重入上下文中
+ * @return 处于重入上下文中返回 true
+ */
+bool FRemoteLogReentrancyScope::IsHandling() noexcept {
+    return bThreadIsHandlingRemoteLog;
+}
 
 /**
  * @brief 构造函数实现：设置默认级别阈值与默认忽略的反射循环分类
  */
 FGameRemoteLogOutputDevice::FGameRemoteLogOutputDevice() {
-    IgnoredCategories.Add(FName(TEXT("LogGameplayMessage")));
-    IgnoredCategories.Add(FName(TEXT("LogGameLogging")));
-    IgnoredCategories.Add(FName(TEXT("LogGameNetService")));
+    FIgnoredCategoriesSnapshot* Initial = new FIgnoredCategoriesSnapshot();
+    Initial->Categories.Add(FName(TEXT("LogGameplayMessage")));
+    Initial->Categories.Add(FName(TEXT("LogGameLogging")));
+    Initial->Categories.Add(FName(TEXT("LogGameNetService")));
+    IgnoredSnapshot.store(Initial, std::memory_order_release);
 }
 
 /**
- * @brief 析构函数实现：清空队列中待发条目
+ * @brief 析构函数实现：清空队列中待发条目并释放快照内存
  */
 FGameRemoteLogOutputDevice::~FGameRemoteLogOutputDevice() {
     Clear();
+    const FIgnoredCategoriesSnapshot* Current = IgnoredSnapshot.exchange(nullptr, std::memory_order_acq_rel);
+    delete Current;
+    RetiredSnapshots.Empty();
 }
 
 /**
@@ -77,7 +91,7 @@ void FGameRemoteLogOutputDevice::Serialize(
 }
 
 /**
- * @brief 核心入队逻辑实现（涵盖级别过滤、防重入、忽略名单排查与队列上限保护）
+ * @brief 核心入队逻辑实现（涵盖级别过滤、防重入、COW 无锁忽略名单排查与队列上限保护）
  * @param V 日志正文
  * @param Verbosity 日志级别
  * @param Category 分类
@@ -89,7 +103,7 @@ void FGameRemoteLogOutputDevice::EnqueueLogInternal(
     const class FName& Category,
     double Time
 ) {
-    if (FRemoteLogReentrancyScope::bHandling) {
+    if (FRemoteLogReentrancyScope::IsHandling()) {
         return;
     }
     const FRemoteLogReentrancyScope ReentrancyGuard;
@@ -99,9 +113,8 @@ void FGameRemoteLogOutputDevice::EnqueueLogInternal(
         return;
     }
 
-    {
-        FRWScopeLock ReadLock(IgnoredCategoriesLock, SLT_ReadOnly);
-        if (IgnoredCategories.Contains(Category)) {
+    if (const FIgnoredCategoriesSnapshot* Snapshot = IgnoredSnapshot.load(std::memory_order_acquire)) {
+        if (Snapshot->Categories.Contains(Category)) {
             return;
         }
     }
@@ -119,7 +132,7 @@ void FGameRemoteLogOutputDevice::EnqueueLogInternal(
 }
 
 /**
- * @brief 批量排出日志队列条目实现
+ * @brief 批量排出日志队列条目实现（合并单次原子扣减）
  * @param OutBatch 目标数组
  * @param MaxCount 最大排出数量
  * @return 实际排出数量
@@ -142,8 +155,11 @@ int32 FGameRemoteLogOutputDevice::DrainBatch(TArray<FGameRemoteLogEntry>& OutBat
             break;
         }
         OutBatch.Add(MoveTemp(Item));
-        QueuedCount.fetch_sub(1, std::memory_order_relaxed);
         ++Drained;
+    }
+
+    if (Drained > 0) {
+        QueuedCount.fetch_sub(Drained, std::memory_order_relaxed);
     }
 
     return Drained;
@@ -195,34 +211,62 @@ int64 FGameRemoteLogOutputDevice::GetDroppedCount() const noexcept {
 }
 
 /**
- * @brief 添加忽略日志分类实现
+ * @brief 添加忽略日志分类实现（COW 无锁快照替换）
  * @param CategoryName 分类名称
  */
 void FGameRemoteLogOutputDevice::AddIgnoredCategory(FName CategoryName) {
-    if (!CategoryName.IsNone()) {
-        FRWScopeLock WriteLock(IgnoredCategoriesLock, SLT_Write);
-        IgnoredCategories.Add(CategoryName);
+    if (CategoryName.IsNone()) {
+        return;
+    }
+    FScopeLock Lock(&IgnoredCategoriesMutex);
+    const FIgnoredCategoriesSnapshot* Old = IgnoredSnapshot.load(std::memory_order_relaxed);
+    if (Old != nullptr && Old->Categories.Contains(CategoryName)) {
+        return;
+    }
+
+    FIgnoredCategoriesSnapshot* NewSnapshot = new FIgnoredCategoriesSnapshot();
+    if (Old != nullptr) {
+        NewSnapshot->Categories = Old->Categories;
+    }
+    NewSnapshot->Categories.Add(CategoryName);
+    IgnoredSnapshot.store(NewSnapshot, std::memory_order_release);
+    if (Old != nullptr) {
+        RetiredSnapshots.Add(TUniquePtr<const FIgnoredCategoriesSnapshot>(Old));
     }
 }
 
 /**
- * @brief 移除忽略日志分类实现
+ * @brief 移除忽略日志分类实现（COW 无锁快照替换）
  * @param CategoryName 分类名称
  */
 void FGameRemoteLogOutputDevice::RemoveIgnoredCategory(FName CategoryName) {
-    if (!CategoryName.IsNone()) {
-        FRWScopeLock WriteLock(IgnoredCategoriesLock, SLT_Write);
-        IgnoredCategories.Remove(CategoryName);
+    if (CategoryName.IsNone()) {
+        return;
     }
+    FScopeLock Lock(&IgnoredCategoriesMutex);
+    const FIgnoredCategoriesSnapshot* Old = IgnoredSnapshot.load(std::memory_order_relaxed);
+    if (Old == nullptr || !Old->Categories.Contains(CategoryName)) {
+        return;
+    }
+
+    FIgnoredCategoriesSnapshot* NewSnapshot = new FIgnoredCategoriesSnapshot();
+    NewSnapshot->Categories = Old->Categories;
+    NewSnapshot->Categories.Remove(CategoryName);
+    IgnoredSnapshot.store(NewSnapshot, std::memory_order_release);
+    RetiredSnapshots.Add(TUniquePtr<const FIgnoredCategoriesSnapshot>(Old));
 }
 
 /**
- * @brief 清空队列并重置状态实现
+ * @brief 清空队列并重置状态实现（支持并发入队条目计数平滑扣减）
  */
 void FGameRemoteLogOutputDevice::Clear() {
     FGameRemoteLogEntry Dump;
+    int32 DrainedInClear = 0;
     while (LogQueue.Dequeue(Dump)) {
+        ++DrainedInClear;
     }
-    QueuedCount.store(0, std::memory_order_relaxed);
+    if (DrainedInClear > 0) {
+        QueuedCount.fetch_sub(DrainedInClear, std::memory_order_relaxed);
+    }
     DroppedCount.store(0, std::memory_order_relaxed);
 }

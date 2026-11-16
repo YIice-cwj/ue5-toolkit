@@ -10,7 +10,7 @@
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameLoggingSubsystemTest,
-    "Game.Logging.Subsystem",
+    "Game.Logging.Subsystem.BasicLifecycle",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
@@ -88,6 +88,69 @@ bool FGameLoggingSubsystemTest::RunTest([[maybe_unused]] const FString& Paramete
     BusHandle.Unregister();
     TestFalse(TEXT("注销后监听句柄应失效"), BusHandle.IsValid());
 
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameLoggingSubsystemFeedbackLoopGuardTest,
+    "Game.Logging.Subsystem.FeedbackLoopGuard",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证当消息总线监听者内部输出 Warning 日志时，重入守卫能阻断自激雪崩
+ * @param Parameters 自动化测试参数
+ * @return 全部断言通过返回 true
+ */
+bool FGameLoggingSubsystemFeedbackLoopGuardTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UGameInstance* GameInstance = NewObject<UGameInstance>(GEngine);
+    GameInstance->InitializeStandalone(FName(TEXT("GameLoggingLoopGuardWorld")));
+
+    UGameLoggingSubsystem* LoggingSubsystem = GameInstance->GetSubsystem<UGameLoggingSubsystem>();
+    TestNotNull(TEXT("UGameLoggingSubsystem 有效"), LoggingSubsystem);
+    UGameplayMessageSubsystem* MessageBus = GameInstance->GetSubsystem<UGameplayMessageSubsystem>();
+    TestNotNull(TEXT("UGameplayMessageSubsystem 有效"), MessageBus);
+    if (LoggingSubsystem == nullptr || MessageBus == nullptr) {
+        return false;
+    }
+
+    LoggingSubsystem->FlushQueue();
+    FGameRemoteLogOutputDevice* Device = LoggingSubsystem->GetOutputDevice();
+    TestNotNull(TEXT("捕获设备应有效"), Device);
+    if (Device == nullptr) {
+        return false;
+    }
+
+    int32 ReceivedBroadcasts = 0;
+    FGameplayMessageListenerHandle BusHandle = MessageBus->RegisterListener<FGameRemoteLogEntry>(
+        TAG_Game_Log_Remote,
+        [&ReceivedBroadcasts, Device]([[maybe_unused]] FGameplayTag Channel, const FGameRemoteLogEntry& Payload) {
+            ++ReceivedBroadcasts;
+            Device->Serialize(
+                TEXT("NestedWarningInsideListener"),
+                ELogVerbosity::Warning,
+                FName(TEXT("LogNestedListenerTest"))
+            );
+        }
+    );
+
+    Device->Serialize(
+        TEXT("InitialRootWarning"),
+        ELogVerbosity::Warning,
+        FName(TEXT("LogRootTest"))
+    );
+    TestEqual(TEXT("初始根日志成功入队"), Device->GetQueuedCount(), 1);
+
+    const int32 DrainedFirst = LoggingSubsystem->FlushQueue();
+    TestEqual(TEXT("首次排空应准确排出 1 条根日志"), DrainedFirst, 1);
+    TestEqual(TEXT("监听者应恰好收到 1 次广播"), ReceivedBroadcasts, 1);
+
+    TestEqual(TEXT("监听者内部输出的 Warning 应被重入守卫拦截阻断"), Device->GetQueuedCount(), 0);
+
+    const int32 DrainedSecond = LoggingSubsystem->FlushQueue();
+    TestEqual(TEXT("次轮排空应为 0，彻底杜绝自激雪崩循环"), DrainedSecond, 0);
+
+    BusHandle.Unregister();
     return true;
 }
 

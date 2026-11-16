@@ -8,7 +8,7 @@
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameRemoteLogOutputDeviceTest,
-    "Game.Logging.RemoteOutputDevice",
+    "Game.Logging.RemoteOutputDevice.BasicFilteringAndConcurrency",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
@@ -103,6 +103,102 @@ bool FGameRemoteLogOutputDeviceTest::RunTest([[maybe_unused]] const FString& Par
     const int32 TotalDrained = Device.DrainBatch(FullBatch, ThreadCount * LogsPerThread + 10);
     TestEqual(TEXT("主线程应完整排空并发压测条目"), TotalDrained, ThreadCount * LogsPerThread);
     TestEqual(TEXT("排空后队列应为 0"), Device.GetQueuedCount(), 0);
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameRemoteLogOutputDeviceCoWAndContentionTest,
+    "Game.Logging.RemoteOutputDevice.CoWAndContention",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证多线程并发进行写日志与动态修改忽略分类名单时，COW 无锁快照的安全与准确性
+ * @param Parameters 自动化测试参数
+ * @return 全部断言通过返回 true
+ */
+bool FGameRemoteLogOutputDeviceCoWAndContentionTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    FGameRemoteLogOutputDevice Device;
+    Device.SetMaxCapacity(10000);
+    Device.SetMinVerbosity(ELogVerbosity::Warning);
+
+    const FName DynamicCategory(TEXT("LogDynamicFlakyCat"));
+    constexpr int32 WorkerCount = 8;
+    constexpr int32 IterationsPerWorker = 200;
+
+    std::atomic<bool> bKeepMutating{true};
+    TFuture<void> MutatorFuture = Async(EAsyncExecution::Thread, [&Device, &bKeepMutating, DynamicCategory]() {
+        while (bKeepMutating.load(std::memory_order_relaxed)) {
+            Device.AddIgnoredCategory(DynamicCategory);
+            Device.RemoveIgnoredCategory(DynamicCategory);
+        }
+    });
+
+    TArray<TFuture<void>> WorkerFutures;
+    WorkerFutures.Reserve(WorkerCount);
+    for (int32 WorkerIdx = 0; WorkerIdx < WorkerCount; ++WorkerIdx) {
+        WorkerFutures.Add(Async(EAsyncExecution::Thread, [&Device, DynamicCategory]() {
+            for (int32 Step = 0; Step < IterationsPerWorker; ++Step) {
+                const FName Cat = (Step % 2 == 0) ? DynamicCategory : FName(TEXT("LogAlwaysAllowedCat"));
+                Device.Serialize(TEXT("StressMessage"), ELogVerbosity::Warning, Cat);
+            }
+        }));
+    }
+
+    for (TFuture<void>& Fut : WorkerFutures) {
+        Fut.Get();
+    }
+    bKeepMutating.store(false, std::memory_order_relaxed);
+    MutatorFuture.Get();
+
+    const int32 TotalQueued = Device.GetQueuedCount();
+    const int32 MinGuaranteed = WorkerCount * (IterationsPerWorker / 2);
+    TestTrue(
+        FString::Printf(TEXT("入队数量 (%d) 应至少包含确定放行的分类 (%d)"), TotalQueued, MinGuaranteed),
+        TotalQueued >= MinGuaranteed
+    );
+
+    TArray<FGameRemoteLogEntry> Drained;
+    const int32 ActuallyDrained = Device.DrainBatch(Drained, TotalQueued + 100);
+    TestEqual(TEXT("排空数量应与队列记录严格吻合"), ActuallyDrained, TotalQueued);
+    TestEqual(TEXT("排空后队列条目为 0"), Device.GetQueuedCount(), 0);
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameRemoteLogOutputDeviceBatchAtomicDrainTest,
+    "Game.Logging.RemoteOutputDevice.BatchAtomicDrain",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证大批次排出时计数器单次合并扣减与状态平滑一致性
+ * @param Parameters 自动化测试参数
+ * @return 全部断言通过返回 true
+ */
+bool FGameRemoteLogOutputDeviceBatchAtomicDrainTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    FGameRemoteLogOutputDevice Device;
+    Device.SetMaxCapacity(500);
+
+    for (int32 Index = 0; Index < 200; ++Index) {
+        Device.Serialize(TEXT("BatchItem"), ELogVerbosity::Error, FName(TEXT("LogBatchCat")));
+    }
+    TestEqual(TEXT("初始入队 200 条"), Device.GetQueuedCount(), 200);
+
+    TArray<FGameRemoteLogEntry> Batch1;
+    const int32 Drained1 = Device.DrainBatch(Batch1, 50);
+    TestEqual(TEXT("分批排出第 1 批 50 条"), Drained1, 50);
+    TestEqual(TEXT("剩余队列计数应精确等于 150"), Device.GetQueuedCount(), 150);
+
+    TArray<FGameRemoteLogEntry> Batch2;
+    const int32 Drained2 = Device.DrainBatch(Batch2, 200);
+    TestEqual(TEXT("排空剩余全部条目"), Drained2, 150);
+    TestEqual(TEXT("剩余队列计数应为 0"), Device.GetQueuedCount(), 0);
+
+    Device.Clear();
+    TestEqual(TEXT("多次 Clear 不会产生负数或状态错乱"), Device.GetQueuedCount(), 0);
 
     return true;
 }

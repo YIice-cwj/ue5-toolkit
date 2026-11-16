@@ -152,7 +152,7 @@ FGameRemoteLogOutputDevice* UGameLoggingSubsystem::GetOutputDevice() const noexc
 }
 
 /**
- * @brief 内部批量排空队列并广播至消息总线实现
+ * @brief 内部批量排空队列并广播至消息总线实现（带重入免疫防自激雪崩保护与无监听者快速路径）
  * @param MaxCount 最大排空数量
  * @return 实际排空并广播的条目数量
  */
@@ -172,6 +172,11 @@ int32 UGameLoggingSubsystem::DrainAndBroadcast(int32 MaxCount) {
         return Drained;
     }
 
+    if (!MessageBus->HasListener(TAG_Game_Log_Remote)) {
+        return Drained;
+    }
+
+    const FRemoteLogReentrancyScope BroadcastReentrancyGuard;
     for (const FGameRemoteLogEntry& Entry : Batch) {
         MessageBus->BroadcastMessage(TAG_Game_Log_Remote, Entry);
     }

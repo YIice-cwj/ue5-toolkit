@@ -12,6 +12,36 @@
 #include <atomic>
 
 /**
+ * @brief 线程局部重入安全守卫，防止日志拦截、派发与总线消费过程中的二次重入与雪崩风暴
+ */
+class GAMELOGGING_API FRemoteLogReentrancyScope final {
+public:
+    /**
+     * @brief 构造守卫并记录进入当前线程重入状态
+     */
+    FRemoteLogReentrancyScope();
+
+    /**
+     * @brief 析构守卫并恢复前序重入状态
+     */
+    ~FRemoteLogReentrancyScope();
+
+    FRemoteLogReentrancyScope(const FRemoteLogReentrancyScope&) = delete;
+    FRemoteLogReentrancyScope& operator=(const FRemoteLogReentrancyScope&) = delete;
+    FRemoteLogReentrancyScope(FRemoteLogReentrancyScope&&) = delete;
+    FRemoteLogReentrancyScope& operator=(FRemoteLogReentrancyScope&&) = delete;
+
+    /**
+     * @brief 查询当前调用线程是否处于日志拦截或派发重入上下文中
+     * @return 处于重入上下文中返回 true
+     */
+    [[nodiscard]] static bool IsHandling() noexcept;
+
+private:
+    bool bPreviousState = false;
+};
+
+/**
  * @brief 线程安全且防重入的远程日志捕获输出设备（接入 GLog 输出流）
  */
 class GAMELOGGING_API FGameRemoteLogOutputDevice final : public FOutputDevice {
@@ -137,13 +167,18 @@ private:
     );
 
 private:
+    struct FIgnoredCategoriesSnapshot {
+        TSet<FName> Categories;
+    };
+
     TQueue<FGameRemoteLogEntry, EQueueMode::Mpsc> LogQueue;
     std::atomic<int32> QueuedCount{0};
     std::atomic<int32> MaxCapacity{DEFAULT_MAX_CAPACITY};
     std::atomic<int64> DroppedCount{0};
     std::atomic<uint8> MinVerbosity{static_cast<uint8>(ELogVerbosity::Warning)};
 
-    mutable FRWLock IgnoredCategoriesLock;
-    TSet<FName> IgnoredCategories;
+    std::atomic<const FIgnoredCategoriesSnapshot*> IgnoredSnapshot{nullptr};
+    mutable FCriticalSection IgnoredCategoriesMutex;
+    TArray<TUniquePtr<const FIgnoredCategoriesSnapshot>> RetiredSnapshots;
 };
 
