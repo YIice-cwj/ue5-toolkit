@@ -54,6 +54,39 @@ struct GAMENETCORE_API FNetPacket {
     GENERATED_BODY()
 
 public:
+    FNetPacket() = default;
+
+    /**
+     * @brief 带参便捷构造完整网络数据包
+     * @param InHeader 报文头
+     * @param InPayload 负载二进制切片
+     */
+    FNetPacket(const FNetPacketHeader& InHeader, TConstArrayView<uint8> InPayload = {})
+        : Header(InHeader) {
+        if (!InPayload.IsEmpty()) {
+            Payload.SetNumUninitialized(InPayload.Num());
+            FMemory::Memcpy(Payload.GetData(), InPayload.GetData(), InPayload.Num());
+        }
+    }
+
+    /**
+     * @brief 相等性比较运算符
+     * @param Other 待比较的另一数据包
+     * @return 报文头与负载字节均相等时返回 true
+     */
+    [[nodiscard]] bool operator==(const FNetPacket& Other) const noexcept {
+        return Header == Other.Header && Payload == Other.Payload;
+    }
+
+    /**
+     * @brief 重置报文头并清空保留容量负载数组（适配对象池复用）
+     */
+    void Reset() noexcept {
+        Header = FNetPacketHeader{};
+        Payload.Reset();
+    }
+
+public:
     UPROPERTY()
     FNetPacketHeader Header;
 

@@ -8,6 +8,7 @@
 
 #if WITH_AUTOMATION_TESTS
 
+#include "Message/GameNetworkMessageTypes.h"
 #include "Transport/MockNetTransport.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -137,6 +138,30 @@ bool FGameNetMockTransportTest::RunTest([[maybe_unused]] const FString& Paramete
     TestTrue(TEXT("闪断后允许重新建立连接"), Transport.Connect(TEXT("mock://reconnected")).IsSuccess());
     Transport.Disconnect(1000, TEXT("NormalShutdown"));
     TestEqual(TEXT("主动断开后状态为 Disconnected"), Transport.GetState(), ENetConnectionState::Disconnected);
+
+    const uint8 EnvelopePayload[] = {1, 2, 3};
+    FGameNetOutboundMessage OutMsg(100, 1, EnvelopePayload);
+    TestEqual(TEXT("OutboundMessage MessageId 一致"), OutMsg.MessageId, 100u);
+    TestEqual(TEXT("OutboundMessage SequenceId 一致"), OutMsg.SequenceId, 1u);
+    TestEqual(TEXT("OutboundMessage 负载大小一致"), OutMsg.Payload.Num(), 3);
+    FGameNetOutboundMessage OutMsgCopy = OutMsg;
+    TestTrue(TEXT("OutboundMessage 相等运算符一致"), OutMsgCopy == OutMsg);
+    OutMsgCopy.Reset();
+    TestEqual(TEXT("OutboundMessage 重置后负载为空"), OutMsgCopy.Payload.Num(), 0);
+
+    FGameNetInboundMessage InMsg(200, 2, EnvelopePayload);
+    TestEqual(TEXT("InboundMessage MessageId 一致"), InMsg.MessageId, 200u);
+    FGameNetInboundMessage InMsgCopy = InMsg;
+    TestTrue(TEXT("InboundMessage 相等运算符一致"), InMsgCopy == InMsg);
+    InMsgCopy.Reset();
+    TestEqual(TEXT("InboundMessage 重置后负载为空"), InMsgCopy.Payload.Num(), 0);
+
+    FGameNetStateMessage StateMsg(true, ENetConnectionState::Connected, TEXT("mock://test"));
+    TestTrue(TEXT("StateMsg 连接状态为 true"), StateMsg.bIsConnected);
+    TestEqual(TEXT("StateMsg 连接枚举一致"), StateMsg.ConnectionState, ENetConnectionState::Connected);
+    TestEqual(TEXT("StateMsg 端点一致"), StateMsg.Endpoint, FString(TEXT("mock://test")));
+    FGameNetStateMessage StateMsgCopy = StateMsg;
+    TestTrue(TEXT("StateMsg 相等运算符一致"), StateMsgCopy == StateMsg);
 
     return true;
 }

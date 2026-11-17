@@ -41,6 +41,27 @@ public:
     [[nodiscard]] FNetFrameDecodeOutcome TryPopPacket();
 
     /**
+     * @brief 零分配窥探缓冲区头部下一帧报文头与解析状态（不移动读游标）
+     * @param OutHeader 成功探测到合法头部时写入的目标报文头引用
+     * @return 解析状态枚举（CompleteFrame 表示整帧已到齐，NeedMoreData 表示半包，其余为畸形包）
+     */
+    [[nodiscard]] ENetFrameParseStatus PeekNextFrame(FNetPacketHeader& OutHeader) const noexcept;
+
+    /**
+     * @brief 尝试就地探测并直接以只读切片回调消费一帧数据包（无堆内存分配零拷贝路径）
+     * @param Consumer 消费回调：接收报文头与负载切片。若数据物理连续则零拷贝直通，跨环绕边界则复用内部临时重组缓冲
+     * @return 成功消费一帧返回 true；半包或畸形熔断清空返回 false
+     */
+    bool TryConsumePacket(TFunctionRef<void(const FNetPacketHeader& Header, TConstArrayView<uint8> Payload)> Consumer);
+
+    /**
+     * @brief 循环消费当前缓冲区内所有已就绪的完整数据包，直至半包或遭遇熔断
+     * @param Consumer 消费回调：接收每帧报文头与负载切片
+     * @return 累计成功消费的数据包总数
+     */
+    int32 ConsumeAllAvailable(TFunctionRef<void(const FNetPacketHeader& Header, TConstArrayView<uint8> Payload)> Consumer);
+
+    /**
      * @brief 重置环形缓冲区的读写游标并丢弃所有未读字节
      */
     void Reset() noexcept;
@@ -92,6 +113,7 @@ private:
 
 private:
     TArray<uint8> Buffer;
+    TArray<uint8> DefragScratchBuffer;
     int32 HeadIndex{0};
     int32 ReadableBytes{0};
     uint32 MaxAllowedPayloadBytes{FNetPacketHeader::DEFAULT_MAX_PAYLOAD_BYTES};

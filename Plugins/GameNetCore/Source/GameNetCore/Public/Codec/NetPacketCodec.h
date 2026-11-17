@@ -48,6 +48,13 @@ public:
     [[nodiscard]] static TArray<uint8> EncodeHeader(const FNetPacketHeader& Header);
 
     /**
+     * @brief 将报文头编码并就地写入外部固定 16 字节缓冲区（零堆分配）
+     * @param Header 待编码的报文头
+     * @param OutWireBytes 目标写入字节数组首地址，长度必须至少为 16 字节
+     */
+    static void EncodeHeaderTo(const FNetPacketHeader& Header, uint8 OutWireBytes[FNetPacketHeader::WIRE_HEADER_BYTES]) noexcept;
+
+    /**
      * @brief 将报文头与负载拼装为单帧完整线格式字节数组（自动对齐 PayloadLength）
      * @param Header 待编码的报文头模板
      * @param Payload 负载二进制切片
@@ -56,10 +63,46 @@ public:
     [[nodiscard]] static TArray<uint8> EncodeFrame(const FNetPacketHeader& Header, TConstArrayView<uint8> Payload);
 
     /**
+     * @brief 将单帧报文头与负载直接编码并写入调用方提供的复用缓冲区（避免新分配 TArray）
+     * @param Header 待编码的报文头模板
+     * @param Payload 负载二进制切片
+     * @param OutFrameBytes 目标写入字节数组（自动就地调整大小，复用底层已预留容量）
+     */
+    static void EncodeFrameTo(
+        const FNetPacketHeader& Header,
+        TConstArrayView<uint8> Payload,
+        TArray<uint8>& OutFrameBytes
+    );
+
+    /**
      * @brief 从二进制切片首部反解 16 字节小端序报文头
      * @param WireBytes 原始字节视图
      * @return 字节数达到 16 时返回包含报文头的成功态，不足 16 字节时返回对应失败态
      */
     [[nodiscard]] static TGameStatusResult<FNetPacketHeader> TryDecodeHeader(TConstArrayView<uint8> WireBytes);
+
+    /**
+     * @brief 高速反解 16 字节小端序报文头（零包装零堆分配热路径专用）
+     * @param Cursor 原始字节缓冲区首地址
+     * @param AvailableBytes 缓冲区剩余可用字节数
+     * @param OutHeader 反解成功时写入的目标报文头引用
+     * @return 字节数达到 16 且反解成功返回 true，不足 16 字节或首地址为空返回 false
+     */
+    [[nodiscard]] static bool TryDecodeHeaderFast(
+        const uint8* Cursor,
+        int32 AvailableBytes,
+        FNetPacketHeader& OutHeader
+    ) noexcept;
+
+    /**
+     * @brief 高速反解 16 字节小端序报文头（零包装零堆分配切片重载）
+     * @param WireBytes 原始字节切片
+     * @param OutHeader 反解成功时写入的目标报文头引用
+     * @return 字节数达到 16 且反解成功返回 true，不足 16 字节返回 false
+     */
+    [[nodiscard]] static bool TryDecodeHeaderFast(
+        TConstArrayView<uint8> WireBytes,
+        FNetPacketHeader& OutHeader
+    ) noexcept;
 };
 

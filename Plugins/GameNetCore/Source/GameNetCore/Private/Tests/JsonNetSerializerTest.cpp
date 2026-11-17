@@ -72,6 +72,17 @@ bool FGameNetJsonSerializerTest::RunTest([[maybe_unused]] const FString& Paramet
     TestEqual(TEXT("GrantedSerialNumbers 数组一致"), JsonDecoded.GetValue().GrantedSerialNumbers, Expected.GrantedSerialNumbers);
     TestTrue(TEXT("BonusItem 嵌套结构一致"), JsonDecoded.GetValue().BonusItem == Expected.BonusItem);
 
+    TArray<uint8> ReusedJsonBuffer;
+    ReusedJsonBuffer.Reserve(512);
+    const TGameStatusResult<void> JsonBufResult = DefaultJsonSerializer.SerializeStructTo(Expected, ReusedJsonBuffer);
+    TestTrue(TEXT("JSON SerializeStructTo 成功写入复用缓冲区"), JsonBufResult.IsSuccess());
+    TestEqual(TEXT("复用缓冲区字节与标准序列化产物完全一致"), ReusedJsonBuffer, JsonBytes.GetValue());
+
+    FGameNetTestPurchaseRsp DirectJsonDecoded;
+    const TGameStatusResult<void> DirectJsonResult = DefaultJsonSerializer.DeserializeStructTo(ReusedJsonBuffer, DirectJsonDecoded);
+    TestTrue(TEXT("JSON DeserializeStructTo 成功就地填充目标结构"), DirectJsonResult.IsSuccess());
+    TestEqual(TEXT("JSON 就地反序列化字段值精确匹配"), DirectJsonDecoded.RemainingGold, Expected.RemainingGold);
+
     FGameNetTestPurchaseRsp TempOut;
     TestTrue(TEXT("JSON 反序列化空字节切片返回失败态"), DefaultJsonSerializer.Deserialize({}, StructMeta, &TempOut).IsFailure());
     TestTrue(TEXT("JSON 反序列化空类型指针返回失败态"), DefaultJsonSerializer.Deserialize(JsonBytes.GetValue(), nullptr, &TempOut).IsFailure());

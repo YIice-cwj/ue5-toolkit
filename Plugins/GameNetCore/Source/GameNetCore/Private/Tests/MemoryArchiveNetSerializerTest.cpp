@@ -76,6 +76,17 @@ bool FGameNetMemoryArchiveSerializerTest::RunTest([[maybe_unused]] const FString
         BinarySerializer.DeserializeStruct<FGameNetTestPurchaseRsp>(TrailingGarbage).IsFailure()
     );
 
+    TArray<uint8> ReusedBuffer;
+    ReusedBuffer.Reserve(256);
+    const TGameStatusResult<void> BufResult = BinarySerializer.SerializeStructTo(Expected, ReusedBuffer);
+    TestTrue(TEXT("SerializeStructTo 成功写入复用缓冲区"), BufResult.IsSuccess());
+    TestEqual(TEXT("复用缓冲区字节与标准序列化产物完全一致"), ReusedBuffer, BinaryBytes.GetValue());
+
+    FGameNetTestPurchaseRsp DirectDecoded;
+    const TGameStatusResult<void> DirectResult = BinarySerializer.DeserializeStructTo(ReusedBuffer, DirectDecoded);
+    TestTrue(TEXT("DeserializeStructTo 成功就地填充目标结构"), DirectResult.IsSuccess());
+    TestEqual(TEXT("就地反序列化字段值精确匹配"), DirectDecoded.RemainingGold, Expected.RemainingGold);
+
     return true;
 }
 

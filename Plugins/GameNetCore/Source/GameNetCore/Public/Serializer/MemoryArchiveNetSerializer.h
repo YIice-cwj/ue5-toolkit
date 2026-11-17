@@ -28,6 +28,19 @@ public:
     ) const override;
 
     /**
+     * @brief 将反射结构体通过二进制属性流高速序列化并写入外部复用字节数组
+     * @param StructData 待序列化的结构体实例首地址
+     * @param StructType 结构体反射元数据指针
+     * @param OutBytes 目标写入字节数组（就地清空并复用已有容量，避免重新分配堆内存）
+     * @return 写入成功且无归档错误时返回成功态，失败返回对应错误
+     */
+    [[nodiscard]] TGameStatusResult<void> SerializeToBuffer(
+        const void* StructData,
+        const UStruct* StructType,
+        TArray<uint8>& OutBytes
+    ) const override;
+
+    /**
      * @brief 从二进制切片完整还原目标反射结构体（严格校验截断越界与尾部脏字节）
      * @param InBytes 二进制负载字节视图
      * @param StructType 目标结构体反射元数据指针

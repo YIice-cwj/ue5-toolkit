@@ -35,6 +35,19 @@ public:
     ) const override;
 
     /**
+     * @brief 将反射结构体编码为无缩进紧凑 UTF-8 JSON 字节流并写入外部复用字节数组
+     * @param StructData 待序列化的结构体实例首地址
+     * @param StructType 结构体反射元数据指针
+     * @param OutBytes 目标写入字节数组（复用已有容量，避免重复堆分配）
+     * @return 编码成功返回成功态，失败返回对应错误
+     */
+    [[nodiscard]] TGameStatusResult<void> SerializeToBuffer(
+        const void* StructData,
+        const UStruct* StructType,
+        TArray<uint8>& OutBytes
+    ) const override;
+
+    /**
      * @brief 将 UTF-8 JSON 字节切片解码写入目标反射结构体
      * @param InBytes UTF-8 JSON 字节切片
      * @param StructType 目标结构体反射元数据指针

@@ -16,8 +16,28 @@
  * @return 编码成功返回包含 UTF-8 字节数组的成功态，失败返回对应错误
  */
 TGameStatusResult<TArray<uint8>> FJsonNetSerializer::Serialize(const void* StructData, const UStruct* StructType) const {
+    TArray<uint8> OutBytes;
+    const TGameStatusResult<void> Result = SerializeToBuffer(StructData, StructType, OutBytes);
+    if (Result.IsFailure()) {
+        return TGameStatusResult<TArray<uint8>>::Failure(Result.GetError());
+    }
+    return TGameStatusResult<TArray<uint8>>::Success(MoveTemp(OutBytes));
+}
+
+/**
+ * @brief 将反射结构体编码为无缩进紧凑 UTF-8 JSON 字节流并写入外部复用字节数组
+ * @param StructData 待序列化的结构体实例首地址
+ * @param StructType 结构体反射元数据指针
+ * @param OutBytes 目标写入字节数组（复用已有容量，避免重复堆分配）
+ * @return 编码成功返回成功态，失败返回对应错误
+ */
+TGameStatusResult<void> FJsonNetSerializer::SerializeToBuffer(
+    const void* StructData,
+    const UStruct* StructType,
+    TArray<uint8>& OutBytes
+) const {
     if (StructData == nullptr || StructType == nullptr) {
-        return TGameStatusResult<TArray<uint8>>::Failure(
+        return TGameStatusResult<void>::Failure(
             FGameError::Make(Game::ModuleId::Net, 2004, TEXT("StructData or StructType is null"))
         );
     }
@@ -29,15 +49,15 @@ TGameStatusResult<TArray<uint8>> FJsonNetSerializer::Serialize(const void* Struc
         JsonText
     );
     if (!bExported) {
-        return TGameStatusResult<TArray<uint8>>::Failure(
+        return TGameStatusResult<void>::Failure(
             FGameError::Make(Game::ModuleId::Net, 2004, TEXT("Failed to convert UStruct to JSON string"))
         );
     }
 
     const FTCHARToUTF8 Utf8Converter(*JsonText, JsonText.Len());
-    TArray<uint8> OutBytes;
+    OutBytes.Reset();
     OutBytes.Append(reinterpret_cast<const uint8*>(Utf8Converter.Get()), Utf8Converter.Length());
-    return TGameStatusResult<TArray<uint8>>::Success(MoveTemp(OutBytes));
+    return TGameStatusResult<void>::Success();
 }
 
 /**

@@ -32,6 +32,42 @@ struct GAMENETCORE_API FGameNetOutboundMessage {
     GENERATED_BODY()
 
 public:
+    FGameNetOutboundMessage() = default;
+
+    /**
+     * @brief 带参便捷构造上行信封
+     * @param InMessageId 协议 ID
+     * @param InSequenceId 序列号
+     * @param InPayload 负载字节切片
+     */
+    FGameNetOutboundMessage(uint32 InMessageId, uint32 InSequenceId, TConstArrayView<uint8> InPayload = {})
+        : MessageId(InMessageId)
+        , SequenceId(InSequenceId) {
+        if (!InPayload.IsEmpty()) {
+            Payload.SetNumUninitialized(InPayload.Num());
+            FMemory::Memcpy(Payload.GetData(), InPayload.GetData(), InPayload.Num());
+        }
+    }
+
+    /**
+     * @brief 相等性比较运算符
+     * @param Other 待比较的另一信封
+     * @return 所有字段均相等时返回 true
+     */
+    [[nodiscard]] bool operator==(const FGameNetOutboundMessage& Other) const noexcept {
+        return MessageId == Other.MessageId && SequenceId == Other.SequenceId && Payload == Other.Payload;
+    }
+
+    /**
+     * @brief 清空信封数据并复用负载预留容量
+     */
+    void Reset() noexcept {
+        MessageId = 0;
+        SequenceId = 0;
+        Payload.Reset();
+    }
+
+public:
     UPROPERTY()
     uint32 MessageId{0};
 
@@ -50,6 +86,42 @@ struct GAMENETCORE_API FGameNetInboundMessage {
     GENERATED_BODY()
 
 public:
+    FGameNetInboundMessage() = default;
+
+    /**
+     * @brief 带参便捷构造下行信封
+     * @param InMessageId 协议 ID
+     * @param InSequenceId 序列号
+     * @param InPayload 负载字节切片
+     */
+    FGameNetInboundMessage(uint32 InMessageId, uint32 InSequenceId, TConstArrayView<uint8> InPayload = {})
+        : MessageId(InMessageId)
+        , SequenceId(InSequenceId) {
+        if (!InPayload.IsEmpty()) {
+            Payload.SetNumUninitialized(InPayload.Num());
+            FMemory::Memcpy(Payload.GetData(), InPayload.GetData(), InPayload.Num());
+        }
+    }
+
+    /**
+     * @brief 相等性比较运算符
+     * @param Other 待比较的另一信封
+     * @return 所有字段均相等时返回 true
+     */
+    [[nodiscard]] bool operator==(const FGameNetInboundMessage& Other) const noexcept {
+        return MessageId == Other.MessageId && SequenceId == Other.SequenceId && Payload == Other.Payload;
+    }
+
+    /**
+     * @brief 清空信封数据并复用负载预留容量
+     */
+    void Reset() noexcept {
+        MessageId = 0;
+        SequenceId = 0;
+        Payload.Reset();
+    }
+
+public:
     UPROPERTY()
     uint32 MessageId{0};
 
@@ -66,6 +138,30 @@ public:
 USTRUCT(BlueprintType)
 struct GAMENETCORE_API FGameNetStateMessage {
     GENERATED_BODY()
+
+public:
+    FGameNetStateMessage() = default;
+
+    /**
+     * @brief 带参便捷构造连接状态信封
+     * @param bInIsConnected 是否已连接
+     * @param InState 连接状态枚举
+     * @param InEndpoint 端点地址
+     */
+    FGameNetStateMessage(bool bInIsConnected, ENetConnectionState InState, FString InEndpoint = {})
+        : bIsConnected(bInIsConnected)
+        , ConnectionState(InState)
+        , Endpoint(MoveTemp(InEndpoint)) {
+    }
+
+    /**
+     * @brief 相等性比较运算符
+     * @param Other 待比较的另一状态信封
+     * @return 所有字段均相等时返回 true
+     */
+    [[nodiscard]] bool operator==(const FGameNetStateMessage& Other) const noexcept {
+        return bIsConnected == Other.bIsConnected && ConnectionState == Other.ConnectionState && Endpoint == Other.Endpoint;
+    }
 
 public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GameNet|MessageBus")

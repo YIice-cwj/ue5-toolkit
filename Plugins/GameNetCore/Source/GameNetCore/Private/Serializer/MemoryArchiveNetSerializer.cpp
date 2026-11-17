@@ -17,24 +17,44 @@ TGameStatusResult<TArray<uint8>> FMemoryArchiveNetSerializer::Serialize(
     const void* StructData,
     const UStruct* StructType
 ) const {
+    TArray<uint8> OutBytes;
+    const TGameStatusResult<void> Result = SerializeToBuffer(StructData, StructType, OutBytes);
+    if (Result.IsFailure()) {
+        return TGameStatusResult<TArray<uint8>>::Failure(Result.GetError());
+    }
+    return TGameStatusResult<TArray<uint8>>::Success(MoveTemp(OutBytes));
+}
+
+/**
+ * @brief 将反射结构体通过二进制属性流高速序列化并写入外部复用字节数组
+ * @param StructData 待序列化的结构体实例首地址
+ * @param StructType 结构体反射元数据指针
+ * @param OutBytes 目标写入字节数组（就地清空并复用已有容量，避免重新分配堆内存）
+ * @return 写入成功且无归档错误时返回成功态，失败返回对应错误
+ */
+TGameStatusResult<void> FMemoryArchiveNetSerializer::SerializeToBuffer(
+    const void* StructData,
+    const UStruct* StructType,
+    TArray<uint8>& OutBytes
+) const {
     if (StructData == nullptr || StructType == nullptr) {
-        return TGameStatusResult<TArray<uint8>>::Failure(
+        return TGameStatusResult<void>::Failure(
             FGameError::Make(Game::ModuleId::Net, 2004, TEXT("StructData or StructType is null"))
         );
     }
 
-    TArray<uint8> OutBytes;
+    OutBytes.Reset();
     FMemoryWriter MemoryWriter(OutBytes, true);
     FObjectAndNameAsStringProxyArchive ProxyWriter(MemoryWriter, false);
     ProxyWriter.SetWantBinaryPropertySerialization(true);
 
     const_cast<UStruct*>(StructType)->SerializeBin(ProxyWriter, const_cast<void*>(StructData));
     if (MemoryWriter.IsError() || ProxyWriter.IsError()) {
-        return TGameStatusResult<TArray<uint8>>::Failure(
+        return TGameStatusResult<void>::Failure(
             FGameError::Make(Game::ModuleId::Net, 2004, TEXT("Binary serialization archive error"))
         );
     }
-    return TGameStatusResult<TArray<uint8>>::Success(MoveTemp(OutBytes));
+    return TGameStatusResult<void>::Success();
 }
 
 /**

@@ -110,6 +110,49 @@ bool FGameNetPacketRingBufferTest::RunTest([[maybe_unused]] const FString& Param
     );
     TestEqual(TEXT("错误魔数熔断后可读字节归零"), RingBuffer.GetReadableBytes(), 0);
 
+    RingBuffer.Append(TConstArrayView<uint8>(FrameA.GetData(), 10));
+    FNetPacketHeader PeekedHeader;
+    TestEqual(
+        TEXT("半包未收齐时 PeekNextFrame 返回 NeedMoreData"),
+        RingBuffer.PeekNextFrame(PeekedHeader),
+        ENetFrameParseStatus::NeedMoreData
+    );
+
+    RingBuffer.Append(TConstArrayView<uint8>(FrameA.GetData() + 10, FrameA.Num() - 10));
+    TestEqual(
+        TEXT("收齐后 PeekNextFrame 返回 CompleteFrame"),
+        RingBuffer.PeekNextFrame(PeekedHeader),
+        ENetFrameParseStatus::CompleteFrame
+    );
+    TestEqual(TEXT("Peek 探测到的 MessageId 精确一致"), PeekedHeader.MessageId, 101u);
+    TestEqual(TEXT("Peek 不消费任何字节"), RingBuffer.GetReadableBytes(), FrameA.Num());
+
+    int32 ConsumedCount = 0;
+    const bool bConsumed = RingBuffer.TryConsumePacket([this, &ConsumedCount, &PayloadA](const FNetPacketHeader& Hdr, TConstArrayView<uint8> Pld) {
+        ++ConsumedCount;
+        TestEqual(TEXT("TryConsumePacket 消费报文头一致"), Hdr.MessageId, 101u);
+        TestEqual(TEXT("TryConsumePacket 切片长度一致"), Pld.Num(), static_cast<int32>(sizeof(PayloadA)));
+        TestEqual(TEXT("TryConsumePacket 首字节一致"), Pld[0], PayloadA[0]);
+    });
+    TestTrue(TEXT("TryConsumePacket 成功消费一帧"), bConsumed);
+    TestEqual(TEXT("消费回调恰好执行 1 次"), ConsumedCount, 1);
+    TestEqual(TEXT("TryConsumePacket 消费完毕后可读字节归零"), RingBuffer.GetReadableBytes(), 0);
+
+    RingBuffer.Append(FNetPacketCodec::EncodeHeader(CorruptMagicHeader));
+    const bool bBadConsume = RingBuffer.TryConsumePacket([](const FNetPacketHeader&, TConstArrayView<uint8>) {});
+    TestFalse(TEXT("畸形数据流通过 TryConsumePacket 触发熔断返回 false"), bBadConsume);
+    TestEqual(TEXT("熔断后缓冲区已清空"), RingBuffer.GetReadableBytes(), 0);
+
+    RingBuffer.Append(FrameA);
+    RingBuffer.Append(FrameB);
+    int32 BatchCounter = 0;
+    const int32 TotalConsumed = RingBuffer.ConsumeAllAvailable([&BatchCounter](const FNetPacketHeader&, TConstArrayView<uint8>) {
+        ++BatchCounter;
+    });
+    TestEqual(TEXT("ConsumeAllAvailable 连续消费全部完整包"), TotalConsumed, 2);
+    TestEqual(TEXT("BatchCounter 累计执行 2 次"), BatchCounter, 2);
+    TestEqual(TEXT("批量消费后缓冲区清空"), RingBuffer.GetReadableBytes(), 0);
+
     return true;
 }
 

@@ -91,6 +91,38 @@ bool FGameNetPacketCodecTest::RunTest([[maybe_unused]] const FString& Parameters
     const TGameStatusResult<FNetPacketHeader> FullDecoded = FNetPacketCodec::TryDecodeHeader(FullFrame);
     TestTrue(TEXT("带负载帧头 PayloadLength 归一化为 5"), FullDecoded.IsSuccess() && FullDecoded.GetValue().PayloadLength == 5);
 
+    FNetPacketHeader FastHeader;
+    TestFalse(TEXT("空指针快速反解返回 false"), FNetPacketCodec::TryDecodeHeaderFast(nullptr, 16, FastHeader));
+    TestFalse(TEXT("不足 16 字节快速反解返回 false"), FNetPacketCodec::TryDecodeHeaderFast(FullFrame.GetData(), 15, FastHeader));
+    TestTrue(TEXT("有效缓冲区快速反解返回 true"), FNetPacketCodec::TryDecodeHeaderFast(FullFrame.GetData(), FullFrame.Num(), FastHeader));
+    TestTrue(TEXT("快速反解报文头字段与编码一致"), FastHeader == FullDecoded.GetValue());
+
+    FNetPacketHeader ViewFastHeader;
+    TestTrue(TEXT("切片快速反解返回 true"), FNetPacketCodec::TryDecodeHeaderFast(FullFrame, ViewFastHeader));
+    TestTrue(TEXT("切片快速反解与指针快速反解一致"), ViewFastHeader == FastHeader);
+
+    TArray<uint8> ReusedBuffer;
+    ReusedBuffer.Reserve(64);
+    FNetPacketCodec::EncodeFrameTo(Original, SamplePayload, ReusedBuffer);
+    TestEqual(TEXT("复用缓冲区 EncodeFrameTo 产物与 EncodeFrame 完全一致"), ReusedBuffer, FullFrame);
+
+    uint8 StackHeaderBytes[FNetPacketHeader::WIRE_HEADER_BYTES];
+    FNetPacketCodec::EncodeHeaderTo(Original, StackHeaderBytes);
+    TestEqual(
+        TEXT("栈缓冲区 EncodeHeaderTo 产物与 EncodeHeader 完全一致"),
+        FMemory::Memcmp(StackHeaderBytes, WireHeader.GetData(), FNetPacketHeader::WIRE_HEADER_BYTES),
+        0
+    );
+
+    FNetPacket ValuePacket(Original, SamplePayload);
+    TestEqual(TEXT("带参构造 FNetPacket 报文头一致"), ValuePacket.Header, Original);
+    TestEqual(TEXT("带参构造 FNetPacket 负载字节一致"), ValuePacket.Payload.Num(), 5);
+    FNetPacket PacketCopy = ValuePacket;
+    TestTrue(TEXT("FNetPacket 相等性运算符一致"), PacketCopy == ValuePacket);
+    PacketCopy.Reset();
+    TestEqual(TEXT("FNetPacket 重置后负载为空"), PacketCopy.Payload.Num(), 0);
+    TestFalse(TEXT("FNetPacket 重置后与原包不相等"), PacketCopy == ValuePacket);
+
     return true;
 }
 

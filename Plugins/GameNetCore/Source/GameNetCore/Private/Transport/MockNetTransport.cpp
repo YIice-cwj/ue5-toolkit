@@ -95,7 +95,10 @@ TGameStatusResult<void> FMockNetTransport::Send(const FNetPacketHeader& Header, 
     if (bEchoUnregistered) {
         FNetPacket EchoPacket;
         EchoPacket.Header = OutboundHeader;
-        EchoPacket.Payload.Append(Payload.GetData(), Payload.Num());
+        if (!Payload.IsEmpty()) {
+            EchoPacket.Payload.SetNumUninitialized(Payload.Num());
+            FMemory::Memcpy(EchoPacket.Payload.GetData(), Payload.GetData(), Payload.Num());
+        }
         PendingInboundQueue.Enqueue(MoveTemp(EchoPacket));
     }
     return TGameStatusResult<void>::Success();
@@ -170,7 +173,10 @@ bool FMockNetTransport::SimulateServerPush(uint32 MessageId, TConstArrayView<uin
         return false;
     }
 
-    PushPacket.Payload.Append(Payload.GetData(), Payload.Num());
+    if (!Payload.IsEmpty()) {
+        PushPacket.Payload.SetNumUninitialized(Payload.Num());
+        FMemory::Memcpy(PushPacket.Payload.GetData(), Payload.GetData(), Payload.Num());
+    }
     PendingInboundQueue.Enqueue(MoveTemp(PushPacket));
     return true;
 }
