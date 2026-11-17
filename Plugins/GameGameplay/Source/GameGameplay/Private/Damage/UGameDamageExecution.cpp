@@ -26,10 +26,14 @@ void UGameDamageExecution::Execute_Implementation(const FGameplayEffectCustomExe
         FGameplayTagContainer SourceTags;
         if (SourceAbilitySystemComponent != nullptr) {
             SourceAbilitySystemComponent->GetOwnedGameplayTags(SourceTags);
+        } else {
+            SourceTags = ExecutionParams.GetOwningSpec().CapturedSourceTags.GetActorTags();
         }
         FGameplayTagContainer TargetTags;
         if (TargetAbilitySystemComponent != nullptr) {
             TargetAbilitySystemComponent->GetOwnedGameplayTags(TargetTags);
+        } else {
+            TargetTags = ExecutionParams.GetOwningSpec().CapturedTargetTags.GetActorTags();
         }
 
         FGameGameplayEffectContext* EffectContext = FGameGameplayEffectContext::ExtractEffectContext(ExecutionParams.GetOwningSpec().GetContext());
@@ -65,7 +69,7 @@ void UGameDamageExecution::Execute_Implementation(const FGameplayEffectCustomExe
             OnPostExecuteChannels(ExecutionParams, TotalCalculatedDamage, EffectContext);
         }
 
-        GAME_LOG(Log, TEXT("【伤害计算】伤害计算执行完毕: 来源=[%s], 目标=[%s], 通道总计实际伤害=%.2f。"),
+        GAME_LOG(Verbose, TEXT("【伤害计算】伤害计算执行完毕: 来源=[%s], 目标=[%s], 通道总计实际伤害=%.2f。"),
             *GetNameSafe(SourceAbilitySystemComponent ? SourceAbilitySystemComponent->GetOwner() : nullptr),
             *GetNameSafe(TargetAbilitySystemComponent ? TargetAbilitySystemComponent->GetOwner() : nullptr),
             TotalCalculatedDamage);

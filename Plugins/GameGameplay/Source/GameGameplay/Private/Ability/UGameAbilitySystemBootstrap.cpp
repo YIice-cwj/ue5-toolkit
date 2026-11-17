@@ -35,6 +35,23 @@ void UGameAbilitySystemBootstrap::BeginPlay() {
  * @param EndPlayReason 结束运行的原因
  */
 void UGameAbilitySystemBootstrap::EndPlay(const EEndPlayReason::Type EndPlayReason) {
+    OnReleaseToPool_Implementation();
+    if (HasBegunPlay()) {
+        Super::EndPlay(EndPlayReason);
+    }
+}
+
+/**
+ * @brief 从对象池激活时重置重试门状态
+ */
+void UGameAbilitySystemBootstrap::OnAcquireFromPool_Implementation() {
+    ConfigureRetryGates();
+}
+
+/**
+ * @brief 归还对象池时清理定时器、撤销已授予能力并重置握手状态
+ */
+void UGameAbilitySystemBootstrap::OnReleaseToPool_Implementation() {
     if (UWorld* World = GetWorld()) {
         World->GetTimerManager().ClearTimer(InitRetryTimerHandle);
         World->GetTimerManager().ClearTimer(ReplicationRetryTimerHandle);
@@ -45,9 +62,12 @@ void UGameAbilitySystemBootstrap::EndPlay(const EEndPlayReason::Type EndPlayReas
         }
     }
     GrantedAbilityHandles.Empty();
-    if (HasBegunPlay()) {
-        Super::EndPlay(EndPlayReason);
-    }
+    CurrentAvatar.Reset();
+    CurrentASC.Reset();
+    bInitialAttributesWritten = false;
+    bDefaultAbilitiesGranted = false;
+    InitRetryGate.Reset();
+    ReplicationRetryGate.Reset();
 }
 
 /**

@@ -16,6 +16,7 @@
 #include "GameplayAbilitySpecHandle.h"
 
 #include "Ability/FBootstrapRetryGate.h"
+#include "Core/IGamePoolable.h"
 #include "UGameAbilitySystemBootstrap.generated.h"
 
 class UAbilitySystemComponent;
@@ -41,7 +42,7 @@ DECLARE_DELEGATE_RetVal(bool, FQueryDataReady);
  * @brief GAS 引导通用组件（游戏无关）
  */
 UCLASS(ClassGroup = (Game), meta = (BlueprintSpawnableComponent))
-class GAMEGAMEPLAY_API UGameAbilitySystemBootstrap : public UActorComponent {
+class GAMEGAMEPLAY_API UGameAbilitySystemBootstrap : public UActorComponent, public IGamePoolable {
     GENERATED_BODY()
 
 public:
@@ -60,6 +61,16 @@ public:
      * @param EndPlayReason 结束运行的原因
      */
     void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+
+    /**
+     * @brief 从对象池激活时重置重试门状态
+     */
+    void OnAcquireFromPool_Implementation() override;
+
+    /**
+     * @brief 归还对象池时清理定时器、撤销已授予能力并重置握手状态
+     */
+    void OnReleaseToPool_Implementation() override;
 
     /**
      * @brief 注入取 ASC 委托（须在引导前完成）

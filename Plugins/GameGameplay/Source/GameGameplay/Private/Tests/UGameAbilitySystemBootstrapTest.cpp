@@ -203,5 +203,72 @@ bool FGameAbilitySystemBootstrapDataReadyFirstTest::RunTest([[maybe_unused]] con
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameAbilitySystemBootstrapPoolableTest,
+    "Game.Gameplay.Bootstrap.PoolableLifecycle",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证 Bootstrap 接入 IGamePoolable 后的出入池重置与自愈复用生命周期
+ * @param Parameters 自动化测试参数
+ * @return 测试是否通过
+ */
+bool FGameAbilitySystemBootstrapPoolableTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UGameAbilitySystemBootstrap* Bootstrap = NewObject<UGameAbilitySystemBootstrap>(GetTransientPackage());
+    AActor* Avatar = NewObject<AActor>(GetTransientPackage());
+    UGameAbilitySystemComponent* ASC = NewObject<UGameAbilitySystemComponent>(Avatar);
+
+    FArrayProperty* DefaultAbilitiesProperty = FindFProperty<FArrayProperty>(
+        UGameAbilitySystemBootstrap::StaticClass(),
+        TEXT("DefaultAbilities")
+    );
+    FIntProperty* MaxReplicationRetriesProperty = FindFProperty<FIntProperty>(
+        UGameAbilitySystemBootstrap::StaticClass(),
+        TEXT("MaxReplicationRetries")
+    );
+    if (DefaultAbilitiesProperty == nullptr || MaxReplicationRetriesProperty == nullptr) {
+        return false;
+    }
+
+    auto& DefaultAbilities = *reinterpret_cast<TArray<TSubclassOf<UGameplayAbility>>*>(
+        DefaultAbilitiesProperty->GetPropertyValuePtr_InContainer(Bootstrap)
+    );
+    DefaultAbilities.Add(UGameplayAbility::StaticClass());
+    *static_cast<int32*>(MaxReplicationRetriesProperty->GetPropertyValuePtr_InContainer(Bootstrap)) = 0;
+
+    Bootstrap->SetResolveAbilitySystemComponentDelegate(FResolveAbilitySystemComponent::CreateLambda([ASC]() {
+        return ASC;
+    }));
+
+    int32 WriteCount = 0;
+    Bootstrap->SetWriteInitialAttributesDelegate(FWriteInitialAttributes::CreateLambda([&WriteCount](UAbilitySystemComponent*) {
+        ++WriteCount;
+    }));
+
+    Bootstrap->EnsureInitialized(Avatar);
+    TestEqual(TEXT("首次握手写入初值"), WriteCount, 1);
+    TestTrue(TEXT("首次握手标记能力已授予"), Bootstrap->IsDefaultAbilitiesGranted());
+    TestNotNull(TEXT("首次握手成功授予能力"), ASC->FindAbilitySpecFromClass(UGameplayAbility::StaticClass()));
+
+    IGamePoolable* Poolable = Cast<IGamePoolable>(Bootstrap);
+    TestNotNull(TEXT("Bootstrap 原生实现 IGamePoolable 接口"), Poolable);
+    if (Poolable != nullptr) {
+        Poolable->Execute_OnReleaseToPool(Bootstrap);
+        TestNull(TEXT("入池释放时清理已授予能力"), ASC->FindAbilitySpecFromClass(UGameplayAbility::StaticClass()));
+        TestFalse(TEXT("入池释放时重置能力授予标记"), Bootstrap->IsDefaultAbilitiesGranted());
+        TestFalse(TEXT("入池释放时重置属性写入标记"), Bootstrap->IsInitialAttributesWritten());
+
+        Poolable->Execute_OnAcquireFromPool(Bootstrap);
+        Bootstrap->EnsureInitialized(Avatar);
+        TestEqual(TEXT("从池中复用时再次成功写初值"), WriteCount, 2);
+        TestTrue(TEXT("从池中复用时再次授予能力"), Bootstrap->IsDefaultAbilitiesGranted());
+        TestNotNull(TEXT("从池中复用时成功重新授予能力规格"), ASC->FindAbilitySpecFromClass(UGameplayAbility::StaticClass()));
+    }
+
+    Bootstrap->EndPlay(EEndPlayReason::Destroyed);
+    return true;
+}
+
 #endif  // WITH_AUTOMATION_TESTS
 

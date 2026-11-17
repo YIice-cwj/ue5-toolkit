@@ -17,6 +17,7 @@ public class GameGameplay : ModuleRules {
             "GameCore",
             "GameMessage",
             "GameGameplayCore",
+            "GamePool",
         });
 
         PrivateDependencyModuleNames.AddRange(new string[] {

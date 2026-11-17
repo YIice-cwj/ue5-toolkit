@@ -42,7 +42,7 @@ FActiveGameplayEffectHandle UGameGasBuffBridge::ApplyBuffEffect(
 
     const FActiveGameplayEffectHandle AppliedHandle = InAbilitySystemComponent->ApplyGameplayEffectSpecToSelf(*SpecHandle.Data.Get());
     if (AppliedHandle.IsValid()) {
-        GAME_LOG(Log, TEXT("【Buff 桥接】成功桥接施加 GameplayEffect: 类=[%s], 等级=%d, 目标=[%s]。"),
+        GAME_LOG(Verbose, TEXT("【Buff 桥接】成功桥接施加 GameplayEffect: 类=[%s], 等级=%d, 目标=[%s]。"),
             *InBuffEffectClass->GetName(), InLevel, *GetNameSafe(InAbilitySystemComponent->GetOwner()));
     }
     return AppliedHandle;
@@ -62,7 +62,7 @@ bool UGameGasBuffBridge::RemoveBuffEffect(UAbilitySystemComponent* InAbilitySyst
 
     const bool bSuccess = InAbilitySystemComponent->RemoveActiveGameplayEffect(InHandle, StacksToRemove);
     if (bSuccess) {
-        GAME_LOG(Log, TEXT("【Buff 桥接】成功移除 GameplayEffect: 目标=[%s], 扣减层数=%d。"),
+        GAME_LOG(Verbose, TEXT("【Buff 桥接】成功移除 GameplayEffect: 目标=[%s], 扣减层数=%d。"),
             *GetNameSafe(InAbilitySystemComponent->GetOwner()), StacksToRemove);
     }
     return bSuccess;
