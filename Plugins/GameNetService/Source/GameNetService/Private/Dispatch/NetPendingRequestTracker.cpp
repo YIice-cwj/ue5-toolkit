@@ -76,20 +76,18 @@ void FNetPendingRequestTracker::TickTimeouts(float DeltaTimeSeconds) {
         return;
     }
 
-    TArray<uint32> ExpiredSequenceIds;
-    for (TPair<uint32, FPendingRequestEntry>& Pair : PendingRequests) {
-        Pair.Value.RemainingSeconds -= DeltaTimeSeconds;
-        if (Pair.Value.RemainingSeconds <= 0.0f) {
-            ExpiredSequenceIds.Add(Pair.Key);
+    ExpiredEntriesScratch.Reset();
+    for (auto It = PendingRequests.CreateIterator(); It; ++It) {
+        It.Value().RemainingSeconds -= DeltaTimeSeconds;
+        if (It.Value().RemainingSeconds <= 0.0f) {
+            ExpiredEntriesScratch.Add(MoveTemp(It.Value()));
+            It.RemoveCurrent();
         }
     }
 
     const FNetPacketHeader EmptyHeader;
-    for (uint32 SequenceId : ExpiredSequenceIds) {
-        FPendingRequestEntry ExpiredEntry;
-        if (PendingRequests.RemoveAndCopyValue(SequenceId, ExpiredEntry)) {
-            ExpiredEntry.Callback(ENetRequestResult::TimedOut, EmptyHeader, {});
-        }
+    for (const FPendingRequestEntry& ExpiredEntry : ExpiredEntriesScratch) {
+        ExpiredEntry.Callback(ENetRequestResult::TimedOut, EmptyHeader, {});
     }
 }
 
@@ -109,5 +107,14 @@ void FNetPendingRequestTracker::FailAll(ENetRequestResult FailureReason) {
     for (TPair<uint32, FPendingRequestEntry>& Pair : DrainedRequests) {
         Pair.Value.Callback(FailureReason, EmptyHeader, {});
     }
+}
+
+/**
+ * @brief 重置请求序列号计数器与全部缓存
+ */
+void FNetPendingRequestTracker::Reset() noexcept {
+    NextSequenceCounter = 0;
+    PendingRequests.Reset();
+    ExpiredEntriesScratch.Reset();
 }
 

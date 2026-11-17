@@ -49,6 +49,7 @@ FWebSocketNetTransport::FWebSocketNetTransport(uint32 InMaxPayloadBytes, FWebSoc
 FWebSocketNetTransport::~FWebSocketNetTransport() {
     ++ActiveGeneration;
     ReleaseSocket(1000, TEXT("TransportDestroyed"), true);
+    SharedEventQueue->Empty();
 }
 
 /**
@@ -129,8 +130,8 @@ TGameStatusResult<void> FWebSocketNetTransport::Send(const FNetPacketHeader& Hea
         );
     }
 
-    const TArray<uint8> WireFrame = FNetPacketCodec::EncodeFrame(OutboundHeader, Payload);
-    ActiveSocket->Send(WireFrame.GetData(), static_cast<SIZE_T>(WireFrame.Num()), true);
+    FNetPacketCodec::EncodeFrameTo(OutboundHeader, Payload, OutboundScratchBuffer);
+    ActiveSocket->Send(OutboundScratchBuffer.GetData(), static_cast<SIZE_T>(OutboundScratchBuffer.Num()), true);
     return TGameStatusResult<void>::Success();
 }
 
@@ -222,7 +223,8 @@ void FWebSocketNetTransport::BindSocketCallbacks(
             Event.Kind = EInboundEventKind::BinaryFragment;
             Event.bIsLastFragment = bIsLastFragment;
             if (Data != nullptr && Size > 0) {
-                Event.BinaryData.Append(static_cast<const uint8*>(Data), static_cast<int32>(Size));
+                Event.BinaryData.SetNumUninitialized(static_cast<int32>(Size));
+                FMemory::Memcpy(Event.BinaryData.GetData(), Data, Size);
             }
             QueueRef->Enqueue(MoveTemp(Event));
         }
@@ -262,13 +264,14 @@ void FWebSocketNetTransport::ReleaseSocket(int32 CloseCode, const FString& Close
  * @param bIsLastFragment 是否为当前 WebSocket 消息的最后一个分片
  */
 void FWebSocketNetTransport::ProcessBinaryFragment(TConstArrayView<uint8> FragmentBytes, bool bIsLastFragment) {
-    const FWebSocketFragmentOutcome Outcome = FragmentAssembler.AppendFragment(FragmentBytes, bIsLastFragment);
-    if (Outcome.Status == EWebSocketFragmentStatus::FrameExceedsLimit) {
+    const EWebSocketFragmentStatus Status =
+        FragmentAssembler.AppendFragment(FragmentBytes, bIsLastFragment, AssembledMessageScratch);
+    if (Status == EWebSocketFragmentStatus::FrameExceedsLimit) {
         TriggerProtocolCircuitBreaker(TEXT("WebSocket binary fragment exceeded maximum allowed frame size."));
         return;
     }
-    if (Outcome.Status == EWebSocketFragmentStatus::MessageReady) {
-        ReceiveRingBuffer.Append(Outcome.AssembledMessage);
+    if (Status == EWebSocketFragmentStatus::MessageReady) {
+        ReceiveRingBuffer.Append(AssembledMessageScratch);
         DrainDecodedFrames();
     }
 }
@@ -278,17 +281,22 @@ void FWebSocketNetTransport::ProcessBinaryFragment(TConstArrayView<uint8> Fragme
  */
 void FWebSocketNetTransport::DrainDecodedFrames() {
     while (CurrentState == ENetConnectionState::Connected) {
-        const FNetFrameDecodeOutcome Outcome = ReceiveRingBuffer.TryPopPacket();
-        if (Outcome.Status == ENetFrameParseStatus::NeedMoreData) {
+        FNetPacketHeader DecodedHeader;
+        const ENetFrameParseStatus Status = ReceiveRingBuffer.PeekNextFrame(DecodedHeader);
+        if (Status == ENetFrameParseStatus::NeedMoreData) {
             return;
         }
-        if (Outcome.Status != ENetFrameParseStatus::CompleteFrame) {
+        if (Status != ENetFrameParseStatus::CompleteFrame) {
             TriggerProtocolCircuitBreaker(
-                FString::Printf(TEXT("Malformed wire frame rejected (status=%d)."), static_cast<int32>(Outcome.Status))
+                FString::Printf(TEXT("Malformed wire frame rejected (status=%d)."), static_cast<int32>(Status))
             );
             return;
         }
-        PacketReceivedEvent.Broadcast(Outcome.Packet.Header, Outcome.Packet.Payload);
+        ReceiveRingBuffer.TryConsumePacket(
+            [this](const FNetPacketHeader& Header, TConstArrayView<uint8> Payload) {
+                PacketReceivedEvent.Broadcast(Header, Payload);
+            }
+        );
     }
 }
 

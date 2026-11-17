@@ -23,14 +23,16 @@ public:
     ) noexcept;
 
     /**
-     * @brief 追加一帧 WebSocket 二进制分片并在末分片到达时产出完整消息；超出上限时清空并返回超限状态
+     * @brief 追加一帧 WebSocket 二进制分片并在末分片到达时就地写入外部复用数组（零额外堆分配）
      * @param FragmentBytes 当前到达的分片字节切片
      * @param bIsLastFragment 是否为当前 WebSocket 消息的最后一个分片
-     * @return 包含组装状态与完整字节消息的结果值对象
+     * @param OutMessage 接收完整拼装消息的外部复用数组（未成包或超限时清空）
+     * @return 分片拼装状态枚举
      */
-    [[nodiscard]] FWebSocketFragmentOutcome AppendFragment(
+    EWebSocketFragmentStatus AppendFragment(
         TConstArrayView<uint8> FragmentBytes,
-        bool bIsLastFragment
+        bool bIsLastFragment,
+        TArray<uint8>& OutMessage
     );
 
     /**

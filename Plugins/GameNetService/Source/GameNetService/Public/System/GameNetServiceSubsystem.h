@@ -316,6 +316,7 @@ private:
     FGameplayMessageListenerHandle RemoteLogListenerHandle;
     FString TargetEndpoint;
     double MonotonicClockSeconds{0.0};
+    TArray<uint8> SendScratchBuffer;
     bool bManualDisconnect{true};
     bool bInReconnectCycle{false};
     bool bRemoteLogForwardingEnabled{true};
@@ -330,12 +331,12 @@ TGameStatusResult<void> UGameNetServiceSubsystem::SendStruct(uint32 MessageId, c
         return TGameStatusResult<void>::Failure(Game::NetErrorCodes::InvalidSerializer, TEXT("Serializer is invalid"));
     }
 
-    const TGameStatusResult<TArray<uint8>> Encoded = ActiveSerializer->SerializeStruct(StructPayload);
-    if (Encoded.IsFailure()) {
-        return TGameStatusResult<void>::Failure(Encoded.GetError().ErrorCode, Encoded.GetError().Message);
+    const TGameStatusResult<void> EncodeStatus = ActiveSerializer->SerializeStructTo(StructPayload, SendScratchBuffer);
+    if (EncodeStatus.IsFailure()) {
+        return TGameStatusResult<void>::Failure(EncodeStatus.GetError().ErrorCode, EncodeStatus.GetError().Message);
     }
 
-    return SendRaw(MessageId, Encoded.GetValue(), 0);
+    return SendRaw(MessageId, SendScratchBuffer, 0);
 }
 
 template <typename TStruct>
@@ -355,9 +356,10 @@ int64 UGameNetServiceSubsystem::RegisterStructHandler(
             if (Self == nullptr || !Self->ActiveSerializer.IsValid()) {
                 return;
             }
-            const TGameStatusResult<TStruct> Decoded = Self->ActiveSerializer->DeserializeStruct<TStruct>(Payload);
-            if (Decoded.IsSuccess()) {
-                Callback(Header, Decoded.GetValue());
+            TStruct Decoded;
+            const TGameStatusResult<void> DecodeResult = Self->ActiveSerializer->DeserializeStructTo(Payload, Decoded);
+            if (DecodeResult.IsSuccess()) {
+                Callback(Header, Decoded);
             }
         }
     );
@@ -379,17 +381,17 @@ TGameStatusResult<uint32> UGameNetServiceSubsystem::SendStructRequest(
         return TGameStatusResult<uint32>::Failure(Game::NetErrorCodes::InvalidSerializer, TEXT("Serializer is invalid"));
     }
 
-    const TGameStatusResult<TArray<uint8>> EncodedReq = ActiveSerializer->SerializeStruct(RequestPayload);
-    if (EncodedReq.IsFailure()) {
+    const TGameStatusResult<void> EncodeStatus = ActiveSerializer->SerializeStructTo(RequestPayload, SendScratchBuffer);
+    if (EncodeStatus.IsFailure()) {
         Callback(ENetRequestResult::SendFailed, nullptr);
-        return TGameStatusResult<uint32>::Failure(EncodedReq.GetError().ErrorCode, EncodedReq.GetError().Message);
+        return TGameStatusResult<uint32>::Failure(EncodeStatus.GetError().ErrorCode, EncodeStatus.GetError().Message);
     }
 
     TWeakObjectPtr<UGameNetServiceSubsystem> WeakThis(this);
     return SendRawRequest(
         RequestMessageId,
         ExpectedResponseMessageId,
-        EncodedReq.GetValue(),
+        SendScratchBuffer,
         TimeoutSeconds,
         [WeakThis, Callback = MoveTemp(Callback)](
             ENetRequestResult Result,
@@ -405,13 +407,13 @@ TGameStatusResult<uint32> UGameNetServiceSubsystem::SendStructRequest(
                 Callback(ENetRequestResult::ConnectionClosed, nullptr);
                 return;
             }
-            const TGameStatusResult<TRspStruct> DecodedRsp = Self->ActiveSerializer->DeserializeStruct<TRspStruct>(RspPayload);
-            if (DecodedRsp.IsFailure()) {
+            TRspStruct DecodedRsp;
+            const TGameStatusResult<void> DecodeResult = Self->ActiveSerializer->DeserializeStructTo(RspPayload, DecodedRsp);
+            if (DecodeResult.IsFailure()) {
                 Callback(ENetRequestResult::DeserializeFailed, nullptr);
                 return;
             }
-            const TRspStruct Value = DecodedRsp.GetValue();
-            Callback(ENetRequestResult::Success, &Value);
+            Callback(ENetRequestResult::Success, &DecodedRsp);
         }
     );
 }
@@ -427,12 +429,14 @@ void TNetRequestStructAwaiter<TReqStruct, TRspStruct>::SuspendWithGuard(
     }
 
     TSharedRef<TGameResult<TRspStruct, ENetRequestResult>, ESPMode::ThreadSafe> CapturedSlot = ResultHolder;
+    const TSharedRef<bool, ESPMode::ThreadSafe> bCallbackInvoked = MakeShared<bool, ESPMode::ThreadSafe>(false);
     const TGameStatusResult<uint32> SendResult = Subsystem->SendStructRequest<TReqStruct, TRspStruct>(
         RequestMessageId,
         ExpectedResponseMessageId,
         Payload,
         TimeoutSeconds,
-        [InGuard, CapturedSlot](ENetRequestResult ReqResult, const TRspStruct* RspPtr) {
+        [InGuard, CapturedSlot, bCallbackInvoked](ENetRequestResult ReqResult, const TRspStruct* RspPtr) {
+            *bCallbackInvoked = true;
             if (ReqResult == ENetRequestResult::Success && RspPtr != nullptr) {
                 *CapturedSlot = TGameResult<TRspStruct, ENetRequestResult>::Success(*RspPtr);
             } else {
@@ -442,7 +446,7 @@ void TNetRequestStructAwaiter<TReqStruct, TRspStruct>::SuspendWithGuard(
         }
     );
 
-    if (SendResult.IsFailure()) {
+    if (SendResult.IsFailure() && !*bCallbackInvoked) {
         *CapturedSlot = TGameResult<TRspStruct, ENetRequestResult>::Failure(ENetRequestResult::SendFailed);
         InGuard->ResumeOrAbort();
     }

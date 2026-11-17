@@ -69,6 +69,7 @@ void UGameNetServiceSubsystem::Deinitialize() {
     RemoteLogListenerHandle.Unregister();
     bManualDisconnect = true;
     bInReconnectCycle = false;
+    TargetEndpoint.Reset();
     ReconnectPolicy.Reset();
     HeartbeatKeeper.Reset();
     PendingRequestTracker.FailAll(ENetRequestResult::ConnectionClosed);
@@ -95,6 +96,7 @@ void UGameNetServiceSubsystem::SetTransport(TSharedPtr<INetTransport> NewTranspo
 
     bManualDisconnect = true;
     bInReconnectCycle = false;
+    TargetEndpoint.Reset();
     ReconnectPolicy.Reset();
     HeartbeatKeeper.Reset();
     PendingRequestTracker.FailAll(ENetRequestResult::ConnectionClosed);
@@ -162,7 +164,6 @@ void UGameNetServiceSubsystem::Disconnect(int32 ReasonCode, const FString& Reaso
     bManualDisconnect = true;
     const bool bWasReconnecting = bInReconnectCycle;
     bInReconnectCycle = false;
-    TargetEndpoint.Reset();
     ReconnectPolicy.Reset();
     HeartbeatKeeper.Reset();
     PendingRequestTracker.FailAll(ENetRequestResult::ConnectionClosed);
@@ -173,6 +174,7 @@ void UGameNetServiceSubsystem::Disconnect(int32 ReasonCode, const FString& Reaso
     if (bWasReconnecting) {
         MessageBusBridge.BroadcastConnectionState(ENetConnectionState::Disconnected, TargetEndpoint);
     }
+    TargetEndpoint.Reset();
 }
 
 /**

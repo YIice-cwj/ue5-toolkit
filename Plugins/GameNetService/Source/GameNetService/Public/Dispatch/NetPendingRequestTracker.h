@@ -68,6 +68,11 @@ public:
     void FailAll(ENetRequestResult FailureReason);
 
     /**
+     * @brief 重置请求序列号计数器与全部缓存（断开后全新重置）
+     */
+    void Reset() noexcept;
+
+    /**
      * @brief 查询当前正在等待响应的挂起异步请求总数
      * @return 挂起请求数量
      */
@@ -78,5 +83,6 @@ public:
 private:
     uint32 NextSequenceCounter{0};
     TMap<uint32, FPendingRequestEntry> PendingRequests;
+    TArray<FPendingRequestEntry> ExpiredEntriesScratch;
 };
 

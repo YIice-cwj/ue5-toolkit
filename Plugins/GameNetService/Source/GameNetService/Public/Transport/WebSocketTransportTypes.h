@@ -18,14 +18,6 @@ enum class EWebSocketFragmentStatus : uint8 {
     FrameExceedsLimit
 };
 
-/**
- * @brief WebSocket 单次分片追加后的组装结果值对象
- */
-struct GAMENETSERVICE_API FWebSocketFragmentOutcome {
-    EWebSocketFragmentStatus Status{EWebSocketFragmentStatus::Incomplete};
-    TArray<uint8> AssembledMessage;
-};
-
 using FWebSocketFactory = TFunction<TSharedPtr<IWebSocket>(
     const FString&,
     const FString&,

@@ -63,7 +63,8 @@ void FNetMessageBusBridge::BroadcastInboundPacket(
     BusEnvelope.MessageId = Header.MessageId;
     BusEnvelope.SequenceId = Header.SequenceId;
     if (!Payload.IsEmpty()) {
-        BusEnvelope.Payload.Append(Payload.GetData(), Payload.Num());
+        BusEnvelope.Payload.SetNumUninitialized(Payload.Num());
+        FMemory::Memcpy(BusEnvelope.Payload.GetData(), Payload.GetData(), Payload.Num());
     }
     MessageBus->BroadcastMessage(TAG_Game_Net_Inbound, BusEnvelope);
 }

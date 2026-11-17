@@ -70,7 +70,7 @@ TGameStatusResult<void> FNetMessageDispatcher::DispatchPacket(const FNetPacketHe
  * @brief 清空所有已注册的常驻协议监听器
  */
 void FNetMessageDispatcher::ClearHandlers() {
-    MessageHandlers.Empty();
+    MessageHandlers.Reset();
 }
 
 /**

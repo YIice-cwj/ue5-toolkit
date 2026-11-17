@@ -13,42 +13,47 @@ FWebSocketFragmentAssembler::FWebSocketFragmentAssembler(uint32 InMaxPayloadByte
 }
 
 /**
- * @brief 追加一帧 WebSocket 二进制分片并在末分片到达时产出完整消息；超出上限时清空并返回超限状态
+ * @brief 追加一帧 WebSocket 二进制分片并在末分片到达时就地写入外部复用数组（零额外堆分配）
  * @param FragmentBytes 当前到达的分片字节切片
  * @param bIsLastFragment 是否为当前 WebSocket 消息的最后一个分片
- * @return 包含组装状态与完整字节消息的结果值对象
+ * @param OutMessage 接收完整拼装消息的外部复用数组
+ * @return 分片拼装状态枚举
  */
-FWebSocketFragmentOutcome FWebSocketFragmentAssembler::AppendFragment(
+EWebSocketFragmentStatus FWebSocketFragmentAssembler::AppendFragment(
     TConstArrayView<uint8> FragmentBytes,
-    bool bIsLastFragment
+    bool bIsLastFragment,
+    TArray<uint8>& OutMessage
 ) {
+    OutMessage.Reset();
+
     const int64 ProjectedBytes = static_cast<int64>(FragmentBuffer.Num()) + static_cast<int64>(FragmentBytes.Num());
     if (ProjectedBytes > MaxFrameBytes) {
         Reset();
-        return FWebSocketFragmentOutcome{EWebSocketFragmentStatus::FrameExceedsLimit, {}};
+        return EWebSocketFragmentStatus::FrameExceedsLimit;
     }
 
     if (FragmentBuffer.IsEmpty() && bIsLastFragment) {
-        FWebSocketFragmentOutcome ReadyOutcome;
-        ReadyOutcome.Status = EWebSocketFragmentStatus::MessageReady;
         if (!FragmentBytes.IsEmpty()) {
-            ReadyOutcome.AssembledMessage.Append(FragmentBytes.GetData(), FragmentBytes.Num());
+            OutMessage.SetNumUninitialized(FragmentBytes.Num());
+            FMemory::Memcpy(OutMessage.GetData(), FragmentBytes.GetData(), FragmentBytes.Num());
         }
-        return ReadyOutcome;
+        return EWebSocketFragmentStatus::MessageReady;
     }
 
     if (!FragmentBytes.IsEmpty()) {
-        FragmentBuffer.Append(FragmentBytes.GetData(), FragmentBytes.Num());
-    }
-    if (!bIsLastFragment) {
-        return FWebSocketFragmentOutcome{EWebSocketFragmentStatus::Incomplete, {}};
+        const int32 OldNum = FragmentBuffer.Num();
+        FragmentBuffer.SetNumUninitialized(OldNum + FragmentBytes.Num());
+        FMemory::Memcpy(FragmentBuffer.GetData() + OldNum, FragmentBytes.GetData(), FragmentBytes.Num());
     }
 
-    FWebSocketFragmentOutcome ReadyOutcome;
-    ReadyOutcome.Status = EWebSocketFragmentStatus::MessageReady;
-    ReadyOutcome.AssembledMessage = MoveTemp(FragmentBuffer);
+    if (!bIsLastFragment) {
+        return EWebSocketFragmentStatus::Incomplete;
+    }
+
+    OutMessage.SetNumUninitialized(FragmentBuffer.Num());
+    FMemory::Memcpy(OutMessage.GetData(), FragmentBuffer.GetData(), FragmentBuffer.Num());
     FragmentBuffer.Reset();
-    return ReadyOutcome;
+    return EWebSocketFragmentStatus::MessageReady;
 }
 
 /**

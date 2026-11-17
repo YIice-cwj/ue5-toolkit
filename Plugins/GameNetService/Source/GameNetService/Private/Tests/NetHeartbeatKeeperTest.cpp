@@ -42,6 +42,10 @@ bool FGameNetHeartbeatKeeperTest::RunTest([[maybe_unused]] const FString& Parame
     Keeper.NotifyInboundPacket(11, 77, 100.045);
     TestTrue(TEXT("匹配序列号的 Pong 精确计算出 45ms RTT"), FMath::IsNearlyEqual(Keeper.GetLastRttMilliseconds(), 45.0f, 0.1f));
 
+    Keeper.RecordPingSent(78, 200.0);
+    Keeper.NotifyInboundPacket(11, 0, 200.030);
+    TestTrue(TEXT("缺省序列号 0 的 Pong 同样安全兼容计算出 30ms RTT"), FMath::IsNearlyEqual(Keeper.GetLastRttMilliseconds(), 30.0f, 0.1f));
+
     TestEqual(TEXT("静默 6.0s 触发一次 Ping"), Keeper.Tick(6.0f), ENetHeartbeatAction::SendPing);
     TestEqual(TEXT("继续静默 6.1s 累计超过 12.0s 触发 TimeoutDisconnect"), Keeper.Tick(6.1f), ENetHeartbeatAction::TimeoutDisconnect);
 

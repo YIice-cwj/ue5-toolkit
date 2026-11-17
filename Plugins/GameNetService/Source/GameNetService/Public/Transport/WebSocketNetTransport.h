@@ -181,6 +181,8 @@ private:
     TSharedPtr<IWebSocket> ActiveSocket;
     FWebSocketFragmentAssembler FragmentAssembler;
     FNetPacketRingBuffer ReceiveRingBuffer;
+    TArray<uint8> OutboundScratchBuffer;
+    TArray<uint8> AssembledMessageScratch;
     FString SubProtocol;
     TMap<FString, FString> UpgradeHeaders;
     uint64 ActiveGeneration{0};

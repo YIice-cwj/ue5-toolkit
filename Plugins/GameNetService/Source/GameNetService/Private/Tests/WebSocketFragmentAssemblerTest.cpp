@@ -26,10 +26,13 @@ bool FGameNetWebSocketFragmentAssemblerTest::RunTest([[maybe_unused]] const FStr
     TestEqual(TEXT("最大帧长等于 16 字节报文头加 16 字节最大负载"), Assembler.GetMaxFrameBytes(), int64(32));
     TestEqual(TEXT("初始缓存分片字节为 0"), Assembler.GetBufferedFragmentBytes(), 0);
 
+    TArray<uint8> OutputBuffer;
+    OutputBuffer.Reserve(64);
+
     const uint8 SingleChunk[] = {1, 2, 3, 4};
-    const FWebSocketFragmentOutcome DirectOutcome = Assembler.AppendFragment(SingleChunk, true);
-    TestEqual(TEXT("单分片完整消息立即返回 MessageReady"), DirectOutcome.Status, EWebSocketFragmentStatus::MessageReady);
-    TestEqual(TEXT("单分片消息长度一致"), DirectOutcome.AssembledMessage.Num(), 4);
+    const EWebSocketFragmentStatus DirectStatus = Assembler.AppendFragment(SingleChunk, true, OutputBuffer);
+    TestEqual(TEXT("单分片完整消息立即返回 MessageReady"), DirectStatus, EWebSocketFragmentStatus::MessageReady);
+    TestEqual(TEXT("单分片消息长度一致"), OutputBuffer.Num(), 4);
     TestEqual(TEXT("单分片直通不残留缓存"), Assembler.GetBufferedFragmentBytes(), 0);
 
     const uint8 Part1[] = {10, 20, 30};
@@ -37,33 +40,33 @@ bool FGameNetWebSocketFragmentAssemblerTest::RunTest([[maybe_unused]] const FStr
     const uint8 Part3[] = {60};
     TestEqual(
         TEXT("首分片未结束返回 Incomplete"),
-        Assembler.AppendFragment(Part1, false).Status,
+        Assembler.AppendFragment(Part1, false, OutputBuffer),
         EWebSocketFragmentStatus::Incomplete
     );
     TestEqual(
         TEXT("中间分片未结束返回 Incomplete"),
-        Assembler.AppendFragment(Part2, false).Status,
+        Assembler.AppendFragment(Part2, false, OutputBuffer),
         EWebSocketFragmentStatus::Incomplete
     );
     TestEqual(TEXT("已累积 5 字节未完成分片"), Assembler.GetBufferedFragmentBytes(), 5);
 
-    const FWebSocketFragmentOutcome MultiOutcome = Assembler.AppendFragment(Part3, true);
-    TestEqual(TEXT("末分片到达产出 MessageReady"), MultiOutcome.Status, EWebSocketFragmentStatus::MessageReady);
-    TestEqual(TEXT("重组后总字节数为 6"), MultiOutcome.AssembledMessage.Num(), 6);
-    TestEqual(TEXT("重组后末字节为 60"), MultiOutcome.AssembledMessage[5], static_cast<uint8>(60));
+    const EWebSocketFragmentStatus MultiStatus = Assembler.AppendFragment(Part3, true, OutputBuffer);
+    TestEqual(TEXT("末分片到达产出 MessageReady"), MultiStatus, EWebSocketFragmentStatus::MessageReady);
+    TestEqual(TEXT("重组后总字节数为 6"), OutputBuffer.Num(), 6);
+    TestEqual(TEXT("重组后末字节为 60"), OutputBuffer[5], static_cast<uint8>(60));
     TestEqual(TEXT("重组完成后内部缓存归零"), Assembler.GetBufferedFragmentBytes(), 0);
 
     TArray<uint8> TwentyBytes;
     TwentyBytes.SetNumZeroed(20);
     TestEqual(
         TEXT("追加 20 字节首分片未超 32 字节上限"),
-        Assembler.AppendFragment(TwentyBytes, false).Status,
+        Assembler.AppendFragment(TwentyBytes, false, OutputBuffer),
         EWebSocketFragmentStatus::Incomplete
     );
-    const FWebSocketFragmentOutcome OverflowOutcome = Assembler.AppendFragment(TwentyBytes, true);
+    const EWebSocketFragmentStatus OverflowStatus = Assembler.AppendFragment(TwentyBytes, true, OutputBuffer);
     TestEqual(
         TEXT("累计 40 字节超过 32 字节最大帧长触发 FrameExceedsLimit"),
-        OverflowOutcome.Status,
+        OverflowStatus,
         EWebSocketFragmentStatus::FrameExceedsLimit
     );
     TestEqual(TEXT("超限拦截后自动清空半包缓存"), Assembler.GetBufferedFragmentBytes(), 0);

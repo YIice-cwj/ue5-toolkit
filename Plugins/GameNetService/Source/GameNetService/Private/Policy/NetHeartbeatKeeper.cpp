@@ -71,7 +71,7 @@ void FNetHeartbeatKeeper::RecordPingSent(uint32 SequenceId, double SentTimestamp
 }
 
 /**
- * @brief 通知收到任意下行报文以刷新对端存活计时；若命中挂起 Pong 则更新最新 RTT
+ * @brief 通知收到任意下行报文以刷新对端存活计时；若命中挂起 Pong（严格匹配序号或缺省序号 0）则更新最新 RTT
  * @param MessageId 收到的下行报文协议 ID
  * @param SequenceId 收到的下行报文序列号
  * @param ReceivedTimestampSeconds 收到时刻秒数
@@ -82,7 +82,7 @@ void FNetHeartbeatKeeper::NotifyInboundPacket(
     double ReceivedTimestampSeconds
 ) noexcept {
     SecondsSinceLastInbound = 0.0f;
-    if (bHasPendingPing && MessageId == Config.PongMessageId && SequenceId == PendingPingSequenceId) {
+    if (bHasPendingPing && MessageId == Config.PongMessageId && (SequenceId == PendingPingSequenceId || SequenceId == 0)) {
         const double ElapsedSeconds = FMath::Max(0.0, ReceivedTimestampSeconds - PendingPingSentSeconds);
         LastRttMilliseconds = static_cast<float>(ElapsedSeconds * 1000.0);
         bHasPendingPing = false;
