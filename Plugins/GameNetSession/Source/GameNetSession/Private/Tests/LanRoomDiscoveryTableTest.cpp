@@ -58,18 +58,41 @@ bool FGameNetLanRoomDiscoveryTableTest::RunTest([[maybe_unused]] const FString& 
         Table.UpsertDiscoveredRoom(ValidRoom, TEXT("192.168.1.20"), 0, 11.0);
     TestTrue(TEXT("同 RoomId 刷新成功"), Updated.IsSet());
     TestEqual(TEXT("同 RoomId 原地去重保持 1 条记录"), Table.GetRoomCount(), 1);
-    TestEqual(TEXT("快照中人数已刷新为 3"), Table.GetRoomsSnapshot()[0].CurrentPlayers, 3);
-    TestEqual(TEXT("无回显的主动宣告保留此前已测算的 42ms Ping"), Table.GetRoomsSnapshot()[0].PingMilliseconds, 42);
 
-    TestEqual(TEXT("未超 2.0s 过期阈值时不剔除"), Table.PruneExpiredRooms(12.5).Num(), 0);
-    const TArray<FString> ExpiredIds = Table.PruneExpiredRooms(13.1);
-    TestEqual(TEXT("超过 2.0s 阈值后精确剔除 1 个房间"), ExpiredIds.Num(), 1);
-    TestEqual(TEXT("剔除的 RoomId 为 Room_Alpha"), ExpiredIds[0], FString(TEXT("Room_Alpha")));
+    TArray<FGameNetRoomDescriptor> ReusableSnapshot;
+    Table.GetRoomsSnapshotTo(ReusableSnapshot);
+    TestEqual(TEXT("就地快照中数量为 1"), ReusableSnapshot.Num(), 1);
+    TestEqual(TEXT("快照中人数已刷新为 3"), ReusableSnapshot[0].CurrentPlayers, 3);
+    TestEqual(TEXT("无回显的主动宣告保留此前已测算的 42ms Ping"), ReusableSnapshot[0].PingMilliseconds, 42);
+
+    const uint32 OrphanProbeSeq = Table.AllocateAndRecordProbe(10.0);
+    TestEqual(TEXT("分配悬挂探测序列号"), OrphanProbeSeq, 2u);
+
+    TestEqual(TEXT("未超 2.0s 过期阈值时不剔除"), Table.PruneExpiredRooms(11.5).Num(), 0);
+    TArray<FString> ReusableExpiredIds;
+    Table.PruneExpiredRoomsTo(13.1, ReusableExpiredIds);
+    TestEqual(TEXT("通过就地接口超过 2.0s 阈值后精确剔除 1 个房间"), ReusableExpiredIds.Num(), 1);
+    TestEqual(TEXT("剔除的 RoomId 为 Room_Alpha"), ReusableExpiredIds[0], FString(TEXT("Room_Alpha")));
     TestEqual(TEXT("剔除后表内房间归零"), Table.GetRoomCount(), 0);
+
+    FGameNetRoomDescriptor RoomBeta;
+    RoomBeta.RoomId = TEXT("Room_Beta");
+    RoomBeta.RoomName = TEXT("BetaArena");
+    RoomBeta.MaxPlayers = 8;
+    const TOptional<FGameNetRoomDescriptor> LateInserted =
+        Table.UpsertDiscoveredRoom(RoomBeta, TEXT("192.168.1.30"), OrphanProbeSeq, 14.0);
+    TestTrue(TEXT("延迟插入房间成功"), LateInserted.IsSet());
+    if (LateInserted.IsSet()) {
+        TestEqual(TEXT("已超期的悬挂探测已被剔除因而未算入延迟时延"), LateInserted->PingMilliseconds, 0);
+    }
 
     Table.UpsertDiscoveredRoom(ValidRoom, TEXT("192.168.1.20"), 0, 20.0);
     Table.Reset();
     TestEqual(TEXT("Reset 后缓存完全清空"), Table.GetRoomCount(), 0);
+
+    ValidRoom.Reset();
+    TestTrue(TEXT("Reset 后 RoomId 为空"), ValidRoom.RoomId.IsEmpty());
+    TestEqual(TEXT("Reset 后默认端口为 7777"), ValidRoom.HostGamePort, 7777);
 
     return true;
 }

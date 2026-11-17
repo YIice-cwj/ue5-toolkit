@@ -62,6 +62,37 @@ public:
      */
     [[nodiscard]] bool operator==(const FGameNetRoomDescriptor& Other) const noexcept = default;
 
+    /**
+     * @brief 判定当前房间关键字段是否有效
+     * @return 房间 ID、名称与主机地址非空且端口与人数合法返回 true
+     */
+    [[nodiscard]] bool IsValid() const noexcept {
+        return !RoomId.IsEmpty() && !RoomName.IsEmpty() && !HostAddress.IsEmpty() && HostGamePort > 0 && MaxPlayers > 0;
+    }
+
+    /**
+     * @brief 获取用于客户端连接的标准化主机:端口地址字符串
+     * @return 形如 "192.168.1.100:7777" 的连接串
+     */
+    [[nodiscard]] FString GetConnectUrl() const {
+        return FString::Printf(TEXT("%s:%d"), *HostAddress, HostGamePort);
+    }
+
+    /**
+     * @brief 重置房间描述符内部字段至初始默认值（保留字符串缓冲区容量，便于对象池复用）
+     */
+    void Reset() noexcept {
+        RoomId.Reset();
+        RoomName.Reset();
+        MapPath.Reset();
+        HostAddress.Reset();
+        HostGamePort = 7777;
+        CurrentPlayers = 1;
+        MaxPlayers = 4;
+        PingMilliseconds = 0;
+        bIsLanRoom = true;
+    }
+
 public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GameNet|Session")
     FString RoomId;

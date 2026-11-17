@@ -48,6 +48,10 @@ bool FGameNetSessionSubsystemTest::RunTest([[maybe_unused]] const FString& Param
     TestFalse(TEXT("JoinOnlineRoomByIndex 越界下标安全返回 false"), ClientSession.JoinOnlineRoomByIndex(0, 0));
     TestFalse(TEXT("DestroyOnlineRoom 无活跃命名会话安全返回 false"), HostSession.DestroyOnlineRoom());
     TestEqual(TEXT("无在线搜索结果时返回空数组"), ClientSession.GetOnlineSearchResults().Num(), 0);
+    TestEqual(TEXT("无在线搜索结果时返回空引用"), ClientSession.GetOnlineSearchResultsRef().Num(), 0);
+    TArray<FGameNetRoomDescriptor> ReusableOnlineResults;
+    ClientSession.GetOnlineSearchResultsTo(ReusableOnlineResults);
+    TestEqual(TEXT("就地接口获取在线搜索结果为空"), ReusableOnlineResults.Num(), 0);
 
     FGameNetCreateRoomRequest LanReq;
     LanReq.RoomName = TEXT("SubsystemLanRoom");
@@ -74,6 +78,9 @@ bool FGameNetSessionSubsystemTest::RunTest([[maybe_unused]] const FString& Param
 
     const TArray<FGameNetRoomDescriptor> Rooms = ClientSession.GetDiscoveredLanRooms();
     TestEqual(TEXT("客户端子系统查询到 1 个局域网房间"), Rooms.Num(), 1);
+    TArray<FGameNetRoomDescriptor> ReusableRooms;
+    ClientSession.GetDiscoveredLanRoomsTo(ReusableRooms);
+    TestEqual(TEXT("客户端子系统复用接口查询到 1 个局域网房间"), ReusableRooms.Num(), 1);
     if (Rooms.Num() == 1) {
         TestEqual(TEXT("子系统房间名一致"), Rooms[0].RoomName, TEXT("SubsystemLanRoom"));
         TestEqual(TEXT("子系统最大人数一致"), Rooms[0].MaxPlayers, 6);

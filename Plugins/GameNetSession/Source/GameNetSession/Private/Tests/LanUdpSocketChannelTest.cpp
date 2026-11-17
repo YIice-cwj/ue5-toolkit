@@ -61,6 +61,19 @@ bool FGameNetLanUdpSocketChannelTest::RunTest([[maybe_unused]] const FString& Pa
 
     TestFalse(TEXT("缓冲排空后再次非阻塞读取立即返回空值"), ReceiverChannel.TryReceiveDatagram().IsSet());
 
+    FLanReceivedDatagram ReusableDatagram;
+    TestFalse(TEXT("空通道调用 TryReceiveDatagramTo 返回 false"), ReceiverChannel.TryReceiveDatagramTo(ReusableDatagram));
+
+    TestTrue(
+        TEXT("再次向接收通道端口发送数据报成功"),
+        SenderChannel.SendTo(SampleBytes, TEXT("127.0.0.1"), ReceiverChannel.GetBoundPort())
+    );
+    TestTrue(TEXT("内核检测到第二次数据报到达"), ReceiverChannel.WaitReadable(1.0));
+    TestTrue(TEXT("就地复用读取数据报成功"), ReceiverChannel.TryReceiveDatagramTo(ReusableDatagram));
+    TestEqual(TEXT("就地读取字节长度为 4"), ReusableDatagram.Bytes.Num(), 4);
+    ReusableDatagram.Reset();
+    TestEqual(TEXT("Reset 后字节数组归零但保留容量"), ReusableDatagram.Bytes.Num(), 0);
+
     SenderChannel.Close();
     ReceiverChannel.Close();
     TestFalse(TEXT("Close 后通道关闭"), SenderChannel.IsOpen());

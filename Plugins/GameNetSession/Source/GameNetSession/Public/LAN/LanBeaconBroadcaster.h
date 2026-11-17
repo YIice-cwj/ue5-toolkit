@@ -139,8 +139,14 @@ public:
      * @brief 获取当前所有未过期的已发现局域网房间快照列表
      * @return 房间描述符数组
      */
-    [[nodiscard]] TArray<FGameNetRoomDescriptor> GetDiscoveredRooms() const {
-        return DiscoveryTable.GetRoomsSnapshot();
+    [[nodiscard]] TArray<FGameNetRoomDescriptor> GetDiscoveredRooms() const;
+
+    /**
+     * @brief 获取当前所有未过期的已发现局域网房间快照并写入外部复用数组
+     * @param OutRooms 目标接收数组
+     */
+    void GetDiscoveredRoomsTo(TArray<FGameNetRoomDescriptor>& OutRooms) const {
+        DiscoveryTable.GetRoomsSnapshotTo(OutRooms);
     }
 
     /**
@@ -192,6 +198,11 @@ private:
     EGameNetLanRole Role{EGameNetLanRole::Inactive};
     FGameNetRoomDescriptor HostedRoom;
     double MonotonicClockSeconds{0.0};
+    TArray<uint8> SendScratchBuffer;
+    TArray<uint8> EncodedRoomPayloadBuffer;
+    FLanReceivedDatagram ReceivedDatagramScratch;
+    TArray<FString> ExpiredRoomIdsScratch;
+    FGameNetRoomDescriptor DecodedRoomScratch;
     FOnLanRoomDiscovered RoomDiscoveredDelegate;
     FOnLanRoomExpired RoomExpiredDelegate;
 };

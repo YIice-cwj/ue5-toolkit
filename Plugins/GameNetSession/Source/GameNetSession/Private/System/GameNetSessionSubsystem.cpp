@@ -130,7 +130,9 @@ void UGameNetSessionSubsystem::StopLanSession() {
  * @return 房间描述符数组
  */
 TArray<FGameNetRoomDescriptor> UGameNetSessionSubsystem::GetDiscoveredLanRooms() const {
-    return LanBeacon.GetDiscoveredRooms();
+    TArray<FGameNetRoomDescriptor> Rooms;
+    LanBeacon.GetDiscoveredRoomsTo(Rooms);
+    return Rooms;
 }
 
 /**

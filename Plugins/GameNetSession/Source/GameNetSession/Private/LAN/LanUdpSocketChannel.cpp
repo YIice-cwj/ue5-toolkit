@@ -143,25 +143,38 @@ bool FLanUdpSocketChannel::SendTo(
 }
 
 /**
- * @brief 非阻塞尝试从接收缓冲队列读取一帧到达的 UDP 数据报（复用预分配地址对象，消除每帧堆内存分配）
+ * @brief 非阻塞尝试从接收缓冲队列读取一帧到达的 UDP 数据报
  * @return 有可读数据报时返回包含字节流与来源 IP/端口的值对象，无数据时返回空值
  */
 TOptional<FLanReceivedDatagram> FLanUdpSocketChannel::TryReceiveDatagram() {
-    if (RawSocket == nullptr || !CachedSenderAddr.IsValid()) {
-        return NullOpt;
-    }
-
-    uint8 Buffer[MAX_DATAGRAM_BUFFER_BYTES];
-    int32 BytesRead = 0;
-    if (!RawSocket->RecvFrom(Buffer, MAX_DATAGRAM_BUFFER_BYTES, BytesRead, *CachedSenderAddr) || BytesRead <= 0) {
-        return NullOpt;
-    }
-
     FLanReceivedDatagram Datagram;
-    Datagram.Bytes.Append(Buffer, BytesRead);
-    Datagram.SenderIp = CachedSenderAddr->ToString(false);
-    Datagram.SenderPort = CachedSenderAddr->GetPort();
-    return Datagram;
+    if (TryReceiveDatagramTo(Datagram)) {
+        return Datagram;
+    }
+    return NullOpt;
+}
+
+/**
+ * @brief 非阻塞尝试从接收缓冲队列读取一帧到达的 UDP 数据报并写入外部复用对象（零额外堆分配）
+ * @param OutDatagram 接收数据报的外部复用对象
+ * @return 成功读到数据报返回 true，无数据或读取失败返回 false
+ */
+bool FLanUdpSocketChannel::TryReceiveDatagramTo(FLanReceivedDatagram& OutDatagram) {
+    if (RawSocket == nullptr || !CachedSenderAddr.IsValid()) {
+        return false;
+    }
+
+    OutDatagram.Bytes.SetNumUninitialized(MAX_DATAGRAM_BUFFER_BYTES);
+    int32 BytesRead = 0;
+    if (!RawSocket->RecvFrom(OutDatagram.Bytes.GetData(), MAX_DATAGRAM_BUFFER_BYTES, BytesRead, *CachedSenderAddr) || BytesRead <= 0) {
+        OutDatagram.Bytes.Reset();
+        return false;
+    }
+
+    OutDatagram.Bytes.SetNum(BytesRead, EAllowShrinking::No);
+    OutDatagram.SenderIp = CachedSenderAddr->ToString(false);
+    OutDatagram.SenderPort = CachedSenderAddr->GetPort();
+    return true;
 }
 
 /**

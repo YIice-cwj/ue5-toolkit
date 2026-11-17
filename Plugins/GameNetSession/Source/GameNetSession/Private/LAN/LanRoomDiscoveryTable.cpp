@@ -57,32 +57,41 @@ TOptional<FGameNetRoomDescriptor> FLanRoomDiscoveryTable::UpsertDiscoveredRoom(
     }
 
     FDiscoveredRoomRecord& Record = DiscoveredRooms.FindOrAdd(IncomingRoom.RoomId);
-    Record.Descriptor = IncomingRoom;
+    Record.Descriptor = MoveTemp(IncomingRoom);
     Record.LastSeenTimeSeconds = CurrentClockSeconds;
     return Record.Descriptor;
 }
 
 /**
- * @brief 扫描并移除所有超过过期阈值的房间记录
+ * @brief 扫描并移除所有超过过期阈值的房间记录与失联悬挂探测时间戳
  * @param CurrentClockSeconds 当前单调时钟秒数
  * @return 本次被剔除的所有过期 RoomId 列表
  */
 TArray<FString> FLanRoomDiscoveryTable::PruneExpiredRooms(double CurrentClockSeconds) {
     TArray<FString> ExpiredIds;
-    if (DiscoveredRooms.IsEmpty()) {
-        return ExpiredIds;
-    }
+    PruneExpiredRoomsTo(CurrentClockSeconds, ExpiredIds);
+    return ExpiredIds;
+}
 
-    for (const TPair<FString, FDiscoveredRoomRecord>& Pair : DiscoveredRooms) {
-        if ((CurrentClockSeconds - Pair.Value.LastSeenTimeSeconds) > static_cast<double>(ExpirationSeconds)) {
-            ExpiredIds.Add(Pair.Key);
+/**
+ * @brief 扫描并移除所有超过过期阈值的房间记录与失联悬挂探测时间戳并就地写入外部复用数组（单次迭代安全剔除，零额外堆分配）
+ * @param CurrentClockSeconds 当前单调时钟秒数
+ * @param OutExpiredIds 本次被剔除的所有过期 RoomId 目标数组
+ */
+void FLanRoomDiscoveryTable::PruneExpiredRoomsTo(double CurrentClockSeconds, TArray<FString>& OutExpiredIds) {
+    OutExpiredIds.Reset();
+    for (auto It = DiscoveredRooms.CreateIterator(); It; ++It) {
+        if ((CurrentClockSeconds - It.Value().LastSeenTimeSeconds) > static_cast<double>(ExpirationSeconds)) {
+            OutExpiredIds.Add(It.Key());
+            It.RemoveCurrent();
         }
     }
 
-    for (const FString& ExpiredId : ExpiredIds) {
-        DiscoveredRooms.Remove(ExpiredId);
+    for (auto It = PendingProbeSendTimes.CreateIterator(); It; ++It) {
+        if ((CurrentClockSeconds - It.Value()) > static_cast<double>(ExpirationSeconds)) {
+            It.RemoveCurrent();
+        }
     }
-    return ExpiredIds;
 }
 
 /**
@@ -91,11 +100,20 @@ TArray<FString> FLanRoomDiscoveryTable::PruneExpiredRooms(double CurrentClockSec
  */
 TArray<FGameNetRoomDescriptor> FLanRoomDiscoveryTable::GetRoomsSnapshot() const {
     TArray<FGameNetRoomDescriptor> Snapshot;
-    Snapshot.Reserve(DiscoveredRooms.Num());
-    for (const TPair<FString, FDiscoveredRoomRecord>& Pair : DiscoveredRooms) {
-        Snapshot.Add(Pair.Value.Descriptor);
-    }
+    GetRoomsSnapshotTo(Snapshot);
     return Snapshot;
+}
+
+/**
+ * @brief 获取当前未过期局域网房间的描述符快照并就地写入外部复用数组
+ * @param OutSnapshot 目标接收数组
+ */
+void FLanRoomDiscoveryTable::GetRoomsSnapshotTo(TArray<FGameNetRoomDescriptor>& OutSnapshot) const {
+    OutSnapshot.Reset();
+    OutSnapshot.Reserve(DiscoveredRooms.Num());
+    for (const TPair<FString, FDiscoveredRoomRecord>& Pair : DiscoveredRooms) {
+        OutSnapshot.Add(Pair.Value.Descriptor);
+    }
 }
 
 /**
@@ -104,5 +122,6 @@ TArray<FGameNetRoomDescriptor> FLanRoomDiscoveryTable::GetRoomsSnapshot() const 
 void FLanRoomDiscoveryTable::Reset() {
     DiscoveredRooms.Empty();
     PendingProbeSendTimes.Empty();
+    NextProbeSequenceId = 0;
 }
 

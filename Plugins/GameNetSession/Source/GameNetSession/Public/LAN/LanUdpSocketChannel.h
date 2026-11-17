@@ -60,6 +60,13 @@ public:
     [[nodiscard]] TOptional<FLanReceivedDatagram> TryReceiveDatagram();
 
     /**
+     * @brief 非阻塞尝试从接收缓冲队列读取一帧到达的 UDP 数据报并写入外部复用对象（零额外堆分配）
+     * @param OutDatagram 接收数据报的外部复用对象（就地重用 Bytes 与 SenderIp 容量）
+     * @return 成功读到数据报返回 true，无数据或读取失败返回 false
+     */
+    bool TryReceiveDatagramTo(FLanReceivedDatagram& OutDatagram);
+
+    /**
      * @brief 基于内核 select/poll 事件驱动等待底层 Socket 可读就绪
      * @param MaxWaitSeconds 最大等待秒数上限
      * @return 超时前检测到可读数据报到达返回 true

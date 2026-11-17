@@ -283,7 +283,7 @@ void FOnlineSessionRoomAdapter::HandleFindComplete(TWeakObjectPtr<const UWorld> 
         FindDelegateHandle.Reset();
     }
 
-    CachedRooms.Empty();
+    CachedRooms.Reset();
     if (bWasSuccessful && ActiveSessionSearch.IsValid()) {
         CachedRooms.Reserve(ActiveSessionSearch->SearchResults.Num());
         for (const FOnlineSessionSearchResult& SearchResult : ActiveSessionSearch->SearchResults) {

@@ -59,10 +59,23 @@ public:
     [[nodiscard]] TArray<FString> PruneExpiredRooms(double CurrentClockSeconds);
 
     /**
+     * @brief 扫描并移除所有超过过期阈值的房间记录并就地写入外部复用数组（零额外堆分配）
+     * @param CurrentClockSeconds 当前单调时钟秒数
+     * @param OutExpiredIds 本次被剔除的所有过期 RoomId 目标数组（就地清空并复用已有容量）
+     */
+    void PruneExpiredRoomsTo(double CurrentClockSeconds, TArray<FString>& OutExpiredIds);
+
+    /**
      * @brief 获取当前所有未过期局域网房间的描述符快照列表
      * @return 房间描述符数组
      */
     [[nodiscard]] TArray<FGameNetRoomDescriptor> GetRoomsSnapshot() const;
+
+    /**
+     * @brief 获取当前未过期局域网房间的描述符快照并就地写入外部复用数组
+     * @param OutSnapshot 目标接收数组（就地清空并复用已有容量）
+     */
+    void GetRoomsSnapshotTo(TArray<FGameNetRoomDescriptor>& OutSnapshot) const;
 
     /**
      * @brief 清空所有已发现房间缓存与挂起探测时间记录

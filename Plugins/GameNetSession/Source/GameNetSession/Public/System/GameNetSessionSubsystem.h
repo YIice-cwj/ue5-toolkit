@@ -86,6 +86,14 @@ public:
     TArray<FGameNetRoomDescriptor> GetDiscoveredLanRooms() const;
 
     /**
+     * @brief 获取当前局域网发现缓存中的活跃房间列表并就地写入外部复用数组（零额外堆分配）
+     * @param OutRooms 接收结果的房间描述符数组
+     */
+    void GetDiscoveredLanRoomsTo(TArray<FGameNetRoomDescriptor>& OutRooms) const {
+        LanBeacon.GetDiscoveredRoomsTo(OutRooms);
+    }
+
+    /**
      * @brief 获取当前局域网信标实际绑定的本地 UDP 端口号
      * @return 已绑定端口号；未激活时返回 0
      */
@@ -143,6 +151,22 @@ public:
      */
     UFUNCTION(BlueprintPure, Category = "GameNet|Session")
     TArray<FGameNetRoomDescriptor> GetOnlineSearchResults() const;
+
+    /**
+     * @brief 获取最近一次平台会话搜索转换后的标准化房间描述符列表并就地写入外部复用数组（零额外堆分配）
+     * @param OutRooms 接收结果的房间描述符数组
+     */
+    void GetOnlineSearchResultsTo(TArray<FGameNetRoomDescriptor>& OutRooms) const {
+        OutRooms = OnlineAdapter.GetCachedRooms();
+    }
+
+    /**
+     * @brief 获取最近一次平台会话搜索转换后的标准化房间描述符快照常引用（C++ 零拷贝）
+     * @return 房间描述符数组常引用
+     */
+    [[nodiscard]] const TArray<FGameNetRoomDescriptor>& GetOnlineSearchResultsRef() const noexcept {
+        return OnlineAdapter.GetCachedRooms();
+    }
 
     /**
      * @brief 委托 UNetTravelLibrary 执行服务端/房主 ListenServer 地图切换

@@ -25,14 +25,19 @@ FString UNetTravelLibrary::BuildListenServerTravelUrl(
 
     FString Url = FString::Printf(TEXT("%s?listen?port=%d"), *TrimmedMap, ListenPort);
     FString TrimmedExtra = ExtraOptions.TrimStartAndEnd();
-    while (TrimmedExtra.StartsWith(TEXT("?"))) {
-        TrimmedExtra.RightChopInline(1, EAllowShrinking::No);
+    int32 LeadingQuestionIndex = 0;
+    while (LeadingQuestionIndex < TrimmedExtra.Len() && TrimmedExtra[LeadingQuestionIndex] == TEXT('?')) {
+        ++LeadingQuestionIndex;
+    }
+    if (LeadingQuestionIndex > 0) {
+        TrimmedExtra.RightChopInline(LeadingQuestionIndex, EAllowShrinking::No);
     }
 
     if (!TrimmedExtra.IsEmpty()) {
         if (!IsCleanUrlToken(TrimmedExtra)) {
             return FString();
         }
+        Url.Reserve(Url.Len() + 1 + TrimmedExtra.Len());
         Url += TEXT("?");
         Url += TrimmedExtra;
     }
@@ -57,14 +62,19 @@ FString UNetTravelLibrary::BuildClientTravelUrl(
 
     FString Url = FString::Printf(TEXT("%s:%d"), *TrimmedHost, Room.HostGamePort);
     FString TrimmedExtra = ExtraOptions.TrimStartAndEnd();
-    while (TrimmedExtra.StartsWith(TEXT("?"))) {
-        TrimmedExtra.RightChopInline(1, EAllowShrinking::No);
+    int32 LeadingQuestionIndex = 0;
+    while (LeadingQuestionIndex < TrimmedExtra.Len() && TrimmedExtra[LeadingQuestionIndex] == TEXT('?')) {
+        ++LeadingQuestionIndex;
+    }
+    if (LeadingQuestionIndex > 0) {
+        TrimmedExtra.RightChopInline(LeadingQuestionIndex, EAllowShrinking::No);
     }
 
     if (!TrimmedExtra.IsEmpty()) {
         if (!IsCleanUrlToken(TrimmedExtra)) {
             return FString();
         }
+        Url.Reserve(Url.Len() + 1 + TrimmedExtra.Len());
         Url += TEXT("?");
         Url += TrimmedExtra;
     }

@@ -80,6 +80,10 @@ bool FGameNetLanBeaconBroadcasterTest::RunTest([[maybe_unused]] const FString& P
     const TArray<FGameNetRoomDescriptor> FirstSnapshot = ClientBeacon.GetDiscoveredRooms();
     TestEqual(TEXT("客户端成功发现 1 个局域网房间"), FirstSnapshot.Num(), 1);
     TestEqual(TEXT("房间发现委托触发 1 次"), DiscoveredEvents.Num(), 1);
+
+    TArray<FGameNetRoomDescriptor> ReusableSnapshot;
+    ClientBeacon.GetDiscoveredRoomsTo(ReusableSnapshot);
+    TestEqual(TEXT("通过就地接口获取的已发现房间数量与快照一致"), ReusableSnapshot.Num(), 1);
     if (FirstSnapshot.Num() == 1) {
         TestEqual(TEXT("发现房间 ID 与房主一致"), FirstSnapshot[0].RoomId, HostBeacon.GetHostedRoom().RoomId);
         TestEqual(TEXT("发现房间名称还原无损"), FirstSnapshot[0].RoomName, TEXT("TaoistArena_01"));
