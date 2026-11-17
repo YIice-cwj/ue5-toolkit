@@ -25,7 +25,7 @@
 
 namespace {
 
-class FTestDamageExecutionProxy : public UGameDamageExecution {
+class FTestDamagePerfExecutionProxy : public UGameDamageExecution {
 public:
     static void TestRegisterChannelBinding(
         UGameDamageExecution* Target,
@@ -33,7 +33,7 @@ public:
         const FGameplayAttribute& TargetAttribute,
         EGameplayModOp::Type ModOp = EGameplayModOp::Additive
     ) {
-        static_cast<FTestDamageExecutionProxy*>(Target)->RegisterChannelBinding(ChannelTag, TargetAttribute, ModOp);
+        static_cast<FTestDamagePerfExecutionProxy*>(Target)->RegisterChannelBinding(ChannelTag, TargetAttribute, ModOp);
     }
 };
 
