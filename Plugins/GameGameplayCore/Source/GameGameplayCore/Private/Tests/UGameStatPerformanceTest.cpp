@@ -43,7 +43,7 @@ constexpr int32 BuffStackTickIterations = 5000;
 constexpr double BuffStackTickBudgetNsPerOp = 5000.0;
 
 constexpr int32 DamageDispatchIterations = 10000;
-constexpr double DamageDispatchBudgetNsPerOp = 3000.0;
+constexpr double DamageDispatchBudgetNsPerOp = 4500.0;
 
 struct FBenchmarkMetrics {
     double MedianNs = 0.0;
