@@ -1,17 +1,16 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
+/**
+ * @file GameAssetCore.cpp
+ * @brief GameAssetCore 运行时模块生命周期实现
+ */
 
 #include "GameAssetCore.h"
-#include "Asset/FGameAssetLoader.h"
-
-#define LOCTEXT_NAMESPACE "FGameAssetCoreModule"
+#include "Asset/FGameAssetPinner.h"
 
 void FGameAssetCoreModule::StartupModule() {
 }
 
 void FGameAssetCoreModule::ShutdownModule() {
-    FGameAssetLoader::ClearAllPinnedAssets();
+    FGameAssetPinner::ClearAllPinnedAssets();
 }
-
-#undef LOCTEXT_NAMESPACE
 
 IMPLEMENT_MODULE(FGameAssetCoreModule, GameAssetCore)

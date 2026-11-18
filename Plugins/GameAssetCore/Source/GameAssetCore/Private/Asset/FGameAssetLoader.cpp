@@ -1,32 +1,9 @@
 /**
  * @file FGameAssetLoader.cpp
- * @brief FGameAssetLoader 弱引用守卫异步资产加载器与内存保活实现
+ * @brief FGameAssetLoader 弱引用守卫异步资产加载器批量加载实现
  */
 
 #include "Asset/FGameAssetLoader.h"
-#include "HAL/CriticalSection.h"
-#include "Misc/ScopeLock.h"
-
-namespace {
-
-struct FPinnedAssetEntry {
-    TSharedPtr<FStreamableHandle> Handle;
-    int32 RefCount = 0;
-};
-
-FCriticalSection GPinnedAssetsLock;
-TMap<FSoftObjectPath, FPinnedAssetEntry> GPinnedAssets;
-
-} // namespace
-
-FGameAssetLoadHandle FGameAssetLoader::LoadBatchAsync(
-    const TArray<FSoftObjectPath>& AssetPaths,
-    TWeakObjectPtr<UObject> Owner,
-    TFunction<void()> OnAllLoaded,
-    TAsyncLoadPriority Priority
-) {
-    return LoadBatchAsync(AssetPaths, Owner, MoveTemp(OnAllLoaded), nullptr, FCancellationToken::None(), Priority);
-}
 
 FGameAssetLoadHandle FGameAssetLoader::LoadBatchAsync(
     const TArray<FSoftObjectPath>& AssetPaths,
@@ -34,7 +11,7 @@ FGameAssetLoadHandle FGameAssetLoader::LoadBatchAsync(
     TFunction<void()> OnAllLoaded,
     TFunction<void(float Progress)> OnProgress,
     const FCancellationToken& CancellationToken,
-    TAsyncLoadPriority Priority
+    EGameAssetPriority Priority
 ) {
     if (!Owner.IsValid() || !OnAllLoaded || CancellationToken.IsCancellationRequested()) {
         return FGameAssetLoadHandle();
@@ -42,9 +19,12 @@ FGameAssetLoadHandle FGameAssetLoader::LoadBatchAsync(
 
     TArray<FSoftObjectPath> ValidPaths;
     ValidPaths.Reserve(AssetPaths.Num());
+    TSet<FSoftObjectPath> SeenPaths;
+    SeenPaths.Reserve(AssetPaths.Num());
     for (const FSoftObjectPath& Path : AssetPaths) {
-        if (Path.IsValid()) {
-            ValidPaths.AddUnique(Path);
+        if (Path.IsValid() && !SeenPaths.Contains(Path)) {
+            SeenPaths.Add(Path);
+            ValidPaths.Add(Path);
         }
     }
 
@@ -89,7 +69,7 @@ FGameAssetLoadHandle FGameAssetLoader::LoadBatchAsync(
             }
             Callback();
         }),
-        Priority
+        ToAsyncLoadPriority(Priority)
     );
 
     if (RawHandle.IsValid()) {
@@ -114,66 +94,4 @@ FGameAssetLoadHandle FGameAssetLoader::LoadBatchAsync(
     }
 
     return FGameAssetLoadHandle(MoveTemp(RawHandle));
-}
-
-TGameStatusResult<void> FGameAssetLoader::PinAsset(const FSoftObjectPath& AssetPath) {
-    if (!AssetPath.IsValid()) {
-        return TGameStatusResult<void>::Failure(
-            FGameError::Make(Game::ModuleId::Asset, 1001, TEXT("AssetPath is invalid"))
-        );
-    }
-
-    FScopeLock Lock(&GPinnedAssetsLock);
-    if (FPinnedAssetEntry* Existing = GPinnedAssets.Find(AssetPath)) {
-        ++Existing->RefCount;
-        return TGameStatusResult<void>::Success();
-    }
-
-    FStreamableManager& Streamable = UAssetManager::GetStreamableManager();
-    TSharedPtr<FStreamableHandle> Handle = Streamable.RequestSyncLoad(AssetPath);
-    if (!Handle.IsValid() || Handle->HasError() || Handle->GetLoadedAsset() == nullptr) {
-        return TGameStatusResult<void>::Failure(
-            FGameError::Make(Game::ModuleId::Asset, 1002, TEXT("Failed to pin asset due to sync load failure"))
-        );
-    }
-
-    FPinnedAssetEntry& Entry = GPinnedAssets.Add(AssetPath);
-    Entry.Handle = MoveTemp(Handle);
-    Entry.RefCount = 1;
-    return TGameStatusResult<void>::Success();
-}
-
-TGameStatusResult<void> FGameAssetLoader::UnpinAsset(const FSoftObjectPath& AssetPath) {
-    if (!AssetPath.IsValid()) {
-        return TGameStatusResult<void>::Failure(
-            FGameError::Make(Game::ModuleId::Asset, 1001, TEXT("AssetPath is invalid"))
-        );
-    }
-
-    FScopeLock Lock(&GPinnedAssetsLock);
-    if (FPinnedAssetEntry* Existing = GPinnedAssets.Find(AssetPath)) {
-        --Existing->RefCount;
-        if (Existing->RefCount <= 0) {
-            GPinnedAssets.Remove(AssetPath);
-        }
-        return TGameStatusResult<void>::Success();
-    }
-
-    return TGameStatusResult<void>::Failure(
-        FGameError::Make(Game::ModuleId::Asset, 1003, TEXT("Asset is not pinned"))
-    );
-}
-
-bool FGameAssetLoader::IsAssetPinned(const FSoftObjectPath& AssetPath) {
-    if (!AssetPath.IsValid()) {
-        return false;
-    }
-
-    FScopeLock Lock(&GPinnedAssetsLock);
-    return GPinnedAssets.Contains(AssetPath);
-}
-
-void FGameAssetLoader::ClearAllPinnedAssets() {
-    FScopeLock Lock(&GPinnedAssetsLock);
-    GPinnedAssets.Empty();
 }
