@@ -117,7 +117,8 @@ DEFINE_FUNCTION(UAsyncAction_ListenForGameplayMessage::execGetPayload) {
     bool bSuccess = false;
     if (StructProperty && DestAddress && P_THIS) {
         const UScriptStruct* TargetStruct = StructProperty->Struct;
-        if (P_THIS->ReceivedPayloadStructType.IsValid() && P_THIS->ReceivedPayloadStructType.Get() == TargetStruct && P_THIS->ReceivedPayloadData.Num() > 0) {
+        const UScriptStruct* ReceivedStruct = P_THIS->ReceivedPayloadStructType.Get();
+        if (TargetStruct != nullptr && ReceivedStruct != nullptr && (ReceivedStruct == TargetStruct || ReceivedStruct->IsChildOf(TargetStruct)) && P_THIS->ReceivedPayloadData.Num() > 0) {
             TargetStruct->CopyScriptStruct(DestAddress, P_THIS->ReceivedPayloadData.GetData());
             bSuccess = true;
         }

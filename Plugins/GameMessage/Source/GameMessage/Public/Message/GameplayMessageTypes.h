@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include <atomic>
+
 #include "CoreMinimal.h"
 #include "GameplayTagContainer.h"
 #include "Templates/SharedPointer.h"
@@ -38,17 +40,17 @@ private:
 
     struct FListenerRegistration {
         FListenerRegistration() = default;
-        FListenerRegistration(const FListenerRegistration&) = default;
-        FListenerRegistration& operator=(const FListenerRegistration&) = default;
-        FListenerRegistration(FListenerRegistration&&) = default;
-        FListenerRegistration& operator=(FListenerRegistration&&) = default;
+        FListenerRegistration(const FListenerRegistration&) = delete;
+        FListenerRegistration& operator=(const FListenerRegistration&) = delete;
+        FListenerRegistration(FListenerRegistration&&) = delete;
+        FListenerRegistration& operator=(FListenerRegistration&&) = delete;
         ~FListenerRegistration();
 
         void Unregister();
 
         TWeakObjectPtr<UGameplayMessageSubsystem> SubsystemWeak;
         FGameplayTag Channel;
-        int64 ListenerId = 0;
+        std::atomic<int64> ListenerId{0};
     };
 
 public:
@@ -64,6 +66,33 @@ public:
      * @return 有效返回 true
      */
     [[nodiscard]] bool IsValid() const noexcept;
+
+    /**
+     * @brief 比较两个句柄是否指向同一底层监听注册
+     * @param Other 待比较句柄
+     * @return 指向同一注册返回 true
+     */
+    [[nodiscard]] bool operator==(const FGameplayMessageListenerHandle& Other) const noexcept {
+        return Registration == Other.Registration;
+    }
+
+    /**
+     * @brief 比较两个句柄是否指向不同底层监听注册
+     * @param Other 待比较句柄
+     * @return 指向不同注册返回 true
+     */
+    [[nodiscard]] bool operator!=(const FGameplayMessageListenerHandle& Other) const noexcept {
+        return Registration != Other.Registration;
+    }
+
+    /**
+     * @brief 计算句柄哈希值以支持 TSet 与 TMap 容器
+     * @param Handle 待哈希句柄
+     * @return 内部注册指针哈希值
+     */
+    [[nodiscard]] friend uint32 GetTypeHash(const FGameplayMessageListenerHandle& Handle) noexcept {
+        return GetTypeHash(Handle.Registration);
+    }
 
 private:
     FGameplayMessageListenerHandle(UGameplayMessageSubsystem* InSubsystem, FGameplayTag InChannel, int64 InId);

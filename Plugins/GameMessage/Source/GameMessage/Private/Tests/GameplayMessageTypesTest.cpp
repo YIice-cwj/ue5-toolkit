@@ -51,7 +51,14 @@ bool FGameMessageTypesHandleLifecycleTest::RunTest([[maybe_unused]] const FStrin
     FGameplayMessageListenerHandle CopiedHandle = ActiveHandle;
     TestTrue(TEXT("拷贝构造句柄共享有效性"), CopiedHandle.IsValid());
     TestTrue(TEXT("原句柄依然有效"), ActiveHandle.IsValid());
+    TestTrue(TEXT("同源句柄比较相等"), ActiveHandle == CopiedHandle);
+    TestFalse(TEXT("同源句柄不等比较返回 false"), ActiveHandle != CopiedHandle);
+    TestEqual(TEXT("同源句柄哈希值完全一致"), GetTypeHash(ActiveHandle), GetTypeHash(CopiedHandle));
     TestEqual(TEXT("拷贝句柄不增加子系统监听器数量"), Subsystem->GetListenerCount(), 1);
+
+    FGameplayMessageListenerHandle OtherHandle;
+    TestTrue(TEXT("不同句柄比较不相等"), ActiveHandle != OtherHandle);
+    TestFalse(TEXT("不同句柄相等比较返回 false"), ActiveHandle == OtherHandle);
 
     FGameplayMessageListenerHandle MovedHandle = MoveTemp(ActiveHandle);
     TestTrue(TEXT("移动构造后目标句柄接管有效性"), MovedHandle.IsValid());

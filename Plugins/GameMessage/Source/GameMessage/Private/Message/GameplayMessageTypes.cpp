@@ -13,16 +13,15 @@ FGameplayMessageListenerHandle::FListenerRegistration::~FListenerRegistration() 
 }
 
 /**
- * @brief 执行退订逻辑，若在非游戏线程触发则自动切回游戏线程注销
+ * @brief 执行退订逻辑，若在非游戏线程触发则自动切回游戏线程注销（原子 exchange 保证严格单次退订）
  */
 void FGameplayMessageListenerHandle::FListenerRegistration::Unregister() {
-    if (ListenerId != 0) {
-        const int64 IdToUnregister = ListenerId;
+    const int64 IdToUnregister = ListenerId.exchange(0, std::memory_order_acq_rel);
+    if (IdToUnregister != 0) {
         const FGameplayTag ChannelToUnregister = Channel;
         TWeakObjectPtr<UGameplayMessageSubsystem> SubsystemToNotify = SubsystemWeak;
 
         SubsystemWeak.Reset();
-        ListenerId = 0;
         Channel = FGameplayTag();
 
         if (IsInGameThread()) {
@@ -54,7 +53,7 @@ void FGameplayMessageListenerHandle::Unregister() {
  * @return 有效返回 true
  */
 bool FGameplayMessageListenerHandle::IsValid() const noexcept {
-    return Registration.IsValid() && Registration->ListenerId != 0 && Registration->SubsystemWeak.IsValid();
+    return Registration.IsValid() && Registration->ListenerId.load(std::memory_order_acquire) != 0 && Registration->SubsystemWeak.IsValid();
 }
 
 /**
@@ -71,5 +70,5 @@ FGameplayMessageListenerHandle::FGameplayMessageListenerHandle(
     Registration = MakeShared<FListenerRegistration>();
     Registration->SubsystemWeak = InSubsystem;
     Registration->Channel = InChannel;
-    Registration->ListenerId = InId;
+    Registration->ListenerId.store(InId, std::memory_order_release);
 }

@@ -78,7 +78,8 @@ public:
         if (TargetStruct == nullptr) {
             TargetStruct = TMessageStructType::StaticStruct();
         }
-        if (ReceivedPayloadStructType.IsValid() && ReceivedPayloadStructType.Get() == TargetStruct && ReceivedPayloadData.Num() > 0) {
+        const UScriptStruct* ReceivedStruct = ReceivedPayloadStructType.Get();
+        if (TargetStruct != nullptr && ReceivedStruct != nullptr && (ReceivedStruct == TargetStruct || ReceivedStruct->IsChildOf(TargetStruct)) && ReceivedPayloadData.Num() > 0) {
             TargetStruct->CopyScriptStruct(&OutPayload, ReceivedPayloadData.GetData());
             return true;
         }

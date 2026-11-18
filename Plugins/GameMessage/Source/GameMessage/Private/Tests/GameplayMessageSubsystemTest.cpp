@@ -76,7 +76,15 @@ bool FGameMessageBroadcastAndListenTest::RunTest([[maybe_unused]] const FString&
         }
     );
 
-    TestEqual(TEXT("已注册 2 个监听器"), Subsystem->GetListenerCount(), 2);
+    int32 DirectPayloadSeenValue = 0;
+    FGameplayMessageListenerHandle PayloadOnlyHandle = Subsystem->RegisterListener<FTestGameplayMessage>(
+        ChannelHit,
+        [&DirectPayloadSeenValue](const FTestGameplayMessage& Payload) {
+            DirectPayloadSeenValue = Payload.Value;
+        }
+    );
+
+    TestEqual(TEXT("已注册 3 个监听器"), Subsystem->GetListenerCount(), 3);
 
     FTestGameplayMessage HitPayload;
     HitPayload.Value = 42;
@@ -85,6 +93,7 @@ bool FGameMessageBroadcastAndListenTest::RunTest([[maybe_unused]] const FString&
 
     TestEqual(TEXT("命中通道收到消息"), HitCount, 1);
     TestEqual(TEXT("收到载荷数值一致"), LastHitValue, 42);
+    TestEqual(TEXT("仅接收载荷的 Lambda 同样准确捕获数值"), DirectPayloadSeenValue, 42);
     TestEqual(TEXT("收到载荷文本一致"), LastHitText, TEXT("CriticalStrike"));
     TestEqual(TEXT("不同通道互不串扰"), HealCount, 0);
 
@@ -96,6 +105,7 @@ bool FGameMessageBroadcastAndListenTest::RunTest([[maybe_unused]] const FString&
 
     HitHandle.Unregister();
     HealHandle.Unregister();
+    PayloadOnlyHandle.Unregister();
     TestEqual(TEXT("注销后监听器清空"), Subsystem->GetListenerCount(), 0);
 
     return true;

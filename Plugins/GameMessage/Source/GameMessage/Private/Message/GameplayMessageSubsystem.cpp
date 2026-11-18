@@ -59,6 +59,7 @@ void UGameplayMessageSubsystem::Deinitialize() {
     }
     bDrainScheduled.store(false, std::memory_order_release);
     PartialMatchListenerCount = 0;
+    NextListenerId = 0;
 
     if constexpr (Game::Config::bEnableLog) {
         UE_LOG(LogGameplayMessage, Log, TEXT("【消息子系统】子系统注销，清空 %d 个通道的监听器。"), ListenerMap.Num());
@@ -266,7 +267,7 @@ TGameStatusResult<void> UGameplayMessageSubsystem::BroadcastMessageInternal(
             return;
         }
         if (const UScriptStruct* ExpectedStruct = Entry.ExpectedStructType.Get()) {
-            if (StructType->IsChildOf(ExpectedStruct)) {
+            if (StructType == ExpectedStruct || StructType->IsChildOf(ExpectedStruct)) {
                 CallbacksToInvoke.Add(Entry.Callback);
             }
         } else if (Entry.ExpectedStructType.IsExplicitlyNull()) {

@@ -118,7 +118,7 @@ public:
     );
 
     /**
-     * @brief 注册通用 Lambda / TFunction 监听器
+     * @brief 注册通用 Lambda / TFunction 监听器（接收通道 Tag 与载荷引用）
      * @tparam TMessageStructType 载荷结构体类型
      * @param Channel 监听通道
      * @param Callback 回调闭包
@@ -129,6 +129,21 @@ public:
     [[nodiscard]] FGameplayMessageListenerHandle RegisterListener(
         FGameplayTag Channel,
         TFunction<void(FGameplayTag, const TMessageStructType&)> Callback,
+        EGameplayMessageMatch MatchRule = EGameplayMessageMatch::ExactMatch
+    );
+
+    /**
+     * @brief 注册通用 Lambda / TFunction 监听器（仅接收载荷引用）
+     * @tparam TMessageStructType 载荷结构体类型
+     * @param Channel 监听通道
+     * @param Callback 回调闭包
+     * @param MatchRule 匹配模式（默认精确匹配）
+     * @return RAII 订阅句柄
+     */
+    template <typename TMessageStructType>
+    [[nodiscard]] FGameplayMessageListenerHandle RegisterListener(
+        FGameplayTag Channel,
+        TFunction<void(const TMessageStructType&)> Callback,
         EGameplayMessageMatch MatchRule = EGameplayMessageMatch::ExactMatch
     );
 
@@ -268,4 +283,22 @@ FGameplayMessageListenerHandle UGameplayMessageSubsystem::RegisterListener(
     };
 
     return RegisterListenerInternal(Channel, StructType, MoveTemp(Thunk), MatchRule);
+}
+
+template <typename TMessageStructType>
+FGameplayMessageListenerHandle UGameplayMessageSubsystem::RegisterListener(
+    FGameplayTag Channel,
+    TFunction<void(const TMessageStructType&)> Callback,
+    EGameplayMessageMatch MatchRule
+) {
+    if (!Callback) {
+        return FGameplayMessageListenerHandle();
+    }
+    return RegisterListener<TMessageStructType>(
+        Channel,
+        [Callback = MoveTemp(Callback)]([[maybe_unused]] FGameplayTag InChannel, const TMessageStructType& Payload) {
+            Callback(Payload);
+        },
+        MatchRule
+    );
 }
