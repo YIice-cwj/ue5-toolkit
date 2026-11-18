@@ -8,7 +8,9 @@
 #include "UObject/WeakObjectPtr.h"
 
 class AActor;
+class UObject;
 class FActorPoolManager;
+class FUObjectPoolManager;
 
 /**
  * @brief 延时入池调度控制器，封装硬件级无锁环形队列并提供批量延迟归还调度
@@ -29,12 +31,20 @@ public:
     [[nodiscard]] TGameStatusResult<void> EnqueueDeferredRelease(AActor* Actor);
 
     /**
-     * @brief 分步批量处理延时归还队列中的 Actor
-     * @param ActorManager Actor 池管理器引用
-     * @param MaxProcessCount 本次最大处理配额
-     * @return 实际成功归还入池的 Actor 数量
+     * @brief 异步延时将纯 UObject 加入归还队列（多线程/并发安全）
+     * @param Object 待归还的目标 UObject 实例
+     * @return 成功入队返回 Success，队列已满或 Object 无效返回 Failure
      */
-    int32 ProcessDeferredReleases(FActorPoolManager& ActorManager, int32 MaxProcessCount = 64);
+    [[nodiscard]] TGameStatusResult<void> EnqueueDeferredRelease(UObject* Object);
+
+    /**
+     * @brief 分步批量处理延时归还队列中的 Actor 与 UObject
+     * @param ActorManager Actor 池管理器引用
+     * @param ObjectManager UObject 池管理器引用
+     * @param MaxProcessCount 本次最大处理配额
+     * @return 实际成功归还入池的实例总数
+     */
+    int32 ProcessDeferredReleases(FActorPoolManager& ActorManager, FUObjectPoolManager& ObjectManager, int32 MaxProcessCount = 64);
 
     /**
      * @brief 清空延时归还环形队列中的所有待处理项
@@ -43,4 +53,5 @@ public:
 
 private:
     TLockFreeRingBuffer<TWeakObjectPtr<AActor>, 1024> DeferredReleaseBuffer;
+    TLockFreeRingBuffer<TWeakObjectPtr<UObject>, 1024> DeferredObjectReleaseBuffer;
 };

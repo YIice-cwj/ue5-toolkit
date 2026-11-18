@@ -126,9 +126,6 @@ struct GAMEPOOL_API FPoolBucket {
     TArray<double> IdleReturnTimestamps;
 
     UPROPERTY()
-    TSet<TObjectPtr<AActor>> IdleActorSet;
-
-    UPROPERTY()
     TSet<TObjectPtr<AActor>> ActiveActorSet;
 
     /**
@@ -167,9 +164,6 @@ struct GAMEPOOL_API FObjectPoolBucket {
     TArray<TObjectPtr<UObject>> IdleObjects;
 
     TArray<double> IdleReturnTimestamps;
-
-    UPROPERTY()
-    TSet<TObjectPtr<UObject>> IdleObjectSet;
 
     UPROPERTY()
     TSet<TObjectPtr<UObject>> ActiveObjectSet;

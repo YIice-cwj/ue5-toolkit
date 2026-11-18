@@ -93,7 +93,7 @@ void FPooledActorResetter::ResetActorComponents(AActor* Actor, EPoolResetFlags R
  * @param bAcquire 若为 true 触发借出唤醒回调，若为 false 触发归还休眠回调
  */
 void FPooledActorResetter::InvokePoolableCallback(UObject* TargetObject, bool bAcquire) {
-    if (TargetObject == nullptr || !TargetObject->GetClass()->ImplementsInterface(UGamePoolable::StaticClass())) {
+    if (TargetObject == nullptr) {
         return;
     }
 
@@ -106,9 +106,11 @@ void FPooledActorResetter::InvokePoolableCallback(UObject* TargetObject, bool bA
         return;
     }
 
-    if (bAcquire) {
-        IGamePoolable::Execute_OnAcquireFromPool(TargetObject);
-    } else {
-        IGamePoolable::Execute_OnReleaseToPool(TargetObject);
+    if (TargetObject->GetClass()->ImplementsInterface(UGamePoolable::StaticClass())) {
+        if (bAcquire) {
+            IGamePoolable::Execute_OnAcquireFromPool(TargetObject);
+        } else {
+            IGamePoolable::Execute_OnReleaseToPool(TargetObject);
+        }
     }
 }

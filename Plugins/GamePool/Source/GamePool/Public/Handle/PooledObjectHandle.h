@@ -126,6 +126,15 @@ public:
     }
 
     /**
+     * @brief 友元哈希计算函数，支持在 TMap / TSet 中作为键
+     * @param Handle 待计算句柄
+     * @return 组合哈希值
+     */
+    friend uint32 GetTypeHash(const TPooledObjectHandle& Handle) noexcept {
+        return HashCombine(GetTypeHash(Handle.ObjectPtr), HashCombine(GetTypeHash(Handle.SubsystemPtr), Handle.Generation));
+    }
+
+    /**
      * @brief 重置句柄为初始空状态
      */
     void Reset() noexcept {
@@ -236,7 +245,7 @@ public:
     /**
      * @brief 提前显式归还对象入池并重置租约
      */
-    void EarlyRelease();
+    void EarlyRelease() noexcept;
 
     /**
      * @brief 脱钩放弃池管理所有权（不触发归还，转由调用方负责管理）
@@ -261,15 +270,17 @@ bool TPooledObjectHandle<T>::IsValid() const {
 }
 
 template <typename T>
-void TScopedPoolRental<T>::EarlyRelease() {
+void TScopedPoolRental<T>::EarlyRelease() noexcept {
     if (Handle.IsValid()) {
         if (UObjectPoolSubsystem* Subsystem = Handle.GetSubsystem()) {
-            if constexpr (std::is_base_of_v<AActor, T>) {
-                Game::Pool::Private::ReleasePooledActor(Subsystem, Handle.Get());
-            } else {
-                Game::Pool::Private::ReleasePooledObject(Subsystem, Handle.Get());
+            if (T* Raw = Handle.Get()) {
+                if constexpr (std::is_base_of_v<AActor, T>) {
+                    Game::Pool::Private::ReleasePooledActor(Subsystem, Raw);
+                } else {
+                    Game::Pool::Private::ReleasePooledObject(Subsystem, Raw);
+                }
             }
         }
-        Handle.Reset();
     }
+    Handle.Reset();
 }

@@ -146,12 +146,12 @@ TGameStatusResult<void> UObjectPoolSubsystem::ReleaseActorDeferred(AActor* Actor
 }
 
 /**
- * @brief 处理延时归还队列中的 Actor
+ * @brief 处理延时归还队列中的实例（Actor 与 UObject）
  * @param MaxProcessCount 本次最大处理配额
- * @return 实际成功归还入池的 Actor 数量
+ * @return 实际成功归还入池的实例总数
  */
 int32 UObjectPoolSubsystem::ProcessDeferredReleases(const int32 MaxProcessCount) {
-    return DeferredDispatcher.ProcessDeferredReleases(ActorManager, MaxProcessCount);
+    return DeferredDispatcher.ProcessDeferredReleases(ActorManager, ObjectManager, MaxProcessCount);
 }
 
 /**
@@ -272,6 +272,15 @@ void UObjectPoolSubsystem::K2_ReleaseObject(UObject* Object) {
  */
 TGameStatusResult<void> UObjectPoolSubsystem::ReleaseObject(UObject* Object) {
     return ObjectManager.ReleaseObject(Object);
+}
+
+/**
+ * @brief 异步延时将纯 UObject 加入归还队列
+ * @param Object 待归还的目标 UObject 实例
+ * @return 成功入队返回 Success，队列已满或 Object 无效返回 Failure
+ */
+TGameStatusResult<void> UObjectPoolSubsystem::ReleaseObjectDeferred(UObject* Object) {
+    return DeferredDispatcher.EnqueueDeferredRelease(Object);
 }
 
 /**

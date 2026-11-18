@@ -41,8 +41,8 @@ public:
     }
 
     void OnAcquireFromPoolWithPayload(const void* InPayload) override {
-        if (InPayload != nullptr) {
-            LastReceivedPayloadValue = *reinterpret_cast<const int32*>(InPayload);
+        if (const int32* ValuePtr = IGamePoolable::ExtractPayload<int32>(InPayload)) {
+            LastReceivedPayloadValue = *ValuePtr;
         }
     }
 

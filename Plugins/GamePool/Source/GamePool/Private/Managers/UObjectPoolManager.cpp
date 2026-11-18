@@ -53,7 +53,6 @@ TGameStatusResult<void> FUObjectPoolManager::SpawnIdleObjectToPool(TSubclassOf<U
     }
     Bucket.IdleObjects.Add(NewInstance);
     Bucket.IdleReturnTimestamps.Add(FPlatformTime::Seconds());
-    Bucket.IdleObjectSet.Add(NewInstance);
     INC_DWORD_STAT(STAT_GamePool_IdleObjects);
     return TGameStatusResult<void>::Success();
 }
@@ -108,7 +107,6 @@ void FUObjectPoolManager::SetMaxCapacity(TSubclassOf<UObject> ObjectClass, int32
             if (Bucket.IdleReturnTimestamps.Num() > 0) {
                 Bucket.IdleReturnTimestamps.Pop();
             }
-            Bucket.IdleObjectSet.Remove(ObjToDiscard);
             DEC_DWORD_STAT(STAT_GamePool_IdleObjects);
             if (GenerationTracker != nullptr) {
                 GenerationTracker->RemoveGeneration(ObjToDiscard.Get());
@@ -183,7 +181,6 @@ int32 FUObjectPoolManager::EvictExpiredObjects(const double NowSeconds, const in
             TObjectPtr<UObject> ObjToDiscard = Bucket.IdleObjects[0];
             Bucket.IdleObjects.RemoveAt(0);
             Bucket.IdleReturnTimestamps.RemoveAt(0);
-            Bucket.IdleObjectSet.Remove(ObjToDiscard);
             DEC_DWORD_STAT(STAT_GamePool_IdleObjects);
 
             if (UObject* RawObj = ObjToDiscard.Get()) {
@@ -245,7 +242,7 @@ TGameStatusResult<UObject*> FUObjectPoolManager::AcquireObject(TSubclassOf<UObje
         if (Bucket.IdleReturnTimestamps.Num() > 0) {
             Bucket.IdleReturnTimestamps.Pop();
         }
-        Bucket.IdleObjectSet.Remove(Candidate);
+        DEC_DWORD_STAT(STAT_GamePool_IdleObjects);
         if (IsValid(Candidate.Get())) {
             ResultObject = Candidate.Get();
             break;
@@ -256,7 +253,6 @@ TGameStatusResult<UObject*> FUObjectPoolManager::AcquireObject(TSubclassOf<UObje
     if (bReused) {
         ++CacheHits;
         INC_DWORD_STAT(STAT_GamePool_Hits);
-        DEC_DWORD_STAT(STAT_GamePool_IdleObjects);
     } else {
         ++CacheMisses;
         INC_DWORD_STAT(STAT_GamePool_Misses);
@@ -333,7 +329,6 @@ TGameStatusResult<void> FUObjectPoolManager::ReleaseObject(UObject* Object) {
     } else {
         Bucket->IdleObjects.Add(Object);
         Bucket->IdleReturnTimestamps.Add(FPlatformTime::Seconds());
-        Bucket->IdleObjectSet.Add(Object);
         INC_DWORD_STAT(STAT_GamePool_IdleObjects);
     }
     return TGameStatusResult<void>::Success();
@@ -370,7 +365,6 @@ void FUObjectPoolManager::DestroyBucketIdleObjects(FObjectPoolBucket& Bucket) {
     TArray<TObjectPtr<UObject>> IdleObjects = MoveTemp(Bucket.IdleObjects);
     Bucket.IdleObjects.Empty();
     Bucket.IdleReturnTimestamps.Empty();
-    Bucket.IdleObjectSet.Empty();
     for (TObjectPtr<UObject>& IdleObj : IdleObjects) {
         if (IsValid(IdleObj.Get())) {
             if (GenerationTracker != nullptr) {
@@ -399,7 +393,6 @@ int32 FUObjectPoolManager::FlushIdleObjects(const bool bPreserveMinCount) {
             if (Bucket.IdleReturnTimestamps.Num() > 0) {
                 Bucket.IdleReturnTimestamps.Pop();
             }
-            Bucket.IdleObjectSet.Remove(ObjPtr);
             DEC_DWORD_STAT(STAT_GamePool_IdleObjects);
 
             if (UObject* RawObj = ObjPtr.Get()) {
@@ -423,7 +416,6 @@ int32 FUObjectPoolManager::FlushIdleObjects(const bool bPreserveMinCount) {
 void FUObjectPoolManager::AddReferencedObjects(FReferenceCollector& Collector) {
     for (auto& Pair : ObjectPoolMap) {
         Collector.AddReferencedObjects(Pair.Value.IdleObjects);
-        Collector.AddReferencedObjects(Pair.Value.IdleObjectSet);
         Collector.AddReferencedObjects(Pair.Value.ActiveObjectSet);
     }
 }

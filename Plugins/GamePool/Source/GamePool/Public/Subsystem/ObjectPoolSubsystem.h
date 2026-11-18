@@ -218,9 +218,9 @@ public:
     TGameStatusResult<void> ReleaseActorDeferred(AActor* Actor);
 
     /**
-     * @brief 处理延时归还队列中的待归还 Actor
+     * @brief 处理延时归还队列中的待归还实例（Actor 与 UObject）
      * @param MaxProcessCount 本次单步最大处理配额
-     * @return 实际成功归还入池的 Actor 数量
+     * @return 实际成功归还入池的实例总数
      */
     int32 ProcessDeferredReleases(int32 MaxProcessCount = 64);
 
@@ -391,6 +391,13 @@ public:
         }
         return ReleaseObject(Handle.Get());
     }
+
+    /**
+     * @brief 异步延时将纯 UObject 加入归还队列（并发/多线程安全）
+     * @param Object 待归还的目标 UObject 实例
+     * @return 成功入队返回 Success，队列已满或 Object 无效返回 Failure
+     */
+    TGameStatusResult<void> ReleaseObjectDeferred(UObject* Object);
 
     /**
      * @brief 查询指定纯 UObject 类的池容量与活跃统计快照

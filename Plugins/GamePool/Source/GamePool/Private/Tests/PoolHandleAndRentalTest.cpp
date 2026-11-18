@@ -85,6 +85,14 @@ bool FGameObjectPoolHandleGenerationSafetyTest::RunTest([[maybe_unused]] const F
     TestFalse(TEXT("归还后 UObject 句柄失效"), ObjHandle.IsValid());
     TestNull(TEXT("失效 UObject 句柄返回 nullptr"), ObjHandle.Get());
 
+    TSet<TPooledObjectHandle<AGamePoolableTestActor>> HandleSet;
+    HandleSet.Add(FirstHandle);
+    TestTrue(TEXT("句柄支持无缝存入 TSet 并检索"), HandleSet.Contains(FirstHandle));
+
+    TMap<TPooledObjectHandle<AGamePoolableTestActor>, FString> HandleMap;
+    HandleMap.Add(FirstHandle, TEXT("ActorHandle"));
+    TestEqual(TEXT("句柄支持作为 TMap 键值映射"), HandleMap.FindRef(FirstHandle), FString(TEXT("ActorHandle")));
+
     Pool->ClearPool(ActorClass);
     Pool->ClearObjectPool(ObjClass);
     return true;

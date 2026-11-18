@@ -76,7 +76,6 @@ TGameStatusResult<void> FActorPoolManager::SpawnIdleActorToPool(TSubclassOf<AAct
     FPoolBucket& Bucket = PoolMap.FindOrAdd(ActorClass);
     Bucket.IdleActors.Add(SpawnedActor);
     Bucket.IdleReturnTimestamps.Add(FPlatformTime::Seconds());
-    Bucket.IdleActorSet.Add(SpawnedActor);
     INC_DWORD_STAT(STAT_GamePool_IdleActors);
     return TGameStatusResult<void>::Success();
 }
@@ -100,7 +99,6 @@ void FActorPoolManager::SetMaxPoolCapacity(TSubclassOf<AActor> ActorClass, int32
             if (Bucket.IdleReturnTimestamps.Num() > 0) {
                 Bucket.IdleReturnTimestamps.Pop();
             }
-            Bucket.IdleActorSet.Remove(ActorToDestroy);
             DEC_DWORD_STAT(STAT_GamePool_IdleActors);
             if (GenerationTracker != nullptr) {
                 GenerationTracker->RemoveGeneration(ActorToDestroy.Get());
@@ -196,7 +194,6 @@ int32 FActorPoolManager::EvictExpiredActors(const double NowSeconds, const int32
             TObjectPtr<AActor> ActorToDestroy = Bucket.IdleActors[0];
             Bucket.IdleActors.RemoveAt(0);
             Bucket.IdleReturnTimestamps.RemoveAt(0);
-            Bucket.IdleActorSet.Remove(ActorToDestroy);
             DEC_DWORD_STAT(STAT_GamePool_IdleActors);
 
             if (AActor* RawActor = ActorToDestroy.Get()) {
@@ -258,7 +255,7 @@ TGameStatusResult<AActor*> FActorPoolManager::AcquireActor(TSubclassOf<AActor> A
         if (Bucket.IdleReturnTimestamps.Num() > 0) {
             Bucket.IdleReturnTimestamps.Pop();
         }
-        Bucket.IdleActorSet.Remove(Candidate);
+        DEC_DWORD_STAT(STAT_GamePool_IdleActors);
         if (IsValid(Candidate.Get())) {
             ResultActor = Candidate.Get();
             break;
@@ -269,7 +266,6 @@ TGameStatusResult<AActor*> FActorPoolManager::AcquireActor(TSubclassOf<AActor> A
     if (bReused) {
         ++CacheHits;
         INC_DWORD_STAT(STAT_GamePool_Hits);
-        DEC_DWORD_STAT(STAT_GamePool_IdleActors);
     } else {
         ++CacheMisses;
         INC_DWORD_STAT(STAT_GamePool_Misses);
@@ -405,7 +401,6 @@ TGameStatusResult<void> FActorPoolManager::ReleaseActor(AActor* Actor) {
     } else {
         Bucket->IdleActors.Add(Actor);
         Bucket->IdleReturnTimestamps.Add(FPlatformTime::Seconds());
-        Bucket->IdleActorSet.Add(Actor);
         INC_DWORD_STAT(STAT_GamePool_IdleActors);
         if constexpr (Game::Config::bEnableLog) {
             UE_LOG(LogGameActorPool, Verbose, TEXT("【Actor对象池】归还 Actor 成功: 类=[%s], 实例=[%s], 剩余活跃数=%d, 当前空闲数=%d"),
@@ -453,7 +448,6 @@ void FActorPoolManager::OnPooledActorDestroyed(AActor* DestroyedActor) {
 
     TSubclassOf<AActor> ActorClass = DestroyedActor->GetClass();
     if (FPoolBucket* Bucket = PoolMap.Find(ActorClass)) {
-        Bucket->IdleActorSet.Remove(DestroyedActor);
         const int32 Index = Bucket->IdleActors.IndexOfByKey(DestroyedActor);
         if (Index != INDEX_NONE) {
             Bucket->IdleActors.RemoveAt(Index);
@@ -485,7 +479,6 @@ void FActorPoolManager::DestroyBucketIdleActors(FPoolBucket& Bucket) {
     }
     Bucket.IdleActors.Empty();
     Bucket.IdleReturnTimestamps.Empty();
-    Bucket.IdleActorSet.Empty();
 }
 
 /**
@@ -506,7 +499,6 @@ int32 FActorPoolManager::FlushIdleActors(const bool bPreserveMinCount) {
             if (Bucket.IdleReturnTimestamps.Num() > 0) {
                 Bucket.IdleReturnTimestamps.Pop();
             }
-            Bucket.IdleActorSet.Remove(ActorPtr);
             DEC_DWORD_STAT(STAT_GamePool_IdleActors);
 
             if (AActor* Actor = ActorPtr.Get()) {

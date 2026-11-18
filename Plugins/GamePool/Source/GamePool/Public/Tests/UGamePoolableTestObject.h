@@ -39,6 +39,16 @@ public:
         }
     }
 
+    /**
+     * @brief 借出携带业务载荷回调
+     * @param InPayload 业务载荷指针
+     */
+    void OnAcquireFromPoolWithPayload(const void* InPayload) override {
+        if (const int32* ValuePtr = IGamePoolable::ExtractPayload<int32>(InPayload)) {
+            PayloadValue = *ValuePtr;
+        }
+    }
+
     int32 AcquireCount = 0;
     int32 ReleaseCount = 0;
     int32 PayloadValue = 0;

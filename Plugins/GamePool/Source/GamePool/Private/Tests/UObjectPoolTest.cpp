@@ -118,6 +118,27 @@ bool FGameNonActorUObjectPoolTest::RunTest([[maybe_unused]] const FString& Param
     Stats = Pool->GetObjectPoolStats(ObjClass);
     TestEqual(TEXT("ClearAllPools 同步清空所有 UObject 空闲池"), Stats.IdleCount, 0);
 
+    const int32 CustomPayload = 777;
+    const TGameStatusResult<UGamePoolableTestObject*> PayloadObjRes =
+        Pool->AcquireObjectWithPayload<UGamePoolableTestObject>(ObjClass, CustomPayload);
+    TestTrue(TEXT("带载荷借出纯 UObject 成功"), PayloadObjRes.IsSuccess());
+    UGamePoolableTestObject* PayloadObj = PayloadObjRes.GetValue();
+    TestNotNull(TEXT("带载荷借出实例有效"), PayloadObj);
+    TestEqual(TEXT("载荷值正确分发至纯 UObject"), PayloadObj->PayloadValue, 777);
+
+    const TGameStatusResult<TPooledObjectHandle<UGamePoolableTestObject>> PayloadHandleRes =
+        Pool->AcquireObjectHandleWithPayload<UGamePoolableTestObject>(ObjClass, 888);
+    TestTrue(TEXT("带载荷借出安全句柄成功"), PayloadHandleRes.IsSuccess());
+    TPooledObjectHandle<UGamePoolableTestObject> PayloadHandle = PayloadHandleRes.GetValue();
+    TestTrue(TEXT("安全句柄有效"), PayloadHandle.IsValid());
+    TestEqual(TEXT("句柄对象载荷分发正确"), PayloadHandle.Get()->PayloadValue, 888);
+
+    TestTrue(TEXT("延迟归还句柄对象成功"), Pool->ReleaseObjectDeferred(PayloadHandle.Get()).IsSuccess());
+    TestTrue(TEXT("延迟归还普通对象成功"), Pool->ReleaseObjectDeferred(PayloadObj).IsSuccess());
+    const int32 HarvestedCount = Pool->ProcessDeferredReleases(64);
+    TestEqual(TEXT("批量处理延迟归还收割2个UObject实例"), HarvestedCount, 2);
+
+    Pool->ClearAllPools();
     return true;
 }
 
