@@ -5,20 +5,28 @@
 
 #include "Async/FWaitLoadingCompleteAwaiter.h"
 
+#include <atomic>
+
 #include "Engine/GameInstance.h"
 #include "System/ULoadingSubsystem.h"
 #include "TimerManager.h"
 
 FWaitLoadingCompleteAwaiter::FWaitLoadingCompleteAwaiter(
     ULoadingSubsystem* InSubsystem,
-    float InTimeoutSeconds
+    float InTimeoutSeconds,
+    FCancellationToken InCancellationToken
 ) noexcept
     : SubsystemWeak(InSubsystem)
     , TimeoutSeconds(InTimeoutSeconds)
+    , CancellationToken(MoveTemp(InCancellationToken))
     , ResultHolder(MakeShared<bool, ESPMode::ThreadSafe>(false)) {
 }
 
 bool FWaitLoadingCompleteAwaiter::await_ready() const noexcept {
+    if (CancellationToken.IsCancellationRequested()) {
+        *ResultHolder = false;
+        return true;
+    }
     const ULoadingSubsystem* Subsystem = SubsystemWeak.Get();
     if (Subsystem == nullptr) {
         *ResultHolder = false;
@@ -34,6 +42,12 @@ bool FWaitLoadingCompleteAwaiter::await_ready() const noexcept {
 void FWaitLoadingCompleteAwaiter::SuspendWithGuard(
     TSharedRef<Game::Coro::FGameCoroSuspensionGuard, ESPMode::ThreadSafe> InGuard
 ) {
+    if (CancellationToken.IsCancellationRequested()) {
+        *ResultHolder = false;
+        InGuard->ResumeOrAbort();
+        return;
+    }
+
     ULoadingSubsystem* Subsystem = SubsystemWeak.Get();
     if (Subsystem == nullptr) {
         *ResultHolder = false;
@@ -52,6 +66,8 @@ void FWaitLoadingCompleteAwaiter::SuspendWithGuard(
         FTimerHandle TimeoutTimerHandle;
         TWeakObjectPtr<UGameInstance> GameInstanceWeak;
         TSharedPtr<bool, ESPMode::ThreadSafe> ResultHolder;
+        FCancellationTokenRegistration CancelRegistration;
+        std::atomic<bool> bCompleted{false};
     };
 
     const TSharedRef<FAwaiterContext> Context = MakeShared<FAwaiterContext>();
@@ -59,19 +75,34 @@ void FWaitLoadingCompleteAwaiter::SuspendWithGuard(
     Context->GameInstanceWeak = Subsystem->GetGameInstance();
     Context->ResultHolder = ResultHolder;
 
+    auto CleanupAndResume = [Context, InGuard](bool bSuccess) {
+        if (Context->bCompleted.exchange(true)) {
+            return;
+        }
+        const TSharedRef<Game::Coro::FGameCoroSuspensionGuard, ESPMode::ThreadSafe> GuardCopy = InGuard;
+        const TSharedRef<FAwaiterContext> ContextCopy = Context;
+
+        *ContextCopy->ResultHolder = bSuccess;
+        ContextCopy->CancelRegistration.Unregister();
+        if (UGameInstance* GI = ContextCopy->GameInstanceWeak.Get()) {
+            GI->GetTimerManager().ClearTimer(ContextCopy->TimeoutTimerHandle);
+        }
+
+        GuardCopy->ResumeOrAbort();
+
+        if (ULoadingSubsystem* ValidSubsystem = ContextCopy->SubsystemWeak.Get()) {
+            if (ContextCopy->ListenerHandle.IsValid()) {
+                const FDelegateHandle HandleToRemove = ContextCopy->ListenerHandle;
+                ContextCopy->ListenerHandle.Reset();
+                ValidSubsystem->OnLoadingStateChangedNative.Remove(HandleToRemove);
+            }
+        }
+    };
+
     Context->ListenerHandle = Subsystem->OnLoadingStateChangedNative.AddLambda(
-        [InGuard, Context](bool bIsLoading, FName) {
+        [CleanupAndResume](bool bIsLoading, FName) {
             if (!bIsLoading) {
-                *Context->ResultHolder = true;
-                if (UGameInstance* GI = Context->GameInstanceWeak.Get()) {
-                    GI->GetTimerManager().ClearTimer(Context->TimeoutTimerHandle);
-                }
-                const TSharedRef<Game::Coro::FGameCoroSuspensionGuard, ESPMode::ThreadSafe> GuardCopy = InGuard;
-                const TSharedRef<FAwaiterContext> ContextCopy = Context;
-                GuardCopy->ResumeOrAbort();
-                if (ULoadingSubsystem* ValidSubsystem = ContextCopy->SubsystemWeak.Get()) {
-                    ValidSubsystem->OnLoadingStateChangedNative.Remove(ContextCopy->ListenerHandle);
-                }
+                CleanupAndResume(true);
             }
         }
     );
@@ -80,19 +111,21 @@ void FWaitLoadingCompleteAwaiter::SuspendWithGuard(
         if (UGameInstance* GI = Subsystem->GetGameInstance()) {
             GI->GetTimerManager().SetTimer(
                 Context->TimeoutTimerHandle,
-                [InGuard, Context]() {
-                    *Context->ResultHolder = false;
-                    const TSharedRef<Game::Coro::FGameCoroSuspensionGuard, ESPMode::ThreadSafe> GuardCopy = InGuard;
-                    const TSharedRef<FAwaiterContext> ContextCopy = Context;
-                    GuardCopy->ResumeOrAbort();
-                    if (ULoadingSubsystem* ValidSubsystem = ContextCopy->SubsystemWeak.Get()) {
-                        ValidSubsystem->OnLoadingStateChangedNative.Remove(ContextCopy->ListenerHandle);
-                    }
+                [CleanupAndResume]() {
+                    CleanupAndResume(false);
                 },
                 TimeoutSeconds,
                 false
             );
         }
+    }
+
+    if (CancellationToken.CanBeCancelled()) {
+        Context->CancelRegistration = CancellationToken.Register(
+            [CleanupAndResume]() {
+                CleanupAndResume(false);
+            }
+        );
     }
 }
 
@@ -104,9 +137,14 @@ namespace GameFlow {
 
 FWaitLoadingCompleteAwaiter WaitLoadingComplete(
     const UObject* WorldContextObject,
-    float TimeoutSeconds
+    float TimeoutSeconds,
+    FCancellationToken CancellationToken
 ) {
-    return FWaitLoadingCompleteAwaiter(ULoadingSubsystem::Get(WorldContextObject), TimeoutSeconds);
+    return FWaitLoadingCompleteAwaiter(
+        ULoadingSubsystem::Get(WorldContextObject),
+        TimeoutSeconds,
+        MoveTemp(CancellationToken)
+    );
 }
 
 } // namespace GameFlow

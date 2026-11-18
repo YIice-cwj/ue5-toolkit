@@ -7,8 +7,46 @@
 
 #include "System/ULoadingSubsystem.h"
 
+FLoadingBarrierToken::FLoadingBarrierToken(FLoadingBarrierToken&& Other) noexcept
+    : SubsystemWeak(MoveTemp(Other.SubsystemWeak))
+    , BarrierId(Other.BarrierId)
+    , BarrierName(Other.BarrierName)
+    , CurrentProgress(Other.CurrentProgress)
+    , bReleased(Other.bReleased) {
+    Other.bReleased = true;
+    Other.BarrierId = 0ULL;
+    Other.BarrierName = NAME_None;
+    Other.CurrentProgress = 0.0f;
+}
+
+FLoadingBarrierToken& FLoadingBarrierToken::operator=(FLoadingBarrierToken&& Other) noexcept {
+    if (this != &Other) {
+        Release();
+        SubsystemWeak = MoveTemp(Other.SubsystemWeak);
+        BarrierId = Other.BarrierId;
+        BarrierName = Other.BarrierName;
+        CurrentProgress = Other.CurrentProgress;
+        bReleased = Other.bReleased;
+        Other.bReleased = true;
+        Other.BarrierId = 0ULL;
+        Other.BarrierName = NAME_None;
+        Other.CurrentProgress = 0.0f;
+    }
+    return *this;
+}
+
 FLoadingBarrierToken::~FLoadingBarrierToken() {
     Release();
+}
+
+void FLoadingBarrierToken::ReportProgress(float InProgress, const FText& InDescription) {
+    if (bReleased) {
+        return;
+    }
+    CurrentProgress = FMath::Clamp(InProgress, 0.0f, 1.0f);
+    if (ULoadingSubsystem* Subsystem = SubsystemWeak.Get()) {
+        Subsystem->UpdateBarrierProgressInternal(BarrierId, CurrentProgress, InDescription);
+    }
 }
 
 void FLoadingBarrierToken::Release() {
@@ -28,5 +66,6 @@ FLoadingBarrierToken::FLoadingBarrierToken(
     const FName& InBarrierName) noexcept
     : SubsystemWeak(InSubsystem)
     , BarrierId(InBarrierId)
-    , BarrierName(InBarrierName) {
+    , BarrierName(InBarrierName)
+    , bReleased(false) {
 }
