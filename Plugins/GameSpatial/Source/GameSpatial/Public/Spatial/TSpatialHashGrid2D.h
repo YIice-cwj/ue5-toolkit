@@ -1,177 +1,119 @@
 /**
  * @file TSpatialHashGrid2D.h
- * @brief 纯逻辑轻量 2D 均匀空间哈希网格模板（脱离物理引擎，纳秒级范围检索与近邻查询）
+ * @brief 2D 均匀空间哈希网格门面（基于底层容器 TSpatialHashContainer2D 与求交算法 FSpatialQuery2D）
  */
 
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Math/Box2D.h"
-#include "Math/Vector2D.h"
-#include "Types/TGameResult.h"
+#include "Spatial/Algorithms/SpatialQuery2D.h"
+#include "Spatial/Containers/TSpatialHashContainer2D.h"
 
 /**
- * @brief 2D 纯逻辑均匀空间哈希网格容器模板
+ * @brief 2D 纯逻辑均匀空间哈希网格门面模板（向后兼容全套几何查询、流式消费与增删改查）
  * @tparam TElement 空间对象键或句柄类型（须支持 GetTypeHash 与 operator==）
  */
 template <typename TElement>
-class TSpatialHashGrid2D {
+class TSpatialHashGrid2D : public TSpatialHashContainer2D<TElement> {
 public:
-    static constexpr float DEFAULT_CELL_SIZE = 500.0f;
+    using Super = TSpatialHashContainer2D<TElement>;
 
-public:
     /**
      * @brief 构造空间哈希网格并指定单元格跨度
      * @param InCellSize 单元格边长（必须大于 1.0f）
      */
-    explicit TSpatialHashGrid2D(float InCellSize = DEFAULT_CELL_SIZE) noexcept
-        : CellSize(InCellSize > 1.0f ? InCellSize : DEFAULT_CELL_SIZE)
-        , InvCellSize(1.0f / (InCellSize > 1.0f ? InCellSize : DEFAULT_CELL_SIZE)) {}
+    explicit TSpatialHashGrid2D(float InCellSize = Super::DEFAULT_CELL_SIZE) noexcept
+        : Super(InCellSize) {}
+
+    TSpatialHashGrid2D(const TSpatialHashGrid2D&) = default;
+    TSpatialHashGrid2D& operator=(const TSpatialHashGrid2D&) = default;
+    TSpatialHashGrid2D(TSpatialHashGrid2D&&) noexcept = default;
+    TSpatialHashGrid2D& operator=(TSpatialHashGrid2D&&) noexcept = default;
+    ~TSpatialHashGrid2D() = default;
 
     /**
-     * @brief 向网格中插入新元素及其空间坐标
-     * @param Element 目标元素标识
-     * @param Location 空间二维坐标
-     * @return 插入成功返回成功态，若已存在同名元素返回携带 6002 错误码的失败态
-     */
-    TGameStatusResult<void> Insert(const TElement& Element, const FVector2D& Location) {
-        if (ElementToCell.Contains(Element)) {
-            return TGameStatusResult<void>::Failure(
-                FGameError::Make(Game::ModuleId::Spatial, 6002, TEXT("Element already exists in 2D spatial grid"))
-            );
-        }
-
-        const uint64 CellKey = ComputeCellKey(Location);
-        Cells.FindOrAdd(CellKey).Add(Element);
-        ElementToCell.Add(Element, CellKey);
-        ElementLocations.Add(Element, Location);
-        return TGameStatusResult<void>::Success();
-    }
-
-    /**
-     * @brief 更新已有元素的空间坐标（若未跨越单元格边界则无移动开销）
-     * @param Element 目标元素标识
-     * @param NewLocation 新空间二维坐标
-     * @return 元素存在且更新成功返回成功态，不存在返回携带 6001 错误码的失败态
-     */
-    TGameStatusResult<void> Update(const TElement& Element, const FVector2D& NewLocation) {
-        uint64* ExistingCellKey = ElementToCell.Find(Element);
-        if (ExistingCellKey == nullptr) {
-            return TGameStatusResult<void>::Failure(
-                FGameError::Make(Game::ModuleId::Spatial, 6001, TEXT("Element not found in 2D spatial grid"))
-            );
-        }
-
-        const uint64 NewCellKey = ComputeCellKey(NewLocation);
-        if (*ExistingCellKey != NewCellKey) {
-            RemoveFromBucket(*ExistingCellKey, Element);
-            Cells.FindOrAdd(NewCellKey).Add(Element);
-            *ExistingCellKey = NewCellKey;
-        }
-
-        ElementLocations.Add(Element, NewLocation);
-        return TGameStatusResult<void>::Success();
-    }
-
-    /**
-     * @brief 从网格中移除目标元素
-     * @param Element 待移除的元素标识
-     * @return 成功移除返回成功态，元素不存在返回携带 6001 错误码的失败态
-     */
-    TGameStatusResult<void> Remove(const TElement& Element) {
-        uint64 RemovedCellKey = 0;
-        if (!ElementToCell.RemoveAndCopyValue(Element, RemovedCellKey)) {
-            return TGameStatusResult<void>::Failure(
-                FGameError::Make(Game::ModuleId::Spatial, 6001, TEXT("Element not found in 2D spatial grid"))
-            );
-        }
-
-        ElementLocations.Remove(Element);
-        RemoveFromBucket(RemovedCellKey, Element);
-        return TGameStatusResult<void>::Success();
-    }
-
-    /**
-     * @brief 检查网格中是否包含目标元素
-     * @param Element 待查询的元素标识
-     * @return 包含返回 true
-     */
-    [[nodiscard]] bool Contains(const TElement& Element) const noexcept {
-        return ElementToCell.Contains(Element);
-    }
-
-    /**
-     * @brief 获取目标元素的当前坐标（强类型结果契约）
-     * @param Element 待查询的元素标识
-     * @return 成功返回包含二维坐标的成功态，元素不存在返回携带 6001 错误码的失败态
-     */
-    [[nodiscard]] TGameStatusResult<FVector2D> GetLocation(const TElement& Element) const {
-        if (const FVector2D* Found = ElementLocations.Find(Element)) {
-            return TGameStatusResult<FVector2D>::Success(*Found);
-        }
-        return TGameStatusResult<FVector2D>::Failure(
-            FGameError::Make(Game::ModuleId::Spatial, 6001, TEXT("Element not found in 2D spatial grid"))
-        );
-    }
-
-    /**
-     * @brief 清空网格中所有已注册元素与单元格桶
-     */
-    void Clear() {
-        Cells.Empty();
-        ElementToCell.Empty();
-        ElementLocations.Empty();
-    }
-
-    /**
-     * @brief 查询当前网格中容纳的元素总数
-     * @return 元素总数
-     */
-    [[nodiscard]] int32 Num() const noexcept {
-        return ElementToCell.Num();
-    }
-
-    /**
-     * @brief 查询当前分配并处于活跃态的单元格桶数量
-     * @return 活跃桶数量
-     */
-    [[nodiscard]] int32 GetBucketCount() const noexcept {
-        return Cells.Num();
-    }
-
-    /**
-     * @brief 查询当前网格设置的单元格边长
-     * @return 边长尺寸
-     */
-    [[nodiscard]] float GetCellSize() const noexcept {
-        return CellSize;
-    }
-
-    /**
-     * @brief 半径球形/圆形范围查询
+     * @brief 半径圆形流式范围查询（零堆分配，单次遍历就地消费）
+     * @tparam TConsumer 消费回调类型
+     * @tparam TPredicate 过滤谓词类型
      * @param Center 圆心坐标
      * @param Radius 查询半径（须大于 0）
-     * @param OutResults 输出落入半径内的元素集合
+     * @param Consumer 命中元素就地消费者
+     * @param Predicate 过滤谓词
+     */
+    template <typename TConsumer, typename TPredicate>
+    void QueryRadiusMatching(const FVector2D& Center, float Radius, TConsumer Consumer, TPredicate Predicate) const {
+        FSpatialQuery2D::QueryRadiusMatching(*this, Center, Radius, MoveTemp(Consumer), MoveTemp(Predicate));
+    }
+
+    /**
+     * @brief 半径圆形流式范围查询（无过滤谓词）
+     * @tparam TConsumer 消费回调类型
+     * @param Center 圆心坐标
+     * @param Radius 查询半径
+     * @param Consumer 命中元素就地消费者
+     */
+    template <typename TConsumer>
+    void QueryRadiusMatching(const FVector2D& Center, float Radius, TConsumer Consumer) const {
+        QueryRadiusMatching(Center, Radius, MoveTemp(Consumer), [](const TElement&) { return true; });
+    }
+
+    /**
+     * @brief 半径圆形范围查询（带自定义过滤谓词）
+     * @tparam TPredicate 谓词类型
+     * @param Center 圆心坐标
+     * @param Radius 查询半径（须大于 0）
+     * @param OutResults 输出落入圆形内且通过谓词检验的元素集合
+     * @param Predicate 过滤谓词
+     */
+    template <typename TPredicate>
+    void QueryRadius(const FVector2D& Center, float Radius, TArray<TElement>& OutResults, TPredicate Predicate) const {
+        FSpatialQuery2D::QueryRadius(*this, Center, Radius, OutResults, MoveTemp(Predicate));
+    }
+
+    /**
+     * @brief 半径圆形范围查询
+     * @param Center 圆心坐标
+     * @param Radius 查询半径（须大于 0）
+     * @param OutResults 输出落入圆形内的元素集合
      */
     void QueryRadius(const FVector2D& Center, float Radius, TArray<TElement>& OutResults) const {
-        OutResults.Reset();
-        if (Radius <= 0.0f || ElementToCell.IsEmpty()) {
-            return;
-        }
+        QueryRadius(Center, Radius, OutResults, [](const TElement&) { return true; });
+    }
 
-        const float RadiusSq = Radius * Radius;
-        const int32 MinX = FMath::FloorToInt((Center.X - Radius) * InvCellSize);
-        const int32 MaxX = FMath::FloorToInt((Center.X + Radius) * InvCellSize);
-        const int32 MinY = FMath::FloorToInt((Center.Y - Radius) * InvCellSize);
-        const int32 MaxY = FMath::FloorToInt((Center.Y + Radius) * InvCellSize);
+    /**
+     * @brief 轴对齐矩形 AABB 流式范围查询（零堆分配）
+     * @tparam TConsumer 消费回调类型
+     * @tparam TPredicate 过滤谓词类型
+     * @param Box 查询矩形包围盒
+     * @param Consumer 命中元素就地消费者
+     * @param Predicate 过滤谓词
+     */
+    template <typename TConsumer, typename TPredicate>
+    void QueryAABBMatching(const FBox2D& Box, TConsumer Consumer, TPredicate Predicate) const {
+        FSpatialQuery2D::QueryAABBMatching(*this, Box, MoveTemp(Consumer), MoveTemp(Predicate));
+    }
 
-        ForEachCellInBox(MinX, MaxX, MinY, MaxY, [this, &Center, RadiusSq, &OutResults](uint64 Key) {
-            ForEachElementInCell(Key, [&Center, RadiusSq, &OutResults](const TElement& Item, const FVector2D& Loc) {
-                if (FVector2D::DistSquared(Center, Loc) <= RadiusSq) {
-                    OutResults.Add(Item);
-                }
-            });
-        });
+    /**
+     * @brief 轴对齐矩形 AABB 流式范围查询
+     * @tparam TConsumer 消费回调类型
+     * @param Box 查询矩形包围盒
+     * @param Consumer 命中元素就地消费者
+     */
+    template <typename TConsumer>
+    void QueryAABBMatching(const FBox2D& Box, TConsumer Consumer) const {
+        QueryAABBMatching(Box, MoveTemp(Consumer), [](const TElement&) { return true; });
+    }
+
+    /**
+     * @brief 轴对齐矩形 AABB 范围查询（带自定义过滤谓词）
+     * @tparam TPredicate 谓词类型
+     * @param Box 查询矩形包围盒
+     * @param OutResults 输出落入矩形内且通过谓词检验的元素集合
+     * @param Predicate 过滤谓词
+     */
+    template <typename TPredicate>
+    void QueryAABB(const FBox2D& Box, TArray<TElement>& OutResults, TPredicate Predicate) const {
+        FSpatialQuery2D::QueryAABB(*this, Box, OutResults, MoveTemp(Predicate));
     }
 
     /**
@@ -180,115 +122,150 @@ public:
      * @param OutResults 输出落入矩形内的元素集合
      */
     void QueryAABB(const FBox2D& Box, TArray<TElement>& OutResults) const {
-        OutResults.Reset();
-        if (!Box.bIsValid || ElementToCell.IsEmpty()) {
-            return;
-        }
-
-        const int32 MinX = FMath::FloorToInt(Box.Min.X * InvCellSize);
-        const int32 MaxX = FMath::FloorToInt(Box.Max.X * InvCellSize);
-        const int32 MinY = FMath::FloorToInt(Box.Min.Y * InvCellSize);
-        const int32 MaxY = FMath::FloorToInt(Box.Max.Y * InvCellSize);
-
-        ForEachCellInBox(MinX, MaxX, MinY, MaxY, [this, &Box, &OutResults](uint64 Key) {
-            ForEachElementInCell(Key, [&Box, &OutResults](const TElement& Item, const FVector2D& Loc) {
-                if (Loc.X >= Box.Min.X && Loc.X <= Box.Max.X &&
-                    Loc.Y >= Box.Min.Y && Loc.Y <= Box.Max.Y) {
-                    OutResults.Add(Item);
-                }
-            });
-        });
+        QueryAABB(Box, OutResults, [](const TElement&) { return true; });
     }
 
     /**
-     * @brief 查找距离给定中心点最近的目标元素（单次遍历无额外内存分配）
+     * @brief 2D 扇形流式范围查询（零堆分配）
+     * @tparam TConsumer 消费回调类型
+     * @tparam TPredicate 过滤谓词类型
+     * @param Center 扇形圆心
+     * @param Forward 扇形基准朝向
+     * @param Radius 扇形半径（须大于 0）
+     * @param HalfAngleDegrees 扇形半角（度数）
+     * @param Consumer 命中元素就地消费者
+     * @param Predicate 过滤谓词
+     */
+    template <typename TConsumer, typename TPredicate>
+    void QuerySectorMatching(
+        const FVector2D& Center,
+        const FVector2D& Forward,
+        float Radius,
+        float HalfAngleDegrees,
+        TConsumer Consumer,
+        TPredicate Predicate
+    ) const {
+        FSpatialQuery2D::QuerySectorMatching(*this, Center, Forward, Radius, HalfAngleDegrees, MoveTemp(Consumer), MoveTemp(Predicate));
+    }
+
+    /**
+     * @brief 2D 扇形流式范围查询
+     * @tparam TConsumer 消费回调类型
+     * @param Center 扇形圆心
+     * @param Forward 扇形基准朝向
+     * @param Radius 扇形半径
+     * @param HalfAngleDegrees 扇形半角
+     * @param Consumer 命中元素就地消费者
+     */
+    template <typename TConsumer>
+    void QuerySectorMatching(
+        const FVector2D& Center,
+        const FVector2D& Forward,
+        float Radius,
+        float HalfAngleDegrees,
+        TConsumer Consumer
+    ) const {
+        QuerySectorMatching(Center, Forward, Radius, HalfAngleDegrees, MoveTemp(Consumer), [](const TElement&) { return true; });
+    }
+
+    /**
+     * @brief 2D 扇形范围查询（带自定义过滤谓词）
+     * @tparam TPredicate 谓词类型
+     * @param Center 扇形圆心
+     * @param Forward 扇形基准朝向
+     * @param Radius 扇形半径（须大于 0）
+     * @param HalfAngleDegrees 扇形半角（度数）
+     * @param OutResults 输出落入扇形内且通过谓词检验的元素集合
+     * @param Predicate 过滤谓词
+     */
+    template <typename TPredicate>
+    void QuerySector(
+        const FVector2D& Center,
+        const FVector2D& Forward,
+        float Radius,
+        float HalfAngleDegrees,
+        TArray<TElement>& OutResults,
+        TPredicate Predicate
+    ) const {
+        FSpatialQuery2D::QuerySector(*this, Center, Forward, Radius, HalfAngleDegrees, OutResults, MoveTemp(Predicate));
+    }
+
+    /**
+     * @brief 2D 扇形范围查询
+     * @param Center 扇形圆心
+     * @param Forward 扇形基准朝向
+     * @param Radius 扇形半径（须大于 0）
+     * @param HalfAngleDegrees 扇形半角（度数）
+     * @param OutResults 输出落入扇形内的元素集合
+     */
+    void QuerySector(
+        const FVector2D& Center,
+        const FVector2D& Forward,
+        float Radius,
+        float HalfAngleDegrees,
+        TArray<TElement>& OutResults
+    ) const {
+        QuerySector(Center, Forward, Radius, HalfAngleDegrees, OutResults, [](const TElement&) { return true; });
+    }
+
+    /**
+     * @brief 查找距离给定中心点最近的目标元素（单元格包围盒最短距离动态剪枝与谓词过滤）
+     * @tparam TPredicate 谓词类型
+     * @param Center 中心点二维坐标
+     * @param MaxSearchRadius 最大检索截断半径
+     * @param OutNearest 输出最近元素
+     * @param Predicate 过滤谓词
+     * @return 存在有效元素返回 true，指定半径内无元素返回 false
+     */
+    template <typename TPredicate>
+    bool QueryNearest(const FVector2D& Center, float MaxSearchRadius, TElement& OutNearest, TPredicate Predicate) const {
+        return FSpatialQuery2D::QueryNearest(*this, Center, MaxSearchRadius, OutNearest, MoveTemp(Predicate));
+    }
+
+    /**
+     * @brief 查找距离给定中心点最近的目标元素（单元格包围盒最短距离动态剪枝）
      * @param Center 中心点二维坐标
      * @param MaxSearchRadius 最大检索截断半径
      * @param OutNearest 输出最近元素
      * @return 存在有效元素返回 true，指定半径内无元素返回 false
      */
     bool QueryNearest(const FVector2D& Center, float MaxSearchRadius, TElement& OutNearest) const {
-        if (MaxSearchRadius <= 0.0f || ElementToCell.IsEmpty()) {
-            return false;
-        }
-
-        float ClosestDistSq = MaxSearchRadius * MaxSearchRadius;
-        const TElement* BestCandidate = nullptr;
-
-        const int32 MinX = FMath::FloorToInt((Center.X - MaxSearchRadius) * InvCellSize);
-        const int32 MaxX = FMath::FloorToInt((Center.X + MaxSearchRadius) * InvCellSize);
-        const int32 MinY = FMath::FloorToInt((Center.Y - MaxSearchRadius) * InvCellSize);
-        const int32 MaxY = FMath::FloorToInt((Center.Y + MaxSearchRadius) * InvCellSize);
-
-        ForEachCellInBox(MinX, MaxX, MinY, MaxY, [this, &Center, &ClosestDistSq, &BestCandidate](uint64 Key) {
-            ForEachElementInCell(Key, [&Center, &ClosestDistSq, &BestCandidate](const TElement& Item, const FVector2D& Loc) {
-                const float DistSq = FVector2D::DistSquared(Center, Loc);
-                if (DistSq <= ClosestDistSq) {
-                    ClosestDistSq = DistSq;
-                    BestCandidate = &Item;
-                }
-            });
-        });
-
-        if (BestCandidate == nullptr) {
-            return false;
-        }
-        OutNearest = *BestCandidate;
-        return true;
+        return QueryNearest(Center, MaxSearchRadius, OutNearest, [](const TElement&) { return true; });
     }
 
-private:
+    /**
+     * @brief 查找距离给定中心点最近的 K 个目标元素（动态剪枝与谓词过滤，按距离升序返回）
+     * @tparam TPredicate 谓词类型
+     * @param Center 中心点二维坐标
+     * @param MaxSearchRadius 最大检索截断半径
+     * @param K 期望获取的最大近邻数量（必须大于 0）
+     * @param OutNearestList 输出最近的 K 个元素列表（按距离由近至远升序排列）
+     * @param Predicate 过滤谓词
+     */
     template <typename TPredicate>
-    void ForEachCellInBox(int32 MinX, int32 MaxX, int32 MinY, int32 MaxY, TPredicate Predicate) const {
-        for (int32 X = MinX; X <= MaxX; ++X) {
-            for (int32 Y = MinY; Y <= MaxY; ++Y) {
-                Predicate(PackCellKey(X, Y));
-            }
-        }
+    void QueryKNearest(
+        const FVector2D& Center,
+        float MaxSearchRadius,
+        int32 K,
+        TArray<TElement>& OutNearestList,
+        TPredicate Predicate
+    ) const {
+        FSpatialQuery2D::QueryKNearest(*this, Center, MaxSearchRadius, K, OutNearestList, MoveTemp(Predicate));
     }
 
-    template <typename TPredicate>
-    void ForEachElementInCell(uint64 CellKey, TPredicate Predicate) const {
-        const TArray<TElement>* Bucket = Cells.Find(CellKey);
-        if (Bucket == nullptr) {
-            return;
-        }
-
-        for (const TElement& Item : *Bucket) {
-            const FVector2D* Loc = ElementLocations.Find(Item);
-            if (Loc != nullptr) {
-                Predicate(Item, *Loc);
-            }
-        }
+    /**
+     * @brief 查找距离给定中心点最近的 K 个目标元素（动态剪枝，按距离升序返回）
+     * @param Center 中心点二维坐标
+     * @param MaxSearchRadius 最大检索截断半径
+     * @param K 期望获取的最大近邻数量（必须大于 0）
+     * @param OutNearestList 输出最近的 K 个元素列表（按距离由近至远升序排列）
+     */
+    void QueryKNearest(
+        const FVector2D& Center,
+        float MaxSearchRadius,
+        int32 K,
+        TArray<TElement>& OutNearestList
+    ) const {
+        QueryKNearest(Center, MaxSearchRadius, K, OutNearestList, [](const TElement&) { return true; });
     }
-
-    void RemoveFromBucket(uint64 CellKey, const TElement& Element) {
-        TArray<TElement>* Bucket = Cells.Find(CellKey);
-        if (Bucket == nullptr) {
-            return;
-        }
-        Bucket->RemoveSingleSwap(Element);
-        if (Bucket->IsEmpty()) {
-            Cells.Remove(CellKey);
-        }
-    }
-
-    [[nodiscard]] static constexpr uint64 PackCellKey(int32 CellX, int32 CellY) noexcept {
-        const uint64 UX = static_cast<uint64>(static_cast<uint32>(CellX));
-        const uint64 UY = static_cast<uint64>(static_cast<uint32>(CellY));
-        return (UX << 32) | UY;
-    }
-
-    [[nodiscard]] uint64 ComputeCellKey(const FVector2D& Location) const noexcept {
-        const int32 CellX = FMath::FloorToInt(Location.X * InvCellSize);
-        const int32 CellY = FMath::FloorToInt(Location.Y * InvCellSize);
-        return PackCellKey(CellX, CellY);
-    }
-
-private:
-    TMap<uint64, TArray<TElement>> Cells;
-    TMap<TElement, uint64> ElementToCell;
-    TMap<TElement, FVector2D> ElementLocations;
-    float CellSize = DEFAULT_CELL_SIZE;
-    float InvCellSize = 1.0f / DEFAULT_CELL_SIZE;
 };

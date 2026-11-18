@@ -1,15 +1,14 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
+/**
+ * @file GameSpatial.cpp
+ * @brief GameSpatial 纯逻辑空间算法模块入口实现
+ */
 
 #include "GameSpatial.h"
-
-#define LOCTEXT_NAMESPACE "FGameSpatialModule"
 
 void FGameSpatialModule::StartupModule() {
 }
 
 void FGameSpatialModule::ShutdownModule() {
 }
-
-#undef LOCTEXT_NAMESPACE
 
 IMPLEMENT_MODULE(FGameSpatialModule, GameSpatial)

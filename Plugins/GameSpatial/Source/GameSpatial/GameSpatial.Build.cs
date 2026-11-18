@@ -11,6 +11,7 @@ public class GameSpatial : ModuleRules {
             "Core",
             "CoreUObject",
             "Engine",
+            "GameplayTags",
             "GameCore",
         });
 

@@ -108,6 +108,29 @@ bool FSpatialHashGrid3DQueriesTest::RunTest([[maybe_unused]] const FString& Para
     TestTrue(TEXT("三维近邻查询成功"), bFound);
     TestEqual(TEXT("最近目标为 101"), NearestTarget, 101);
 
+    int32 PredicateNearest = 0;
+    const bool bPredFound = Grid.QueryNearest(
+        FVector(10.0f, 10.0f, 10.0f),
+        150.0f,
+        PredicateNearest,
+        [](int32 Id) { return Id != 101; }
+    );
+    TestTrue(TEXT("三维排除 101 后近邻查询成功命中第二近目标"), bPredFound);
+    TestEqual(TEXT("三维排除 101 后的最近目标为 102"), PredicateNearest, 102);
+
+    TArray<int32> PredicateCylinderResults;
+    Grid.QueryCylinder(
+        FVector(0.0f, 0.0f, 100.0f),
+        100.0f,
+        250.0f,
+        PredicateCylinderResults,
+        [](int32, const FVector& Loc) { return Loc.Z > 200.0; }
+    );
+    TestEqual(TEXT("圆柱体带谓词过滤仅命中高处的 104"), PredicateCylinderResults.Num(), 1);
+    if (!PredicateCylinderResults.IsEmpty()) {
+        TestEqual(TEXT("圆柱体命中项为 104"), PredicateCylinderResults[0], 104);
+    }
+
     int32 FarTarget = 0;
     const bool bFarFound = Grid.QueryNearest(FVector(8000.0f, 8000.0f, 8000.0f), 100.0f, FarTarget);
     TestFalse(TEXT("超出截断半径返回 false"), bFarFound);
@@ -176,6 +199,166 @@ bool FSpatialHashGrid3DNegativeAndColocationTest::RunTest([[maybe_unused]] const
 
     int32 EmptyNearest = 0;
     TestFalse(TEXT("空网格近邻查询安全返回 false"), Grid.QueryNearest(FVector(0.0f, 0.0f, 0.0f), 100.0f, EmptyNearest));
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FSpatialHashGrid3DConeAndKNearestTest,
+    "Game.Spatial.HashGrid3D.ConeAndKNearest",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证 3D 空间哈希网格锥体范围查询与多目标 K 近邻升序检索
+ * @param Parameters 自动化测试参数
+ * @return 全部断言通过返回 true
+ */
+bool FSpatialHashGrid3DConeAndKNearestTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    TSpatialHashGrid3D<int32> Grid(100.0f);
+
+    Grid.Insert(1, FVector(100.0f, 0.0f, 0.0f));
+    Grid.Insert(2, FVector(70.0f, 40.0f, 0.0f));
+    Grid.Insert(3, FVector(0.0f, 100.0f, 0.0f));
+    Grid.Insert(4, FVector(0.0f, 0.0f, 100.0f));
+    Grid.Insert(5, FVector(-100.0f, 0.0f, 0.0f));
+    Grid.Insert(6, FVector(20.0f, 0.0f, 0.0f));
+
+    TArray<int32> ConeResults;
+    Grid.QueryCone(FVector::ZeroVector, FVector(1.0f, 0.0f, 0.0f), 150.0f, 45.0f, ConeResults);
+    TestEqual(TEXT("45度半角前向锥体命中 3 个目标"), ConeResults.Num(), 3);
+    TestTrue(TEXT("命中正前方的 1"), ConeResults.Contains(1));
+    TestTrue(TEXT("命中 30 度角附近的 2"), ConeResults.Contains(2));
+    TestTrue(TEXT("命中极近处的 6"), ConeResults.Contains(6));
+    TestFalse(TEXT("侧向 3 未命中"), ConeResults.Contains(3));
+    TestFalse(TEXT("正上方 4 未命中"), ConeResults.Contains(4));
+    TestFalse(TEXT("后方 5 未命中"), ConeResults.Contains(5));
+
+    TArray<int32> PredConeResults;
+    Grid.QueryCone(FVector::ZeroVector, FVector(1.0f, 0.0f, 0.0f), 150.0f, 45.0f, PredConeResults, [](int32 Id) {
+        return Id != 6;
+    });
+    TestEqual(TEXT("谓词过滤排除 6 之后命中 2 个"), PredConeResults.Num(), 2);
+    TestFalse(TEXT("不包含 6"), PredConeResults.Contains(6));
+
+    TArray<int32> FullConeResults;
+    Grid.QueryCone(FVector::ZeroVector, FVector(1.0f, 0.0f, 0.0f), 150.0f, 180.0f, FullConeResults);
+    TestEqual(TEXT("180度半角退化为全向球形命中全部 6 个点"), FullConeResults.Num(), 6);
+
+    TArray<int32> KNearestResults;
+    Grid.QueryKNearest(FVector::ZeroVector, 200.0f, 3, KNearestResults);
+    TestEqual(TEXT("K=3 检索出最近的 3 个目标"), KNearestResults.Num(), 3);
+    if (KNearestResults.Num() == 3) {
+        TestEqual(TEXT("第 1 近为 6 (距离 20)"), KNearestResults[0], 6);
+        TestTrue(TEXT("后续目标距离均大于第 1 近"), KNearestResults[1] != 6 && KNearestResults[2] != 6);
+    }
+
+    TArray<int32> PredKNearest;
+    Grid.QueryKNearest(FVector::ZeroVector, 200.0f, 2, PredKNearest, [](int32 Id) {
+        return Id != 6;
+    });
+    TestEqual(TEXT("过滤掉 6 后 K=2 命中 2 个目标"), PredKNearest.Num(), 2);
+    TestFalse(TEXT("过滤后不含 6"), PredKNearest.Contains(6));
+
+    TArray<int32> LargeKResults;
+    Grid.QueryKNearest(FVector::ZeroVector, 200.0f, 15, LargeKResults);
+    TestEqual(TEXT("K 大于总数时返回全部 6 个目标"), LargeKResults.Num(), 6);
+
+    TArray<int32> InvalidKResults;
+    Grid.QueryKNearest(FVector::ZeroVector, 200.0f, 0, InvalidKResults);
+    TestEqual(TEXT("K<=0 安全返回空"), InvalidKResults.Num(), 0);
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FSpatialHashGrid3DStreamingQueryTest,
+    "Game.Spatial.HashGrid3D.StreamingQuery",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证三维空间哈希网格零堆分配流式查询原语
+ * @param Parameters 自动化测试参数
+ * @return 全部断言通过返回 true
+ */
+bool FSpatialHashGrid3DStreamingQueryTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    TSpatialHashGrid3D<int32> Grid(100.0f);
+
+    Grid.Insert(1, FVector(100.0f, 0.0f, 0.0f));
+    Grid.Insert(2, FVector(70.0f, 40.0f, 0.0f));
+    Grid.Insert(3, FVector(0.0f, 100.0f, 0.0f));
+    Grid.Insert(4, FVector(0.0f, 0.0f, 100.0f));
+    Grid.Insert(5, FVector(-100.0f, 0.0f, 0.0f));
+    Grid.Insert(6, FVector(20.0f, 0.0f, 0.0f));
+
+    int32 StreamCount = 0;
+    int32 StreamIdSum = 0;
+    Grid.QueryRadiusMatching(FVector::ZeroVector, 150.0f, [&StreamCount, &StreamIdSum](int32 Id, const FVector&) {
+        ++StreamCount;
+        StreamIdSum += Id;
+    });
+
+    TestEqual(TEXT("三维流式半径查询匹配全部 6 个元素"), StreamCount, 6);
+    TestEqual(TEXT("三维流式累计 ID 校验通过"), StreamIdSum, 1 + 2 + 3 + 4 + 5 + 6);
+
+    TArray<int32> FilteredResults;
+    Grid.QueryRadiusMatching(
+        FVector::ZeroVector,
+        150.0f,
+        [&FilteredResults](int32 Id) {
+            FilteredResults.Add(Id);
+        },
+        [](int32 Id, const FVector& Loc) {
+            return Loc.X > 0.0 && Id != 6;
+        }
+    );
+    TestEqual(TEXT("带谓词三维流式半径查询命中 2 个元素"), FilteredResults.Num(), 2);
+    TestTrue(TEXT("包含 1"), FilteredResults.Contains(1));
+    TestTrue(TEXT("包含 2"), FilteredResults.Contains(2));
+
+    TArray<int32> AABBResults;
+    const FBox QueryBox(FVector(10.0f, -10.0f, -10.0f), FVector(110.0f, 10.0f, 10.0f));
+    Grid.QueryAABBMatching(QueryBox, [&AABBResults](int32 Id) {
+        AABBResults.Add(Id);
+    });
+    TestEqual(TEXT("三维 AABB 流式消费命中 2 个目标"), AABBResults.Num(), 2);
+    TestTrue(TEXT("命中 1"), AABBResults.Contains(1));
+    TestTrue(TEXT("命中 6"), AABBResults.Contains(6));
+
+    TArray<int32> ConeResults;
+    Grid.QueryConeMatching(
+        FVector::ZeroVector,
+        FVector(1.0f, 0.0f, 0.0f),
+        150.0f,
+        45.0f,
+        [&ConeResults](int32 Id) {
+            ConeResults.Add(Id);
+        }
+    );
+    TestEqual(TEXT("流式视锥匹配命中 3 个目标"), ConeResults.Num(), 3);
+    TestTrue(TEXT("命中 1"), ConeResults.Contains(1));
+    TestTrue(TEXT("命中 2"), ConeResults.Contains(2));
+    TestTrue(TEXT("命中 6"), ConeResults.Contains(6));
+
+    TArray<int32> CylinderResults;
+    Grid.QueryCylinderMatching(
+        FVector::ZeroVector,
+        50.0f,
+        120.0f,
+        [&CylinderResults](int32 Id) {
+            CylinderResults.Add(Id);
+        }
+    );
+    TestEqual(TEXT("流式圆柱体匹配命中 2 个目标 (4 与 6)"), CylinderResults.Num(), 2);
+    TestTrue(TEXT("圆柱体命中 4"), CylinderResults.Contains(4));
+    TestTrue(TEXT("圆柱体命中 6"), CylinderResults.Contains(6));
+
+    int32 EmptyCount = 0;
+    Grid.QueryRadiusMatching(FVector(5000.0f, 5000.0f, 5000.0f), 50.0f, [&EmptyCount](int32) {
+        ++EmptyCount;
+    });
+    TestEqual(TEXT("三维超出范围的流式消费执行 0 次"), EmptyCount, 0);
 
     return true;
 }

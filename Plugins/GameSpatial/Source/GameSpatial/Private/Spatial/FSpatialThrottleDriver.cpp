@@ -178,20 +178,22 @@ void FSpatialThrottleDriver::UpdateSpatialThrottle(const FSpatialViewContext& Vi
 
         FSpatialEntity& Entry = Entities[Index];
         const FVector ToEntity = EntityLocation - ViewContext.ViewLocation;
-        const float Distance = ToEntity.Size();
+        const float DistSq = ToEntity.SizeSquared();
 
         ESpatialDistanceTier TargetTier = ESpatialDistanceTier::OutOfRange;
         float TargetInterval = Config.OutOfRangeOrBehindInterval;
 
-        if (Entry.bHighSignificance || Distance <= KINDA_SMALL_NUMBER) {
+        if (Entry.bHighSignificance || DistSq <= KINDA_SMALL_NUMBER) {
             TargetTier = ESpatialDistanceTier::Near;
             TargetInterval = Config.NearInterval;
         } else {
             const float MaxDistThreshold = (Entry.CurrentTier == ESpatialDistanceTier::OutOfRange)
                 ? ViewContext.MaxDistance
                 : (ViewContext.MaxDistance + DistMargin);
+            const float MaxDistThresholdSq = MaxDistThreshold * MaxDistThreshold;
 
-            if (Distance <= MaxDistThreshold) {
+            if (DistSq <= MaxDistThresholdSq) {
+                const float Distance = FMath::Sqrt(DistSq);
                 const FVector ToEntityDir = ToEntity / Distance;
                 const float DotProduct = FVector::DotProduct(ToEntityDir, SafeViewForward);
                 const float CosThreshold = (Entry.CurrentTier == ESpatialDistanceTier::OutOfRange) ? CosEnterFov : CosKeepFov;
@@ -244,7 +246,15 @@ void FSpatialThrottleDriver::UpdateSpatialThrottle(const FSpatialViewContext& Vi
  * @param InConfig 新配置参数
  */
 void FSpatialThrottleDriver::SetTierConfig(const FSpatialThrottleTierConfig& InConfig) {
-    Config = InConfig;
+    Config.DistanceNear = FMath::Max(0.0f, InConfig.DistanceNear);
+    Config.DistanceMid = FMath::Max(Config.DistanceNear, InConfig.DistanceMid);
+    Config.DistanceFar = FMath::Max(Config.DistanceMid, InConfig.DistanceFar);
+    Config.DistanceHysteresis = FMath::Max(0.0f, InConfig.DistanceHysteresis);
+    Config.NearInterval = FMath::Max(0.0f, InConfig.NearInterval);
+    Config.MidInterval = FMath::Max(0.0f, InConfig.MidInterval);
+    Config.FarInterval = FMath::Max(0.0f, InConfig.FarInterval);
+    Config.OutOfRangeOrBehindInterval = FMath::Max(0.0f, InConfig.OutOfRangeOrBehindInterval);
+    Config.HysteresisDegrees = FMath::Clamp(InConfig.HysteresisDegrees, 0.0f, 90.0f);
 }
 
 /**
