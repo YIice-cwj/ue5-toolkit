@@ -6,6 +6,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Config/GameCompileSwitches.h"
 
 /**
  * @brief 屏幕调试信息打印工具类
@@ -62,7 +63,7 @@ public:
     [[nodiscard]] static uint64 GetChannelKey(const FName& Channel);
 };
 
-#if !UE_BUILD_SHIPPING
+#if GAME_ENABLE_DEBUG_DRAW != 0
     #define GAME_DEBUG_PRINT(Msg, ...) \
         FGameDebugPrint::Print(FString::Printf(TEXT(Msg), ##__VA_ARGS__))
 

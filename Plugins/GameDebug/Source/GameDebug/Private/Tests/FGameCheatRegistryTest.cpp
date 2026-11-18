@@ -83,6 +83,11 @@ bool FGameCheatRegistryLifecycleTest::RunTest([[maybe_unused]] const FString& Pa
     TestEqual(TEXT("双引号包裹的含空格参数完整提取"), LastItemName, FString(TEXT("Excalibur Blade")));
     TestEqual(TEXT("第二个整型参数解析正确"), LastItemCount, 5);
 
+    const bool bExecutedWithEscapedQuotes = CheatRegistry.ExecuteCheat(TEXT("UnitTest.GM.GiveItem \"Hero \\\"Dragon\\\" Sword\" 1"));
+    TestTrue(TEXT("含转义引号的参数执行成功"), bExecutedWithEscapedQuotes);
+    TestEqual(TEXT("转义双引号被正确还原保留"), LastItemName, FString(TEXT("Hero \"Dragon\" Sword")));
+    TestEqual(TEXT("转义引号后后续参数解析正确"), LastItemCount, 1);
+
     IConsoleObject* ConsoleObj = IConsoleManager::Get().FindConsoleObject(*GiveItemCmd.ToString());
     if (ConsoleObj != nullptr && ConsoleObj->AsCommand() != nullptr) {
         TArray<FString> ConsoleArgs;

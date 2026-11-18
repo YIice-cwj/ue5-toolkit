@@ -17,14 +17,6 @@ class GAMEDEBUG_API FGameCheatRegistry {
 public:
     using FCheatHandler = TFunction<void(const TArray<FString>&)>;
 
-private:
-    struct FCheatEntry {
-        FString HelpText;
-        TSharedPtr<const FCheatHandler> Handler;
-        IConsoleObject* ConsoleCommand = nullptr;
-    };
-
-public:
     FGameCheatRegistry() = default;
     ~FGameCheatRegistry() = default;
 
@@ -81,6 +73,12 @@ public:
     void ClearAll();
 
 private:
+    struct FCheatEntry {
+        FString HelpText;
+        TSharedPtr<const FCheatHandler> Handler;
+        IConsoleObject* ConsoleCommand = nullptr;
+    };
+
     mutable FRWLock RegistryLock;
     TMap<FName, FCheatEntry> Entries;
 };

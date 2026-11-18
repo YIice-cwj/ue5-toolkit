@@ -19,6 +19,14 @@ void TokenizeCheatCommandLine(const FString& CommandLine, TArray<FString>& OutTo
 
     for (int32 Index = 0; Index < CommandLine.Len(); ++Index) {
         const TCHAR Ch = CommandLine[Index];
+        if (Ch == TEXT('\\') && Index + 1 < CommandLine.Len()) {
+            const TCHAR NextCh = CommandLine[Index + 1];
+            if (NextCh == TEXT('\"') || NextCh == TEXT('\\')) {
+                Current.AppendChar(NextCh);
+                ++Index;
+                continue;
+            }
+        }
         if (Ch == TEXT('\"')) {
             bInQuotes = !bInQuotes;
             continue;
@@ -61,7 +69,6 @@ bool FGameCheatRegistry::RegisterCheat(
             return false;
         }
 
-        TSharedPtr<const FCheatHandler> SharedHandler = MakeShared<const FCheatHandler>(MoveTemp(Handler));
         FWriteScopeLock WriteLock(RegistryLock);
         if (Entries.Contains(CommandName)) {
             if constexpr (Game::Config::bEnableLog) {
@@ -69,6 +76,8 @@ bool FGameCheatRegistry::RegisterCheat(
             }
             return false;
         }
+
+        TSharedPtr<const FCheatHandler> SharedHandler = MakeShared<const FCheatHandler>(MoveTemp(Handler));
 
         IConsoleObject* ConsoleObj = nullptr;
         IConsoleManager& ConsoleManager = IConsoleManager::Get();

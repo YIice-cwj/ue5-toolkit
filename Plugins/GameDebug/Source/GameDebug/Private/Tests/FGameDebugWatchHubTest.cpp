@@ -47,6 +47,9 @@ bool FGameDebugWatchHubLifecycleTest::RunTest([[maybe_unused]] const FString& Pa
     TArray<FName> Categories;
     Hub.GetCategories(Categories);
     TestEqual(TEXT("注册了 2 个分类"), Categories.Num(), 2);
+    TestEqual(TEXT("Player 分类下有 2 个观察项"), Hub.GetWatchItemCount(CatPlayer), 2);
+    TestEqual(TEXT("Tasks 分类下有 1 个观察项"), Hub.GetWatchItemCount(CatTasks), 1);
+    TestEqual(TEXT("不存在分类返回 0"), Hub.GetWatchItemCount(FName(TEXT("NonExistent"))), 0);
 
     Hub.TickDisplay(0.016f);
 

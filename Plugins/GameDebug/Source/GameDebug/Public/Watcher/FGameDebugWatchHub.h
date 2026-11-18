@@ -6,6 +6,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Config/GameCompileSwitches.h"
 #include "Misc/ScopeRWLock.h"
 
 /**
@@ -15,18 +16,6 @@ class GAMEDEBUG_API FGameDebugWatchHub {
 public:
     using FValueGetter = TFunction<FString()>;
 
-    struct FWatchItem {
-        FName Name;
-        FValueGetter Getter;
-    };
-
-    struct FCategoryGroup {
-        FName Category;
-        bool bEnabled = true;
-        TArray<FWatchItem> Items;
-    };
-
-public:
     FGameDebugWatchHub();
     ~FGameDebugWatchHub();
 
@@ -90,6 +79,13 @@ public:
     void GetCategories(TArray<FName>& OutCategories) const;
 
     /**
+     * @brief 获取指定分类下注册的观察项数量
+     * @param Category 业务分类名称
+     * @return 观察项数量（分类不存在返回 0）
+     */
+    [[nodiscard]] int32 GetWatchItemCount(const FName& Category) const;
+
+    /**
      * @brief 清空所有注册的观察项与分类
      */
     void ClearAll();
@@ -101,12 +97,23 @@ public:
     void TickDisplay(float DeltaTime);
 
 private:
+    struct FWatchItem {
+        FName Name;
+        FValueGetter Getter;
+    };
+
+    struct FCategoryGroup {
+        FName Category;
+        bool bEnabled = true;
+        TArray<FWatchItem> Items;
+    };
+
     mutable FRWLock RegistryLock;
     TMap<FName, FCategoryGroup> Categories;
     bool bGlobalEnabled = true;
 };
 
-#if !UE_BUILD_SHIPPING
+#if GAME_ENABLE_DEBUG_DRAW != 0
     #define GAME_DEBUG_WATCH(Category, Name, Getter) \
         FGameDebugWatchHub::Get().Watch(FName(TEXT(Category)), FName(TEXT(Name)), Getter)
 

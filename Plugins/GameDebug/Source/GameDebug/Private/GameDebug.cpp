@@ -4,30 +4,35 @@
  */
 
 #include "GameDebug.h"
+
 #include "Cheat/FGameCheatRegistry.h"
-#include "Watcher/FGameDebugWatchHub.h"
+#include "Config/GameCompileSwitches.h"
 #include "Containers/Ticker.h"
+#include "Time/FGameDebugTimeController.h"
+#include "Watcher/FGameDebugWatchHub.h"
 
 #define LOCTEXT_NAMESPACE "FGameDebugModule"
 
 void FGameDebugModule::StartupModule() {
-#if !UE_BUILD_SHIPPING
-    TickerHandle = FTSTicker::GetCoreTicker().AddTicker(
-        FTickerDelegate::CreateLambda([](float DeltaTime) -> bool {
-            FGameDebugWatchHub::Get().TickDisplay(DeltaTime);
-            return true;
-        })
-    );
-#endif
+    FGameDebugTimeController::Initialize();
+
+    if constexpr (Game::Config::bEnableDebugDraw) {
+        TickerHandle = FTSTicker::GetCoreTicker().AddTicker(
+            FTickerDelegate::CreateLambda([](float DeltaTime) -> bool {
+                FGameDebugWatchHub::Get().TickDisplay(DeltaTime);
+                return true;
+            })
+        );
+    }
 }
 
 void FGameDebugModule::ShutdownModule() {
-#if !UE_BUILD_SHIPPING
-    if (TickerHandle.IsValid()) {
-        FTSTicker::GetCoreTicker().RemoveTicker(TickerHandle);
-        TickerHandle.Reset();
+    if constexpr (Game::Config::bEnableDebugDraw) {
+        if (TickerHandle.IsValid()) {
+            FTSTicker::GetCoreTicker().RemoveTicker(TickerHandle);
+            TickerHandle.Reset();
+        }
     }
-#endif
     FGameDebugWatchHub::Get().ClearAll();
     FGameCheatRegistry::Get().ClearAll();
 }
