@@ -6,8 +6,8 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Math/RandomStream.h"
 #include "Policy/NetPolicyTypes.h"
+#include "Random/FGameRandomStream.h"
 
 /**
  * @brief 指数退避与防雪崩随机抖动重连调度策略
@@ -91,7 +91,7 @@ public:
 
 private:
     FNetReconnectConfig Config;
-    FRandomStream RandomStream;
+    FGameRandomStream RandomStream;
     int32 CurrentAttempt{0};
     float RemainingDelaySeconds{0.0f};
     bool bWaitingForRetry{false};

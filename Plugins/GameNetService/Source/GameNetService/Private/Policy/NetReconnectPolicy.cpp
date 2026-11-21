@@ -9,7 +9,7 @@
  */
 FNetReconnectPolicy::FNetReconnectPolicy(const FNetReconnectConfig& InConfig, int32 RandomSeed) noexcept
     : Config(InConfig)
-    , RandomStream(RandomSeed) {
+    , RandomStream(static_cast<uint64>(RandomSeed)) {
 }
 
 /**
