@@ -54,7 +54,7 @@ sequenceDiagram
 
 ## 插件依赖
 
-- **依赖项**：`Core`, `CoreUObject`, `Engine`, `GameplayTags`, `GameCore`, `NetCore`, `GameLogging`
+- **依赖项**：`Core`, `CoreUObject`, `Engine`, `GameplayTags`, `GameCore`, `GamePool`, `NetCore`, `GameLogging`
 - **外部依赖限制**：严格禁止依赖 `GameplayAbilities`、`GameGameplay`、`GameData`，以及应用层长连接网络库（`GameNetCore`、`GameNetService`），保持其作为战斗底层契约层的独立性与 100% 离线立即可用性。
 - **C++ 标准**：C++20
 
