@@ -132,24 +132,7 @@ struct GAMECORE_API FGameError {
     }
 
     /**
-     * @brief 快速构造标准错误实例（参数排布严格对齐全参构造函数）
-     * @param InModuleId 产生错误的模块 ID
-     * @param InErrorCode 错误码
-     * @param InSeverity 严重级别
-     * @param InMessage 详细描述文案
-     * @return 错误实例
-     */
-    [[nodiscard]] static FGameError Make(
-        int32 InModuleId,
-        int32 InErrorCode,
-        EGameErrorSeverity InSeverity,
-        FString InMessage
-    ) {
-        return FGameError(InModuleId, InErrorCode, InSeverity, MoveTemp(InMessage));
-    }
-
-    /**
-     * @brief 快速构造普通错误实例（文案在前，严重级别默认 Error）
+     * @brief 快速构造标准错误实例（文案在前，严重级别默认 Error）
      * @param InModuleId 产生错误的模块 ID
      * @param InErrorCode 错误码
      * @param InMessage 详细描述文案

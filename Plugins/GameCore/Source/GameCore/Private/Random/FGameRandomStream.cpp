@@ -110,7 +110,7 @@ float FGameRandomStream::FRandRange(float Min, float Max) noexcept {
  * @return 命中返回 true
  */
 bool FGameRandomStream::RollChance(float Probability) noexcept {
-    if (Probability <= 0.0f) {
+    if (!(Probability > 0.0f)) {
         return false;
     }
     if (Probability >= 1.0f) {

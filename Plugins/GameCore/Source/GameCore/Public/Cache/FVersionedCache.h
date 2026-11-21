@@ -6,12 +6,10 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Misc/EngineVersionComparison.h"
 #include "Misc/ScopeRWLock.h"
 
 #include "Cache/FCachePolicy.h"
 #include "Cache/FLruIndexPool.h"
-#include "Config/FConfigRegistry.h"
 
 /**
  * @brief 三策略缓存容器模板（模板类，声明与接口契约）
@@ -29,7 +27,6 @@ private:
      * @brief 待析构旧状态（在锁内转移所有权，出锁后离开作用域自然析构，消除锁内析构延迟）
      */
     struct FRetiredStorage {
-        TSharedPtr<ValueMap> EagerMap;
         TSet<FName> ValidKeys;
         ValueMap Entries;
     };
@@ -113,7 +110,18 @@ public:
     [[nodiscard]] uint64 GetGeneration() const noexcept;
 
 private:
+    /**
+     * @brief 在持有写锁的前提下转移现有存储所有权以供出锁析构，并重置底层状态
+     * @return 待出锁析构的旧存储对象
+     */
     FRetiredStorage RetireAllStorage();
+
+    /**
+     * @brief 结合配置策略与主表总行数解析最终生效的缓存策略
+     * @param Policy 已解析的域缓存策略
+     * @param RowCount 主表总行数
+     * @return 生效的策略枚举值
+     */
     static ECacheStrategy ResolveEffectiveStrategy(const FCachePolicy& Policy, int32 RowCount);
 
 private:
@@ -125,8 +133,6 @@ private:
     uint64 Generation = 0;
 
     mutable FRWLock CacheLock;
-    TSharedPtr<ValueMap> EagerMap;
-
     mutable TSet<FName> ValidKeys;
     mutable ValueMap Entries;
     mutable FLruIndexPool LruPool;
@@ -149,15 +155,13 @@ void FVersionedCache<T>::Rebuild(const TArray<FName>& AllKeys, TFunction<ValueTy
     NewPolicy.LruCapacity = ClampedCapacity;
     const ECacheStrategy NewStrategy = ResolveEffectiveStrategy(NewPolicy, AllKeys.Num());
 
-    TSharedPtr<ValueMap> BuiltSnapshot;
+    ValueMap BuiltEntries;
     TSet<FName> BuiltValidKeys;
     if (NewStrategy == ECacheStrategy::Eager) {
-        ValueMap PlainMap;
-        PlainMap.Reserve(AllKeys.Num());
+        BuiltEntries.Reserve(AllKeys.Num());
         for (const FName& Key : AllKeys) {
-            PlainMap.Add(Key, MakeShared<const ValueType>(InBuildFn(Key)));
+            BuiltEntries.Add(Key, MakeShared<const ValueType>(InBuildFn(Key)));
         }
-        BuiltSnapshot = MakeShared<ValueMap>(MoveTemp(PlainMap));
     } else {
         BuiltValidKeys.Reserve(AllKeys.Num());
         for (const FName& Key : AllKeys) {
@@ -174,7 +178,7 @@ void FVersionedCache<T>::Rebuild(const TArray<FName>& AllKeys, TFunction<ValueTy
         BuildFn = MoveTemp(InBuildFn);
         EffectiveStrategy = NewStrategy;
         if (NewStrategy == ECacheStrategy::Eager) {
-            EagerMap = BuiltSnapshot;
+            Entries = MoveTemp(BuiltEntries);
         } else {
             ValidKeys = MoveTemp(BuiltValidKeys);
             Entries.Reserve(FMath::Min(AllKeys.Num(), ClampedCapacity));
@@ -196,23 +200,13 @@ typename FVersionedCache<T>::ValueTypePtr FVersionedCache<T>::FindShared(FName K
         {
             FReadScopeLock ReadLock(CacheLock);
             ObservedGeneration = Generation;
-            if (EffectiveStrategy == ECacheStrategy::Eager) {
-                if (EagerMap.IsValid()) {
-                    const ValueTypePtr* Found = EagerMap->Find(Key);
-                    return Found != nullptr ? *Found : ValueTypePtr();
-                }
-                return ValueTypePtr();
-            }
-            if (!ValidKeys.Contains(Key)) {
-                return ValueTypePtr();
-            }
             if (const ValueTypePtr* Found = Entries.Find(Key)) {
                 if (EffectiveStrategy == ECacheStrategy::Lru) {
                     LruPool.MarkReferenced(Key);
                 }
                 return *Found;
             }
-            if (!BuildFn) {
+            if (EffectiveStrategy == ECacheStrategy::Eager || !ValidKeys.Contains(Key) || !BuildFn) {
                 return ValueTypePtr();
             }
             LocalBuildFn = BuildFn;
@@ -225,18 +219,14 @@ typename FVersionedCache<T>::ValueTypePtr FVersionedCache<T>::FindShared(FName K
             if (Generation != ObservedGeneration) {
                 continue;
             }
-            if (EffectiveStrategy == ECacheStrategy::Eager) {
-                const ValueTypePtr* Found = EagerMap.IsValid() ? EagerMap->Find(Key) : nullptr;
-                return Found != nullptr ? *Found : ValueTypePtr();
-            }
-            if (!ValidKeys.Contains(Key)) {
-                return ValueTypePtr();
-            }
             if (const ValueTypePtr* Found = Entries.Find(Key)) {
                 if (EffectiveStrategy == ECacheStrategy::Lru) {
                     LruPool.Touch(Key);
                 }
                 return *Found;
+            }
+            if (EffectiveStrategy == ECacheStrategy::Eager || !ValidKeys.Contains(Key)) {
+                return ValueTypePtr();
             }
             Entries.Add(Key, Built);
             if (EffectiveStrategy == ECacheStrategy::Lru) {
@@ -277,21 +267,14 @@ bool FVersionedCache<T>::Invalidate(FName Key) {
     bool bRemoved = false;
     {
         FWriteScopeLock WriteLock(CacheLock);
-        if (EffectiveStrategy == ECacheStrategy::Eager) {
-            if (EagerMap.IsValid() && EagerMap->RemoveAndCopyValue(Key, RetiredValue)) {
-                bRemoved = true;
-            }
-        } else {
-            if (ValidKeys.Remove(Key) > 0) {
-                bRemoved = true;
-            }
-            if (Entries.RemoveAndCopyValue(Key, RetiredValue)) {
-                bRemoved = true;
-            }
-
-            if (EffectiveStrategy == ECacheStrategy::Lru) {
-                LruPool.Remove(Key);
-            }
+        if (ValidKeys.Remove(Key) > 0) {
+            bRemoved = true;
+        }
+        if (Entries.RemoveAndCopyValue(Key, RetiredValue)) {
+            bRemoved = true;
+        }
+        if (EffectiveStrategy == ECacheStrategy::Lru) {
+            LruPool.Remove(Key);
         }
     }
 
@@ -301,18 +284,12 @@ bool FVersionedCache<T>::Invalidate(FName Key) {
 template<typename T>
 int32 FVersionedCache<T>::Num() const {
     FReadScopeLock ReadLock(CacheLock);
-    if (EffectiveStrategy == ECacheStrategy::Eager) {
-        return EagerMap.IsValid() ? EagerMap->Num() : 0;
-    }
     return Entries.Num();
 }
 
 template<typename T>
 bool FVersionedCache<T>::IsEmpty() const {
     FReadScopeLock ReadLock(CacheLock);
-    if (EffectiveStrategy == ECacheStrategy::Eager) {
-        return !EagerMap.IsValid() || EagerMap->IsEmpty();
-    }
     return Entries.IsEmpty();
 }
 
@@ -322,9 +299,6 @@ bool FVersionedCache<T>::Contains(FName Key) const {
         return false;
     }
     FReadScopeLock ReadLock(CacheLock);
-    if (EffectiveStrategy == ECacheStrategy::Eager) {
-        return EagerMap.IsValid() && EagerMap->Contains(Key);
-    }
     return Entries.Contains(Key);
 }
 
@@ -343,7 +317,6 @@ uint64 FVersionedCache<T>::GetGeneration() const noexcept {
 template<typename T>
 typename FVersionedCache<T>::FRetiredStorage FVersionedCache<T>::RetireAllStorage() {
     FRetiredStorage Retired;
-    Retired.EagerMap = MoveTemp(EagerMap);
     Retired.ValidKeys = MoveTemp(ValidKeys);
     Retired.Entries = MoveTemp(Entries);
     LruPool.Reset();

@@ -192,6 +192,10 @@ public:
     }
 
 private:
+    /**
+     * @brief 执行主状态跃迁循环并拉平消费回调重入产生的 FIFO 切态队列
+     * @param InitialTarget 初始目标状态
+     */
     void ExecuteTransitionLoop(StateType InitialTarget);
 
 private:

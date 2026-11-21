@@ -12,6 +12,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include <atomic>
 #include <type_traits>
 
 #include "Config/FConfigRegistry.h"
@@ -40,17 +41,33 @@ class TCachedConfigHandle {
     );
 
 private:
+    struct FEmptyAtomicStorage {};
+
     /**
-     * @brief 句柄内部共享状态（支持句柄浅拷贝共享同一底层订阅）
+     * @brief 句柄内部共享状态（支持句柄浅拷贝共享同一底层订阅；标量类型维护原子镜像实现零锁热路径读取）
      */
     struct FState {
+        using FAtomicMirror = std::conditional_t<std::is_arithmetic_v<T>, std::atomic<T>, FEmptyAtomicStorage>;
+
         FName KeyName;
         T FallbackValue{};
         mutable FRWLock DataLock;
         T CachedValue{};
+        FAtomicMirror AtomicCachedValue{};
         bool bIsBound = false;
         TSharedPtr<FObserverSubscription> Subscription;
         TFunction<void(const T&)> OnChangedCallback;
+
+        /**
+         * @brief 在持有 DataLock 写锁的前提下同步更新缓存值与标量原子镜像
+         * @param InValue 新配置值
+         */
+        void StoreCachedValueLocked(const T& InValue) {
+            CachedValue = InValue;
+            if constexpr (std::is_arithmetic_v<T>) {
+                AtomicCachedValue.store(InValue, std::memory_order_release);
+            }
+        }
     };
 
 public:
@@ -105,10 +122,11 @@ public:
      * @param WorldContextObject 新的世界上下文对象
      */
     void Rebind(const UObject* WorldContextObject = nullptr) {
-        if (!State.IsValid() || State->KeyName.IsNone()) {
+        const FName CurrentKey = GetKey();
+        if (CurrentKey.IsNone()) {
             return;
         }
-        BindInternal(WorldContextObject);
+        BindInternal(CurrentKey, WorldContextObject);
     }
 
     /**
@@ -129,15 +147,19 @@ public:
     }
 
     /**
-     * @brief 获取当前缓存的配置值（线程安全按值返回，无哈希表查找开销）
+     * @brief 获取当前缓存的配置值（标量类型走零锁原子读，复合类型经读锁按值返回，无哈希表查找开销）
      * @return 当前有效配置值或回退值
      */
     [[nodiscard]] T Get() const {
         if (!State.IsValid()) {
             return T{};
         }
-        FReadScopeLock ReadLock(State->DataLock);
-        return State->CachedValue;
+        if constexpr (std::is_arithmetic_v<T>) {
+            return State->AtomicCachedValue.load(std::memory_order_acquire);
+        } else {
+            FReadScopeLock ReadLock(State->DataLock);
+            return State->CachedValue;
+        }
     }
 
     /**
@@ -189,20 +211,15 @@ public:
     }
 
     /**
-     * @brief 与同类型配置值的值不等性比较
-     * @param Other 比较目标值
-     * @return 值不等返回 true
-     */
-    bool operator!=(const T& Other) const {
-        return !(*this == Other);
-    }
-
-    /**
      * @brief 获取配置键名
      * @return 配置键名
      */
-    [[nodiscard]] FName GetKey() const noexcept {
-        return State.IsValid() ? State->KeyName : NAME_None;
+    [[nodiscard]] FName GetKey() const {
+        if (!State.IsValid()) {
+            return NAME_None;
+        }
+        FReadScopeLock ReadLock(State->DataLock);
+        return State->KeyName;
     }
 
     /**
@@ -233,17 +250,17 @@ public:
      * @brief 查询当前句柄是否已初始化有效键名
      * @return 键名非空返回 true
      */
-    [[nodiscard]] bool IsValid() const noexcept {
-        return State.IsValid() && !State->KeyName.IsNone();
+    [[nodiscard]] bool IsValid() const {
+        return !GetKey().IsNone();
     }
 
     /**
-     * @brief 注册配置热更监听回调
+     * @brief 注册配置热更监听回调（支持在默认构造后先设置回调再调用 Reset 绑定键名，且重绑定时保留已有回调）
      * @param InCallback 值变更时的通知闭包
      */
     void SetOnChanged(TFunction<void(const T&)> InCallback) {
         if (!State.IsValid()) {
-            return;
+            State = MakeShared<FState>();
         }
         FWriteScopeLock WriteLock(State->DataLock);
         State->OnChangedCallback = MoveTemp(InCallback);
@@ -251,62 +268,96 @@ public:
 
 private:
     /**
-     * @brief 初始化内部状态并执行首次绑定
+     * @brief 初始化或复用内部状态并执行绑定（保留已注册的 OnChangedCallback 与共享句柄引用）
      * @param InKeyName 配置键名
      * @param InFallbackValue 回退值
      * @param WorldContextObject 世界上下文
      */
     void InitAndBind(FName InKeyName, T&& InFallbackValue, const UObject* WorldContextObject) {
-        State = MakeShared<FState>();
-        State->KeyName = InKeyName;
-        State->FallbackValue = MoveTemp(InFallbackValue);
-        State->CachedValue = State->FallbackValue;
-        State->bIsBound = false;
+        if (!State.IsValid()) {
+            State = MakeShared<FState>();
+        }
 
-        if (!State->KeyName.IsNone()) {
-            BindInternal(WorldContextObject);
+        TSharedPtr<FObserverSubscription> OldSubscription;
+        {
+            FWriteScopeLock WriteLock(State->DataLock);
+            OldSubscription = MoveTemp(State->Subscription);
+            State->KeyName = InKeyName;
+            State->FallbackValue = MoveTemp(InFallbackValue);
+            State->StoreCachedValueLocked(State->FallbackValue);
+            State->bIsBound = false;
+        }
+        if (OldSubscription.IsValid()) {
+            OldSubscription->Reset();
+        }
+
+        if (!InKeyName.IsNone()) {
+            BindInternal(InKeyName, WorldContextObject);
         }
     }
 
     /**
      * @brief 执行底层订阅与初始值拉取
+     * @param TargetKeyName 目标配置键名
      * @param WorldContextObject 世界上下文
      */
-    void BindInternal(const UObject* WorldContextObject) {
+    void BindInternal(FName TargetKeyName, const UObject* WorldContextObject) {
         FConfigRegistry& Registry = FConfigRegistry::Get(WorldContextObject);
 
         TWeakPtr<FState> WeakState = State;
+        TSharedPtr<FObserverSubscription> OldSubscription;
         {
             FWriteScopeLock WriteLock(State->DataLock);
+            OldSubscription = MoveTemp(State->Subscription);
             State->bIsBound = false;
         }
-        State->Subscription = Registry.WatchConfig<T>(State->KeyName, [WeakState](const T& NewValue) {
-            if (TSharedPtr<FState> Pinned = WeakState.Pin()) {
-                TFunction<void(const T&)> UserCallbackToInvoke;
-                {
-                    FWriteScopeLock WriteLock(Pinned->DataLock);
-                    Pinned->CachedValue = NewValue;
-                    Pinned->bIsBound = true;
-                    UserCallbackToInvoke = Pinned->OnChangedCallback;
-                }
-                if (UserCallbackToInvoke) {
-                    UserCallbackToInvoke(NewValue);
+        if (OldSubscription.IsValid()) {
+            OldSubscription->Reset();
+        }
+
+        TSharedRef<FObserverSubscription> NewSubscription = Registry.WatchConfig<T>(
+            TargetKeyName,
+            [WeakState, TargetKeyName](const T& NewValue) {
+                if (TSharedPtr<FState> Pinned = WeakState.Pin()) {
+                    TFunction<void(const T&)> UserCallbackToInvoke;
+                    {
+                        FWriteScopeLock WriteLock(Pinned->DataLock);
+                        if (Pinned->KeyName != TargetKeyName) {
+                            return;
+                        }
+                        Pinned->StoreCachedValueLocked(NewValue);
+                        Pinned->bIsBound = true;
+                        UserCallbackToInvoke = Pinned->OnChangedCallback;
+                    }
+                    if (UserCallbackToInvoke) {
+                        UserCallbackToInvoke(NewValue);
+                    }
                 }
             }
-        });
+        );
 
-        const TOptional<T> InitialValue = Registry.GetConfigOptional<T>(State->KeyName);
+        const TOptional<T> InitialValue = Registry.GetConfigOptional<T>(TargetKeyName);
+        TSharedPtr<FObserverSubscription> SupersededSubscription;
         {
             FWriteScopeLock WriteLock(State->DataLock);
-            if (!State->bIsBound) {
-                if (InitialValue.IsSet()) {
-                    State->CachedValue = *InitialValue;
-                    State->bIsBound = true;
-                } else {
-                    State->CachedValue = State->FallbackValue;
-                    State->bIsBound = false;
+            if (State->KeyName != TargetKeyName) {
+                SupersededSubscription = NewSubscription;
+            } else {
+                SupersededSubscription = MoveTemp(State->Subscription);
+                State->Subscription = MoveTemp(NewSubscription);
+                if (!State->bIsBound) {
+                    if (InitialValue.IsSet()) {
+                        State->StoreCachedValueLocked(*InitialValue);
+                        State->bIsBound = true;
+                    } else {
+                        State->StoreCachedValueLocked(State->FallbackValue);
+                        State->bIsBound = false;
+                    }
                 }
             }
+        }
+        if (SupersededSubscription.IsValid()) {
+            SupersededSubscription->Reset();
         }
     }
 

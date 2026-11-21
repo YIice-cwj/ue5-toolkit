@@ -62,15 +62,6 @@ public:
     [[nodiscard]] const ValueType& Pick(FGameRandomStream& Stream) const;
 
     /**
-     * @brief 以 O(1) 复杂度按权重抽取一个元素值拷贝（安全值语义，避免持有悬垂引用）
-     * @param Stream 驱动抽取的隔离随机流
-     * @return 命中元素的值拷贝
-     */
-    [[nodiscard]] ValueType PickValue(FGameRandomStream& Stream) const {
-        return Pick(Stream);
-    }
-
-    /**
      * @brief 清空所有候选条目与别名表缓存
      */
     void Clear();
@@ -149,11 +140,11 @@ void TWeightedPicker<TValue>::Build() const {
         return;
     }
 
-    TArray<double> ScaledProbabilities;
+    TArray<double, TInlineAllocator<32>> ScaledProbabilities;
     ScaledProbabilities.SetNumUninitialized(Count);
 
-    TArray<int32> SmallIndices;
-    TArray<int32> LargeIndices;
+    TArray<int32, TInlineAllocator<32>> SmallIndices;
+    TArray<int32, TInlineAllocator<32>> LargeIndices;
     SmallIndices.Reserve(Count);
     LargeIndices.Reserve(Count);
 

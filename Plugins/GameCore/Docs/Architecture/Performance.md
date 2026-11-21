@@ -4,12 +4,23 @@
 
 ---
 
-## 1. 基准清单
+## 1. 基准清单（UE 5.8 Mac arm64 Development 实测）
 
-| 测试用例路径 | 覆盖原语与算法 | 压测规模 | 预算门禁 | 实测参考 |
+| 测试用例路径 | 覆盖原语与算法 | 压测规模 | 预算门禁 | 实测中位数参考 |
 | :--- | :--- | :--- | :--- | :--- |
-| `Game.Core.Perf.VersionedCacheFind` | `FVersionedCache::FindShared` (Eager 快照) | 4096 键 / 200,000 次 | < 2000 ns/op | **~10.5 ns/op** (0.5% 预算) |
-| `Game.Core.Perf.ListenerHubThroughput` | `FListenerHub::Emit` (COW 零锁派发) | 100,000 次单订阅广播 | < 5000 ns/op | **~17.2 ns/op** (0.3% 预算) |
+| `Game.Core.Perf.ByteSpanWriterReader` | `FByteSpanWriter/Reader` 连续编解码 | 100,000 次往返 | < 300 ns/op | **~0.6 ns/op** |
+| `Game.Core.Perf.SlotMapFindAndIterate` | `TSlotMap::Find` 代际句柄查找 | 200,000 次 | < 100 ns/op | **~1.3 ns/op** (745 Mops/s) |
+| `Game.Core.Perf.CachedConfigHandleVsRegistry` | `TCachedConfigHandle<float>::Get()` (无锁标量原子) | 200,000 次 | < 300 ns/op | **~2.3 ns/op** (**2.80×** vs Registry 6.5 ns) |
+| `Game.Core.Perf.SortedVectorMapFind` | `TSortedVectorMap::Find` 扁平二分查找 | 200,000 次 | < 150 ns/op | **~2.7 ns/op** (370 Mops/s) |
+| `Game.Core.Perf.LockFreeRingBuffer` | `TLockFreeRingBuffer` MPMC 入队/出队往返 | 200,000 次 | < 200 ns/op | **~3.6 ns/op** (278 Mops/s) |
+| `Game.Core.Perf.FixedSizePoolVsMalloc` | `TFixedSizePool` New/Free 对比原生堆分配 | 200,000 次 | < 200 ns/op | **~5.1 ns/op** (194 Mops/s) |
+| `Game.Core.Perf.WeightedPickerPick` | `TWeightedPicker` (32 项 Vose 别名表) | 200,000 次 | < 150 ns/op | **~6.7 ns/op** (150 Mops/s) |
+| `Game.Core.Perf.PriorityArbitrator` | `TPriorityArbitrator` (8 通道更新与累加仲裁) | 100,000 次 | < 500 ns/op | **~7.3 ns/op** (137 Mops/s) |
+| `Game.Core.Perf.VersionedCacheFind` | `FVersionedCache::FindShared` (Eager 快照) | 4096 键 / 200,000 次 | < 2000 ns/op | **~8.9 ns/op** (112 Mops/s) |
+| `Game.Core.Perf.RewindSnapshotInterpolation` | `TRewindSnapshotBuffer` (128 帧二分插值) | 100,000 次 | < 300 ns/op | **~9.3 ns/op** (108 Mops/s) |
+| `Game.Core.Perf.ListenerHubThroughput` | `FListenerHub::Emit` (COW 零锁派发) | 100,000 次单订阅广播 | < 5000 ns/op | **~13.9 ns/op** (72 Mops/s) |
+| `Game.Core.Perf.StateChecksumMix64` | `FStateChecksumBuilder` (8 字节小端定序块混入) | 100,000 次综合状态 | < 500 ns/op | **~25.8 ns/op** (38.8 Mops/s) |
+| `Game.Core.Perf.ScratchpadVsHeapArray` | `TScratchArray` (128 元素全周期 vs 堆 `TArray`) | 20,000 次 | < 2000 ns/op | **~79.9 ns/op** (**2.96×** vs Heap 236.5 ns) |
 | `Game.Core.Service.ServiceLocator.Concurrency` | `FGameServiceLocator::Resolve` (多线程高频读) | 5000 次 ParallelFor 并发 | 零数据撕裂与死锁 | **100% 成功** |
 | `Game.Core.Profiling.CpuTimer.MovingAverageSampler` | `FMovingAverageSampler` (滑动平均采样) | 窗口滑动与极值回绕 | 纯栈计算零堆分配 | **< 1 ns/op** |
 

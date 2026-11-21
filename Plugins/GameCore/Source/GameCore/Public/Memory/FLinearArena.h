@@ -1,5 +1,5 @@
 /**
- * @file TLinearArena.h
+ * @file FLinearArena.h
  * @brief 单帧/局部单调线性内存分配器（支持指针稳定化、RAII 作用域标记回退与自动析构链）
  */
 
@@ -16,7 +16,7 @@
  * 专为高频临时计算设计的单调线性分配器：
  * 1. 连续块内递增游标分配，零内存碎片与纳秒级分配速度；
  * 2. 块链表机制确保已分配内存指针 100% 稳定，扩容不发生数据搬移；
- * 3. 支持 TScopeMarker RAII 作用域标记，离开作用域自动回退游标并按逆序析构非平凡对象；
+ * 3. 支持 FScopeMarker RAII 作用域标记，离开作用域自动回退游标并按逆序析构非平凡对象；
  * 4. Reset 仅重置游标并保留已申请的大块内存，供下一帧零 Malloc 复用。
  */
 class GAMECORE_API FLinearArena {

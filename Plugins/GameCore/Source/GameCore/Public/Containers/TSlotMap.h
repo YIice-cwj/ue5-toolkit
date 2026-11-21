@@ -7,6 +7,8 @@
 
 #include "CoreMinimal.h"
 
+#include <atomic>
+
 #include "Types/TGameHandle.h"
 
 /**
@@ -31,6 +33,64 @@ private:
 
 public:
     TSlotMap() = default;
+
+    /**
+     * @brief 拷贝构造函数
+     * @param Other 源容器
+     */
+    TSlotMap(const TSlotMap& Other)
+        : Slots(Other.Slots)
+        , DenseValues(Other.DenseValues)
+        , DenseToSlot(Other.DenseToSlot)
+        , FreeHead(Other.FreeHead)
+        , IteratingDepth(0) {
+    }
+
+    /**
+     * @brief 移动构造函数
+     * @param Other 源容器
+     */
+    TSlotMap(TSlotMap&& Other) noexcept
+        : Slots(MoveTemp(Other.Slots))
+        , DenseValues(MoveTemp(Other.DenseValues))
+        , DenseToSlot(MoveTemp(Other.DenseToSlot))
+        , FreeHead(Other.FreeHead)
+        , IteratingDepth(0) {
+        Other.FreeHead = HandleType::INVALID_INDEX;
+    }
+
+    /**
+     * @brief 拷贝赋值运算符
+     * @param Other 源容器
+     * @return 自身引用
+     */
+    TSlotMap& operator=(const TSlotMap& Other) {
+        if (this != &Other) {
+            checkf(IteratingDepth.load(std::memory_order_relaxed) == 0, TEXT("TSlotMap copy assignment prohibited during ForEach iteration"));
+            Slots = Other.Slots;
+            DenseValues = Other.DenseValues;
+            DenseToSlot = Other.DenseToSlot;
+            FreeHead = Other.FreeHead;
+        }
+        return *this;
+    }
+
+    /**
+     * @brief 移动赋值运算符
+     * @param Other 源容器
+     * @return 自身引用
+     */
+    TSlotMap& operator=(TSlotMap&& Other) noexcept {
+        if (this != &Other) {
+            checkf(IteratingDepth.load(std::memory_order_relaxed) == 0, TEXT("TSlotMap move assignment prohibited during ForEach iteration"));
+            Slots = MoveTemp(Other.Slots);
+            DenseValues = MoveTemp(Other.DenseValues);
+            DenseToSlot = MoveTemp(Other.DenseToSlot);
+            FreeHead = Other.FreeHead;
+            Other.FreeHead = HandleType::INVALID_INDEX;
+        }
+        return *this;
+    }
 
     /**
      * @brief 预分配槽位与密集元素数组容量
@@ -209,7 +269,7 @@ private:
     TArray<ValueType> DenseValues;
     TArray<uint32> DenseToSlot;
     uint32 FreeHead = HandleType::INVALID_INDEX;
-    mutable int32 IteratingDepth = 0;
+    mutable std::atomic<int32> IteratingDepth{0};
 };
 
 template <typename TValue, typename TTag>
@@ -230,7 +290,7 @@ typename TSlotMap<TValue, TTag>::HandleType TSlotMap<TValue, TTag>::Insert(Value
 template <typename TValue, typename TTag>
 template <typename... TArgs>
 typename TSlotMap<TValue, TTag>::HandleType TSlotMap<TValue, TTag>::Emplace(TArgs&&... Args) {
-    checkf(IteratingDepth == 0, TEXT("TSlotMap structural modification is prohibited during ForEach iteration"));
+    checkf(IteratingDepth.load(std::memory_order_relaxed) == 0, TEXT("TSlotMap structural modification is prohibited during ForEach iteration"));
     uint32 SlotIdx = HandleType::INVALID_INDEX;
     if (FreeHead != HandleType::INVALID_INDEX) {
         SlotIdx = FreeHead;
@@ -252,7 +312,7 @@ typename TSlotMap<TValue, TTag>::HandleType TSlotMap<TValue, TTag>::Emplace(TArg
 
 template <typename TValue, typename TTag>
 bool TSlotMap<TValue, TTag>::Remove(HandleType Handle) {
-    checkf(IteratingDepth == 0, TEXT("TSlotMap structural modification is prohibited during ForEach iteration"));
+    checkf(IteratingDepth.load(std::memory_order_relaxed) == 0, TEXT("TSlotMap structural modification is prohibited during ForEach iteration"));
     if (!IsValidHandle(Handle)) {
         return false;
     }
@@ -316,7 +376,7 @@ const typename TSlotMap<TValue, TTag>::ValueType* TSlotMap<TValue, TTag>::Find(H
 
 template <typename TValue, typename TTag>
 void TSlotMap<TValue, TTag>::Reset() {
-    checkf(IteratingDepth == 0, TEXT("TSlotMap structural modification is prohibited during ForEach iteration"));
+    checkf(IteratingDepth.load(std::memory_order_relaxed) == 0, TEXT("TSlotMap structural modification is prohibited during ForEach iteration"));
     DenseValues.Reset();
     DenseToSlot.Reset();
     FreeHead = HandleType::INVALID_INDEX;
@@ -353,9 +413,9 @@ typename TSlotMap<TValue, TTag>::HandleType TSlotMap<TValue, TTag>::GetHandleFor
 template <typename TValue, typename TTag>
 template <typename TFunc>
 void TSlotMap<TValue, TTag>::ForEach(TFunc&& Func) {
-    ++IteratingDepth;
+    IteratingDepth.fetch_add(1, std::memory_order_relaxed);
     const int32 Count = DenseValues.Num();
-    for (int32 Index = 0; Index < Count && Index < DenseValues.Num(); ++Index) {
+    for (int32 Index = 0; Index < Count; ++Index) {
         const uint32 SlotIdx = DenseToSlot[Index];
         const HandleType Handle(SlotIdx, Slots[SlotIdx].Generation);
         if constexpr (std::is_invocable_r_v<bool, TFunc, HandleType, ValueType&>) {
@@ -366,15 +426,15 @@ void TSlotMap<TValue, TTag>::ForEach(TFunc&& Func) {
             Func(Handle, DenseValues[Index]);
         }
     }
-    --IteratingDepth;
+    IteratingDepth.fetch_sub(1, std::memory_order_relaxed);
 }
 
 template <typename TValue, typename TTag>
 template <typename TFunc>
 void TSlotMap<TValue, TTag>::ForEach(TFunc&& Func) const {
-    ++IteratingDepth;
+    IteratingDepth.fetch_add(1, std::memory_order_relaxed);
     const int32 Count = DenseValues.Num();
-    for (int32 Index = 0; Index < Count && Index < DenseValues.Num(); ++Index) {
+    for (int32 Index = 0; Index < Count; ++Index) {
         const uint32 SlotIdx = DenseToSlot[Index];
         const HandleType Handle(SlotIdx, Slots[SlotIdx].Generation);
         if constexpr (std::is_invocable_r_v<bool, TFunc, HandleType, const ValueType&>) {
@@ -385,5 +445,5 @@ void TSlotMap<TValue, TTag>::ForEach(TFunc&& Func) const {
             Func(Handle, DenseValues[Index]);
         }
     }
-    --IteratingDepth;
+    IteratingDepth.fetch_sub(1, std::memory_order_relaxed);
 }

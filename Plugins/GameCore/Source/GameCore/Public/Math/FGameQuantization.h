@@ -13,6 +13,8 @@
  */
 class GAMECORE_API FGameQuantization {
 public:
+    FGameQuantization() = delete;
+
     /**
      * @brief 32 位单精度浮点转 IEEE 754 16 位半精度浮点编码
      * @param InValue 单精度浮点值

@@ -54,14 +54,18 @@ public:
         , ConfiguredMode(Other.ConfiguredMode)
         , CurrentSequence(Other.CurrentSequence)
         , CachedWinnerChannel(Other.CachedWinnerChannel)
-        , bWinnerCacheDirty(Other.bWinnerCacheDirty)
+        , CachedWinnerValuePtr(nullptr)
+        , bWinnerCacheDirty(true)
         , CachedAggregationBaseValue(MoveTemp(Other.CachedAggregationBaseValue))
         , CachedAggregationResult(MoveTemp(Other.CachedAggregationResult))
         , CachedAggregationMode(Other.CachedAggregationMode)
+        , bAggregationStructureDirty(true)
         , bAggregationCacheDirty(true) {
         SortedValuePtrsCache.Reset();
         Other.SortedValuePtrsCache.Reset();
+        Other.CachedWinnerValuePtr = nullptr;
         Other.bWinnerCacheDirty = true;
+        Other.bAggregationStructureDirty = true;
         Other.bAggregationCacheDirty = true;
     }
 
@@ -76,14 +80,18 @@ public:
             ConfiguredMode = Other.ConfiguredMode;
             CurrentSequence = Other.CurrentSequence;
             CachedWinnerChannel = Other.CachedWinnerChannel;
-            bWinnerCacheDirty = Other.bWinnerCacheDirty;
+            CachedWinnerValuePtr = nullptr;
+            bWinnerCacheDirty = true;
             CachedAggregationBaseValue = MoveTemp(Other.CachedAggregationBaseValue);
             CachedAggregationResult = MoveTemp(Other.CachedAggregationResult);
             CachedAggregationMode = Other.CachedAggregationMode;
+            bAggregationStructureDirty = true;
             bAggregationCacheDirty = true;
             SortedValuePtrsCache.Reset();
             Other.SortedValuePtrsCache.Reset();
+            Other.CachedWinnerValuePtr = nullptr;
             Other.bWinnerCacheDirty = true;
+            Other.bAggregationStructureDirty = true;
             Other.bAggregationCacheDirty = true;
         }
         return *this;
@@ -116,11 +124,22 @@ public:
      * @param InPriority 优先级数值（仅在 OverrideHighestPriority 模式下生效，数值越大优先级越高，默认 0）
      */
     void SetChannel(const FName& ChannelName, const ValueType& InValue, int32 InPriority = 0) {
-        FChannelRecord& Record = Channels.FindOrAdd(ChannelName);
-        Record.Value = InValue;
-        Record.Priority = InPriority;
-        Record.Sequence = ++CurrentSequence;
+        if (FChannelRecord* ExistingRecord = Channels.Find(ChannelName)) {
+            ExistingRecord->Value = InValue;
+            ExistingRecord->Priority = InPriority;
+            ExistingRecord->Sequence = ++CurrentSequence;
+            bWinnerCacheDirty = true;
+            bAggregationCacheDirty = true;
+            return;
+        }
+
+        FChannelRecord NewRecord;
+        NewRecord.Value = InValue;
+        NewRecord.Priority = InPriority;
+        NewRecord.Sequence = ++CurrentSequence;
+        Channels.Add(ChannelName, MoveTemp(NewRecord));
         bWinnerCacheDirty = true;
+        bAggregationStructureDirty = true;
         bAggregationCacheDirty = true;
     }
 
@@ -131,7 +150,9 @@ public:
      */
     bool ClearChannel(const FName& ChannelName) {
         if (Channels.Remove(ChannelName) > 0) {
+            CachedWinnerValuePtr = nullptr;
             bWinnerCacheDirty = true;
+            bAggregationStructureDirty = true;
             bAggregationCacheDirty = true;
             return true;
         }
@@ -214,8 +235,9 @@ public:
                 }
             }
 
-            if (bAggregationCacheDirty) {
+            if (bAggregationStructureDirty) {
                 RebuildAggregationPointers();
+                bAggregationStructureDirty = false;
             }
 
             if (Mode == EPriorityArbitrationMode::Additive) {
@@ -263,8 +285,10 @@ public:
         Channels.Empty();
         CurrentSequence = 0;
         CachedWinnerChannel = NAME_None;
+        CachedWinnerValuePtr = nullptr;
         bWinnerCacheDirty = false;
         SortedValuePtrsCache.Reset();
+        bAggregationStructureDirty = false;
         bAggregationCacheDirty = false;
     }
 
@@ -299,6 +323,9 @@ private:
         }
     };
 
+    /**
+     * @brief 按通道名称字典序重建确定性聚合指针缓存
+     */
     void RebuildAggregationPointers() const {
         TArray<FChannelSortEntry, TInlineAllocator<16>> SortedEntries;
         SortedEntries.Reserve(Channels.Num());
@@ -314,17 +341,20 @@ private:
         }
     }
 
+    /**
+     * @brief 计算并缓存最高优先级胜出通道（优先级相同时按最近写入序号胜出）
+     * @return 胜出通道名与值指针快照
+     */
     [[nodiscard]] FWinningMatch FindWinner() const noexcept {
         if (Channels.IsEmpty()) {
             CachedWinnerChannel = NAME_None;
+            CachedWinnerValuePtr = nullptr;
             bWinnerCacheDirty = false;
             return FWinningMatch();
         }
 
-        if (!bWinnerCacheDirty) {
-            if (const FChannelRecord* CachedRec = Channels.Find(CachedWinnerChannel)) {
-                return FWinningMatch{CachedWinnerChannel, &CachedRec->Value};
-            }
+        if (!bWinnerCacheDirty && CachedWinnerValuePtr != nullptr) {
+            return FWinningMatch{CachedWinnerChannel, CachedWinnerValuePtr};
         }
 
         int32 HighestPriority = TNumericLimits<int32>::Lowest();
@@ -345,6 +375,7 @@ private:
         }
 
         CachedWinnerChannel = Result.ChannelName;
+        CachedWinnerValuePtr = Result.ValuePtr;
         bWinnerCacheDirty = false;
         return Result;
     }
@@ -354,11 +385,13 @@ private:
     EPriorityArbitrationMode ConfiguredMode = EPriorityArbitrationMode::OverrideHighestPriority;
     uint64 CurrentSequence = 0;
     mutable FName CachedWinnerChannel = NAME_None;
+    mutable const ValueType* CachedWinnerValuePtr = nullptr;
     mutable bool bWinnerCacheDirty = true;
 
     mutable TArray<const ValueType*, TInlineAllocator<16>> SortedValuePtrsCache;
     mutable ValueType CachedAggregationBaseValue{};
     mutable ValueType CachedAggregationResult{};
     mutable EPriorityArbitrationMode CachedAggregationMode = EPriorityArbitrationMode::OverrideHighestPriority;
+    mutable bool bAggregationStructureDirty = true;
     mutable bool bAggregationCacheDirty = true;
 };

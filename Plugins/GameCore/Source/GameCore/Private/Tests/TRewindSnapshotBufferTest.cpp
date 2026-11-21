@@ -193,32 +193,24 @@ bool TRewindSnapshotBufferBasicAndInterpolationTest::RunTest([[maybe_unused]] co
     Buffer.EmplaceSnapshot(10.0, 100ULL, FVector(11.0f, 22.0f, 33.0f), 88.0f);
     TestEqual(TEXT("EmplaceSnapshot 原位构造成功"), Buffer.Num(), 1);
 
-    TOptional<FSimpleMotionState> OptLatest = Buffer.GetLatestSnapshot();
-    TestTrue(TEXT("GetLatestSnapshot Optional 有效"), OptLatest.IsSet());
-    if (OptLatest.IsSet()) {
-        TestEqual(TEXT("Optional 最新状态字段正确"), OptLatest->Health, 88.0f);
-        TestEqual(TEXT("Optional 最新坐标 X 正确"), OptLatest->Position.X, 11.0);
-    }
+    FSimpleMotionState EmplacedLatest;
+    TestTrue(TEXT("GetLatestSnapshot 有效"), Buffer.GetLatestSnapshot(EmplacedLatest));
+    TestEqual(TEXT("最新状态字段正确"), EmplacedLatest.Health, 88.0f);
+    TestEqual(TEXT("最新坐标 X 正确"), EmplacedLatest.Position.X, 11.0);
 
-    TOptional<FSimpleMotionState> OptOldest = Buffer.GetOldestSnapshot();
-    TestTrue(TEXT("GetOldestSnapshot Optional 有效"), OptOldest.IsSet());
-    if (OptOldest.IsSet()) {
-        TestEqual(TEXT("Optional 最早状态字段正确"), OptOldest->Health, 88.0f);
-    }
+    FSimpleMotionState EmplacedOldest;
+    TestTrue(TEXT("GetOldestSnapshot 有效"), Buffer.GetOldestSnapshot(EmplacedOldest));
+    TestEqual(TEXT("最早状态字段正确"), EmplacedOldest.Health, 88.0f);
 
-    TOptional<FSimpleMotionState> OptFrame = Buffer.GetSnapshotAtFrame(100ULL);
-    TestTrue(TEXT("GetSnapshotAtFrame Optional 命中"), OptFrame.IsSet());
-    if (OptFrame.IsSet()) {
-        TestEqual(TEXT("Optional 帧状态匹配"), OptFrame->Health, 88.0f);
-    }
-    TestFalse(TEXT("GetSnapshotAtFrame Optional 未命中返回空"), Buffer.GetSnapshotAtFrame(999ULL).IsSet());
+    FSimpleMotionState EmplacedFrame;
+    TestTrue(TEXT("GetSnapshotAtFrame 命中"), Buffer.GetSnapshotAtFrame(100ULL, EmplacedFrame));
+    TestEqual(TEXT("帧状态匹配"), EmplacedFrame.Health, 88.0f);
+    TestFalse(TEXT("GetSnapshotAtFrame 未命中返回 false"), Buffer.GetSnapshotAtFrame(999ULL, EmplacedFrame));
 
     Buffer.EmplaceSnapshot(20.0, 101ULL, FVector(111.0f, 222.0f, 333.0f), 10.0f);
-    TOptional<FSimpleMotionState> OptInterp = Buffer.GetInterpolatedSnapshot(15.0, &FSimpleMotionState::Lerp);
-    TestTrue(TEXT("GetInterpolatedSnapshot Optional 成功计算"), OptInterp.IsSet());
-    if (OptInterp.IsSet()) {
-        TestEqual(TEXT("Optional 插值血量正确"), OptInterp->Health, 49.0f);
-    }
+    FSimpleMotionState EmplacedInterp;
+    TestTrue(TEXT("GetInterpolatedSnapshot 成功计算"), Buffer.GetInterpolatedSnapshot(15.0, EmplacedInterp, &FSimpleMotionState::Lerp));
+    TestEqual(TEXT("插值血量正确"), EmplacedInterp.Health, 49.0f);
 
     return true;
 }

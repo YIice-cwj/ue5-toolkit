@@ -72,7 +72,6 @@ void FWaitSecondsAwaiter::SuspendWithGuard(
 
     FThrottledTickScheduler* SchedulerPtr = Scheduler;
     const float TargetDuration = DurationSeconds;
-    TSharedRef<float, ESPMode::ThreadSafe> ElapsedSeconds = MakeShared<float, ESPMode::ThreadSafe>(0.0f);
     TSharedRef<uint64, ESPMode::ThreadSafe> HandleSlot = MakeShared<uint64, ESPMode::ThreadSafe>(0ULL);
 
     const uint64 RegisteredHandle = SchedulerPtr->RegisterIntervalTick(
@@ -80,7 +79,7 @@ void FWaitSecondsAwaiter::SuspendWithGuard(
             return !InGuard->GetState()->ShouldAbort();
         },
         0.0f,
-        [SchedulerPtr, TargetDuration, ElapsedSeconds, HandleSlot, InGuard](float DeltaTime) {
+        [SchedulerPtr, TargetDuration, ElapsedSeconds = 0.0f, HandleSlot, InGuard](float DeltaTime) mutable {
             if (InGuard->GetState()->ShouldAbort()) {
                 if (*HandleSlot != 0ULL) {
                     SchedulerPtr->UnregisterTick(*HandleSlot);
@@ -89,8 +88,8 @@ void FWaitSecondsAwaiter::SuspendWithGuard(
                 InGuard->AbortAndDestroyFrame();
                 return;
             }
-            *ElapsedSeconds += FMath::Max(0.0f, DeltaTime);
-            if (*ElapsedSeconds + 1e-5f >= TargetDuration) {
+            ElapsedSeconds += FMath::Max(0.0f, DeltaTime);
+            if (ElapsedSeconds + 1e-5f >= TargetDuration) {
                 if (*HandleSlot != 0ULL) {
                     SchedulerPtr->UnregisterTick(*HandleSlot);
                     *HandleSlot = 0ULL;

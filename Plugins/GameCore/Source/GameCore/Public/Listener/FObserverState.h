@@ -41,6 +41,38 @@ public:
             return !Owner.IsExplicitlyNull() && !Owner.IsValid();
         }
 
+        /**
+         * @brief 按宿主绑定策略安全派发回调（若绑定了非空 Owner 且当前在非主线程，则自动切回 GameThread 校验并执行）
+         * @param InCallback 监听回调
+         * @param InWeakOwner 弱引用宿主
+         * @param ValueSnapshot 待派发的值快照
+         */
+        static void InvokeWithOwnerGuard(
+            const FListener& InCallback,
+            const TWeakObjectPtr<UObject>& InWeakOwner,
+            ConstReference ValueSnapshot
+        ) {
+            if (!InCallback) {
+                return;
+            }
+            if (InWeakOwner.IsExplicitlyNull()) {
+                InCallback(ValueSnapshot);
+                return;
+            }
+            if (IsInGameThread()) {
+                if (InWeakOwner.IsValid()) {
+                    InCallback(ValueSnapshot);
+                }
+                return;
+            }
+            FGameThreadTaskRunner::RunOnGameThread(
+                InWeakOwner,
+                [CallbackCopy = InCallback, ValueCopy = ValueSnapshot]() {
+                    CallbackCopy(ValueCopy);
+                }
+            );
+        }
+
     public:
         uint64 SubscriptionId = 0;
         FListener Callback;
@@ -109,10 +141,10 @@ private:
     void PurgeInvalidListeners();
 
     /**
-     * @brief 清理失效监听条目后返回当前存活监听者数量
+     * @brief 返回当前存活监听者数量（主线程调用时自动跳过或清理已失效宿主条目）
      * @return 存活监听者数量
      */
-    [[nodiscard]] int32 NumListeners();
+    [[nodiscard]] int32 NumListeners() const;
 
 private:
     ValueType Value{};
@@ -161,22 +193,7 @@ typename FObserverState<T>::FSubscribeSnapshot FObserverState<T>::AddListenerWit
     Listeners = MakeShared<const TArray<FListenerEntry>>(MoveTemp(Updated));
     Result.bShouldDrain = FNotificationDispatcher::Get().Enqueue(
         [ReplayListener = MoveTemp(ReplayListener), WeakOwner = InOwner, CurrentValue = Value]() {
-            if (!WeakOwner.IsExplicitlyNull()) {
-                if (IsInGameThread()) {
-                    if (WeakOwner.IsValid()) {
-                        ReplayListener(CurrentValue);
-                    }
-                } else {
-                    FGameThreadTaskRunner::RunOnGameThread(
-                        WeakOwner,
-                        [ReplayListener, CurrentValue]() {
-                            ReplayListener(CurrentValue);
-                        }
-                    );
-                }
-            } else {
-                ReplayListener(CurrentValue);
-            }
+            FListenerEntry::InvokeWithOwnerGuard(ReplayListener, WeakOwner, CurrentValue);
         });
     return Result;
 }
@@ -205,22 +222,7 @@ bool FObserverState<T>::SetValueAndPurge(ConstReference InValue, bool bBroadcast
     return FNotificationDispatcher::Get().Enqueue(
         [Snapshot = Listeners, ValueSnapshot = Value]() {
             for (const FListenerEntry& Entry : *Snapshot) {
-                if (!Entry.Owner.IsExplicitlyNull()) {
-                    if (IsInGameThread()) {
-                        if (Entry.Owner.IsValid()) {
-                            Entry.Callback(ValueSnapshot);
-                        }
-                    } else {
-                        FGameThreadTaskRunner::RunOnGameThread(
-                            Entry.Owner,
-                            [Callback = Entry.Callback, ValueSnapshot]() {
-                                Callback(ValueSnapshot);
-                            }
-                        );
-                    }
-                } else {
-                    Entry.Callback(ValueSnapshot);
-                }
+                FListenerEntry::InvokeWithOwnerGuard(Entry.Callback, Entry.Owner, ValueSnapshot);
             }
         });
 }
@@ -262,11 +264,20 @@ void FObserverState<T>::PurgeInvalidListeners() {
 }
 
 template<typename T>
-int32 FObserverState<T>::NumListeners() {
-    if (IsInGameThread()) {
-        PurgeInvalidListeners();
-    }
+int32 FObserverState<T>::NumListeners() const {
     FReadScopeLock ReadLock(ListenersLock);
-    return Listeners.IsValid() ? Listeners->Num() : 0;
+    if (!Listeners.IsValid()) {
+        return 0;
+    }
+    if (!IsInGameThread()) {
+        return Listeners->Num();
+    }
+    int32 ActiveCount = 0;
+    for (const FListenerEntry& Entry : *Listeners) {
+        if (!Entry.IsOwnerExpired()) {
+            ++ActiveCount;
+        }
+    }
+    return ActiveCount;
 }
 

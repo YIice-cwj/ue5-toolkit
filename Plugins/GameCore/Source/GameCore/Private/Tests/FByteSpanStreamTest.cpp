@@ -26,7 +26,6 @@ bool FByteSpanStreamScalarAndBytesTest::RunTest([[maybe_unused]] const FString& 
     FByteSpanWriter Writer(MakeArrayView(RawBuffer, 128));
 
     TestEqual(TEXT("初始已写字节为 0"), Writer.GetBytesWritten(), 0);
-    TestEqual(TEXT("初始剩余容量为 128"), Writer.GetRemainingCapacity(), 128);
     TestEqual(TEXT("初始 GetRemainingBytes 匹配剩余容量"), Writer.GetRemainingBytes(), 128);
 
     const uint32 ValU32 = 0xDEADBEEF;
@@ -213,6 +212,23 @@ bool FByteSpanStreamMathAndVarInt32Test::RunTest([[maybe_unused]] const FString&
     TestTrue(TEXT("读取 FQuat4f 成功"), Reader.Read(ReadQuat));
     TestEqual(TEXT("FQuat4f 完全一致"), ReadQuat, Quat);
 
+    const uint8 ValidMaxVarU32[5] = { 0xFF, 0xFF, 0xFF, 0xFF, 0x0F };
+    FByteSpanReader ValidMaxReader(MakeArrayView(ValidMaxVarU32, 5));
+    uint32 DecodedMaxU32 = 0U;
+    TestTrue(TEXT("合法最大值 5 字节 VarUInt32 解码成功"), ValidMaxReader.ReadVarUInt32(DecodedMaxU32));
+    TestEqual(TEXT("解码结果等于 0xFFFFFFFF"), DecodedMaxU32, 0xFFFFFFFFU);
+
+    const uint8 OverflowHighBitsVarU32[5] = { 0xFF, 0xFF, 0xFF, 0xFF, 0x10 };
+    FByteSpanReader OverflowReaderA(MakeArrayView(OverflowHighBitsVarU32, 5));
+    uint32 DummyU32 = 0U;
+    TestFalse(TEXT("第 5 字节高位溢出 (0x10) VarUInt32 被拦截"), OverflowReaderA.ReadVarUInt32(DummyU32));
+    TestTrue(TEXT("第 5 字节高位溢出触发错误位"), OverflowReaderA.HasError());
+
+    const uint8 OverflowContVarU32[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0x80, 0x00 };
+    FByteSpanReader OverflowReaderB(MakeArrayView(OverflowContVarU32, 6));
+    TestFalse(TEXT("第 5 字节续位溢出 (0x80) VarUInt32 被拦截"), OverflowReaderB.ReadVarUInt32(DummyU32));
+    TestTrue(TEXT("第 5 字节续位溢出触发错误位"), OverflowReaderB.HasError());
+
     return true;
 }
 
@@ -285,7 +301,7 @@ bool FByteSpanStreamBoundsSafetyTest::RunTest([[maybe_unused]] const FString& Pa
 
     const uint32 ValA = 42;
     TestTrue(TEXT("写入 4 字节成功"), Writer.Write(ValA));
-    TestEqual(TEXT("缓冲区已满"), Writer.GetRemainingCapacity(), 0);
+    TestEqual(TEXT("缓冲区已满"), Writer.GetRemainingBytes(), 0);
     TestTrue(TEXT("写满前流状态处于 Ok"), Writer.IsOk());
 
     const uint8 OverflowByte = 1;
@@ -319,6 +335,18 @@ bool FByteSpanStreamBoundsSafetyTest::RunTest([[maybe_unused]] const FString& Pa
     TArrayView<const UTF8CHAR> MaliciousSpan;
     TestFalse(TEXT("巨额 VarInt 长度前缀越界读取被安全拦截"), MaliciousReader.ReadUtf8Span(MaliciousSpan));
     TestTrue(TEXT("拦截后触发黏性错误"), MaliciousReader.HasError());
+    TestEqual(TEXT("ReadUtf8Span 失败后读取游标原子回滚到 0"), MaliciousReader.GetBytesRead(), 0);
+
+    uint8 NegTestBuf[16]{0};
+    FByteSpanWriter NegWriter(MakeArrayView(NegTestBuf, 16));
+    TestFalse(TEXT("WriteBytes 负数长度返回 false"), NegWriter.WriteBytes(NegTestBuf, -1));
+    TestTrue(TEXT("WriteBytes 负数长度置错误位"), NegWriter.HasError());
+    NegWriter.ClearError();
+    TestFalse(TEXT("WriteString 容量不足写入正文时失败"), FByteSpanWriter(MakeArrayView(NegTestBuf, 2)).WriteString(TEXT("TooLong")));
+
+    FByteSpanReader NegReader(MakeArrayView(NegTestBuf, 16));
+    TestFalse(TEXT("ReadBytes 负数长度返回 false"), NegReader.ReadBytes(NegTestBuf, -5));
+    TestTrue(TEXT("ReadBytes 负数长度置错误位"), NegReader.HasError());
 
     return true;
 }

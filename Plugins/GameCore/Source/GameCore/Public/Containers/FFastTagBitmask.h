@@ -1,14 +1,13 @@
 /**
  * @file FFastTagBitmask.h
- * @brief 64 位极速状态位掩码与标签字典
+ * @brief 64 位无锁极速状态位掩码
  */
 
 #pragma once
 
 #include "CoreMinimal.h"
-#include "HAL/CriticalSection.h"
 #include "Math/UnrealMathUtility.h"
-#include "Types/FGameDistId.h"
+#include "Types/FGameTypeFingerprint.h"
 
 /**
  * @brief 64 位无锁极速状态位掩码
@@ -23,6 +22,10 @@ struct GAMECORE_API FFastTagBitmask {
 
     constexpr FFastTagBitmask() = default;
 
+    /**
+     * @brief 由 64 位原始位掩码整数构造
+     * @param InValue 原始位掩码数值
+     */
     constexpr explicit FFastTagBitmask(uint64 InValue)
         : Value(InValue) {
     }
@@ -128,13 +131,34 @@ struct GAMECORE_API FFastTagBitmask {
         return static_cast<int32>(FPlatformMath::CountBits64(Value));
     }
 
+    /**
+     * @brief 相等比较运算符
+     * @param Other 另一掩码
+     * @return 位模式全等返回 true
+     */
     [[nodiscard]] constexpr bool operator==(const FFastTagBitmask& Other) const noexcept = default;
+
+    /**
+     * @brief 三路比较运算符
+     * @param Other 另一掩码
+     * @return 偏序比较结果
+     */
     [[nodiscard]] constexpr auto operator<=>(const FFastTagBitmask& Other) const noexcept = default;
 
+    /**
+     * @brief 按位并集运算符
+     * @param Other 另一掩码
+     * @return 并集位掩码
+     */
     [[nodiscard]] constexpr FFastTagBitmask operator|(const FFastTagBitmask& Other) const noexcept {
         return FFastTagBitmask(Value | Other.Value);
     }
 
+    /**
+     * @brief 按位交集运算符
+     * @param Other 另一掩码
+     * @return 交集位掩码
+     */
     [[nodiscard]] constexpr FFastTagBitmask operator&(const FFastTagBitmask& Other) const noexcept {
         return FFastTagBitmask(Value & Other.Value);
     }
@@ -197,6 +221,10 @@ struct GAMECORE_API FFastTagBitmask {
         return *this;
     }
 
+    /**
+     * @brief 按位取反运算符
+     * @return 取反后的位掩码
+     */
     [[nodiscard]] constexpr FFastTagBitmask operator~() const noexcept {
         return FFastTagBitmask(~Value);
     }
@@ -220,63 +248,4 @@ struct GAMECORE_API FFastTagBitmask {
         Ar << InMask.Value;
         return Ar;
     }
-};
-
-/**
- * @brief FName 到 64 位 Tag 索引的线程安全双向映射字典
- */
-class GAMECORE_API FFastTagDictionary {
-public:
-    static constexpr int32 MaxTagCount = 64;
-
-    /**
-     * @brief 获取全局单例字典实例
-     * @return 字典单例引用
-     */
-    static FFastTagDictionary& Get();
-
-    /**
-     * @brief 注册或查询指定标签名称的位索引
-     * @param TagName 标签名称
-     * @return 分配的位索引 [0, 63]，注册满或非法名称返回 INDEX_NONE
-     */
-    int32 RegisterOrFindTag(FName TagName);
-
-    /**
-     * @brief 查询已知标签名称的位索引
-     * @param TagName 标签名称
-     * @return 索引值，未注册返回 INDEX_NONE
-     */
-    [[nodiscard]] int32 FindTagIndex(FName TagName) const;
-
-    /**
-     * @brief 查询已知位索引对应的标签名称
-     * @param BitIndex 索引值
-     * @return 注册的名称，越界或未注册返回 NAME_None
-     */
-    [[nodiscard]] FName FindTagName(int32 BitIndex) const;
-
-    /**
-     * @brief 批量将标签名称列表转换为位掩码
-     * @param TagNames 标签名称视图
-     * @param OutAllSucceeded 可选输出标志：若所有标签均合法且未超出 64 上限则置为 true，否则置为 false
-     * @return 聚合位掩码
-     */
-    [[nodiscard]] FFastTagBitmask MakeMask(TConstArrayView<FName> TagNames, bool* OutAllSucceeded = nullptr);
-
-    /**
-     * @brief 获取当前已注册的标签总数
-     * @return 标签数量
-     */
-    [[nodiscard]] int32 Num() const;
-
-    /**
-     * @brief 重置清空所有注册信息（仅限单测或环境重置使用）
-     */
-    void Reset();
-
-private:
-    mutable FCriticalSection Mutex;
-    TArray<FName> RegisteredTagNames;
-    TMap<FName, int32> TagNameToIndexMap;
 };

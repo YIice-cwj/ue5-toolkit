@@ -182,6 +182,12 @@ namespace {
 
 constexpr double EXP_DECAY_LN2 = 0.693147180559945309417;
 
+/**
+ * @brief 根据半衰期与帧流逝时间计算 [0, 1] 区间的精确指数衰减插值系数
+ * @param HalfLifeSeconds 误差衰减至一半的半衰期（秒）
+ * @param DeltaSeconds 帧流逝时间（秒）
+ * @return 指数衰减插值因子
+ */
 inline float ComputeExpDecayFactor(float HalfLifeSeconds, float DeltaSeconds) noexcept {
     if (DeltaSeconds <= 0.0f) {
         return 0.0f;

@@ -7,6 +7,9 @@
 
 #if WITH_AUTOMATION_TESTS
 
+#include <atomic>
+
+#include "Async/ParallelFor.h"
 #include "Misc/AutomationTest.h"
 #include "Serialization/MemoryReader.h"
 #include "Serialization/MemoryWriter.h"
@@ -242,6 +245,24 @@ bool FSlotMapIterationAndHandleLookupTest::RunTest([[maybe_unused]] const FStrin
     }
     TestTrue(TEXT("仅移动类型移除成功"), MoveOnlyMap.Remove(MoveHandle));
     TestFalse(TEXT("仅移动类型移除后句柄失效"), MoveOnlyMap.IsValidHandle(MoveHandle));
+
+    std::atomic<int64> ConcurrentSum{0};
+    ParallelFor(8, [&ConstMap, &ConcurrentSum](int32) {
+        for (int32 Pass = 0; Pass < 64; ++Pass) {
+            ConstMap.ForEach([&ConcurrentSum](FEntityHandle, const int32& Val) {
+                ConcurrentSum.fetch_add(Val, std::memory_order_relaxed);
+            });
+        }
+    });
+    TestEqual(TEXT("8 线程并发 const ForEach 无竞争且总和精确"), ConcurrentSum.load(), static_cast<int64>(8 * 64 * (11 + 21 + 31)));
+
+    const FEntityHandle PostConcurrentHandle = Map.Insert(40);
+    TestTrue(TEXT("并发只读遍历结束后主线程结构修改正常"), Map.IsValidHandle(PostConcurrentHandle));
+
+    FEntitySlotMap CopiedMap(Map);
+    TestEqual(TEXT("拷贝构造元素数量一致"), CopiedMap.Num(), Map.Num());
+    FEntitySlotMap MovedMap(MoveTemp(CopiedMap));
+    TestEqual(TEXT("移动构造元素数量一致"), MovedMap.Num(), Map.Num());
 
     return true;
 }

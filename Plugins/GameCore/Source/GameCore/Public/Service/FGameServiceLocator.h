@@ -8,7 +8,7 @@
 #include "CoreMinimal.h"
 #include "Misc/ScopeRWLock.h"
 #include "Templates/SharedPointer.h"
-#include "Listener/FGameTypeFingerprint.h"
+#include "Types/FGameTypeFingerprint.h"
 
 GAMECORE_API DECLARE_LOG_CATEGORY_EXTERN(LogGameServiceLocator, Log, All);
 

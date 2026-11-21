@@ -1,9 +1,9 @@
 /**
- * @file TLinearArenaTest.cpp
+ * @file FLinearArenaTest.cpp
  * @brief FLinearArena 单元测试（对齐、指针稳定、非平凡析构链、作用域标记与并发独立性）
  */
 
-#include "Memory/TLinearArena.h"
+#include "Memory/FLinearArena.h"
 
 #if WITH_AUTOMATION_TESTS
 

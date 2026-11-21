@@ -54,15 +54,6 @@ public:
     }
 
     /**
-     * @brief 工厂方法：基于单枚举位索引创建位掩码（等价于 1 << BitIndex）
-     * @param BitIndex 0 起始的枚举位索引
-     * @return 构造出的强类型位掩码实例
-     */
-    [[nodiscard]] static constexpr TBitMask FromBitIndex(TEnum BitIndex) noexcept {
-        return TBitMask(BitIndex);
-    }
-
-    /**
      * @brief 工厂方法：基于原始二进制位掩码创建（直接包装底层二进制掩码）
      * @param InRawMask 底层位掩码整数
      * @return 构造出的强类型位掩码实例
@@ -162,7 +153,6 @@ public:
     }
 
     constexpr bool operator==(const TBitMask& Other) const noexcept = default;
-    constexpr bool operator!=(const TBitMask& Other) const noexcept = default;
 
     /**
      * @brief 按位并集运算符
@@ -189,6 +179,36 @@ public:
      */
     constexpr TBitMask operator^(const TBitMask& Other) const noexcept {
         return TBitMask(RawMask ^ Other.RawMask);
+    }
+
+    /**
+     * @brief 复合按位或赋值运算符
+     * @param Other 另一掩码
+     * @return 自身引用
+     */
+    constexpr TBitMask& operator|=(const TBitMask& Other) noexcept {
+        RawMask |= Other.RawMask;
+        return *this;
+    }
+
+    /**
+     * @brief 复合按位与赋值运算符
+     * @param Other 另一掩码
+     * @return 自身引用
+     */
+    constexpr TBitMask& operator&=(const TBitMask& Other) noexcept {
+        RawMask &= Other.RawMask;
+        return *this;
+    }
+
+    /**
+     * @brief 复合按位异或赋值运算符
+     * @param Other 另一掩码
+     * @return 自身引用
+     */
+    constexpr TBitMask& operator^=(const TBitMask& Other) noexcept {
+        RawMask ^= Other.RawMask;
+        return *this;
     }
 
     /**

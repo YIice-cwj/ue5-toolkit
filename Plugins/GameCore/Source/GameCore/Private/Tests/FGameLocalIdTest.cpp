@@ -65,7 +65,7 @@ bool FGameLocalIdBasicOpsTest::RunTest([[maybe_unused]] const FString& Parameter
     TestFalse(TEXT("非法字符解析失败"), FGameLocalId::FromString(TEXT("123abcXYZ"), InvalidId));
 
     const FGameDistId DistId = IdA.ToDistId();
-    TestEqual(TEXT("ToDistId 裸值匹配"), DistId.GetRawValue(), IdA.GetValue());
+    TestEqual(TEXT("ToDistId 裸值匹配"), DistId.GetValue(), IdA.GetValue());
     const FGameLocalId ConvertedLocal = FGameLocalId::FromDistId(DistId);
     TestEqual(TEXT("FromDistId 还原一致"), ConvertedLocal, IdA);
 

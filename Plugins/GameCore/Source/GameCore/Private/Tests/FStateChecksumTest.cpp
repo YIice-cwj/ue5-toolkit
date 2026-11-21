@@ -111,6 +111,49 @@ bool FStateChecksumBuilderDeterminismTest::RunTest([[maybe_unused]] const FStrin
 
     TestEqual(TEXT("大世界双精度坐标在容差范围内平滑量化消除抖动"), BuilderLwcJitter.Finalize(), BuilderLwcA.Finalize());
 
+    FStateChecksumBuilder BuilderStrSplitA;
+    BuilderStrSplitA.AddString(TEXT("AB"));
+    BuilderStrSplitA.AddString(TEXT("C"));
+
+    FStateChecksumBuilder BuilderStrSplitB;
+    BuilderStrSplitB.AddString(TEXT("A"));
+    BuilderStrSplitB.AddString(TEXT("BC"));
+    TestNotEqual(TEXT("字符串长度定界帧杜绝 AB+C 与 A+BC 碰撞"), BuilderStrSplitA.Finalize(), BuilderStrSplitB.Finalize());
+
+    FStateChecksumBuilder BuilderWithEmptyStr;
+    BuilderWithEmptyStr.AddString(TEXT(""));
+    FStateChecksumBuilder BuilderFreshEmpty;
+    TestNotEqual(TEXT("注入空字符串应更新校验状态，不可退化为空操作"), BuilderWithEmptyStr.Finalize(), BuilderFreshEmpty.Finalize());
+
+    FStateChecksumBuilder BuilderHugePos;
+    BuilderHugePos.AddFloatQuantized(1e36f, 0.001f);
+    BuilderHugePos.AddDoubleQuantized(1e30, 0.001);
+    FStateChecksumBuilder BuilderHugeNeg;
+    BuilderHugeNeg.AddFloatQuantized(-1e36f, 0.001f);
+    BuilderHugeNeg.AddDoubleQuantized(-1e30, 0.001);
+    TestNotEqual(TEXT("正负超大有限坐标量化钳制区分且无跨架构 UB"), BuilderHugePos.Finalize(), BuilderHugeNeg.Finalize());
+
+    FStateChecksumBuilder BuilderInfPrecA;
+    BuilderInfPrecA.AddDoubleQuantized(12.345, INFINITY);
+    FStateChecksumBuilder BuilderInfPrecB;
+    BuilderInfPrecB.AddDoubleQuantized(99.876, INFINITY);
+    TestNotEqual(TEXT("Precision=+Inf 自动回退有效精度，不把不同数值折叠为 0"), BuilderInfPrecA.Finalize(), BuilderInfPrecB.Finalize());
+
+    const uint8 TailOneByte[] = {0x01};
+    const uint8 TailTwoBytes[] = {0x01, 0x00};
+    FStateChecksumBuilder BuilderTailA;
+    BuilderTailA.AddBytes(TailOneByte, sizeof(TailOneByte));
+    FStateChecksumBuilder BuilderTailB;
+    BuilderTailB.AddBytes(TailTwoBytes, sizeof(TailTwoBytes));
+    TestNotEqual(TEXT("8 字节块尾字节携带长度帧，0x01 与 0x01,0x00 不碰撞"), BuilderTailA.Finalize(), BuilderTailB.Finalize());
+
+    const uint8 MultiBlockPayload[19] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19};
+    FStateChecksumBuilder BuilderBlockA;
+    BuilderBlockA.AddBytes(MultiBlockPayload + 1, 17);
+    FStateChecksumBuilder BuilderBlockB;
+    BuilderBlockB.AddBytes(MultiBlockPayload + 1, 17);
+    TestEqual(TEXT("非对齐多块字节流哈希 100% 确定性一致"), BuilderBlockA.Finalize(), BuilderBlockB.Finalize());
+
     return true;
 }
 

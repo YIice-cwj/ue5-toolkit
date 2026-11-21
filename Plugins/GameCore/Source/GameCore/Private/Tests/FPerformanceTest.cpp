@@ -7,13 +7,22 @@
  */
 
 #include "Cache/FVersionedCache.h"
+#include "Config/FConfigRegistry.h"
+#include "Config/TCachedConfigHandle.h"
+#include "Containers/TLockFreeRingBuffer.h"
 #include "Containers/TScratchArray.h"
+#include "Containers/TSlotMap.h"
+#include "Containers/TSortedVectorMap.h"
 #include "Determinism/FStateChecksumBuilder.h"
+#include "Determinism/TRewindSnapshotBuffer.h"
 #include "Listener/FListenerHub.h"
 #include "Memory/FByteSpanReader.h"
 #include "Memory/FByteSpanWriter.h"
 #include "Memory/FScopedFrameScratchpad.h"
 #include "Memory/TFixedSizePool.h"
+#include "Random/FGameRandomStream.h"
+#include "Random/TWeightedPicker.h"
+#include "State/TPriorityArbitrator.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -43,6 +52,35 @@ constexpr double ByteSpanBudgetNsPerOp = 300.0;
 
 constexpr int32 ChecksumIterations = 100000;
 constexpr double ChecksumBudgetNsPerOp = 500.0;
+
+constexpr int32 SlotMapFindIterations = 200000;
+constexpr double SlotMapFindBudgetNsPerOp = 100.0;
+
+constexpr int32 SortedVectorMapIterations = 200000;
+constexpr double SortedVectorMapBudgetNsPerOp = 150.0;
+
+constexpr int32 LockFreeRingBufferIterations = 200000;
+constexpr double LockFreeRingBufferBudgetNsPerOp = 200.0;
+
+constexpr int32 CachedConfigIterations = 200000;
+constexpr double CachedConfigBudgetNsPerOp = 300.0;
+
+constexpr int32 WeightedPickerIterations = 200000;
+constexpr double WeightedPickerBudgetNsPerOp = 150.0;
+
+constexpr int32 PriorityArbitratorIterations = 100000;
+constexpr double PriorityArbitratorBudgetNsPerOp = 500.0;
+
+constexpr int32 RewindSnapshotIterations = 100000;
+constexpr double RewindSnapshotBudgetNsPerOp = 300.0;
+
+struct FPerfSlotMapTag {};
+
+struct FPerfRewindState {
+    double X = 0.0;
+    double Y = 0.0;
+    float Health = 100.0f;
+};
 
 struct FPerfCacheValue {
     int32 Payload = 0;
@@ -462,6 +500,350 @@ bool FGameStateChecksumPerfTest::RunTest([[maybe_unused]] const FString& Paramet
 
     AddInfo(FString::Printf(
         TEXT("StateChecksumMix64: %.1f ns/op (CV: %.2f%%, %.1f Mops/s)"),
+        Metrics.MedianNs,
+        Metrics.CvPercent,
+        Metrics.OpsPerSec / 1.0e6
+    ));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameSlotMapPerfTest,
+    "Game.Core.Perf.SlotMapFindAndIterate",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief TSlotMap 代际句柄 O(1) 查找吞吐基准
+ * @param Parameters 自动化框架参数（未使用）
+ * @return 预算内且结果正确返回 true
+ */
+bool FGameSlotMapPerfTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    using FPerfSlotMap = TSlotMap<int32, FPerfSlotMapTag>;
+    using FPerfHandle = FPerfSlotMap::HandleType;
+
+    constexpr int32 EntryCount = 1024;
+    FPerfSlotMap SlotMap;
+    SlotMap.Reserve(EntryCount);
+    TArray<FPerfHandle> Handles;
+    Handles.Reserve(EntryCount);
+    for (int32 Index = 0; Index < EntryCount; ++Index) {
+        Handles.Add(SlotMap.Insert(Index * 3));
+    }
+
+    volatile int64 Sink = 0;
+    const FBenchmarkMetrics Metrics = RunBenchmark(
+        DefaultWarmupRounds,
+        DefaultSampleRounds,
+        SlotMapFindIterations,
+        [&SlotMap, &Handles, &Sink](const int32 Iterations) {
+            for (int32 Index = 0; Index < Iterations; ++Index) {
+                if (const int32* Val = SlotMap.Find(Handles[Index & (EntryCount - 1)])) {
+                    Sink = Sink + *Val;
+                }
+            }
+        }
+    );
+
+    TestTrue(
+        FString::Printf(TEXT("TSlotMap::Find 耗时 %.1f ns/op 应低于预算 %.0f ns/op"), Metrics.MedianNs, SlotMapFindBudgetNsPerOp),
+        Metrics.MedianNs < SlotMapFindBudgetNsPerOp
+    );
+    AddInfo(FString::Printf(
+        TEXT("TSlotMapFind: %.1f ns/op (CV: %.2f%%, %.1f Mops/s)"),
+        Metrics.MedianNs,
+        Metrics.CvPercent,
+        Metrics.OpsPerSec / 1.0e6
+    ));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameSortedVectorMapPerfTest,
+    "Game.Core.Perf.SortedVectorMapFind",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief TSortedVectorMap 连续内存二分查找吞吐基准
+ * @param Parameters 自动化框架参数（未使用）
+ * @return 预算内且结果正确返回 true
+ */
+bool FGameSortedVectorMapPerfTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    TSortedVectorMap<int32, float, 16> Map;
+    for (int32 Key = 0; Key < 16; ++Key) {
+        Map.Add(Key * 2, static_cast<float>(Key) * 1.5f);
+    }
+
+    volatile double Sink = 0.0;
+    const FBenchmarkMetrics Metrics = RunBenchmark(
+        DefaultWarmupRounds,
+        DefaultSampleRounds,
+        SortedVectorMapIterations,
+        [&Map, &Sink](const int32 Iterations) {
+            for (int32 Index = 0; Index < Iterations; ++Index) {
+                if (const float* Found = Map.Find((Index & 15) * 2)) {
+                    Sink = Sink + *Found;
+                }
+            }
+        }
+    );
+
+    TestTrue(
+        FString::Printf(TEXT("TSortedVectorMap::Find 耗时 %.1f ns/op 应低于预算 %.0f ns/op"), Metrics.MedianNs, SortedVectorMapBudgetNsPerOp),
+        Metrics.MedianNs < SortedVectorMapBudgetNsPerOp
+    );
+    AddInfo(FString::Printf(
+        TEXT("TSortedVectorMapFind: %.1f ns/op (CV: %.2f%%, %.1f Mops/s)"),
+        Metrics.MedianNs,
+        Metrics.CvPercent,
+        Metrics.OpsPerSec / 1.0e6
+    ));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameLockFreeRingBufferPerfTest,
+    "Game.Core.Perf.LockFreeRingBufferThroughput",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief TLockFreeRingBuffer 无锁入队出队往返吞吐基准
+ * @param Parameters 自动化框架参数（未使用）
+ * @return 预算内且结果正确返回 true
+ */
+bool FGameLockFreeRingBufferPerfTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    TUniquePtr<TLockFreeRingBuffer<uint64, 1024>> Ring = MakeUnique<TLockFreeRingBuffer<uint64, 1024>>();
+    volatile uint64 Sink = 0;
+
+    const FBenchmarkMetrics Metrics = RunBenchmark(
+        DefaultWarmupRounds,
+        DefaultSampleRounds,
+        LockFreeRingBufferIterations,
+        [&Ring, &Sink](const int32 Iterations) {
+            uint64 OutValue = 0;
+            for (int32 Index = 0; Index < Iterations; ++Index) {
+                Ring->Enqueue(static_cast<uint64>(Index));
+                if (Ring->Dequeue(OutValue)) {
+                    Sink = Sink + OutValue;
+                }
+            }
+        }
+    );
+
+    TestTrue(
+        FString::Printf(TEXT("TLockFreeRingBuffer Enqueue+Dequeue 耗时 %.1f ns/op 应低于预算 %.0f ns/op"), Metrics.MedianNs, LockFreeRingBufferBudgetNsPerOp),
+        Metrics.MedianNs < LockFreeRingBufferBudgetNsPerOp
+    );
+    AddInfo(FString::Printf(
+        TEXT("TLockFreeRingBuffer: %.1f ns/op (CV: %.2f%%, %.1f Mops/s)"),
+        Metrics.MedianNs,
+        Metrics.CvPercent,
+        Metrics.OpsPerSec / 1.0e6
+    ));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameCachedConfigHandlePerfTest,
+    "Game.Core.Perf.CachedConfigHandleVsRegistry",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief TCachedConfigHandle 零哈希读取对比 FConfigRegistry::GetConfig 吞吐基准
+ * @param Parameters 自动化框架参数（未使用）
+ * @return 预算内且结果正确返回 true
+ */
+bool FGameCachedConfigHandlePerfTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    static const FName PerfKey(TEXT("Perf.Config.MoveSpeed"));
+    FConfigRegistry& Registry = FConfigRegistry::Get();
+    Registry.RegisterConfig<float>(PerfKey, 650.0f);
+    TCachedConfigHandle<float> CachedHandle(PerfKey, 300.0f);
+
+    volatile double Sink = 0.0;
+    const FBenchmarkMetrics HandleMetrics = RunBenchmark(
+        DefaultWarmupRounds,
+        DefaultSampleRounds,
+        CachedConfigIterations,
+        [&CachedHandle, &Sink](const int32 Iterations) {
+            for (int32 Index = 0; Index < Iterations; ++Index) {
+                Sink = Sink + CachedHandle.Get();
+            }
+        }
+    );
+
+    const FBenchmarkMetrics RegistryMetrics = RunBenchmark(
+        DefaultWarmupRounds,
+        DefaultSampleRounds,
+        CachedConfigIterations,
+        [&Registry, &Sink](const int32 Iterations) {
+            for (int32 Index = 0; Index < Iterations; ++Index) {
+                Sink = Sink + Registry.GetConfig<float>(PerfKey, 300.0f);
+            }
+        }
+    );
+
+    const double SpeedupRatio = (HandleMetrics.MedianNs > 0.0) ? (RegistryMetrics.MedianNs / HandleMetrics.MedianNs) : 0.0;
+    TestTrue(
+        FString::Printf(TEXT("TCachedConfigHandle::Get 耗时 %.1f ns/op 应低于预算 %.0f ns/op"), HandleMetrics.MedianNs, CachedConfigBudgetNsPerOp),
+        HandleMetrics.MedianNs < CachedConfigBudgetNsPerOp
+    );
+    AddInfo(FString::Printf(
+        TEXT("TCachedConfigHandle: %.1f ns/op (CV: %.2f%%) | FConfigRegistry: %.1f ns/op (CV: %.2f%%) | Speedup: %.2fx"),
+        HandleMetrics.MedianNs,
+        HandleMetrics.CvPercent,
+        RegistryMetrics.MedianNs,
+        RegistryMetrics.CvPercent,
+        SpeedupRatio
+    ));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameRandomAndWeightedPickerPerfTest,
+    "Game.Core.Perf.RandomAndWeightedPicker",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief FGameRandomStream PCG32 与 TWeightedPicker Vose 别名表 O(1) 权重抽取基准
+ * @param Parameters 自动化框架参数（未使用）
+ * @return 预算内且结果正确返回 true
+ */
+bool FGameRandomAndWeightedPickerPerfTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    FGameRandomStream Stream(20261120ULL);
+    TWeightedPicker<int32> Picker;
+    for (int32 Index = 0; Index < 32; ++Index) {
+        Picker.AddEntry(Index + 1, static_cast<double>(Index + 1));
+    }
+    Picker.Build();
+
+    volatile int64 Sink = 0;
+    const FBenchmarkMetrics Metrics = RunBenchmark(
+        DefaultWarmupRounds,
+        DefaultSampleRounds,
+        WeightedPickerIterations,
+        [&Picker, &Stream, &Sink](const int32 Iterations) {
+            for (int32 Index = 0; Index < Iterations; ++Index) {
+                Sink = Sink + Picker.Pick(Stream);
+            }
+        }
+    );
+
+    TestTrue(
+        FString::Printf(TEXT("TWeightedPicker::Pick 耗时 %.1f ns/op 应低于预算 %.0f ns/op"), Metrics.MedianNs, WeightedPickerBudgetNsPerOp),
+        Metrics.MedianNs < WeightedPickerBudgetNsPerOp
+    );
+    AddInfo(FString::Printf(
+        TEXT("TWeightedPickerPick(32): %.1f ns/op (CV: %.2f%%, %.1f Mops/s)"),
+        Metrics.MedianNs,
+        Metrics.CvPercent,
+        Metrics.OpsPerSec / 1.0e6
+    ));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGamePriorityArbitratorPerfTest,
+    "Game.Core.Perf.PriorityArbitratorEval",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief TPriorityArbitrator 覆盖缓存直读与已有通道高频数值更新免排序聚合基准
+ * @param Parameters 自动化框架参数（未使用）
+ * @return 预算内且结果正确返回 true
+ */
+bool FGamePriorityArbitratorPerfTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    TPriorityArbitrator<float> Arbitrator(EPriorityArbitrationMode::Additive);
+    const FName Channels[8] = {
+        FName(TEXT("Ch0")), FName(TEXT("Ch1")), FName(TEXT("Ch2")), FName(TEXT("Ch3")),
+        FName(TEXT("Ch4")), FName(TEXT("Ch5")), FName(TEXT("Ch6")), FName(TEXT("Ch7"))
+    };
+    for (int32 Index = 0; Index < 8; ++Index) {
+        Arbitrator.SetChannel(Channels[Index], static_cast<float>(Index + 1), Index);
+    }
+    [[maybe_unused]] const float WarmupVal = Arbitrator.GetEffectiveValue(100.0f);
+
+    volatile double Sink = 0.0;
+    const FBenchmarkMetrics Metrics = RunBenchmark(
+        DefaultWarmupRounds,
+        DefaultSampleRounds,
+        PriorityArbitratorIterations,
+        [&Arbitrator, &Channels, &Sink](const int32 Iterations) {
+            for (int32 Index = 0; Index < Iterations; ++Index) {
+                Arbitrator.SetChannel(Channels[Index & 7], static_cast<float>(Index & 31), Index & 7);
+                Sink = Sink + Arbitrator.GetEffectiveValue(100.0f);
+            }
+        }
+    );
+
+    TestTrue(
+        FString::Printf(TEXT("TPriorityArbitrator 已有通道更新+聚合耗时 %.1f ns/op 应低于预算 %.0f ns/op"), Metrics.MedianNs, PriorityArbitratorBudgetNsPerOp),
+        Metrics.MedianNs < PriorityArbitratorBudgetNsPerOp
+    );
+    AddInfo(FString::Printf(
+        TEXT("TPriorityArbitratorUpdateEval(8ch): %.1f ns/op (CV: %.2f%%, %.1f Mops/s)"),
+        Metrics.MedianNs,
+        Metrics.CvPercent,
+        Metrics.OpsPerSec / 1.0e6
+    ));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameRewindSnapshotPerfTest,
+    "Game.Core.Perf.RewindSnapshotInterpolation",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief TRewindSnapshotBuffer 环形写入与 O(log N) 亚帧插值查询基准
+ * @param Parameters 自动化框架参数（未使用）
+ * @return 预算内且结果正确返回 true
+ */
+bool FGameRewindSnapshotPerfTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    TRewindSnapshotBuffer<FPerfRewindState, 128> Buffer;
+    for (uint64 Frame = 0; Frame < 128; ++Frame) {
+        Buffer.RecordSnapshot(
+            static_cast<double>(Frame) * 0.016,
+            Frame,
+            FPerfRewindState{static_cast<double>(Frame) * 10.0, static_cast<double>(Frame) * 5.0, 100.0f}
+        );
+    }
+
+    const auto Interpolator = [](const FPerfRewindState& A, const FPerfRewindState& B, float Alpha) {
+        return FPerfRewindState{
+            FMath::Lerp(A.X, B.X, Alpha),
+            FMath::Lerp(A.Y, B.Y, Alpha),
+            FMath::Lerp(A.Health, B.Health, Alpha)
+        };
+    };
+
+    volatile double Sink = 0.0;
+    const FBenchmarkMetrics Metrics = RunBenchmark(
+        DefaultWarmupRounds,
+        DefaultSampleRounds,
+        RewindSnapshotIterations,
+        [&Buffer, &Interpolator, &Sink](const int32 Iterations) {
+            FPerfRewindState OutState;
+            for (int32 Index = 0; Index < Iterations; ++Index) {
+                const double QueryTime = static_cast<double>(Index & 127) * 0.016 + 0.008;
+                if (Buffer.GetInterpolatedSnapshot(QueryTime, OutState, Interpolator)) {
+                    Sink = Sink + OutState.X;
+                }
+            }
+        }
+    );
+
+    TestTrue(
+        FString::Printf(TEXT("TRewindSnapshotBuffer 亚帧插值耗时 %.1f ns/op 应低于预算 %.0f ns/op"), Metrics.MedianNs, RewindSnapshotBudgetNsPerOp),
+        Metrics.MedianNs < RewindSnapshotBudgetNsPerOp
+    );
+    AddInfo(FString::Printf(
+        TEXT("TRewindSnapshotInterp(128): %.1f ns/op (CV: %.2f%%, %.1f Mops/s)"),
         Metrics.MedianNs,
         Metrics.CvPercent,
         Metrics.OpsPerSec / 1.0e6

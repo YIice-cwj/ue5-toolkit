@@ -46,10 +46,14 @@ public:
      * @brief 批量写入原始字节数据
      * @param Data 源数据指针
      * @param ByteCount 写入字节数
-     * @return 成功写入返回 true，空间不足返回 false
+     * @return 成功写入返回 true，负数长度、空指针或空间不足返回 false
      */
     bool WriteBytes(const void* Data, int32 ByteCount) noexcept {
-        if (ByteCount <= 0) {
+        if (ByteCount < 0) {
+            bHasError = true;
+            return false;
+        }
+        if (ByteCount == 0) {
             return true;
         }
         if (Data == nullptr || ByteCount > (Buffer.Num() - WriteOffset)) {
@@ -125,11 +129,12 @@ public:
     }
 
     /**
-     * @brief 写入 UTF-8 格式字符串切片（带变长 32 位字节长度前缀）
+     * @brief 写入 UTF-8 格式字符串切片（带变长 32 位字节长度前缀，失败时自动回滚写入游标）
      * @param Str 字符串视图
      * @return 成功写入返回 true，容量不足返回 false
      */
     bool WriteString(FStringView Str) noexcept {
+        const int32 SavedOffset = WriteOffset;
         const int32 Length = Str.Len();
         if (Length == 0) {
             return WriteVarUInt32(0U);
@@ -137,9 +142,14 @@ public:
         const auto Utf8 = StringCast<UTF8CHAR>(Str.GetData(), Length);
         const int32 ByteLen = Utf8.Length();
         if (!WriteVarUInt32(static_cast<uint32>(ByteLen))) {
+            WriteOffset = SavedOffset;
             return false;
         }
-        return WriteBytes(Utf8.Get(), ByteLen);
+        if (!WriteBytes(Utf8.Get(), ByteLen)) {
+            WriteOffset = SavedOffset;
+            return false;
+        }
+        return true;
     }
 
     /**
@@ -215,15 +225,7 @@ public:
     }
 
     /**
-     * @brief 获取剩余可写空间容量
-     * @return 剩余字节数
-     */
-    [[nodiscard]] constexpr int32 GetRemainingCapacity() const noexcept {
-        return Buffer.Num() - WriteOffset;
-    }
-
-    /**
-     * @brief 获取剩余可写字节数（对齐 Reader 命名）
+     * @brief 获取剩余可写字节数（与 FByteSpanReader::GetRemainingBytes 对称统一）
      * @return 剩余字节数
      */
     [[nodiscard]] constexpr int32 GetRemainingBytes() const noexcept {

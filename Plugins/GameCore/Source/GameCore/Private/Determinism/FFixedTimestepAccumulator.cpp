@@ -16,9 +16,9 @@ FFixedTimestepAccumulator::FFixedTimestepAccumulator(
     int32 InMaxSubsteps,
     double InMaxDeltaTime
 )
-    : FixedDeltaTime(InFixedDeltaTime > 0.0 ? InFixedDeltaTime : (1.0 / 60.0))
+    : FixedDeltaTime((FMath::IsFinite(InFixedDeltaTime) && InFixedDeltaTime > 0.0) ? InFixedDeltaTime : (1.0 / 60.0))
     , MaxSubsteps(FMath::Max(1, InMaxSubsteps))
-    , ConfiguredMaxDeltaTime(InMaxDeltaTime > 0.0 ? InMaxDeltaTime : 0.25)
+    , ConfiguredMaxDeltaTime((FMath::IsFinite(InMaxDeltaTime) && InMaxDeltaTime > 0.0) ? InMaxDeltaTime : 0.25)
     , MaxDeltaTime(FMath::Max(FixedDeltaTime, ConfiguredMaxDeltaTime))
     , AccumulatedTime(0.0) {
 }
@@ -78,7 +78,7 @@ double FFixedTimestepAccumulator::GetFixedDeltaTime() const noexcept {
  * @param InFixedDeltaTime 新固定步长（必须大于 0）
  */
 void FFixedTimestepAccumulator::SetFixedDeltaTime(double InFixedDeltaTime) {
-    if (InFixedDeltaTime > 0.0) {
+    if (FMath::IsFinite(InFixedDeltaTime) && InFixedDeltaTime > 0.0) {
         FixedDeltaTime = InFixedDeltaTime;
         MaxDeltaTime = FMath::Max(FixedDeltaTime, ConfiguredMaxDeltaTime);
     }

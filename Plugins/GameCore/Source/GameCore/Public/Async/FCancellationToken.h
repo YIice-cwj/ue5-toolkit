@@ -169,15 +169,6 @@ public:
     }
 
     /**
-     * @brief 令牌不相等比较操作符
-     * @param Other 待比较令牌
-     * @return 状态源不相同返回 true
-     */
-    [[nodiscard]] bool operator!=(const FCancellationToken& Other) const noexcept {
-        return State != Other.State;
-    }
-
-    /**
      * @brief 获取不可被取消的全局空令牌单例
      * @return 恒为 false 的令牌对象
      */

@@ -52,25 +52,15 @@ public:
     /**
      * @brief 从当前轮次剩余元素中抽取一项（若当前轮已抽空则自动开启新一轮；空袋时触发断言，不确定非空请用 TryDraw）
      * @param Stream 驱动抽取的隔离随机流
-     * @return 抽中元素的常量引用（调用前袋不可为空）
-     * @warning 返回引用指向内部容器元素，下一次 Draw/TryDraw 内部交换会置换其内存，严禁长期跨次抽取持有该引用！若需安全持有请使用 DrawValue()。
+     * @return 抽中元素的值拷贝（安全值语义，避免后续洗牌交换导致引用悬垂）
      */
-    [[nodiscard]] const ValueType& Draw(FGameRandomStream& Stream);
-
-    /**
-     * @brief 安全抽取值拷贝（安全值语义，避免后续洗牌交换导致引用内存被置换）
-     * @param Stream 驱动抽取的隔离随机流
-     * @return 抽中元素的值拷贝
-     */
-    [[nodiscard]] ValueType DrawValue(FGameRandomStream& Stream) {
-        return Draw(Stream);
-    }
+    [[nodiscard]] ValueType Draw(FGameRandomStream& Stream);
 
     /**
      * @brief 安全抽取指针接口（袋为空时返回 nullptr）
      * @param Stream 驱动抽取的隔离随机流
      * @return 抽中元素常量指针，空袋返回 nullptr
-     * @warning 返回指针指向内部容器元素，下一次 Draw/TryDraw 内部交换会置换其内存，严禁长期跨次抽取持有该指针！
+     * @warning 返回指针指向内部容器元素，下一次 Draw/TryDraw 内部交换会置换其内存，严禁跨次抽取持有该指针！
      */
     [[nodiscard]] const ValueType* TryDraw(FGameRandomStream& Stream);
 
@@ -165,7 +155,7 @@ void TShuffleBag<TValue>::Emplace(ArgsType&&... Args) {
 }
 
 template <typename TValue>
-const typename TShuffleBag<TValue>::ValueType& TShuffleBag<TValue>::Draw(FGameRandomStream& Stream) {
+typename TShuffleBag<TValue>::ValueType TShuffleBag<TValue>::Draw(FGameRandomStream& Stream) {
     const ValueType* Picked = TryDraw(Stream);
     checkf(Picked != nullptr, TEXT("Attempted Draw() on an empty TShuffleBag"));
     return *Picked;

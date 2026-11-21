@@ -103,6 +103,16 @@ bool FFixedTimestepAccumulatorSpiralOfDeathProtectionTest::RunTest([[maybe_unuse
     Accumulator.SetFixedDeltaTime(0.05);
     TestEqual(TEXT("动态更新固定步长成功"), Accumulator.GetFixedDeltaTime(), 0.05);
 
+    const double InfVal = std::numeric_limits<double>::infinity();
+    const double NanVal = std::numeric_limits<double>::quiet_NaN();
+    Accumulator.SetFixedDeltaTime(InfVal);
+    Accumulator.SetFixedDeltaTime(NanVal);
+    TestEqual(TEXT("SetFixedDeltaTime 忽略 +Inf 与 NaN 保留原步长"), Accumulator.GetFixedDeltaTime(), 0.05);
+
+    FFixedTimestepAccumulator NonFiniteCtor(InfVal, 4, InfVal);
+    TestTrue(TEXT("构造传入 +Inf 步长安全回退为有限默认值"), FMath::IsFinite(NonFiniteCtor.GetFixedDeltaTime()) && NonFiniteCtor.GetFixedDeltaTime() > 0.0);
+    TestEqual(TEXT("非有限构造回退后可正常推进子步"), NonFiniteCtor.Advance(0.05, [](double) {}), 3);
+
     return true;
 }
 

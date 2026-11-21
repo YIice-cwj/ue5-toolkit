@@ -50,14 +50,14 @@ bool FGameErrorContractAndSeverityTest::RunTest([[maybe_unused]] const FString& 
     TestEqual(TEXT("错误码正确"), WarningErr.ErrorCode, 1001);
     TestEqual(TEXT("错误消息一致"), WarningErr.Message, TEXT("MemoryThresholdExceeded"));
 
-    const FGameError SeverityFirstErr = FGameError::Make(
+    const FGameError SeverityFirstErr(
         Game::ModuleId::Core,
         1002,
         EGameErrorSeverity::Warning,
         TEXT("SeverityFirst")
     );
-    TestEqual(TEXT("参数排布对齐 Make 严重级别正确"), SeverityFirstErr.Severity, EGameErrorSeverity::Warning);
-    TestEqual(TEXT("参数排布对齐 Make 消息一致"), SeverityFirstErr.Message, FString(TEXT("SeverityFirst")));
+    TestEqual(TEXT("全参构造严重级别正确"), SeverityFirstErr.Severity, EGameErrorSeverity::Warning);
+    TestEqual(TEXT("全参构造消息一致"), SeverityFirstErr.Message, FString(TEXT("SeverityFirst")));
 
     const FGameError EnrichedLValue = WarningErr.WithContext(TEXT("InnerStage"));
     TestEqual(TEXT("左值 WithContext 正确追加上下文"), EnrichedLValue.Message, FString(TEXT("MemoryThresholdExceeded [InnerStage]")));

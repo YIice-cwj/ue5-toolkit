@@ -120,6 +120,10 @@ bool FGameRandomStreamDeterminismAndSamplingTest::RunTest([[maybe_unused]] const
     TestTrue(TEXT("概率 >= 1 恒命中"), StreamA.RollChance(1.0f));
     TestTrue(TEXT("超 1 概率恒命中"), StreamA.RollChance(1.5f));
 
+    const uint64 StateBeforeNanRoll = StreamA.GetState();
+    TestFalse(TEXT("NaN 概率恒不命中"), StreamA.RollChance(NAN));
+    TestEqual(TEXT("RollChance(NaN) 不得消耗确定性随机流状态"), StreamA.GetState(), StateBeforeNanRoll);
+
     int32 HitCount = 0;
     constexpr int32 TotalRolls = 20000;
     for (int32 Index = 0; Index < TotalRolls; ++Index) {
@@ -205,10 +209,29 @@ bool FPseudoRandomDistributionTest::RunTest([[maybe_unused]] const FString& Para
         const float Val = 0.20f;
         Prop->SetValue_InContainer(&RawPrd, &Val);
     }
-    TestTrue(TEXT("未初始化常数的 PRD 具备自动求解保底能力"), RawPrd.GetNextRollProbability() > 0.0f);
-    TestTrue(TEXT("求解后常数写回缓存"), RawPrd.GetIncrementConstant() > 0.0f);
+    const FPseudoRandomDistribution& ConstRawPrd = RawPrd;
+    TestTrue(TEXT("const PRD 实例无 UB 自动求解下一击概率"), ConstRawPrd.GetNextRollProbability() > 0.0f);
+    RawPrd.SetNominalProbability(0.20f);
+    TestTrue(TEXT("SetNominalProbability 求解后常数写回缓存"), RawPrd.GetIncrementConstant() > 0.0f);
     const float CachedC = RawPrd.GetIncrementConstant();
     TestEqual(TEXT("后续调用保持缓存一致"), RawPrd.GetIncrementConstant(), CachedC);
+
+    FPseudoRandomDistribution NanPrd(NAN);
+    TestEqual(TEXT("NaN 标称概率安全回退为 0.0"), NanPrd.GetNominalProbability(), 0.0f);
+    TestEqual(TEXT("NaN 标称概率对应常数 C 为 0.0"), NanPrd.GetIncrementConstant(), 0.0f);
+    TestEqual(TEXT("CalculatePreciseConstantForProbability(NaN) 返回 0.0"), FPseudoRandomDistribution::CalculatePreciseConstantForProbability(NAN), 0.0);
+
+    const double TinyP6 = 1e-6;
+    const double TinyC6 = FPseudoRandomDistribution::CalculatePreciseConstantForProbability(TinyP6);
+    const double ExpectedAsympC6 = (UE_DOUBLE_PI * 0.5) * TinyP6 * TinyP6;
+    TestTrue(TEXT("极小概率 1e-6 求解有限正数且快速收敛"), FMath::IsFinite(TinyC6) && TinyC6 > 0.0);
+    TestTrue(TEXT("1e-6 步长常数与理论渐近值 (pi/2)*P^2 误差在 1% 以内"), FMath::Abs(TinyC6 - ExpectedAsympC6) / ExpectedAsympC6 < 0.01);
+
+    const double TinyP10 = 1e-10;
+    const double TinyC10 = FPseudoRandomDistribution::CalculatePreciseConstantForProbability(TinyP10);
+    const double ExpectedAsympC10 = (UE_DOUBLE_PI * 0.5) * TinyP10 * TinyP10;
+    TestTrue(TEXT("超极小概率 1e-10 无 int32 溢出无卡死且返回有限正数"), FMath::IsFinite(TinyC10) && TinyC10 > 0.0);
+    TestTrue(TEXT("1e-10 步长常数与理论渐近值 (pi/2)*P^2 高度匹配"), FMath::Abs(TinyC10 - ExpectedAsympC10) / ExpectedAsympC10 < 0.01);
 
     return true;
 }
@@ -255,8 +278,8 @@ bool FShuffleBagAndWeightedPickerTest::RunTest([[maybe_unused]] const FString& P
         TestEqual(TEXT("每轮周期 Epic 精确出现 1 次"), CycleCounts.FindRef(TEXT("Epic")), 1);
     }
 
-    [[maybe_unused]] const FName DrawnOnce = Bag.DrawValue(Stream);
-    TestFalse(TEXT("DrawValue 抽取得到有效项"), DrawnOnce.IsNone());
+    [[maybe_unused]] const FName DrawnOnce = Bag.Draw(Stream);
+    TestFalse(TEXT("Draw 按值安全抽取得到有效项"), DrawnOnce.IsNone());
     TestEqual(TEXT("自动重洗抽取 1 次后剩余 5"), Bag.Remaining(), 5);
     Bag.Reshuffle();
     TestEqual(TEXT("手动 Reshuffle 恢复剩余 6"), Bag.Remaining(), 6);
@@ -297,8 +320,8 @@ bool FShuffleBagAndWeightedPickerTest::RunTest([[maybe_unused]] const FString& P
     TestTrue(TEXT("权重 30% 抽中率处于 [0.285, 0.315]"), FMath::IsWithinInclusive(Ratio200, 0.285, 0.315));
     TestTrue(TEXT("权重 60% 抽中率处于 [0.585, 0.615]"), FMath::IsWithinInclusive(Ratio300, 0.585, 0.615));
 
-    const int32 PickedVal = Picker.PickValue(Stream);
-    TestTrue(TEXT("PickValue 安全值拷贝有效"), PickedVal == 100 || PickedVal == 200 || PickedVal == 300);
+    const int32 PickedVal = Picker.Pick(Stream);
+    TestTrue(TEXT("Pick 抽取有效"), PickedVal == 100 || PickedVal == 200 || PickedVal == 300);
 
     Picker.Clear();
     TestTrue(TEXT("Clear 后抽取器为空"), Picker.IsEmpty());

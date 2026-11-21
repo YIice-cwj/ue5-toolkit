@@ -29,21 +29,12 @@ struct GAMECORE_API FGameLocalId {
     }
 
     /**
-     * @brief 工厂方法：从原始整数构造
-     * @param InValue 原始数值
-     * @return 本地唯一 ID
-     */
-    [[nodiscard]] static constexpr FGameLocalId FromRaw(uint64 InValue) noexcept {
-        return FGameLocalId(InValue);
-    }
-
-    /**
      * @brief 从分布式雪花 ID 直接映射构造本地 ID
      * @param InDistId 分布式雪花 ID
      * @return 映射后的本地 ID
      */
     [[nodiscard]] static constexpr FGameLocalId FromDistId(const FGameDistId& InDistId) noexcept {
-        return FGameLocalId(InDistId.GetRawValue());
+        return FGameLocalId(InDistId.GetValue());
     }
 
     /**

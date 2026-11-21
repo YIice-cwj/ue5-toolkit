@@ -150,9 +150,17 @@ bool FGameQuantizationVectorAndBitMaskTest::RunTest([[maybe_unused]] const FStri
     SafeBoundsMask.Set(OutOfBoundsBit);
     TestFalse(TEXT("越界枚举位 Has 查询安全返回 false"), SafeBoundsMask.Has(OutOfBoundsBit));
 
-    const auto MaskFromIndex = TBitMask<ETestChannelBits>::FromBitIndex(ETestChannelBits::Combat);
-    TestTrue(TEXT("FromBitIndex 包含对应位"), MaskFromIndex.Has(ETestChannelBits::Combat));
-    TestEqual(TEXT("FromBitIndex 底层掩码等于 1 << 4"), MaskFromIndex.GetRawMask(), static_cast<uint32>(1 << 4));
+    const TBitMask<ETestChannelBits> MaskFromIndex(ETestChannelBits::Combat);
+    TestTrue(TEXT("单枚举位构造包含对应位"), MaskFromIndex.Has(ETestChannelBits::Combat));
+    TestEqual(TEXT("单枚举位构造底层掩码等于 1 << 4"), MaskFromIndex.GetRawMask(), static_cast<uint32>(1 << 4));
+
+    TBitMask<ETestChannelBits> CompoundMask(ETestChannelBits::Visibility);
+    CompoundMask |= TBitMask<ETestChannelBits>(ETestChannelBits::Combat);
+    TestTrue(TEXT("operator|= 并入 Combat"), CompoundMask.Has(ETestChannelBits::Combat));
+    CompoundMask &= TBitMask<ETestChannelBits>(ETestChannelBits::Combat);
+    TestFalse(TEXT("operator&= 过滤掉 Visibility"), CompoundMask.Has(ETestChannelBits::Visibility));
+    CompoundMask ^= TBitMask<ETestChannelBits>(ETestChannelBits::Audio);
+    TestTrue(TEXT("operator^= 异或置位 Audio"), CompoundMask.Has(ETestChannelBits::Audio));
 
     const auto MaskFromRaw = TBitMask<ETestChannelBits>::FromRawMask(static_cast<uint32>((1 << 1) | (1 << 3)));
     TestTrue(TEXT("FromRawMask 包含 Collision"), MaskFromRaw.Has(ETestChannelBits::Collision));

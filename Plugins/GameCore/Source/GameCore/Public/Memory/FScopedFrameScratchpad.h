@@ -1,13 +1,13 @@
 /**
  * @file FScopedFrameScratchpad.h
- * @brief 作用域级单帧刮擦内存分配器与连续动态临时数组
+ * @brief 作用域级单帧刮擦内存分配器 RAII 守卫
  */
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "Containers/ArrayView.h"
-#include "Memory/TLinearArena.h"
+#include "Memory/FLinearArena.h"
 
 #include <new>
 #include <type_traits>
@@ -17,6 +17,8 @@
  *
  * 在当前作用域内分配极速临时内存，离开作用域时通过 FScopeMarker
  * 自动回退游标并执行非平凡对象析构，零 Malloc、零锁争用、零内存碎片。
+ *
+ * @warning 本类绑定当前线程的 thread_local FLinearArena（或显式传入的 Arena），仅限在创建它的同一线程栈上使用，严禁跨线程传递或异步跨线程析构！
  */
 class GAMECORE_API FScopedFrameScratchpad {
 public:

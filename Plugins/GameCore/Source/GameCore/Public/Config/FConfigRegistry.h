@@ -26,7 +26,7 @@
  *
  * 功能：注册默认值（仅未注册时生效）、运行时覆盖（版本号自增并广播订阅）、
  * 强类型按值取值（未注册返回 Fallback）与响应式订阅（WatchConfig）。
- * 作用域边界：支持基于 World 上下文的 PIE 多实例隔离（WITH_EDITOR 下自动按 UWorld 分离并继承全局默认项，脱离 World 时回退全局根单例）。
+ * 作用域边界：支持基于 World 上下文的多实例沙盒隔离（传入有效 WorldContextObject 时自动按 UWorld 分离并继承全局默认项，脱离 World 时回退全局根单例）。
  */
 class GAMECORE_API FConfigRegistry {
 public:
@@ -171,6 +171,11 @@ public:
      */
     static void ClearWorldRegistriesForTesting();
 
+    /**
+     * @brief 模块卸载清理：解绑世界销毁全局委托并释放所有 World 隔离注册表
+     */
+    static void Shutdown();
+
 private:
     /**
      * @brief 注册默认值（仅未注册时写入）
@@ -203,7 +208,7 @@ private:
      * @return 告警文案（含键名与实际/期望类型）
      */
     template<typename T>
-    FString DescribeMismatch(FName Name, const FConfigVariant& InValue) const;
+    static FString DescribeMismatch(FName Name, const FConfigVariant& InValue);
 
     /**
      * @brief 取变体当前承载的类型名（诊断用）
@@ -262,17 +267,17 @@ TSharedRef<FObserverSubscription> FConfigRegistry::WatchConfig(FName Name, TFunc
             }
         }
     }
-    return AddWatcher(Name, [this, Name, Callback = MoveTemp(OnChanged)](const FConfigVariant& InValue) {
+    return AddWatcher(Name, [Name, Callback = MoveTemp(OnChanged)](const FConfigVariant& InValue) {
         if (const T* Value = Game::Config::FindVariantValue<T>(InValue)) {
             Callback(*Value);
         } else {
-            ensureAlwaysMsgf(false, TEXT("%s"), *DescribeMismatch<T>(Name, InValue));
+            ensureAlwaysMsgf(false, TEXT("%s"), *FConfigRegistry::DescribeMismatch<T>(Name, InValue));
         }
     });
 }
 
 template<typename T>
-FString FConfigRegistry::DescribeMismatch(FName Name, const FConfigVariant& InValue) const {
+FString FConfigRegistry::DescribeMismatch(FName Name, const FConfigVariant& InValue) {
     const FConfigVariant ExpectedProbe(TInPlaceType<T>{}, T{});
     return FString::Printf(TEXT("【配置注册表】键 [%s] 类型不匹配：已注册类型 %s，本次期望类型 %s，已回退 Fallback。"),
         *Name.ToString(), *VariantTypeName(InValue), *VariantTypeName(ExpectedProbe));

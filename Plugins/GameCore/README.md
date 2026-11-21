@@ -1,6 +1,6 @@
 # GameCore 插件
 
-**GameCore** 是全项目的通用底层核心框架库（当前版本 **3.1.0**）。它遵循**绝对零业务依赖、机制与外壳彻底解耦、纯值语义、强类型安全与高并发无锁/快照并发**设计原则，为上层模块提供最底层的通用基础设施：编译开关镜像、配置中心与多源级联桥接、确定性随机数与抽卡算法、强类型错误与代际槽位表、轻量表驱动状态机与帧率无关游戏数学、通用异步取消令牌、无锁 MPMC 环形缓冲区、多源优先级属性仲裁器、中央纯 C++ 事件总线与响应式数值观察者、四策略版本化缓存、主线程帧预算时间切片与分级交错节流调度器、C++20 轻量无栈协程原语集，以及零开销高精度性能评测与纯 C++ 线程安全服务定位容器。
+**GameCore** 是全项目的通用底层核心框架库（当前版本 **3.1.0**）。它遵循**绝对零业务依赖、机制与外壳彻底解耦、纯值语义、强类型安全与高并发无锁/快照并发**设计原则，为上层模块提供最底层的通用基础设施：编译开关镜像、配置中心与多源级联桥接、确定性随机数与抽卡算法、强类型错误与代际槽位表、轻量表驱动状态机与帧率无关游戏数学、通用异步取消令牌、无锁 MPMC 环形缓冲区、多源优先级属性仲裁器、中央纯 C++ 事件总线与响应式数值观察者、三策略版本化缓存（Eager / Lazy / LRU + Clock 二次机会热度位）、主线程帧预算时间切片与分级交错节流调度器、C++20 轻量无栈协程原语集，以及零开销高精度性能评测与纯 C++ 线程安全服务定位容器。
 
 ---
 
@@ -19,15 +19,15 @@ graph TD
         RingBuffer["无锁队列 TLockFreeRingBuffer<br>(MPMC / 伪共享防护)"]
         Token["异步取消令牌 FCancellationToken<br>(纯值语义 / 级联联合取消)"]
         DistId["分布式唯一 ID FGameDistId<br>(64位雪花算法 / 高并发无锁)"]
-        MemoryPool["高性能内存分配器<br>(TLinearArena / FScopedFrameScratchpad / TFixedBlockAllocator / TScratchArray)"]
+        MemoryPool["高性能内存分配器<br>(FLinearArena / FScopedFrameScratchpad / TFixedBlockAllocator / TScratchArray)"]
     end
 
     subgraph Determinism["确定性随机、状态机与数学 (05, 06, 07, 08)"]
         Rng["确定性随机 FGameRandomStream / URandomSubsystem<br>(PCG32 / PRD 防脸黑 / ShuffleBag / WeightedPicker)"]
-        Rewind["确定性逻辑回溯 TRewindSnapshotBuffer<br>(定长环形快照缓冲)"]
+        Rewind["确定性物理与校验 FFixedTimestepAccumulator / TRewindSnapshotBuffer / FStateChecksumBuilder<br>(固定步长 / 定长环形快照 / Mix64 状态校验)"]
         FSM["轻量状态机 TGameStateMachine<br>(零 UObject / 延迟队列防重入)"]
         Arbitrator["多源属性仲裁器 TPriorityArbitrator<br>(抢占 / 累加 / 乘算)"]
-        Math["帧率无关数学 FGameMath / FGameQuantization<br>(半衰期指数衰减 / 64位向量压缩 / Adler32 校验)"]
+        Math["帧率无关数学 FGameMath / FGameQuantization<br>(半衰期指数衰减 / 临界阻尼弹簧 / 64位向量压缩)"]
     end
 
     subgraph Messaging["纯 C++ 解耦通信 (09)"]
@@ -58,15 +58,15 @@ graph TD
 | 序号 | 核心组件 | 关键原语与设计亮点 | 专属技术规范 |
 |:---:|---|---|:---:|
 | **01** | **Config** | `FConfigRegistry`, `FConfigSourceBridge`, `GameCompileSwitches`<br>读写分离锁出锁派发、多源单向覆盖、PIE 独立隔离与退出自动回滚 | [ConfigRegistry.md](Docs/API/ConfigRegistry.md) |
-| **02** | **Types** | `TGameResult<T>`, `FGameError`, `FFastTagBitmask`, `FGameDistId`, `FGameLocalId`<br>强类型链式错误流转、64位标签快速位掩码、雪花算法唯一分布式 ID | [RandomAndTypes.md](Docs/API/RandomAndTypes.md) |
-| **03** | **Containers** | `TSlotMap`, `TSortedVectorMap`, `TLockFreeRingBuffer`<br>密集连续内存与 64 位代际句柄防 ABA、连续内存二分排序、MPMC 零锁队列 | [Containers.md](Docs/API/Containers.md) |
-| **04** | **Memory** | `TLinearArena`, `FScopedFrameScratchpad`, `TFixedBlockAllocator`, `TScratchArray`<br>1~3ns 极速线性分配、双缓冲帧局部暂存栈、侵入式空闲链表、栈保底动态数组 | [Memory.md](Docs/API/Memory.md) |
-| **05** | **Determinism** | `FFixedTimestepAccumulator`, `TRewindSnapshotBuffer`<br>亚毫秒固定步长累加器、防螺旋死锁截断、确定性历史回放快照环形缓冲区 | [Determinism.md](Docs/API/Determinism.md) |
-| **06** | **Random** | `FGameRandomStream`, `FPseudoRandomDistribution`, `URandomSubsystem`<br>纯整数 PCG32 跨平台位级一致流、PRD 伪随机防连黑、洗牌袋与权重抽取 | [Random.md](Docs/API/Random.md) |
+| **02** | **Types** | `TGameResult<T>`, `FGameError`, `TBitMask`, `FGameDistId`, `FGameLocalId`, `TGameHandle`<br>强类型链式错误流转、枚举位掩码、雪花分布式 ID、极速本地 ID 与跨库类型指纹 | [RandomAndTypes.md](Docs/API/RandomAndTypes.md) |
+| **03** | **Containers** | `TSlotMap`, `TSortedVectorMap`, `TLockFreeRingBuffer`, `FFastTagBitmask`, `TScratchArray`<br>密集连续内存代际槽位表、连续内存二分字典、Vyukov MPMC 无锁队列与 64 位状态标签 | [Containers.md](Docs/API/Containers.md) |
+| **04** | **Memory** | `FLinearArena`, `FScopedFrameScratchpad`, `TFixedBlockAllocator`, `TFixedSizePool`, `FByteSpanReader/Writer`<br>1~3ns 极速线性分配、帧局部暂存栈、侵入式空闲链表对象池与零拷贝二进制切片流 | [Memory.md](Docs/API/Memory.md) |
+| **05** | **Determinism** | `FFixedTimestepAccumulator`, `TRewindSnapshotBuffer`, `FStateChecksumBuilder`, `FDesyncDetector`<br>亚毫秒固定步长累加器、确定性回放快照环、Mix64 零堆分配状态校验与双端分叉检测 | [Determinism.md](Docs/API/Determinism.md) |
+| **06** | **Random** | `FGameRandomStream`, `FGameRandomManager`, `FPseudoRandomDistribution`, `TShuffleBag`, `TWeightedPicker`, `URandomSubsystem`<br>纯整数 PCG32 跨平台位级一致流、PRD 伪随机防连黑、洗牌袋与 Vose 别名表权重抽取 | [Random.md](Docs/API/Random.md) |
 | **07** | **State** | `TGameStateMachine`, `TPriorityArbitrator`<br>编译期类型安全有限状态机（延迟队列防重入）、抢占/累加/乘算多源属性仲裁器 | [State.md](Docs/API/State.md) |
-| **08** | **Math** | `FGameMath`, `FGameQuantization`, `FStateChecksum`<br>半衰期指数衰减阻尼与临界弹簧、64位高精度向量压缩、Adler32/CRC32 校验 | [Math.md](Docs/API/Math.md) |
+| **08** | **Math** | `FGameMath`, `FGameQuantization`<br>半衰期指数衰减阻尼、临界弹簧平滑与 64 位高精度向量压缩量化 | [Math.md](Docs/API/Math.md) |
 | **09** | **Listener** | `FListenerHub`, `FValueObserver<T>`, `FNotificationDispatcher`<br>64位类型指纹 COW 快照事件总线、响应式属性观察、单 Drainer 防重入派发器 | [ListenerHub.md](Docs/API/ListenerHub.md) |
-| **10** | **Cache** | `FVersionedCache`, `FCachePolicy`<br>Eager 全量快照/Lazy/LRU 节点池/Clock 二次机会自适应、代次守卫与指针稳定化 | [Cache.md](Docs/API/Cache.md) |
+| **10** | **Cache** | `FVersionedCache`, `FCachePolicy`, `FLruIndexPool`<br>Eager 全量预热 / Lazy / LRU（Clock 二次机会热度位）三策略自适应与代次守卫 | [Cache.md](Docs/API/Cache.md) |
 | **11** | **Async** | `FGameThreadTaskRunner`, `UTimeSlicedTaskSubsystem`, `UThrottledTickerSubsystem`, `TGameCoroTask`<br>后台任务与主线程安全续体、帧预算切片、分相交错节流、C++20 协程双重自毁防 UAF | [Async.md](Docs/API/Async.md) |
 | **12** | **Profiling & Service** | `FScopedCpuTimer`, `FGameServiceLocator`, `FGameCoreModule`<br>零开销微秒 RAII 计时（Shipping 完全擦除）、滑动平均、纯 C++ 服务定位容器、关停排空 | [ProfilingAndService.md](Docs/API/ProfilingAndService.md) |
 
@@ -115,9 +115,8 @@ const TSharedRef<FObserverSubscription> Sub = FConfigRegistry::Get().WatchConfig
 #include "Random/FPseudoRandomDistribution.h"
 
 URandomSubsystem& Rng = URandomSubsystem::Get(GetWorld());
-Rng.InitializeSeed(1024ULL);
+FGameRandomStream& CritStream = Rng.InitializeStream(TEXT("Combat.Crit"), 1024ULL);
 
-FGameRandomStream& CritStream = Rng.GetOrCreateStream(TEXT("Combat.Crit"));
 FPseudoRandomDistribution CritPrd(0.25f);
 const bool bIsCrit = CritPrd.Roll(CritStream);
 ```
@@ -186,18 +185,18 @@ Plugins/GameCore/
 │       ├── Public/
 │       │   ├── GameCore.h
 │       │   ├── Async/         # 异步取消令牌、C++20 协程原语、跨线程任务与主线程帧切片/节流调度
-│       │   ├── Cache/         # FVersionedCache 四策略版本化缓存与 FLruIndexPool
-│       │   ├── Config/        # 编译开关、FConfigRegistry、FConfigSourceBridge 与 FGameCoreRegistration
-│       │   ├── Containers/    # TSlotMap 代际槽位表、TLockFreeRingBuffer 无锁队列与 TSortedVectorMap
-│       │   ├── Determinism/   # FFixedTimestepAccumulator 固定步长与 TRewindSnapshotBuffer 快照回滚
+│       │   ├── Cache/         # FVersionedCache 三策略版本化缓存与 FLruIndexPool
+│       │   ├── Config/        # 编译开关、FConfigRegistry、TCachedConfigHandle、FConfigSourceBridge 与 FGameCoreRegistration
+│       │   ├── Containers/    # TSlotMap 代际槽位表、TLockFreeRingBuffer MPMC 无锁队列、TSortedVectorMap、TScratchArray 与 FFastTagBitmask
+│       │   ├── Determinism/   # FFixedTimestepAccumulator、TRewindSnapshotBuffer、FStateChecksumBuilder 与 FDesyncDetector
 │       │   ├── Listener/      # FListenerHub 纯 C++ 事件总线、FValueObserver 与 FNotificationDispatcher
-│       │   ├── Math/          # FGameMath 帧率无关数学、FGameQuantization 与 FStateChecksum
-│       │   ├── Memory/        # TLinearArena、TFixedBlockAllocator、FScopedFrameScratchpad 与 TScratchArray
+│       │   ├── Math/          # FGameMath 帧率无关数学与 FGameQuantization 量化压缩
+│       │   ├── Memory/        # FLinearArena、TFixedBlockAllocator、TFixedSizePool、FScopedFrameScratchpad 与 FByteSpanReader/Writer
 │       │   ├── Profiling/     # FScopedCpuTimer 性能计时器与 FMovingAverageSampler 滑动平均统计器
 │       │   ├── Random/        # PCG32 确定性随机流、PRD、洗牌袋、权重抽取与 URandomSubsystem
 │       │   ├── Service/       # FGameServiceLocator 纯 C++ 线程安全服务定位与依赖注入容器
 │       │   ├── State/         # TGameStateMachine 有限状态机与 TPriorityArbitrator 多源优先级仲裁器
-│       │   └── Types/         # TGameResult、FGameError、FFastTagBitmask、FGameDistId、TGameHandle
+│       │   └── Types/         # TGameResult、FGameError、TBitMask、FGameDistId、FGameLocalId、TGameHandle 与 FGameTypeFingerprint
 │       ├── Private/
 │       │   └── ... (对应实现文件与自动化单元测试)
 │       └── GameCore.Build.cs

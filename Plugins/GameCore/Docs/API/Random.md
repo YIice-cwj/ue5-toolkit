@@ -130,9 +130,9 @@ CardBag.Add(TEXT("Common"), 70);
 CardBag.Add(TEXT("Rare"), 25);
 CardBag.Add(TEXT("Epic"), 5);
 
-// 抽取卡牌（抽空一轮自动循环洗牌）
+// 抽取卡牌（值语义安全拷贝，抽空一轮自动循环洗牌）
 FGameRandomStream& Rng = Manager.GetOrCreateStream(TEXT("Gacha"));
-const FString& PulledCard = CardBag.Draw(Rng);
+const FString PulledCard = CardBag.Draw(Rng);
 ```
 
 ---
@@ -145,7 +145,7 @@ const FString& PulledCard = CardBag.Draw(Rng);
 - **Vose's Alias Method（沃斯别名法）**：
   - 传统权重轮盘赌查找复杂度为 $O(N)$ 或 $O(\log N)$；
   - 本容器在 $O(N)$ 预构建/惰性构建别名表后，**单次权重抽取时间严格为 $O(1)$**，与条目数量无关；
-- **防数值截断与权重保护**：严格校验输入权重（必须大于 0 且有限），支持 `TryPick` 安全指针接口、`Pick` 强契约引用接口与 `PickValue` 安全值拷贝接口。
+- **防数值截断与权重保护**：严格校验输入权重（必须大于 0 且有限），支持 `TryPick` 安全指针接口与 `Pick` 强契约常量引用接口。
 
 ```cpp
 TWeightedPicker<FName> EnemySpawnTable;
@@ -156,8 +156,8 @@ EnemySpawnTable.AddEntry(TEXT("Dragon"), 10.0);
 // 显式预构建（也可在首次 Pick 时惰性构建）
 EnemySpawnTable.Build();
 
-// 极速 O(1) 权重轮盘抽取（值语义安全拷贝）
-const FName ChosenEnemy = EnemySpawnTable.PickValue(Rng);
+// 极速 O(1) 权重轮盘抽取
+const FName ChosenEnemy = EnemySpawnTable.Pick(Rng);
 ```
 
 ---

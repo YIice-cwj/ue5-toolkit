@@ -174,6 +174,10 @@ bool FGameValueObserverOwnerLifecycleAndInitialValueTest::RunTest([[maybe_unused
     Owner->MarkAsGarbage();
     TestFalse(TEXT("宿主标记垃圾回收后弱引用失效"), IsValid(Owner));
 
+    const FValueObserver<int32>& ConstObserverBeforeSet = Observer;
+    TestEqual(TEXT("const NumListeners 无 const_cast 即可实时排除过期宿主"), ConstObserverBeforeSet.NumListeners(), 0);
+    TestFalse(TEXT("const HasListeners 在过期宿主后返回 false"), ConstObserverBeforeSet.HasListeners());
+
     Observer.Set(99);
     TestEqual(TEXT("宿主垃圾回收后回调被安全跳过"), OwnerReceived, 88);
     TestEqual(TEXT("Purge 自动清理失效监听条目总数归零"), Observer.NumListeners(), 0);
@@ -196,6 +200,10 @@ bool FGameValueObserverOwnerLifecycleAndInitialValueTest::RunTest([[maybe_unused
     });
     TestEqual(TEXT("Update 成功原位变换当前值"), Observer.Get(), 199);
     TestEqual(TEXT("Update 正常触发通知"), UpdatedCount, 199);
+
+    const FValueObserver<int32>& ConstObserverRef = Observer;
+    TestEqual(TEXT("const FValueObserver::NumListeners 可正常调用"), ConstObserverRef.NumListeners(), 1);
+    TestTrue(TEXT("const FValueObserver::HasListeners 可正常调用"), ConstObserverRef.HasListeners());
 
     return true;
 }
@@ -277,6 +285,47 @@ bool FGameListenerHubTest::RunTest([[maybe_unused]] const FString& Parameters) {
     TestEqual(TEXT("Reset 后通道数归零"), Hub.Num(), 0);
     TestFalse(TEXT("Reset 后原通道不再存在"), Hub.Contains(TestEvent));
 
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameObserverBaseConcurrentDestroyTest,
+    "Game.Core.Listener.Observer.ConcurrentConfigDestroySafety",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证 FObserverBase 析构与后台线程高频配置开关广播并发时的零 UAF 安全性
+ * @param Parameters 自动化测试参数
+ * @return 全部断言通过返回 true
+ */
+bool FGameObserverBaseConcurrentDestroyTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    static const FName SharedObserverName(TEXT("UnitTest.Observer.ConcurrentDestroySafety"));
+    static const FName EnableKey(TEXT("Listener.UnitTest.Observer.ConcurrentDestroySafety.Enabled"));
+
+    FConfigRegistry::Get().RegisterConfig<bool>(EnableKey, true);
+    std::atomic<bool> bStopWriter{false};
+    std::atomic<int32> ToggleCount{0};
+
+    TFuture<void> ConfigWriter = Async(EAsyncExecution::Thread, [&bStopWriter, &ToggleCount]() {
+        bool bToggle = false;
+        while (!bStopWriter.load(std::memory_order_acquire)) {
+            bToggle = !bToggle;
+            FConfigRegistry::Get().SetConfig<bool>(EnableKey, bToggle);
+            ToggleCount.fetch_add(1, std::memory_order_relaxed);
+        }
+    });
+
+    for (int32 Index = 0; Index < 200; ++Index) {
+        FValueObserver<int32> TransientObserver(SharedObserverName, Index);
+        TransientObserver.Set(Index + 1);
+    }
+
+    bStopWriter.store(true, std::memory_order_release);
+    ConfigWriter.Wait();
+    FConfigRegistry::Get().SetConfig<bool>(EnableKey, true);
+
+    TestTrue(TEXT("并发配置开关写入至少执行了若干轮且零崩溃"), ToggleCount.load(std::memory_order_acquire) > 0);
     return true;
 }
 

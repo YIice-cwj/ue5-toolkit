@@ -244,7 +244,7 @@ EntityMap.Add(LocalId, TEXT("PlayerActor"));
 ### 职责与场景
 - 基于强类型 `enum class` 的紧凑位集合模板，底层存储紧凑对齐枚举底层类型（`uint8` ~ `uint64`）；
 - 内部针对负数与超过位宽（`>= BIT_WIDTH`）的枚举位提供编译期与运行期安全拦截，杜绝未定义移位行为（UB）；
-- 重载了完整按位操作符（`|`, `&`, `^`, `~`）与语义谓词（`Has`, `HasAny`, `HasAll`, `HasNone`, `IsEmpty`）；
+- 重载了完整按位操作符（`|`, `&`, `^`, `~` 及复合赋值 `|=`, `&=`, `^=`）与语义谓词（`Has`, `HasAny`, `HasAll`, `HasNone`, `IsEmpty`）；
 - 支持 `GetTypeHash`，可直接作为 `TMap` / `TSet` 的键。
 
 ```cpp

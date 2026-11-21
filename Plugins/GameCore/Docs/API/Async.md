@@ -152,19 +152,10 @@ FTimeSlicedTaskHandle Handle = Subsystem.EnqueueBatch(
 头文件：`#include "Async/TGameCoroTask.h"`、`#include "Async/FGameCoroAwaiters.h"`
 
 #### 挂起点安全架构
-所有挂起原语均满足 `SuspendWithGuard(TSharedRef<FGameCoroSuspensionGuard>)` 协议。`FGameCoroSuspensionGuard` 在唤醒协程时执行：
-```cpp
-bool ResumeOrAbort() {
-    if (bHandled.exchange(true, std::memory_order_acq_rel)) return false;
-    if (State->ShouldAbort()) {
-        State->MarkCancelled();
-        CoroHandle.destroy(); // 原地销毁协程帧，触发局部变量 RAII
-        return false;
-    }
-    CoroHandle.resume();
-    return true;
-}
-```
+所有挂起原语均满足 `SuspendWithGuard(TSharedRef<FGameCoroSuspensionGuard>)` 协议。`FGameCoroSuspensionGuard` 通过单一原子有限状态机（`Suspending / SuspendingPendingResume / SuspendingPendingAbort / Suspended / Handled`）与挂起线程 ID 协调生命周期：
+- **零 UAF 帧守卫**：`await_suspend` 未返回前绝不触发 `resume()` 或 `destroy()`，所有并发取消均原子延后至 `NotifySuspendCompleted()` 收尾；
+- **跨线程亲和性保证**：同线程同步唤醒延迟至 `NotifySuspendCompleted()` 防止重入；跨线程目标线程（如 `SwitchToBackground` 工作线程 / `SwitchToGameThread` 主线程）在 `Suspending` 瞬态窗口让出片刻等待状态切至 `Suspended`，确保 `CoroHandle.resume()` 100% 落在目标线程上执行；
+- **单次终态互斥**：唤醒前二次检查 `State->ShouldAbort()`，若宿主已销毁或已被取消，原地调用 `CoroHandle.destroy()` 触发局部 RAII 析构，绝不执行悬垂续体。
 
 #### 常用 Awaiter 规格表
 | 等待原语 | 语义说明 | 调度内核 |
@@ -209,7 +200,7 @@ TGameCoroTask<int32> UMyManager::ProcessAsyncData(FCancellationToken InToken)
 
 Async 组件全部测试用例统一定义于 `Game.Core.Async.*`：
 - `Game.Core.Async.CancellationToken.*` (4 条)
-- `Game.Core.Async.Coro.*` (5 条)
+- `Game.Core.Async.Coro.*` (7 条)
 - `Game.Core.Async.CancelableScopeGuard.*` (3 条)
 - `Game.Core.Async.Tasks.TaskRunner.*` (3 条)
 - `Game.Core.Async.Tasks.TimeSliceScheduler.*` (1 条)

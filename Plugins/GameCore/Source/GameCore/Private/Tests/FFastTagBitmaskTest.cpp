@@ -4,6 +4,7 @@
  */
 
 #include "Containers/FFastTagBitmask.h"
+#include "Containers/FFastTagDictionary.h"
 
 #if WITH_AUTOMATION_TESTS
 

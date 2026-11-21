@@ -92,6 +92,15 @@ bool FMovingAverageSamplerTest::RunTest([[maybe_unused]] const FString& Paramete
     TestEqual(TEXT("重置后计数归零"), Sampler.GetSampleCount(), 0);
     TestEqual(TEXT("重置后均值归零"), Sampler.GetAverage(), 0.0);
 
+    FMovingAverageSampler<1> SingleWindowSampler;
+    SingleWindowSampler.AddSample(100.0);
+    SingleWindowSampler.AddSample(50.0);
+    SingleWindowSampler.AddSample(200.0);
+    SingleWindowSampler.AddSample(80.0);
+    TestEqual(TEXT("WindowSize=1 当前均值为最新样本 80"), SingleWindowSampler.GetAverage(), 80.0);
+    TestEqual(TEXT("WindowSize=1 历史最小值保持为 50"), SingleWindowSampler.GetMin(), 50.0);
+    TestEqual(TEXT("WindowSize=1 历史最大值保持为 200"), SingleWindowSampler.GetMax(), 200.0);
+
     return true;
 }
 

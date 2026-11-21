@@ -50,6 +50,14 @@ public:
     }
 
     /**
+     * @brief 预先分配指定数量的 Chunk 内存块（消除运行期首次扩容抖动）
+     * @param ChunkCount 目标预热 Chunk 数量
+     */
+    void ReserveChunks(size_t ChunkCount) {
+        BlockAllocator.ReserveChunks(ChunkCount);
+    }
+
+    /**
      * @brief 清空对象池底层分配的所有 Chunk 内存
      */
     void Reset() {
@@ -62,14 +70,6 @@ public:
      */
     [[nodiscard]] size_t GetAllocatedCount() const noexcept {
         return BlockAllocator.GetAllocatedCount();
-    }
-
-    /**
-     * @brief 获取当前借出的活跃对象数量（等价于 GetAllocatedCount）
-     * @return 活跃对象数量
-     */
-    [[nodiscard]] int32 Num() const noexcept {
-        return static_cast<int32>(GetAllocatedCount());
     }
 
     /**

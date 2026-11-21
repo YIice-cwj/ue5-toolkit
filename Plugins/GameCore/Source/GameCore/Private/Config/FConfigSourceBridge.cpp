@@ -16,6 +16,11 @@ DEFINE_LOG_CATEGORY_STATIC(LogGameConfigBridge, Log, All);
 
 namespace {
 
+/**
+ * @brief 支持双引号包裹片段的命令行分词器（按空白切分，保留引号内空格）
+ * @param Stream 原始命令行字符流
+ * @param OutTokens 传出分词结果数组
+ */
 void TokenizeQuoteAware(const TCHAR* Stream, TArray<FString>& OutTokens) {
     OutTokens.Reset();
     if (Stream == nullptr) {
@@ -45,6 +50,11 @@ void TokenizeQuoteAware(const TCHAR* Stream, TArray<FString>& OutTokens) {
     }
 }
 
+/**
+ * @brief 裁剪首尾空白并剥离成对双引号
+ * @param Input 原始字符串
+ * @return 去引号后的净字符串
+ */
 FString StripMatchingQuotes(const FString& Input) {
     FString Trimmed = Input.TrimStartAndEnd();
     if (Trimmed.Len() >= 2 && Trimmed.StartsWith(TEXT("\"")) && Trimmed.EndsWith(TEXT("\""))) {
@@ -53,6 +63,14 @@ FString StripMatchingQuotes(const FString& Input) {
     return Trimmed;
 }
 
+/**
+ * @brief 按目标类型标签解析字符串并强类型写入 FConfigRegistry
+ * @param Registry 目标配置注册表
+ * @param KeyName 配置键名
+ * @param TypeTag 类型标识（如 bool/int32/int64/float/double/string/name/vector/rotator/tag）
+ * @param CleanValue 去引号后的配置值文本
+ * @return 解析合法且成功写入返回 true
+ */
 bool TrySetTypedValue(FConfigRegistry& Registry, const FName& KeyName, const FString& TypeTag, const FString& CleanValue) {
     if (TypeTag.Equals(TEXT("bool"), ESearchCase::IgnoreCase)) {
         bool Parsed = false;

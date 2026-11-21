@@ -151,7 +151,10 @@ public:
      */
     bool MarkReferenced(FName Key) const {
         if (const int32* FoundIdx = KeyToNode.Find(Key)) {
-            FPlatformAtomics::InterlockedExchange(&Pool[*FoundIdx].HotBit, 1);
+            volatile int32* HotBitPtr = &Pool[*FoundIdx].HotBit;
+            if (FPlatformAtomics::AtomicRead_Relaxed(HotBitPtr) == 0) {
+                FPlatformAtomics::InterlockedExchange(HotBitPtr, 1);
+            }
             return true;
         }
         return false;

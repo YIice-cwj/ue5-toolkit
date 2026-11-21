@@ -66,21 +66,45 @@ public:
     }
 
     /**
-     * @brief 追加常量左值元素
+     * @brief 追加常量左值元素（支持自别名元素扩容安全，如 Arr.Add(Arr[0])）
      * @param Item 待追加元素
      */
     void Add(const T& Item) {
-        EnsureCapacity(ElementCount + 1);
+        if (ElementCount + 1 > ElementCapacity) {
+            const uintptr_t ItemAddr = reinterpret_cast<uintptr_t>(&Item);
+            const uintptr_t BeginAddr = reinterpret_cast<uintptr_t>(Elements);
+            const uintptr_t EndAddr = reinterpret_cast<uintptr_t>(Elements + ElementCount);
+            if (ItemAddr >= BeginAddr && ItemAddr < EndAddr) {
+                T Copy(Item);
+                EnsureCapacity(ElementCount + 1);
+                new (&Elements[ElementCount]) T(MoveTemp(Copy));
+                ++ElementCount;
+                return;
+            }
+            EnsureCapacity(ElementCount + 1);
+        }
         new (&Elements[ElementCount]) T(Item);
         ++ElementCount;
     }
 
     /**
-     * @brief 追加右值移动元素
+     * @brief 追加右值移动元素（支持自别名元素扩容安全）
      * @param Item 待追加右值
      */
     void Add(T&& Item) {
-        EnsureCapacity(ElementCount + 1);
+        if (ElementCount + 1 > ElementCapacity) {
+            const uintptr_t ItemAddr = reinterpret_cast<uintptr_t>(&Item);
+            const uintptr_t BeginAddr = reinterpret_cast<uintptr_t>(Elements);
+            const uintptr_t EndAddr = reinterpret_cast<uintptr_t>(Elements + ElementCount);
+            if (ItemAddr >= BeginAddr && ItemAddr < EndAddr) {
+                T Moved(MoveTemp(Item));
+                EnsureCapacity(ElementCount + 1);
+                new (&Elements[ElementCount]) T(MoveTemp(Moved));
+                ++ElementCount;
+                return;
+            }
+            EnsureCapacity(ElementCount + 1);
+        }
         new (&Elements[ElementCount]) T(MoveTemp(Item));
         ++ElementCount;
     }

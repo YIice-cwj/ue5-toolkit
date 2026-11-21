@@ -177,8 +177,13 @@ public:
             Add(NewEntries[0].Key, NewEntries[0].Value);
             return;
         }
-        if (NewEntries.GetData() >= Entries.GetData() && NewEntries.GetData() < Entries.GetData() + Entries.Num()) {
-            return;
+        if (!Entries.IsEmpty()) {
+            const uintptr_t NewAddr = reinterpret_cast<uintptr_t>(NewEntries.GetData());
+            const uintptr_t BeginAddr = reinterpret_cast<uintptr_t>(Entries.GetData());
+            const uintptr_t EndAddr = reinterpret_cast<uintptr_t>(Entries.GetData() + Entries.Num());
+            if (NewAddr >= BeginAddr && NewAddr < EndAddr) {
+                return;
+            }
         }
         struct FTaggedEntry {
             KeyType Key;
@@ -393,12 +398,41 @@ public:
         }
     }
 
-    auto begin() noexcept { return Entries.begin(); }
-    auto end() noexcept { return Entries.end(); }
-    auto begin() const noexcept { return Entries.begin(); }
-    auto end() const noexcept { return Entries.end(); }
-    auto cbegin() const noexcept { return Entries.cbegin(); }
-    auto cend() const noexcept { return Entries.cend(); }
+    /**
+     * @brief 获取可变起始迭代器
+     * @return 首元素迭代器
+     */
+    [[nodiscard]] auto begin() noexcept { return Entries.begin(); }
+
+    /**
+     * @brief 获取可变结束迭代器
+     * @return 尾后迭代器
+     */
+    [[nodiscard]] auto end() noexcept { return Entries.end(); }
+
+    /**
+     * @brief 获取只读起始迭代器
+     * @return 首元素只读迭代器
+     */
+    [[nodiscard]] auto begin() const noexcept { return Entries.begin(); }
+
+    /**
+     * @brief 获取只读结束迭代器
+     * @return 尾后只读迭代器
+     */
+    [[nodiscard]] auto end() const noexcept { return Entries.end(); }
+
+    /**
+     * @brief 获取常量起始迭代器
+     * @return 首元素常量迭代器
+     */
+    [[nodiscard]] auto cbegin() const noexcept { return Entries.cbegin(); }
+
+    /**
+     * @brief 获取常量结束迭代器
+     * @return 尾后常量迭代器
+     */
+    [[nodiscard]] auto cend() const noexcept { return Entries.cend(); }
 
     /**
      * @brief 字典相等性比较运算符（两字典容量及对应键值对全等返回 true）
@@ -417,21 +451,23 @@ public:
         return true;
     }
 
-    /**
-     * @brief 字典不相等比较运算符
-     * @param Other 待比较字典
-     * @return 存在差异返回 true
-     */
-    [[nodiscard]] bool operator!=(const TSortedVectorMap& Other) const {
-        return !(*this == Other);
-    }
-
 private:
+    /**
+     * @brief 按键二分查找条目索引
+     * @param Key 目标键
+     * @return 命中返回有效索引，未命中返回 INDEX_NONE
+     */
     [[nodiscard]] int32 FindIndex(const KeyType& Key) const noexcept {
         int32 Dummy = 0;
         return LowerBoundInternal(Key, Dummy);
     }
 
+    /**
+     * @brief 二分定位下界并判断键是否精确命中
+     * @param Key 目标键
+     * @param OutInsertIndex 传出有序插入点索引
+     * @return 精确命中返回条目索引，未命中返回 INDEX_NONE
+     */
     [[nodiscard]] int32 LowerBoundInternal(const KeyType& Key, int32& OutInsertIndex) const noexcept {
         const int32 Index = LowerBoundIndex(Key);
         OutInsertIndex = Index;

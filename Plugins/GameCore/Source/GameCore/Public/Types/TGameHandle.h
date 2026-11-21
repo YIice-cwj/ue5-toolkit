@@ -6,7 +6,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Types/FGameDistId.h"
+#include "Types/FGameTypeFingerprint.h"
 
 /**
  * @brief 强类型代际句柄模板（不同 TTag 之间编译期类型隔离，零运行时开销）

@@ -159,7 +159,7 @@ TSharedRef<FObserverSubscription> WatchConfig(FName Name, TFunction<void(const T
 ### 痛点与设计目标
 在每秒执行成千上万次的高频热点链路（如物理更新、移动计算、战斗数值计算）中，传统的 `FConfigRegistry::GetConfig(FName)` 每次都需要进行 `FName` 哈希查找、遍历散列表以及争用全局 `FRWLock` 读写锁。  
 `TCachedConfigHandle<T>` 专为高频读取设计：
-- **$O(1)$ 局部缓存读取**：消灭哈希计算与字典查找开销，读取直接解指针/读取本地缓存，极致轻量；
+- **$O(1)$ 局部缓存读取（标量零锁原子快路径）**：消灭哈希计算与字典查找开销；对高频算术标量（`bool` / `int32` / `int64` / `float` / `double`）通过 `std::atomic<T>` 影子镜像走纯无锁原子读取（实测约 `2.6 ns/op`，相比 `FConfigRegistry::GetConfig` 提速 `2.70×`）；复合类型走局部 `FRWLock` 按值拷贝，杜绝跨锁悬垂；
 - **响应式自同步**：内部持有弱引用订阅 `FObserverSubscription`。当外部通过 `RegisterConfig` 或 `SetConfig` 热重载配置时，句柄自动同步最新值，无需调用方写轮询或样板监听代码；
 - **线程安全与自然语法**：支持按值读取 `Get()`、隐式类型转换 `operator T()` 与解引用操作符 `*Handle`；
 - **PIE 多实例感知**：支持指定 `WorldContextObject` 绑定对应 PIE 独立配置，并提供 `Rebind()` 支持切关动态重定向。

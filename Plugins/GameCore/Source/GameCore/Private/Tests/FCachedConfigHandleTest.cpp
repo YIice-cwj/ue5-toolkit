@@ -8,7 +8,10 @@
 
 #if WITH_AUTOMATION_TESTS
 
+#include "Async/ParallelFor.h"
 #include "Misc/AutomationTest.h"
+
+#include <atomic>
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCachedConfigHandleBasicTest, "Game.Core.Config.CachedHandle.Basic",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -110,6 +113,86 @@ bool FCachedConfigHandleObserverAndCopyTest::RunTest([[maybe_unused]] const FStr
     LevelHandle.Rebind(nullptr);
     TestTrue(TEXT("Rebind 重新绑定后依然有效"), LevelHandle.IsValid() && LevelHandle.IsBound());
     TestEqual(TEXT("Rebind 后取值正确"), LevelHandle.Get(), 88);
+
+    TCachedConfigHandle<int32> LateBoundHandle;
+    int32 LateCallbackHits = 0;
+    int32 LateCallbackValue = 0;
+    LateBoundHandle.SetOnChanged([&](int32 NewVal) {
+        ++LateCallbackHits;
+        LateCallbackValue = NewVal;
+    });
+    static const FName LateKeyA(TEXT("UnitTest.CachedHandle.LateKeyA"));
+    static const FName LateKeyB(TEXT("UnitTest.CachedHandle.LateKeyB"));
+    Registry.RegisterConfig<int32>(LateKeyA, 11);
+    Registry.RegisterConfig<int32>(LateKeyB, 22);
+    LateBoundHandle.Reset(LateKeyA, 0);
+    Registry.SetConfig<int32>(LateKeyA, 33);
+    TestEqual(TEXT("默认构造后先 SetOnChanged 再 Reset(Key) 回调生效"), LateCallbackHits, 1);
+    TestEqual(TEXT("回调收到 LateKeyA 更新值 33"), LateCallbackValue, 33);
+
+    LateBoundHandle.Reset(LateKeyB, 0);
+    Registry.SetConfig<int32>(LateKeyB, 44);
+    TestEqual(TEXT("已绑定句柄再次 Reset(NewKey) 后既有回调依然保留生效"), LateCallbackHits, 2);
+    TestEqual(TEXT("回调收到 LateKeyB 更新值 44"), LateCallbackValue, 44);
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCachedConfigHandleConcurrencyAndAtomicTest,
+    "Game.Core.Config.CachedHandle.ConcurrencyAndAtomicFastPath",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证标量原子快路径与复合类型在并发读取、热更及 Reset(NewKey) 下的线程安全与旧键隔离
+ * @param Parameters 自动化测试参数
+ * @return 全部断言通过返回 true
+ */
+bool FCachedConfigHandleConcurrencyAndAtomicTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    FConfigRegistry::ClearWorldRegistriesForTesting();
+    FConfigRegistry& Registry = FConfigRegistry::Get();
+
+    static const FName KeyA(TEXT("UnitTest.CachedHandle.ConcurrentA"));
+    static const FName KeyB(TEXT("UnitTest.CachedHandle.ConcurrentB"));
+    static const FName StrKey(TEXT("UnitTest.CachedHandle.ConcurrentStr"));
+
+    Registry.SetConfig<float>(KeyA, 10.0f);
+    Registry.SetConfig<float>(KeyB, 20.0f);
+    Registry.SetConfig<FString>(StrKey, TEXT("Alpha"));
+
+    TCachedConfigHandle<float> ScalarHandle(KeyA, 0.0f);
+    TCachedConfigHandle<FString> StringHandle(StrKey, TEXT("Fallback"));
+
+    std::atomic<int32> ValidReads{0};
+    ParallelFor(8, [&](int32 WorkerIndex) {
+        if (WorkerIndex == 0) {
+            for (int32 Iter = 0; Iter < 200; ++Iter) {
+                Registry.SetConfig<float>(KeyA, static_cast<float>(Iter));
+                Registry.SetConfig<float>(KeyB, static_cast<float>(1000 + Iter));
+                ScalarHandle.Reset((Iter & 1) == 0 ? KeyA : KeyB, -1.0f);
+                Registry.SetConfig<FString>(StrKey, (Iter & 1) == 0 ? TEXT("Alpha") : TEXT("Beta"));
+            }
+        } else {
+            for (int32 Iter = 0; Iter < 500; ++Iter) {
+                const float Val = ScalarHandle.Get();
+                const FName Key = ScalarHandle.GetKey();
+                const bool bValid = ScalarHandle.IsValid();
+                const FString StrVal = StringHandle.Get();
+                if (bValid && (Key == KeyA || Key == KeyB) && Val >= -1.0f && !StrVal.IsEmpty()) {
+                    ValidReads.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+        }
+    });
+
+    TestEqual(TEXT("全部并发读者在 Reset 与热更交替期间均读到合法状态"), ValidReads.load(std::memory_order_acquire), 7 * 500);
+
+    ScalarHandle.Reset(KeyB, 0.0f);
+    Registry.SetConfig<float>(KeyB, 777.0f);
+    Registry.SetConfig<float>(KeyA, 123.0f);
+    TestEqual(TEXT("切换至 KeyB 后旧键 KeyA 的更新不会污染句柄值"), ScalarHandle.Get(), 777.0f);
+    TestEqual(TEXT("GetKey 准确返回当前绑定键 KeyB"), ScalarHandle.GetKey(), KeyB);
 
     return true;
 }

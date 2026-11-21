@@ -28,7 +28,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FGameDistIdBitfieldsAndSerializationTest::RunTest([[maybe_unused]] const FString& Parameters) {
     FGameDistId EmptyId;
     TestFalse(TEXT("默认构造 ID 无效"), EmptyId.IsValid());
-    TestEqual(TEXT("默认构造 ID 裸值为 0"), EmptyId.GetRawValue(), 0ULL);
+    TestEqual(TEXT("默认构造 ID 裸值为 0"), EmptyId.GetValue(), 0ULL);
 
     const int64 TimestampDelta = 123456789LL;
     const uint16 NodeId = 42;
@@ -68,10 +68,10 @@ bool FGameDistIdBitfieldsAndSerializationTest::RunTest([[maybe_unused]] const FS
     LoadArchive << LoadedId;
 
     TestTrue(TEXT("反序列化后 ID 保持有效"), LoadedId.IsValid());
-    TestEqual(TEXT("反序列化后裸数值精确一致"), LoadedId.GetRawValue(), SyntheticId.GetRawValue());
+    TestEqual(TEXT("反序列化后裸数值精确一致"), LoadedId.GetValue(), SyntheticId.GetValue());
     TestTrue(TEXT("运算符 == 判定相等"), LoadedId == SyntheticId);
 
-    TestEqual(TEXT("ToHex 格式化有效"), SyntheticId.ToHex(), FString::Printf(TEXT("0x%016llX"), SyntheticId.GetRawValue()));
+    TestEqual(TEXT("ToHex 格式化有效"), SyntheticId.ToHex(), FString::Printf(TEXT("0x%016llX"), SyntheticId.GetValue()));
 
     FGameDistId ParsedDistDec;
     TestTrue(TEXT("FromString 解析十进制成功"), FGameDistId::FromString(SyntheticId.ToString(), ParsedDistDec));
@@ -82,7 +82,7 @@ bool FGameDistIdBitfieldsAndSerializationTest::RunTest([[maybe_unused]] const FS
     TestEqual(TEXT("十六进制还原精确"), ParsedDistHex, SyntheticId);
 
     const uint32 DistHashA = GetTypeHash(SyntheticId);
-    const uint32 DistHashB = GetTypeHash(FGameDistId(SyntheticId.GetRawValue() + 1ULL));
+    const uint32 DistHashB = GetTypeHash(FGameDistId(SyntheticId.GetValue() + 1ULL));
     TestNotEqual(TEXT("邻近雪花 ID 散列哈希绝不碰撞"), DistHashA, DistHashB);
 
     return true;
@@ -119,7 +119,7 @@ bool FGameDistIdGeneratorMonotonicAndConcurrencyTest::RunTest([[maybe_unused]] c
     GeneratedRawIds.SetNumUninitialized(TOTAL_IDS);
 
     ParallelFor(TOTAL_IDS, [&Generator, &GeneratedRawIds](int32 Idx) {
-        GeneratedRawIds[Idx] = Generator.NextId().GetRawValue();
+        GeneratedRawIds[Idx] = Generator.NextId().GetValue();
     });
 
     TSet<uint64> UniqueSet;
@@ -151,6 +151,20 @@ bool FGameDistIdGeneratorMonotonicAndConcurrencyTest::RunTest([[maybe_unused]] c
     MockClockMs = FGameDistIdGenerator::DEFAULT_CUSTOM_EPOCH + 1000LL;
     const FGameDistId LargeRollbackId = DeterministicGen.NextId();
     TestTrue(TEXT("大幅时钟回拨 (>5ms) 逻辑时钟兜底保持严格单调递增"), SmallRollbackId < LargeRollbackId);
+
+    const int64 MaxTimestampMs = FGameDistIdGenerator::DEFAULT_CUSTOM_EPOCH + static_cast<int64>(FGameDistId::MAX_TIMESTAMP_DELTA);
+    FGameDistIdGenerator OverflowGen(5);
+    OverflowGen.SetClockSource([MaxTimestampMs]() {
+        return MaxTimestampMs;
+    });
+    for (int32 Idx = 0; Idx <= static_cast<int32>(FGameDistId::MAX_SEQUENCE); ++Idx) {
+        const FGameDistId ValidAtMax = OverflowGen.NextId();
+        TestTrue(TEXT("41 位最大时间戳内的 4096 个序号全部有效"), ValidAtMax.IsValid());
+    }
+    const FGameDistId OverflowFirst = OverflowGen.NextId();
+    const FGameDistId OverflowSecond = OverflowGen.NextId();
+    TestFalse(TEXT("41 位时间戳耗尽首次溢出返回无效 ID"), OverflowFirst.IsValid());
+    TestFalse(TEXT("41 位时间戳耗尽后再次调用绝不因脏 Sequence 产出重复有效 ID"), OverflowSecond.IsValid());
 
     return true;
 }

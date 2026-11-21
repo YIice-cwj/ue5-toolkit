@@ -41,15 +41,15 @@ flowchart TD
 | 组件 ID | 核心设施与原语 | 机制特点 | 专属 API 规范链接 |
 |---|---|---|:---:|
 | **01. Config** | `FConfigRegistry`, `FConfigSourceBridge` | 读写锁、单向级联多源覆盖、PIE 自动回滚 | [ConfigRegistry.md](../API/ConfigRegistry.md) |
-| **02. Types** | `TGameResult<T>`, `FGameError`, `FFastTagBitmask`, `FGameDistId` | 强类型错误、64 位快速标签位掩码、无撞车 Snowflake 分布式 ID | [RandomAndTypes.md](../API/RandomAndTypes.md) |
-| **03. Containers** | `TSlotMap`, `TSortedVectorMap`, `TLockFreeRingBuffer` | 紧凑存储代际句柄防 ABA、连续内存二分查找、SPSC 零锁环形缓冲 | [Containers.md](../API/Containers.md) |
-| **04. Memory** | `FLinearArena`, `FScopedFrameScratchpad`, `TFixedBlockAllocator`, `TScratchArray` | 1~3ns 极速线性分配、双缓冲帧局部暂存栈、侵入式空闲链表、栈保底动态数组 | [Memory.md](../API/Memory.md) |
-| **05. Determinism** | `FFixedTimestepAccumulator`, `TRewindSnapshotBuffer` | 亚毫秒固定步长累加器、确定性逻辑回放快照环形缓冲区 | [Determinism.md](../API/Determinism.md) |
-| **06. Random** | `FGameRandomStream`, `FPseudoRandomDistribution`, `UGameRandomManager` | PCG32 高质量伪随机、PRD 真实保底暴击分布、子系统状态序列化 | [Random.md](../API/Random.md) |
-| **07. State** | `TGameStateMachine`, `TPriorityArbitrator` | 编译期强类型层次有限状态机、动态权值多源仲裁器 | [State.md](../API/State.md) |
-| **08. Math** | `FGameMath`, `FGameQuantization`, `FStateChecksum` | 平滑曲线与插值、64 位高精度向量压缩量化、增量状态 Adler32/CRC32 校验 | [Math.md](../API/Math.md) |
+| **02. Types** | `TGameResult<T>`, `FGameError`, `TBitMask`, `FGameDistId`, `FGameLocalId`, `TGameHandle`, `FGameTypeFingerprint` | 强类型错误、枚举位掩码、无撞车 Snowflake 分布式 ID 与编译期类型指纹 | [RandomAndTypes.md](../API/RandomAndTypes.md) |
+| **03. Containers** | `TSlotMap`, `TSortedVectorMap`, `TLockFreeRingBuffer`, `FFastTagBitmask`, `TScratchArray` | 紧凑存储代际句柄防 ABA、连续内存二分查找、Vyukov MPMC 无锁环形缓冲与 64 位状态位掩码 | [Containers.md](../API/Containers.md) |
+| **04. Memory** | `FLinearArena`, `FScopedFrameScratchpad`, `TFixedBlockAllocator`, `TFixedSizePool`, `FByteSpanReader/Writer` | 1~3ns 极速线性分配、帧局部暂存栈、侵入式空闲链表对象池与零拷贝二进制切片流 | [Memory.md](../API/Memory.md) |
+| **05. Determinism** | `FFixedTimestepAccumulator`, `TRewindSnapshotBuffer`, `FStateChecksumBuilder`, `FDesyncDetector` | 亚毫秒固定步长累加器、确定性回放快照环、Mix64 零堆分配增量状态校验与双端分叉检测 | [Determinism.md](../API/Determinism.md) |
+| **06. Random** | `FGameRandomStream`, `FGameRandomManager`, `FPseudoRandomDistribution`, `URandomSubsystem` | PCG32 高质量伪随机、PRD 真实保底暴击分布、多通道流隔离与归档序列化 | [Random.md](../API/Random.md) |
+| **07. State** | `TGameStateMachine`, `TPriorityArbitrator` | 编译期强类型有限状态机、动态权值多源仲裁器 | [State.md](../API/State.md) |
+| **08. Math** | `FGameMath`, `FGameQuantization` | 平滑曲线、临界阻尼弹簧与 64 位高精度向量压缩量化 | [Math.md](../API/Math.md) |
 | **09. Listener** | `FListenerHub`, `FValueObserver<T>`, `FNotificationDispatcher` | 64 位类型指纹 COW 快照事件总线、响应式属性观察、单 Drainer 防重入派发器 | [ListenerHub.md](../API/ListenerHub.md) |
-| **10. Cache** | `FVersionedCache`, `FCachePolicy` | Eager 快照/Lazy/LRU 节点池/Clock 二次机会自适应、代次守卫防脏写 | [Cache.md](../API/Cache.md) |
+| **10. Cache** | `FVersionedCache`, `FCachePolicy`, `FLruIndexPool` | Eager / Lazy / LRU（Clock 二次机会热度位）三策略自适应与代次守卫防脏写 | [Cache.md](../API/Cache.md) |
 | **11. Async** | `FGameThreadTaskRunner`, `UTimeSlicedTaskSubsystem`, `UThrottledTickerSubsystem`, `TGameCoroTask` | 工作线程安全投递、帧预算切片、分相交错节流、C++20 生产级无栈协程 | [Async.md](../API/Async.md) |
 | **12. Profiling & Service** | `FScopedCpuTimer`, `FGameServiceLocator`, `FGameCoreModule` | 零开销 RAII 微秒采样、滑动平均统计、纯 C++ 依赖注入定位、模块关停协同排空 | [ProfilingAndService.md](../API/ProfilingAndService.md) |
 

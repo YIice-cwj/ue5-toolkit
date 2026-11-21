@@ -130,18 +130,6 @@ public:
     }
 
     /**
-     * @brief 按物理帧序号精确获取快照（现代可选值包装）
-     * @param FrameSequence 期望查询的帧序号
-     * @return 包含快照的 Optional 实例；若不存在返回空 Optional
-     */
-    [[nodiscard]] TOptional<TSnapshot> GetSnapshotAtFrame(uint64 FrameSequence) const {
-        if (const TSnapshot* Found = PeekSnapshotAtFrame(FrameSequence)) {
-            return *Found;
-        }
-        return {};
-    }
-
-    /**
      * @brief 获取最新写入的快照只读指针（零拷贝）
      * @return 存在有效快照返回只读指针，否则返回 nullptr
      */
@@ -164,17 +152,6 @@ public:
             return true;
         }
         return false;
-    }
-
-    /**
-     * @brief 获取最新写入的快照（现代可选值包装）
-     * @return 包含快照的 Optional 实例；若不存在返回空 Optional
-     */
-    [[nodiscard]] TOptional<TSnapshot> GetLatestSnapshot() const {
-        if (const TSnapshot* Found = PeekLatestSnapshot()) {
-            return *Found;
-        }
-        return {};
     }
 
     /**
@@ -205,17 +182,6 @@ public:
             return true;
         }
         return false;
-    }
-
-    /**
-     * @brief 获取最早尚未被覆盖的历史快照（现代可选值包装）
-     * @return 包含快照的 Optional 实例；若不存在返回空 Optional
-     */
-    [[nodiscard]] TOptional<TSnapshot> GetOldestSnapshot() const {
-        if (const TSnapshot* Found = PeekOldestSnapshot()) {
-            return *Found;
-        }
-        return {};
     }
 
     /**
@@ -274,23 +240,6 @@ public:
     }
 
     /**
-     * @brief 依据连续时间戳获取亚帧平滑插值快照（现代可选值包装）
-     * @param TargetTimestamp 目标插值时间戳
-     * @param Interpolator 元素插值委托 (A, B, Alpha) -> TSnapshot
-     * @return 包含插值快照的 Optional 实例；若无法插值返回空 Optional
-     */
-    [[nodiscard]] TOptional<TSnapshot> GetInterpolatedSnapshot(
-        double TargetTimestamp,
-        FInterpolator Interpolator
-    ) const {
-        TSnapshot OutSnapshot{};
-        if (GetInterpolatedSnapshot(TargetTimestamp, OutSnapshot, Interpolator)) {
-            return OutSnapshot;
-        }
-        return {};
-    }
-
-    /**
      * @brief 获取当前有效的快照记录数
      * @return 有效槽位数
      */
@@ -326,6 +275,12 @@ public:
     }
 
 private:
+    /**
+     * @brief 推进环形写游标并初始化下一快照槽位的单调时间戳与帧序号元数据
+     * @param Timestamp 仿真时间戳（秒）
+     * @param FrameSequence 帧序号
+     * @return 新分配的环形槽位索引
+     */
     uint32 PrepareNextSlot(double Timestamp, uint64 FrameSequence) noexcept {
         double SafeTimestamp = FMath::IsFinite(Timestamp) ? Timestamp : 0.0;
         if (ValidCount > 0 && Entries[HeadIndex].bValid && SafeTimestamp < Entries[HeadIndex].Timestamp) {

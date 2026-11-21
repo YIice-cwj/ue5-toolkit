@@ -4,6 +4,7 @@
 
 #include "Modules/ModuleManager.h"
 
+#include "Config/FConfigRegistry.h"
 #include "Config/GameCompileSwitches.h"
 #include "Config/FGameCoreRegistration.h"
 #include "Async/FGameThreadTaskRunner.h"
@@ -50,11 +51,12 @@ void FGameCoreModule::StartupModule() {
 }
 
 /**
- * @brief 模块卸载实现：取消未开始的排队后台任务、等待在飞异步任务排空并协同重置全局服务定位器
+ * @brief 模块卸载实现：取消未开始的排队后台任务、等待在飞异步任务排空、解绑世界配置表并重置全局服务定位器
  */
 void FGameCoreModule::ShutdownModule() {
     FGameThreadTaskRunner::CancelAllPendingTasks();
     FGameThreadTaskRunner::FlushInFlightTasks(1.0);
+    FConfigRegistry::Shutdown();
     FGameServiceLocator::Get().Reset();
     if constexpr (Game::Config::bEnableLog) {
         UE_LOG(LogGameCore, Log, TEXT("【GameCore】核心层主模块注销完成。"));

@@ -174,7 +174,7 @@ bool FGameTaskRunnerFlushTest::RunTest([[maybe_unused]] const FString& Parameter
         FGameThreadTaskRunner::Run(
             FCancellationToken::None(),
             [&CompletedCount]() {
-                FPlatformProcess::Sleep(0.01f);
+                FPlatformProcess::Yield();
                 CompletedCount.fetch_add(1, std::memory_order_relaxed);
             }
         );

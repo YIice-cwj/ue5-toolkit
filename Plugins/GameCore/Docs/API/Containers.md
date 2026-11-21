@@ -110,7 +110,7 @@ for (const auto& Entry : Modifiers) {
 
 ## 4. 64 位极速状态位掩码 `FFastTagBitmask` 与标签字典 `FFastTagDictionary`
 
-头文件：`#include "Containers/FFastTagBitmask.h"`
+头文件：`#include "Containers/FFastTagBitmask.h"`（值掩码，零锁头依赖）、`#include "Containers/FFastTagDictionary.h"`（线程安全动态标签字典）
 
 ### 适用场景与优势
 - **极速判定**：单条位运算指令完成状态包含与互斥检测（$\le 0.3\text{ns}$），适合战斗状态机、连招打断、霸体与控制互斥等高频判定；

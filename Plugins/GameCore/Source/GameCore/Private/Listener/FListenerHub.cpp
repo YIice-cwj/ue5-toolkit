@@ -61,17 +61,7 @@ bool FListenerHub::Contains(const FName& EventName) const {
  * @return 存在且有活跃监听者返回 true
  */
 bool FListenerHub::HasListeners(const FName& EventName) const {
-    if (EventName.IsNone()) {
-        return false;
-    }
-    TSharedPtr<FEventBase> FoundEvent;
-    {
-        FReadScopeLock ReadLock(EventsLock);
-        if (const TSharedPtr<FEventBase>* Found = Events.Find(EventName)) {
-            FoundEvent = *Found;
-        }
-    }
-    return FoundEvent.IsValid() && FoundEvent->NumListeners() > 0;
+    return NumListeners(EventName) > 0;
 }
 
 /**

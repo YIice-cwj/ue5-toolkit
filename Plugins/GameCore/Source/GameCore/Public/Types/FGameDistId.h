@@ -7,81 +7,7 @@
 
 #include "CoreMinimal.h"
 #include "Containers/StringView.h"
-
-namespace Game::Hash {
-
-/**
- * @brief 64 位整数极致雪崩散列算法（MurmurHash3 64-bit Finalizer，单周期无分支位运算）
- * @param Value 待散列 64 位数值
- * @return 散列均匀的 32 位哈希码
- */
-[[nodiscard]] inline constexpr uint32 Hash64To32(uint64 Value) noexcept {
-    Value ^= Value >> 33;
-    Value *= 0xff51afd7ed558ccdULL;
-    Value ^= Value >> 33;
-    Value *= 0xc4ceb9fe1a85ec53ULL;
-    Value ^= Value >> 33;
-    return static_cast<uint32>(Value ^ (Value >> 32));
-}
-
-} // namespace Game::Hash
-
-namespace Game::Private {
-
-/**
- * @brief 零堆分配高性能解析十进制或 0x 前缀十六进制无符号 64 位整数
- * @param InView 输入字符串切片
- * @param OutValue 传出解析结果
- * @return 解析成功且无溢出返回 true，存在非法字符或溢出返回 false
- */
-inline bool ParseUInt64FromView(FStringView InView, uint64& OutValue) noexcept {
-    InView = InView.TrimStartAndEnd();
-    if (InView.IsEmpty()) {
-        return false;
-    }
-    bool bHex = false;
-    if (InView.StartsWith(TEXT("0x"), ESearchCase::IgnoreCase)) {
-        bHex = true;
-        InView.RemovePrefix(2);
-        if (InView.IsEmpty()) {
-            return false;
-        }
-    }
-    uint64 Result = 0;
-    if (bHex) {
-        for (const TCHAR Ch : InView) {
-            uint64 Digit = 0;
-            if (Ch >= TEXT('0') && Ch <= TEXT('9')) {
-                Digit = Ch - TEXT('0');
-            } else if (Ch >= TEXT('a') && Ch <= TEXT('f')) {
-                Digit = 10 + (Ch - TEXT('a'));
-            } else if (Ch >= TEXT('A') && Ch <= TEXT('F')) {
-                Digit = 10 + (Ch - TEXT('A'));
-            } else {
-                return false;
-            }
-            if (Result > (0xFFFFFFFFFFFFFFFFULL >> 4)) {
-                return false;
-            }
-            Result = (Result << 4) | Digit;
-        }
-    } else {
-        for (const TCHAR Ch : InView) {
-            if (Ch < TEXT('0') || Ch > TEXT('9')) {
-                return false;
-            }
-            const uint64 Digit = Ch - TEXT('0');
-            if (Result > (0xFFFFFFFFFFFFFFFFULL - Digit) / 10ULL) {
-                return false;
-            }
-            Result = Result * 10ULL + Digit;
-        }
-    }
-    OutValue = Result;
-    return true;
-}
-
-} // namespace Game::Private
+#include "Types/FGameTypeFingerprint.h"
 
 /**
  * @brief 64 位紧凑分布式全局唯一标识符（雪花算法原语）
@@ -115,15 +41,6 @@ public:
     }
 
     /**
-     * @brief 工厂方法：从原始整数构造
-     * @param InRawValue 原始无符号整数
-     * @return 分布式唯一 ID
-     */
-    [[nodiscard]] static constexpr FGameDistId FromRaw(uint64 InRawValue) noexcept {
-        return FGameDistId(InRawValue);
-    }
-
-    /**
      * @brief 判定标识符是否有效（非 0 即为有效）
      * @return 有效返回 true
      */
@@ -140,10 +57,10 @@ public:
     }
 
     /**
-     * @brief 获取底层 64 位裸数值
-     * @return 64 位裸数值
+     * @brief 获取底层 64 位整数值（与 FGameLocalId::GetValue 对称统一）
+     * @return 64 位整数值
      */
-    [[nodiscard]] constexpr uint64 GetRawValue() const noexcept {
+    [[nodiscard]] constexpr uint64 GetValue() const noexcept {
         return RawValue;
     }
 

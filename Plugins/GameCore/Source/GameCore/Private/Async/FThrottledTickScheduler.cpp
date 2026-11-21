@@ -6,6 +6,55 @@
 #include "Async/FThrottledTickScheduler.h"
 
 /**
+ * @brief 推进单条心跳任务并在到期时触发回调
+ * @param Entry 目标心跳条目
+ * @param DeltaTime 当前帧流逝时间
+ */
+void FThrottledTickScheduler::TickSingleEntry(FThrottledEntry& Entry, float DeltaTime) {
+    if (Entry.bPendingRemoval) {
+        return;
+    }
+
+    if (Entry.bHasOwner && Entry.OwnerValidator && !Entry.OwnerValidator()) {
+        Entry.bPendingRemoval = true;
+        return;
+    }
+
+    if (Entry.Interval <= 0.0f) {
+        if (Entry.Callback) {
+            Entry.Callback(DeltaTime);
+        }
+        return;
+    }
+
+    Entry.Elapsed += DeltaTime;
+    if (Entry.Elapsed >= Entry.Interval) {
+        const float ActualElapsed = Entry.Elapsed;
+        Entry.Elapsed = FMath::Fmod(Entry.Elapsed, Entry.Interval);
+        if (Entry.Callback) {
+            Entry.Callback(ActualElapsed);
+        }
+    }
+}
+
+/**
+ * @brief 更新单个条目的触发间隔并钳制当前累计时长
+ * @param Entry 目标心跳条目
+ * @param NormalizedInterval 归一化后的非负间隔秒数
+ */
+void FThrottledTickScheduler::ApplyIntervalToEntry(FThrottledEntry& Entry, float NormalizedInterval) noexcept {
+    if (FMath::Abs(Entry.Interval - NormalizedInterval) <= KINDA_SMALL_NUMBER) {
+        return;
+    }
+    Entry.Interval = NormalizedInterval;
+    if (NormalizedInterval <= 0.0f) {
+        Entry.Elapsed = 0.0f;
+    } else if (Entry.Elapsed >= NormalizedInterval) {
+        Entry.Elapsed = NormalizedInterval;
+    }
+}
+
+/**
  * @brief 推进调度器中心跳时间
  * @param DeltaTime 帧流逝时间
  */
@@ -19,30 +68,7 @@ void FThrottledTickScheduler::Tick(float DeltaTime) {
     bIsIterating = true;
     const int32 InitialCount = Entries.Num();
     for (int32 Index = 0; Index < InitialCount && Index < Entries.Num(); ++Index) {
-        if (Entries[Index].bPendingRemoval) {
-            continue;
-        }
-
-        if (Entries[Index].bHasOwner && Entries[Index].OwnerValidator && !Entries[Index].OwnerValidator()) {
-            Entries[Index].bPendingRemoval = true;
-            continue;
-        }
-
-        if (Entries[Index].Interval <= 0.0f) {
-            if (Entries[Index].Callback) {
-                Entries[Index].Callback(DeltaTime);
-            }
-            continue;
-        }
-
-        Entries[Index].Elapsed += DeltaTime;
-        if (Entries[Index].Elapsed >= Entries[Index].Interval) {
-            const float ActualElapsed = Entries[Index].Elapsed;
-            Entries[Index].Elapsed = FMath::Fmod(Entries[Index].Elapsed, Entries[Index].Interval);
-            if (Entries[Index].Callback) {
-                Entries[Index].Callback(ActualElapsed);
-            }
-        }
+        TickSingleEntry(Entries[Index], DeltaTime);
     }
     bIsIterating = false;
 
@@ -83,6 +109,9 @@ uint64 FThrottledTickScheduler::RegisterIntervalTick(
     checkf(IsInGameThread(), TEXT("FThrottledTickScheduler::RegisterIntervalTick must be called on GameThread"));
 
     if (!Callback) {
+        return 0ULL;
+    }
+    if (InValidator && !InValidator()) {
         return 0ULL;
     }
 
@@ -190,15 +219,13 @@ bool FThrottledTickScheduler::SetTickInterval(uint64 HandleId, float NewInterval
     const float NormalizedInterval = NewIntervalSeconds > 0.0f ? NewIntervalSeconds : 0.0f;
     for (FThrottledEntry& Entry : Entries) {
         if (Entry.HandleId == HandleId && !Entry.bPendingRemoval) {
-            if (FMath::Abs(Entry.Interval - NormalizedInterval) <= KINDA_SMALL_NUMBER) {
-                return true;
-            }
-            Entry.Interval = NormalizedInterval;
-            if (NormalizedInterval <= 0.0f) {
-                Entry.Elapsed = 0.0f;
-            } else if (Entry.Elapsed >= NormalizedInterval) {
-                Entry.Elapsed = NormalizedInterval;
-            }
+            ApplyIntervalToEntry(Entry, NormalizedInterval);
+            return true;
+        }
+    }
+    for (FThrottledEntry& Entry : PendingAdditions) {
+        if (Entry.HandleId == HandleId && !Entry.bPendingRemoval) {
+            ApplyIntervalToEntry(Entry, NormalizedInterval);
             return true;
         }
     }
@@ -273,6 +300,24 @@ void FThrottledTickScheduler::ClearAll() {
         return;
     }
     Entries.Empty();
+}
+
+/**
+ * @brief 查询是否无活跃任务（同时检查活跃队列与重入待追加队列，忽略已标记待移除项）
+ * @return 为空返回 true
+ */
+bool FThrottledTickScheduler::IsEmpty() const noexcept {
+    for (const FThrottledEntry& Entry : Entries) {
+        if (!Entry.bPendingRemoval) {
+            return false;
+        }
+    }
+    for (const FThrottledEntry& Entry : PendingAdditions) {
+        if (!Entry.bPendingRemoval) {
+            return false;
+        }
+    }
+    return true;
 }
 
 /**

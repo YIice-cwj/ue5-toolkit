@@ -59,7 +59,7 @@ public:
      * @return 启用返回 true，禁用返回 false
      */
     [[nodiscard]] bool IsEnabled() const noexcept {
-        return bCachedEnabled.load(std::memory_order_relaxed);
+        return CachedEnabledState->load(std::memory_order_relaxed);
     }
 
     /**
@@ -102,9 +102,9 @@ private:
     TSharedPtr<FObserverSubscription> EnableWatchSubscription;
 
     /**
-     * @brief 本地原子启停镜像（消除每次 Set/广播时的全局读写锁与哈希查询开销）
+     * @brief 跨线程安全托管的原子启停镜像（经弱引用订阅回调更新，杜绝观察者析构后入队通知悬垂写入）
      */
-    std::atomic<bool> bCachedEnabled{true};
+    TSharedRef<std::atomic<bool>, ESPMode::ThreadSafe> CachedEnabledState;
 
     /**
      * @brief 版本号（每次启用状态下的值提交自增）

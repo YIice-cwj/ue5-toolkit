@@ -1,6 +1,6 @@
 /**
  * @file TFixedBlockAllocator.h
- * @brief 固定尺寸微型内存块分配器与类型化对象池（侵入式空闲链表，O(1) 纳秒级分配与零堆碎片）
+ * @brief 固定尺寸微型内存块分配器（侵入式空闲链表，O(1) 纳秒级分配与零堆碎片）
  */
 
 #pragma once
@@ -105,6 +105,20 @@ public:
         if (AllocatedCount > 0) {
             --AllocatedCount;
         }
+    }
+
+    /**
+     * @brief 预先开辟 Chunk 直至达到目标数量（消除热路径首次扩容抖动）
+     * @param TargetChunkCount 目标 Chunk 总数
+     * @return 成功预热至目标数量返回 true，内存分配失败返回 false
+     */
+    bool ReserveChunks(size_t TargetChunkCount) {
+        while (ChunkCount < TargetChunkCount) {
+            if (!AllocateNewChunk()) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**

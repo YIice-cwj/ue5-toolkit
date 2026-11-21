@@ -154,10 +154,7 @@ void UThrottledTickerSubsystem::ClearAll() {
  * @return 子系统实例引用
  */
 UThrottledTickerSubsystem& UThrottledTickerSubsystem::Get(const UObject* WorldContextObject) {
-    check(WorldContextObject != nullptr);
-    UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::Assert);
-    check(World != nullptr);
-    UThrottledTickerSubsystem* Subsystem = World->GetSubsystem<UThrottledTickerSubsystem>();
+    UThrottledTickerSubsystem* Subsystem = GetPtr(WorldContextObject);
     check(Subsystem != nullptr);
     return *Subsystem;
 }

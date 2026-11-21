@@ -1,9 +1,11 @@
 /**
- * @file FFastTagBitmask.cpp
- * @brief 64 位极速状态位掩码与标签字典实现
+ * @file FFastTagDictionary.cpp
+ * @brief FName 到 64 位 Tag 索引的线程安全双向映射字典实现
  */
 
-#include "Containers/FFastTagBitmask.h"
+#include "Containers/FFastTagDictionary.h"
+
+#include "Misc/ScopeRWLock.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogGameFastTag, Log, All);
 
@@ -17,16 +19,14 @@ FFastTagDictionary& FFastTagDictionary::Get() {
 }
 
 /**
- * @brief 注册或查询指定标签名称的位索引
+ * @brief 在已持有写锁的前提下注册或查询指定标签名称的位索引
  * @param TagName 标签名称
  * @return 分配的位索引 [0, 63]，注册满或非法名称返回 INDEX_NONE
  */
-int32 FFastTagDictionary::RegisterOrFindTag(FName TagName) {
+int32 FFastTagDictionary::RegisterOrFindTagUnderWriteLock(FName TagName) {
     if (TagName.IsNone()) {
         return INDEX_NONE;
     }
-
-    FScopeLock Lock(&Mutex);
 
     if (const int32* ExistingIndex = TagNameToIndexMap.Find(TagName)) {
         return *ExistingIndex;
@@ -50,6 +50,27 @@ int32 FFastTagDictionary::RegisterOrFindTag(FName TagName) {
 }
 
 /**
+ * @brief 注册或查询指定标签名称的位索引（先读锁快速命中，未命中再升级写锁注册）
+ * @param TagName 标签名称
+ * @return 分配的位索引 [0, 63]，注册满或非法名称返回 INDEX_NONE
+ */
+int32 FFastTagDictionary::RegisterOrFindTag(FName TagName) {
+    if (TagName.IsNone()) {
+        return INDEX_NONE;
+    }
+
+    {
+        FReadScopeLock ReadLock(RwLock);
+        if (const int32* ExistingIndex = TagNameToIndexMap.Find(TagName)) {
+            return *ExistingIndex;
+        }
+    }
+
+    FWriteScopeLock WriteLock(RwLock);
+    return RegisterOrFindTagUnderWriteLock(TagName);
+}
+
+/**
  * @brief 查询已知标签名称的位索引
  * @param TagName 标签名称
  * @return 索引值，未注册返回 INDEX_NONE
@@ -59,7 +80,7 @@ int32 FFastTagDictionary::FindTagIndex(FName TagName) const {
         return INDEX_NONE;
     }
 
-    FScopeLock Lock(&Mutex);
+    FReadScopeLock ReadLock(RwLock);
     if (const int32* FoundIndex = TagNameToIndexMap.Find(TagName)) {
         return *FoundIndex;
     }
@@ -72,7 +93,7 @@ int32 FFastTagDictionary::FindTagIndex(FName TagName) const {
  * @return 注册的名称，越界或未注册返回 NAME_None
  */
 FName FFastTagDictionary::FindTagName(int32 BitIndex) const {
-    FScopeLock Lock(&Mutex);
+    FReadScopeLock ReadLock(RwLock);
     if (BitIndex >= 0 && BitIndex < RegisteredTagNames.Num()) {
         return RegisteredTagNames[BitIndex];
     }
@@ -80,7 +101,7 @@ FName FFastTagDictionary::FindTagName(int32 BitIndex) const {
 }
 
 /**
- * @brief 批量将标签名称列表转换为位掩码
+ * @brief 批量将标签名称列表转换为位掩码（单次加锁批量处理，消除循环重复加解锁）
  * @param TagNames 标签名称视图
  * @param OutAllSucceeded 可选输出标志：若所有标签均合法且未超出 64 上限则置为 true，否则置为 false
  * @return 聚合位掩码
@@ -88,14 +109,17 @@ FName FFastTagDictionary::FindTagName(int32 BitIndex) const {
 FFastTagBitmask FFastTagDictionary::MakeMask(TConstArrayView<FName> TagNames, bool* OutAllSucceeded) {
     FFastTagBitmask Mask;
     bool bAllSucceeded = true;
+
+    FWriteScopeLock WriteLock(RwLock);
     for (const FName& Name : TagNames) {
-        const int32 Index = RegisterOrFindTag(Name);
+        const int32 Index = RegisterOrFindTagUnderWriteLock(Name);
         if (Index != INDEX_NONE) {
             Mask.AddTag(Index);
         } else {
             bAllSucceeded = false;
         }
     }
+
     if (OutAllSucceeded != nullptr) {
         *OutAllSucceeded = bAllSucceeded;
     }
@@ -107,7 +131,7 @@ FFastTagBitmask FFastTagDictionary::MakeMask(TConstArrayView<FName> TagNames, bo
  * @return 标签数量
  */
 int32 FFastTagDictionary::Num() const {
-    FScopeLock Lock(&Mutex);
+    FReadScopeLock ReadLock(RwLock);
     return RegisteredTagNames.Num();
 }
 
@@ -115,7 +139,7 @@ int32 FFastTagDictionary::Num() const {
  * @brief 重置清空所有注册信息
  */
 void FFastTagDictionary::Reset() {
-    FScopeLock Lock(&Mutex);
+    FWriteScopeLock WriteLock(RwLock);
     RegisteredTagNames.Reset();
     TagNameToIndexMap.Reset();
 }

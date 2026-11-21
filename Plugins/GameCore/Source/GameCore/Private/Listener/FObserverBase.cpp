@@ -10,16 +10,20 @@
  * @param InObserverName 监听器唯一名称
  */
 FObserverBase::FObserverBase(const FName& InObserverName)
-    : ObserverName(InObserverName),
-      EnableConfigKey(BuildEnableConfigKey(InObserverName)) {
+    : ObserverName(InObserverName)
+    , EnableConfigKey(BuildEnableConfigKey(InObserverName))
+    , CachedEnabledState(MakeShared<std::atomic<bool>, ESPMode::ThreadSafe>(true)) {
     ensureMsgf(!InObserverName.IsNone(), TEXT("FObserverBase should be constructed with a valid, non-None ObserverName."));
     FConfigRegistry& Registry = FConfigRegistry::Get();
     Registry.RegisterConfig<bool>(EnableConfigKey, true);
-    bCachedEnabled.store(Registry.GetConfig<bool>(EnableConfigKey, true), std::memory_order_relaxed);
+    CachedEnabledState->store(Registry.GetConfig<bool>(EnableConfigKey, true), std::memory_order_relaxed);
+    TWeakPtr<std::atomic<bool>, ESPMode::ThreadSafe> WeakEnabledState = CachedEnabledState;
     EnableWatchSubscription = Registry.WatchConfig<bool>(
         EnableConfigKey,
-        [this](const bool& bNewEnabled) {
-            bCachedEnabled.store(bNewEnabled, std::memory_order_relaxed);
+        [WeakEnabledState](const bool& bNewEnabled) {
+            if (TSharedPtr<std::atomic<bool>, ESPMode::ThreadSafe> Pinned = WeakEnabledState.Pin()) {
+                Pinned->store(bNewEnabled, std::memory_order_relaxed);
+            }
         }
     );
 }
@@ -39,7 +43,7 @@ FObserverBase::~FObserverBase() {
  * @param bInEnabled 目标启用状态
  */
 void FObserverBase::SetEnabled(bool bInEnabled) {
-    bCachedEnabled.store(bInEnabled, std::memory_order_relaxed);
+    CachedEnabledState->store(bInEnabled, std::memory_order_relaxed);
     FConfigRegistry::Get().SetConfig<bool>(EnableConfigKey, bInEnabled);
 }
 

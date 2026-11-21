@@ -65,18 +65,18 @@ FGameDistId FGameDistIdGenerator::NextId() {
         return FGameDistId(0ULL);
     }
 
+    uint16 NextSequence = 0;
     if (CurrentDelta == LastTimestampDelta) {
-        Sequence = (Sequence + 1U) & FGameDistId::MAX_SEQUENCE;
-        if (Sequence == 0) {
+        NextSequence = (Sequence + 1U) & FGameDistId::MAX_SEQUENCE;
+        if (NextSequence == 0) {
             CurrentDelta = WaitUntilNextMillis(LastTimestampDelta);
             if (CurrentDelta < 0 || static_cast<uint64>(CurrentDelta) > FGameDistId::MAX_TIMESTAMP_DELTA) {
                 return FGameDistId(0ULL);
             }
         }
-    } else {
-        Sequence = 0;
     }
 
+    Sequence = NextSequence;
     LastTimestampDelta = CurrentDelta;
     return FGameDistId::FromParts(CurrentDelta, NodeId, Sequence);
 }

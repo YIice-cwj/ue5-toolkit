@@ -47,6 +47,49 @@ void TrackActiveTask(const UE::Tasks::FTask& InTask) {
     GActiveTasks.Add(InTask);
 }
 
+/**
+ * @brief 统一派发受在飞追踪、取消世代、协同令牌与可选宿主守卫保护的后台任务
+ * @param bHasOwner 是否启用宿主 UObject 存活守卫
+ * @param Owner 宿主对象弱引用
+ * @param CancellationToken 外部协同取消令牌
+ * @param BackgroundWork 后台工作体闭包
+ * @return 异步任务控制句柄
+ */
+FGameAsyncTaskHandle LaunchTrackedBackgroundTask(
+    bool bHasOwner,
+    TWeakObjectPtr<UObject> Owner,
+    FCancellationToken CancellationToken,
+    TFunction<void()> BackgroundWork
+) {
+    if (!BackgroundWork || CancellationToken.IsCancellationRequested() || (bHasOwner && !Owner.IsValid(false, true))) {
+        return FGameAsyncTaskHandle();
+    }
+
+    const uint64 DispatchEpoch = GTaskCancelEpoch.load(std::memory_order_acquire);
+    TSharedPtr<FCancellationState> TaskCancelState = MakeShared<FCancellationState>();
+    GInFlightBackgroundTasks.fetch_add(1, std::memory_order_acq_rel);
+
+    UE::Tasks::FTask LaunchedTask = UE::Tasks::Launch(
+        UE_SOURCE_LOCATION,
+        [bHasOwner, Owner, DispatchEpoch, TaskCancelState, Token = MoveTemp(CancellationToken), Work = MoveTemp(BackgroundWork)]() mutable {
+            const FScopedInFlightTaskTracker Tracker;
+            if (GTaskCancelEpoch.load(std::memory_order_acquire) != DispatchEpoch) {
+                return;
+            }
+            if (TaskCancelState->IsCancellationRequested() || Token.IsCancellationRequested()) {
+                return;
+            }
+            if (bHasOwner && !Owner.IsValid(false, true)) {
+                return;
+            }
+            Work();
+        }
+    );
+
+    TrackActiveTask(LaunchedTask);
+    return FGameAsyncTaskHandle(MoveTemp(LaunchedTask), MoveTemp(TaskCancelState));
+}
+
 } // namespace
 
 /**
@@ -150,30 +193,7 @@ FGameAsyncTaskHandle FGameThreadTaskRunner::Run(
     FCancellationToken CancellationToken,
     TFunction<void()> BackgroundWork
 ) {
-    if (!Owner.IsValid(false, true) || !BackgroundWork || CancellationToken.IsCancellationRequested()) {
-        return FGameAsyncTaskHandle();
-    }
-
-    const uint64 DispatchEpoch = GTaskCancelEpoch.load(std::memory_order_acquire);
-    TSharedPtr<FCancellationState> TaskCancelState = MakeShared<FCancellationState>();
-    GInFlightBackgroundTasks.fetch_add(1, std::memory_order_acq_rel);
-
-    UE::Tasks::FTask LaunchedTask = UE::Tasks::Launch(
-        UE_SOURCE_LOCATION,
-        [Owner, DispatchEpoch, TaskCancelState, Token = MoveTemp(CancellationToken), Work = MoveTemp(BackgroundWork)]() mutable {
-            const FScopedInFlightTaskTracker Tracker;
-            if (GTaskCancelEpoch.load(std::memory_order_acquire) != DispatchEpoch) {
-                return;
-            }
-            if (TaskCancelState->IsCancellationRequested() || Token.IsCancellationRequested() || !Owner.IsValid(false, true)) {
-                return;
-            }
-            Work();
-        }
-    );
-
-    TrackActiveTask(LaunchedTask);
-    return FGameAsyncTaskHandle(MoveTemp(LaunchedTask), MoveTemp(TaskCancelState));
+    return LaunchTrackedBackgroundTask(true, MoveTemp(Owner), MoveTemp(CancellationToken), MoveTemp(BackgroundWork));
 }
 
 /**
@@ -186,30 +206,7 @@ FGameAsyncTaskHandle FGameThreadTaskRunner::Run(
     FCancellationToken CancellationToken,
     TFunction<void()> BackgroundWork
 ) {
-    if (!BackgroundWork || CancellationToken.IsCancellationRequested()) {
-        return FGameAsyncTaskHandle();
-    }
-
-    const uint64 DispatchEpoch = GTaskCancelEpoch.load(std::memory_order_acquire);
-    TSharedPtr<FCancellationState> TaskCancelState = MakeShared<FCancellationState>();
-    GInFlightBackgroundTasks.fetch_add(1, std::memory_order_acq_rel);
-
-    UE::Tasks::FTask LaunchedTask = UE::Tasks::Launch(
-        UE_SOURCE_LOCATION,
-        [DispatchEpoch, TaskCancelState, Token = MoveTemp(CancellationToken), Work = MoveTemp(BackgroundWork)]() mutable {
-            const FScopedInFlightTaskTracker Tracker;
-            if (GTaskCancelEpoch.load(std::memory_order_acquire) != DispatchEpoch) {
-                return;
-            }
-            if (TaskCancelState->IsCancellationRequested() || Token.IsCancellationRequested()) {
-                return;
-            }
-            Work();
-        }
-    );
-
-    TrackActiveTask(LaunchedTask);
-    return FGameAsyncTaskHandle(MoveTemp(LaunchedTask), MoveTemp(TaskCancelState));
+    return LaunchTrackedBackgroundTask(false, TWeakObjectPtr<UObject>(), MoveTemp(CancellationToken), MoveTemp(BackgroundWork));
 }
 
 /**

@@ -1,6 +1,6 @@
 /**
  * @file FObserverSubscription.h
- * @brief 观察者状态非模板基类 + RAII 订阅守卫（FValueObserver / FListenerHub / FConfigRegistry 共用）
+ * @brief RAII 订阅守卫（FValueObserver / FListenerHub / FConfigRegistry 共用）
  *
  * 设计思路：订阅守卫持 TWeakPtr<FObserverStateBase> 弱引用——观察者先销毁时守卫析构安全跳过；
  * 退订按唯一 uint64 订阅 ID 匹配（TFunction 无可靠 operator==，按值匹配不可用）；
@@ -10,28 +10,10 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Listener/FObserverStateBase.h"
 
 template<typename T>
 class FObserverState;
-
-/**
- * @brief 观察者状态非模板基类：仅承担导出与订阅移除契约
- */
-class GAMECORE_API FObserverStateBase {
-public:
-    FObserverStateBase() = default;
-    virtual ~FObserverStateBase() = default;
-    FObserverStateBase(const FObserverStateBase&) = delete;
-    FObserverStateBase& operator=(const FObserverStateBase&) = delete;
-    FObserverStateBase(FObserverStateBase&&) = delete;
-    FObserverStateBase& operator=(FObserverStateBase&&) = delete;
-
-    /**
-     * @brief 按订阅 ID 移除一条监听（子类实现，具体移除其回调条目）
-     * @param SubscriptionId 订阅 ID
-     */
-    virtual void RemoveListener(uint64 SubscriptionId) = 0;
-};
 
 /**
  * @brief RAII 订阅守卫：析构自动注销；禁止拷贝，允许移动
@@ -82,6 +64,11 @@ private:
     friend class FListenerHub;
     friend class FConfigRegistry;
 
+    /**
+     * @brief 绑定观察者内部状态与订阅 ID（供友元观察者设施初始化守卫）
+     * @param InState 观察者状态基类共享引用
+     * @param InSubscriptionId 分配的唯一订阅 ID
+     */
     void Initialize(const TSharedRef<FObserverStateBase>& InState, uint64 InSubscriptionId);
 
 private:

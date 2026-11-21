@@ -38,7 +38,7 @@ public:
     void Set(ConstReference InValue);
 
     /**
-     * @brief 获取当前值副本并通过修改闭包变换后提交新值
+     * @brief 获取当前值副本并通过修改闭包变换后提交新值（非原子读-改-写：遵循锁外执行用户闭包原则，多写者并发场景请由外部同步）
      * @param Mutator 原地修改值副本的闭包
      */
     void Update(TFunctionRef<void(ValueType&)> Mutator);
@@ -83,13 +83,13 @@ public:
      * @brief 查询当前已注册的活跃监听条目总数
      * @return 监听者数量
      */
-    [[nodiscard]] int32 NumListeners();
+    [[nodiscard]] int32 NumListeners() const;
 
     /**
      * @brief 检查当前是否存在活跃监听条目
      * @return 存在活跃监听者返回 true
      */
-    [[nodiscard]] bool HasListeners() {
+    [[nodiscard]] bool HasListeners() const {
         return NumListeners() > 0;
     }
 
@@ -161,6 +161,6 @@ TSharedRef<FObserverSubscription> FValueObserver<T>::SubscribeWithReplay(UObject
 }
 
 template<typename T>
-int32 FValueObserver<T>::NumListeners() {
+int32 FValueObserver<T>::NumListeners() const {
     return State->NumListeners();
 }

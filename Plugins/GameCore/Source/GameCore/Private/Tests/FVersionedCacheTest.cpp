@@ -4,6 +4,7 @@
  */
 
 #include "Cache/FVersionedCache.h"
+#include "Config/FConfigRegistry.h"
 
 #if WITH_AUTOMATION_TESTS
 

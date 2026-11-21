@@ -1,13 +1,16 @@
 /**
  * @file FScopedCpuTimer.h
- * @brief 零开销 RAII CPU 微秒计时器与滑动平均采样器（供时间切片调度器与底层算法微观性能评测）
+ * @brief 零开销 RAII CPU 微秒计时器（供时间切片调度器与底层算法微观性能评测）
  */
 
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Config/GameCompileSwitches.h"
 #include "HAL/PlatformTime.h"
+
+#ifndef GAME_ENABLE_CPU_PROFILER
+    #define GAME_ENABLE_CPU_PROFILER (UE_BUILD_SHIPPING == 0)
+#endif
 
 /**
  * @brief 纯 RAII 高精度 CPU 作用域计时器
@@ -87,7 +90,7 @@ private:
     FCompleteCallback Callback;
 };
 
-#if GAME_ENABLE_CPU_PROFILER
+#if GAME_ENABLE_CPU_PROFILER != 0
 /**
  * @brief 作用域 CPU 耗时微秒采样宏（受 GAME_ENABLE_CPU_PROFILER 集中编译开关控制）
  */

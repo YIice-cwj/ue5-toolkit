@@ -92,6 +92,10 @@ bool FPriorityArbitratorMathModesTest::RunTest([[maybe_unused]] const FString& P
     const float AdditiveAfterUpdate = Arbitrator.GetEffectiveValue(100.0f, EPriorityArbitrationMode::Additive);
     TestEqual(TEXT("更新通道后置脏重算：100 + 10 + 25 + 5 = 140.0"), AdditiveAfterUpdate, 140.0f);
 
+    Arbitrator.SetChannel(FName(TEXT("ModB")), 35.0f);
+    const float AdditiveAfterExistingUpdate = Arbitrator.GetEffectiveValue(100.0f, EPriorityArbitrationMode::Additive);
+    TestEqual(TEXT("更新已存在通道值免排序重算：100 + 10 + 35 + 5 = 150.0"), AdditiveAfterExistingUpdate, 150.0f);
+
     Arbitrator.Reset();
     Arbitrator.SetChannel(FName(TEXT("TimeScaleSkill")), 0.5f);
     Arbitrator.SetChannel(FName(TEXT("TimeScaleGlobal")), 0.2f);

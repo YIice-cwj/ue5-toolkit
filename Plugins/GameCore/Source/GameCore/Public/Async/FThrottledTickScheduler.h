@@ -108,25 +108,15 @@ public:
     [[nodiscard]] int32 GetRegisteredCount() const;
 
     /**
-     * @brief 获取当前已注册的活跃心跳任务总数（标准容器别名）
-     * @return 任务总数
-     */
-    [[nodiscard]] int32 Num() const {
-        return GetRegisteredCount();
-    }
-
-    /**
      * @brief 清空全部已注册心跳任务
      */
     void ClearAll();
 
     /**
-     * @brief 查询是否无活跃任务
+     * @brief 查询是否无活跃任务（同时检查活跃队列与重入待追加队列，忽略已标记待移除项）
      * @return 为空返回 true
      */
-    [[nodiscard]] bool IsEmpty() const noexcept {
-        return Entries.IsEmpty();
-    }
+    [[nodiscard]] bool IsEmpty() const noexcept;
 
     /**
      * @brief 将枚举频率转换为秒数间隔
@@ -134,6 +124,21 @@ public:
      * @return 对应秒数
      */
     [[nodiscard]] static float RateToIntervalSeconds(EThrottledRate Rate) noexcept;
+
+private:
+    /**
+     * @brief 推进单条心跳任务并在到期时触发回调
+     * @param Entry 目标心跳条目
+     * @param DeltaTime 当前帧流逝时间
+     */
+    static void TickSingleEntry(FThrottledEntry& Entry, float DeltaTime);
+
+    /**
+     * @brief 更新单个条目的触发间隔并钳制当前累计时长
+     * @param Entry 目标心跳条目
+     * @param NormalizedInterval 归一化后的非负间隔秒数
+     */
+    static void ApplyIntervalToEntry(FThrottledEntry& Entry, float NormalizedInterval) noexcept;
 
 private:
     TArray<FThrottledEntry> Entries;

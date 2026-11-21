@@ -23,8 +23,8 @@
 #include "CoreMinimal.h"
 #include "Misc/ScopeRWLock.h"
 
-#include "Listener/FGameTypeFingerprint.h"
 #include "Listener/FObserverSubscription.h"
+#include "Types/FGameTypeFingerprint.h"
 
 GAMECORE_API DECLARE_LOG_CATEGORY_EXTERN(LogGameListenerHub, Log, All);
 
@@ -189,6 +189,10 @@ private:
         }
 
     private:
+        /**
+         * @brief 按订阅 ID 从 COW 回调快照中移除对应事件监听条目
+         * @param SubscriptionId 待移除的订阅 ID
+         */
         void RemoveListener(uint64 SubscriptionId) override;
 
     private:

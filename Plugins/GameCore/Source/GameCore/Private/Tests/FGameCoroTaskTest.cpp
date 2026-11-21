@@ -9,6 +9,7 @@
 
 #if WITH_AUTOMATION_TESTS
 
+#include "Async/Async.h"
 #include "Async/TaskGraphInterfaces.h"
 #include "Engine/GameInstance.h"
 #include "HAL/PlatformProcess.h"
@@ -484,6 +485,210 @@ bool FGameCoroImmediateCancelTest::RunTest([[maybe_unused]] const FString& Param
     Scheduler.Tick(200.0f);
     TestEqual(TEXT("后续 Tick 绝不会重复执行业务"), PostAwaitExecutedCount, 0);
     TestEqual(TEXT("RAII 对象绝不重复析构"), RaiiDestructCount, 1);
+
+    return true;
+}
+
+namespace {
+
+/**
+ * @brief 同步挂起失败触发立即中止的 WaitSeconds 测试协程
+ * @param OutRaiiDestructCount RAII 局部析构计数
+ * @param OutPostExecCount 挂起点后执行计数
+ * @return 整型结果协程
+ */
+TGameCoroTask<int32> RunNullSchedulerWaitCoro(int32& OutRaiiDestructCount, int32& OutPostExecCount) {
+    FCoroFrameRaiiTracker LocalRaii(&OutRaiiDestructCount);
+    co_await Game::Coro::WaitSeconds(static_cast<const UObject*>(nullptr), 1.0f);
+    ++OutPostExecCount;
+    co_return 1;
+}
+
+/**
+ * @brief 同步空闭包触发立即中止的 RunOnBackground 测试协程
+ * @param OutRaiiDestructCount RAII 局部析构计数
+ * @param OutPostExecCount 挂起点后执行计数
+ * @return 整型结果协程
+ */
+TGameCoroTask<int32> RunEmptyBackgroundWorkCoro(int32& OutRaiiDestructCount, int32& OutPostExecCount) {
+    FCoroFrameRaiiTracker LocalRaii(&OutRaiiDestructCount);
+    const int32 Val = co_await Game::Coro::RunOnBackground<int32>(TFunction<int32()>{});
+    ++OutPostExecCount;
+    co_return Val;
+}
+
+/**
+ * @brief 跨线程高频挂起与并发取消压力测试协程
+ * @param AtomicDestructCounter 原子析构计数
+ * @return 整型结果协程
+ */
+TGameCoroTask<int32> RunConcurrentCancelStressCoro(std::atomic<int32>& AtomicDestructCounter) {
+    struct FAtomicRaiiTracker {
+        std::atomic<int32>* Counter = nullptr;
+        ~FAtomicRaiiTracker() {
+            if (Counter != nullptr) {
+                Counter->fetch_add(1, std::memory_order_acq_rel);
+            }
+        }
+    };
+    FAtomicRaiiTracker Tracker{&AtomicDestructCounter};
+    co_await Game::Coro::SwitchToBackground();
+    co_await Game::Coro::SwitchToGameThread();
+    co_return 7;
+}
+
+} // namespace
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameCoroSuspendAbortAndConcurrentCancelTest,
+    "Game.Core.Async.Coro.SuspendAbortAndConcurrentCancel",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证 SuspendWithGuard 同步中止与多线程并发 Cancel/Resume 下的零 UAF 与零丢失唤醒
+ * @param Parameters 自动化测试参数
+ * @return 全部断言通过返回 true
+ */
+bool FGameCoroSuspendAbortAndConcurrentCancelTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    int32 NullSchedRaii = 0;
+    int32 NullSchedPost = 0;
+    TGameCoroTask<int32> NullSchedTask = RunNullSchedulerWaitCoro(NullSchedRaii, NullSchedPost);
+    TestTrue(TEXT("空调度器 WaitSeconds 同步中止转为 Cancelled"), NullSchedTask.IsCancelled());
+    TestEqual(TEXT("空调度器同步中止精准析构局部 RAII 1 次"), NullSchedRaii, 1);
+    TestEqual(TEXT("空调度器同步中止后继代码 0 次执行"), NullSchedPost, 0);
+
+    int32 EmptyWorkRaii = 0;
+    int32 EmptyWorkPost = 0;
+    TGameCoroTask<int32> EmptyWorkTask = RunEmptyBackgroundWorkCoro(EmptyWorkRaii, EmptyWorkPost);
+    TestTrue(TEXT("空闭包 RunOnBackground 同步中止转为 Cancelled"), EmptyWorkTask.IsCancelled());
+    TestEqual(TEXT("空闭包同步中止精准析构局部 RAII 1 次"), EmptyWorkRaii, 1);
+    TestEqual(TEXT("空闭包同步中止后继代码 0 次执行"), EmptyWorkPost, 0);
+
+    constexpr int32 Iterations = 64;
+    std::atomic<int32> DestroyedFrames{0};
+    TArray<TGameCoroTask<int32>> Tasks;
+    Tasks.Reserve(Iterations);
+
+    for (int32 Index = 0; Index < Iterations; ++Index) {
+        TGameCoroTask<int32> Task = RunConcurrentCancelStressCoro(DestroyedFrames);
+        if ((Index & 1) == 0) {
+            Task.Cancel();
+        }
+        Tasks.Add(MoveTemp(Task));
+    }
+
+    const double Deadline = FPlatformTime::Seconds() + 5.0;
+    while (FPlatformTime::Seconds() < Deadline) {
+        bool bAllDone = true;
+        for (const TGameCoroTask<int32>& Task : Tasks) {
+            if (!Task.IsDone()) {
+                bAllDone = false;
+                break;
+            }
+        }
+        if (bAllDone && DestroyedFrames.load(std::memory_order_acquire) == Iterations) {
+            break;
+        }
+        FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);
+        FPlatformProcess::Yield();
+    }
+
+    int32 CompletedOrCancelledCount = 0;
+    for (const TGameCoroTask<int32>& Task : Tasks) {
+        if (Task.IsDone()) {
+            ++CompletedOrCancelledCount;
+        }
+    }
+    TestEqual(TEXT("全部并发挂起/取消协程均收敛至终态（零丢失唤醒）"), CompletedOrCancelledCount, Iterations);
+    TestEqual(TEXT("全部协程帧均精准销毁 1 次（零泄漏/零重删）"), DestroyedFrames.load(std::memory_order_acquire), Iterations);
+
+    return true;
+}
+
+namespace {
+
+/**
+ * @brief 高频往返校验 SwitchToBackground / SwitchToGameThread 严格线程亲和性的测试协程
+ * @param BgViolations 后台亲和性违例计数器
+ * @param GtViolations 主线程亲和性违例计数器
+ * @return 成功返回 1
+ */
+TGameCoroTask<int32> RunThreadAffinityVerifyCoro(
+    std::atomic<int32>& BgViolations,
+    std::atomic<int32>& GtViolations
+) {
+    co_await Game::Coro::SwitchToBackground();
+    if (IsInGameThread()) {
+        BgViolations.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    co_await Game::Coro::SwitchToGameThread();
+    if (!IsInGameThread()) {
+        GtViolations.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    const int32 Val = co_await Game::Coro::RunOnBackground<int32>([&BgViolations]() {
+        if (IsInGameThread()) {
+            BgViolations.fetch_add(1, std::memory_order_relaxed);
+        }
+        return 1;
+    });
+    if (!IsInGameThread()) {
+        GtViolations.fetch_add(1, std::memory_order_relaxed);
+    }
+    co_return Val;
+}
+
+} // namespace
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameCoroThreadAffinityStressTest,
+    "Game.Core.Async.Coro.CrossThreadAffinityStress",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 高频压力验证跨线程协程切换 100% 落在目标线程恢复（绝不被 await_suspend 调用线程劫持）
+ * @param Parameters 自动化测试参数
+ * @return 全部断言通过返回 true
+ */
+bool FGameCoroThreadAffinityStressTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    constexpr int32 Iterations = 64;
+    std::atomic<int32> BgViolations{0};
+    std::atomic<int32> GtViolations{0};
+
+    TArray<TGameCoroTask<int32>> Tasks;
+    Tasks.Reserve(Iterations);
+    for (int32 Index = 0; Index < Iterations; ++Index) {
+        Tasks.Add(RunThreadAffinityVerifyCoro(BgViolations, GtViolations));
+    }
+
+    const double Deadline = FPlatformTime::Seconds() + 5.0;
+    while (FPlatformTime::Seconds() < Deadline) {
+        bool bAllCompleted = true;
+        for (const TGameCoroTask<int32>& Task : Tasks) {
+            if (!Task.IsCompleted()) {
+                bAllCompleted = false;
+                break;
+            }
+        }
+        if (bAllCompleted) {
+            break;
+        }
+        FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);
+        FPlatformProcess::Yield();
+    }
+
+    int32 Sum = 0;
+    for (const TGameCoroTask<int32>& Task : Tasks) {
+        if (Task.IsCompleted()) {
+            Sum += Task.GetResult().GetValueOr(0);
+        }
+    }
+    TestEqual(TEXT("全部 64 条跨线程亲和性测试协程均成功完成"), Sum, Iterations);
+    TestEqual(TEXT("SwitchToBackground/RunOnBackground 0 次误落主线程"), BgViolations.load(std::memory_order_acquire), 0);
+    TestEqual(TEXT("SwitchToGameThread 0 次误落工作线程"), GtViolations.load(std::memory_order_acquire), 0);
 
     return true;
 }

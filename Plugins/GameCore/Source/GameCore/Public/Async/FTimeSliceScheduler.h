@@ -142,19 +142,11 @@ public:
     [[nodiscard]] int32 GetPendingTaskCount() const noexcept;
 
     /**
-     * @brief 获取待处理及执行中的任务总数（标准命名别名）
-     * @return 任务数
-     */
-    [[nodiscard]] int32 Num() const noexcept {
-        return GetPendingTaskCount();
-    }
-
-    /**
-     * @brief 队列是否为空
+     * @brief 队列是否为空（队列已空且无活跃未取消执行中任务返回 true）
      * @return 为空返回 true
      */
     [[nodiscard]] bool IsEmpty() const noexcept {
-        return (QueueHeadIndex >= TaskQueue.Num()) && ExecutingTaskId == 0ULL;
+        return (QueueHeadIndex >= TaskQueue.Num()) && (ExecutingTaskId == 0ULL || bExecutingTaskCancelled);
     }
 
 private:

@@ -25,7 +25,6 @@ bool FTimeSliceSchedulerPureTest::RunTest([[maybe_unused]] const FString& Parame
     FTimeSliceScheduler Scheduler;
     TestTrue(TEXT("初始状态为空"), Scheduler.IsEmpty());
     TestEqual(TEXT("初始待处理任务数为 0"), Scheduler.GetPendingTaskCount(), 0);
-    TestEqual(TEXT("Num() 返回待处理任务数 0"), Scheduler.Num(), 0);
 
     int32 StepCounter = 0;
     const uint64 TaskId = Scheduler.EnqueueTask([&StepCounter]() -> bool {
@@ -39,7 +38,7 @@ bool FTimeSliceSchedulerPureTest::RunTest([[maybe_unused]] const FString& Parame
     TestTrue(TEXT("任务成功入队且返回有效 ID"), TaskId > 0ULL);
     TestTrue(TEXT("任务处于活跃状态"), Scheduler.IsTaskActive(TaskId));
     TestFalse(TEXT("队列非空"), Scheduler.IsEmpty());
-    TestEqual(TEXT("入队后 Num() 为 1"), Scheduler.Num(), 1);
+    TestEqual(TEXT("入队后 GetPendingTaskCount() 为 1"), Scheduler.GetPendingTaskCount(), 1);
 
     Scheduler.Step(0.00005);
     TestEqual(TEXT("首轮推进后计数器为 1"), StepCounter, 1);
@@ -75,6 +74,21 @@ bool FTimeSliceSchedulerPureTest::RunTest([[maybe_unused]] const FString& Parame
         return false;
     });
     TestTrue(TEXT("传入显式空弱指针优雅退化为全局任务成功入队"), NullOwnerTaskId > 0ULL);
+    Scheduler.Step(0.01);
+
+    bool bIsEmptyAfterSelfCancel = false;
+    int32 PendingCountAfterSelfCancel = -1;
+    uint64 SelfCancelId = 0ULL;
+    SelfCancelId = Scheduler.EnqueueTask([&]() -> bool {
+        Scheduler.CancelTask(SelfCancelId);
+        bIsEmptyAfterSelfCancel = Scheduler.IsEmpty();
+        PendingCountAfterSelfCancel = Scheduler.GetPendingTaskCount();
+        return true;
+    });
+    Scheduler.Step(0.01);
+    TestEqual(TEXT("唯一执行中任务自取消后 GetPendingTaskCount 立即归 0"), PendingCountAfterSelfCancel, 0);
+    TestTrue(TEXT("唯一执行中任务自取消后 IsEmpty 与 GetPendingTaskCount 一致返回 true"), bIsEmptyAfterSelfCancel);
+    TestTrue(TEXT("Step 结束后队列保持为空"), Scheduler.IsEmpty());
 
     return true;
 }
@@ -94,7 +108,6 @@ bool FThrottledTickSchedulerPureTest::RunTest([[maybe_unused]] const FString& Pa
     FThrottledTickScheduler Scheduler;
     TestTrue(TEXT("初始状态为空"), Scheduler.IsEmpty());
     TestEqual(TEXT("初始注册数为 0"), Scheduler.GetRegisteredCount(), 0);
-    TestEqual(TEXT("初始 Num() 返回 0"), Scheduler.Num(), 0);
 
     int32 TickCount = 0;
     float LastDelta = 0.0f;
@@ -109,7 +122,6 @@ bool FThrottledTickSchedulerPureTest::RunTest([[maybe_unused]] const FString& Pa
     TestTrue(TEXT("心跳成功注册"), HandleId > 0ULL);
     TestTrue(TEXT("心跳任务活跃"), Scheduler.IsTickActive(HandleId));
     TestEqual(TEXT("当前注册数为 1"), Scheduler.GetRegisteredCount(), 1);
-    TestEqual(TEXT("当前 Num() 为 1"), Scheduler.Num(), 1);
 
     Scheduler.Tick(0.02f);
     TestEqual(TEXT("流逝未达 0.1s 时未触发"), TickCount, 0);
@@ -158,6 +170,39 @@ bool FThrottledTickSchedulerSetIntervalTest::RunTest([[maybe_unused]] const FStr
     TestTrue(TEXT("设置缩短间隔成功"), Scheduler.SetTickInterval(HandleId, 0.05f));
     Scheduler.Tick(0.06f);
     TestEqual(TEXT("缩短间隔后推进达到新间隔，TickCount 应为 2"), TickCount, 2);
+
+    const uint64 ExpiredOwnerHandle = Scheduler.RegisterIntervalTick(
+        []() { return false; },
+        0.05f,
+        [](float) {}
+    );
+    TestEqual(TEXT("已失效 FOwnerValidator 注册时立即拒绝并返回 0"), ExpiredOwnerHandle, 0ULL);
+
+    uint64 ReentrantNewHandle = 0ULL;
+    bool bSetIntervalOnPendingSucceeded = false;
+    bool bIsEmptyWhilePendingOnly = true;
+    int32 PendingTaskTickCount = 0;
+    uint64 OuterHandle = 0ULL;
+    OuterHandle = Scheduler.RegisterIntervalTick(
+        0.0f,
+        [&](float) {
+            Scheduler.UnregisterTick(OuterHandle);
+            Scheduler.UnregisterTick(HandleId);
+            ReentrantNewHandle = Scheduler.RegisterIntervalTick(
+                0.2f,
+                [&PendingTaskTickCount](float) {
+                    ++PendingTaskTickCount;
+                }
+            );
+            bIsEmptyWhilePendingOnly = Scheduler.IsEmpty();
+            bSetIntervalOnPendingSucceeded = Scheduler.SetTickInterval(ReentrantNewHandle, 0.01f);
+        }
+    );
+    Scheduler.Tick(0.01f);
+    TestFalse(TEXT("仅 PendingAdditions 存在活跃任务时 IsEmpty 必须返回 false"), bIsEmptyWhilePendingOnly);
+    TestTrue(TEXT("对处于 PendingAdditions 中的任务调用 SetTickInterval 必须成功"), bSetIntervalOnPendingSucceeded);
+    Scheduler.Tick(0.02f);
+    TestEqual(TEXT("PendingAdditions 中被缩短间隔为 0.01s 的任务在下一帧正常触发"), PendingTaskTickCount, 1);
 
     return true;
 }

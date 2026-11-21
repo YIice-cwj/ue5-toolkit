@@ -22,6 +22,9 @@ public:
      * @param SampleValue 测量值
      */
     void AddSample(double SampleValue) noexcept {
+        const bool bIsFirstSample = !bHasSamples;
+        bHasSamples = true;
+
         if (SampleCount < WindowSize) {
             Samples[SampleCount] = SampleValue;
             RunningSum += SampleValue;
@@ -31,10 +34,17 @@ public:
             Samples[WriteIndex] = SampleValue;
             RunningSum += SampleValue;
             WriteIndex = (WriteIndex + 1) % WindowSize;
+            if (WriteIndex == 0) {
+                double RecomputedSum = 0.0;
+                for (int32 Index = 0; Index < WindowSize; ++Index) {
+                    RecomputedSum += Samples[Index];
+                }
+                RunningSum = RecomputedSum;
+            }
         }
 
-        MinSample = (SampleCount == 1) ? SampleValue : FMath::Min(MinSample, SampleValue);
-        MaxSample = (SampleCount == 1) ? SampleValue : FMath::Max(MaxSample, SampleValue);
+        MinSample = bIsFirstSample ? SampleValue : FMath::Min(MinSample, SampleValue);
+        MaxSample = bIsFirstSample ? SampleValue : FMath::Max(MaxSample, SampleValue);
     }
 
     /**
@@ -94,6 +104,7 @@ public:
         RunningSum = 0.0;
         MinSample = 0.0;
         MaxSample = 0.0;
+        bHasSamples = false;
     }
 
 private:
@@ -103,4 +114,5 @@ private:
     double RunningSum = 0.0;
     double MinSample = 0.0;
     double MaxSample = 0.0;
+    bool bHasSamples = false;
 };

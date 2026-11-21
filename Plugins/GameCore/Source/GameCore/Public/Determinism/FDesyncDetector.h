@@ -3,16 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-
-/**
- * @brief 状态不同步/分叉诊断报告包
- */
-struct FDesyncReport {
-    uint64 Frame = 0ULL;
-    uint64 LocalChecksum = 0ULL;
-    uint64 RemoteChecksum = 0ULL;
-    bool bDiverged = false;
-};
+#include "Determinism/FDesyncReport.h"
 
 /**
  * @brief 双端联机与回放状态分叉探测器
@@ -78,7 +69,7 @@ public:
     [[nodiscard]] bool HasFrame(uint64 Frame) const noexcept;
 
     /**
-     * @brief 查询本地历史记录中是否存在指定帧的记录
+     * @brief 按帧序号提取已记录的本地状态校验码
      * @param Frame 目标帧序号
      * @param OutChecksum 输出校验码
      * @return 存在有效记录返回 true

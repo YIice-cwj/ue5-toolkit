@@ -110,10 +110,12 @@ bool FLockFreeRingBufferBasicTest::RunTest([[maybe_unused]] const FString& Param
 
     Buffer.Enqueue(100);
     Buffer.Enqueue(200);
-    TestTrue(TEXT("Pop 成功丢弃队头 100"), Buffer.Pop());
+    TestTrue(TEXT("Dequeue 成功弹出队头 100"), Buffer.Dequeue().IsSet());
     TestTrue(TEXT("Dequeue 取出剩余元素 200"), Buffer.Dequeue(OutVal));
     TestEqual(TEXT("值为 200"), OutVal, 200);
-    TestFalse(TEXT("空队列 Pop 返回 false"), Buffer.Pop());
+    Buffer.Enqueue(300);
+    Buffer.Clear();
+    TestTrue(TEXT("Clear 后队列为空"), Buffer.IsEmpty());
 
     TLockFreeRingBuffer<FNonDefaultConstructible, 4> NonDefaultBuffer;
     NonDefaultBuffer.Emplace(1001);

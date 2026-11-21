@@ -91,23 +91,10 @@ public:
      */
     template <typename... Args>
     bool Emplace(Args&&... InArgs) {
-        FSlot* TargetSlot = nullptr;
-        uint32 Pos = Tail.load(std::memory_order_relaxed);
-
-        for (;;) {
-            TargetSlot = &Slots[Pos & INDEX_MASK];
-            const uint32 Seq = TargetSlot->Sequence.load(std::memory_order_acquire);
-            const int32 Diff = static_cast<int32>(Seq - Pos);
-
-            if (Diff < 0) {
-                return false;
-            }
-            if (Diff == 0 && Tail.compare_exchange_weak(Pos, Pos + 1, std::memory_order_relaxed)) {
-                break;
-            }
-            if (Diff > 0) {
-                Pos = Tail.load(std::memory_order_relaxed);
-            }
+        uint32 Pos = 0;
+        FSlot* TargetSlot = TryClaimEnqueueSlot(Pos);
+        if (TargetSlot == nullptr) {
+            return false;
         }
 
         new (TargetSlot->Storage.GetTypedPtr()) T(Forward<Args>(InArgs)...);
@@ -121,23 +108,10 @@ public:
      * @return 出队成功返回 true，队列为空返回 false
      */
     bool Dequeue(T& OutItem) {
-        FSlot* TargetSlot = nullptr;
-        uint32 Pos = Head.load(std::memory_order_relaxed);
-
-        for (;;) {
-            TargetSlot = &Slots[Pos & INDEX_MASK];
-            const uint32 Seq = TargetSlot->Sequence.load(std::memory_order_acquire);
-            const int32 Diff = static_cast<int32>(Seq - (Pos + 1));
-
-            if (Diff < 0) {
-                return false;
-            }
-            if (Diff == 0 && Head.compare_exchange_weak(Pos, Pos + 1, std::memory_order_relaxed)) {
-                break;
-            }
-            if (Diff > 0) {
-                Pos = Head.load(std::memory_order_relaxed);
-            }
+        uint32 Pos = 0;
+        FSlot* TargetSlot = TryClaimDequeueSlot(Pos);
+        if (TargetSlot == nullptr) {
+            return false;
         }
 
         T* TypedPtr = TargetSlot->Storage.GetTypedPtr();
@@ -152,23 +126,10 @@ public:
      * @return 成功出队返回包含元素的 Optional，队列为空返回空 Optional
      */
     [[nodiscard]] TOptional<T> Dequeue() {
-        FSlot* TargetSlot = nullptr;
-        uint32 Pos = Head.load(std::memory_order_relaxed);
-
-        for (;;) {
-            TargetSlot = &Slots[Pos & INDEX_MASK];
-            const uint32 Seq = TargetSlot->Sequence.load(std::memory_order_acquire);
-            const int32 Diff = static_cast<int32>(Seq - (Pos + 1));
-
-            if (Diff < 0) {
-                return TOptional<T>();
-            }
-            if (Diff == 0 && Head.compare_exchange_weak(Pos, Pos + 1, std::memory_order_relaxed)) {
-                break;
-            }
-            if (Diff > 0) {
-                Pos = Head.load(std::memory_order_relaxed);
-            }
+        uint32 Pos = 0;
+        FSlot* TargetSlot = TryClaimDequeueSlot(Pos);
+        if (TargetSlot == nullptr) {
+            return TOptional<T>();
         }
 
         T* TypedPtr = TargetSlot->Storage.GetTypedPtr();
@@ -179,40 +140,14 @@ public:
     }
 
     /**
-     * @brief 尝试弹出并就地析构队头的一个元素（不进行拷贝与移动赋值）
-     * @return 成功弹出并析构元素返回 true，队列为空返回 false
-     */
-    bool Pop() {
-        FSlot* TargetSlot = nullptr;
-        uint32 Pos = Head.load(std::memory_order_relaxed);
-
-        for (;;) {
-            TargetSlot = &Slots[Pos & INDEX_MASK];
-            const uint32 Seq = TargetSlot->Sequence.load(std::memory_order_acquire);
-            const int32 Diff = static_cast<int32>(Seq - (Pos + 1));
-
-            if (Diff < 0) {
-                return false;
-            }
-            if (Diff == 0 && Head.compare_exchange_weak(Pos, Pos + 1, std::memory_order_relaxed)) {
-                break;
-            }
-            if (Diff > 0) {
-                Pos = Head.load(std::memory_order_relaxed);
-            }
-        }
-
-        T* TypedPtr = TargetSlot->Storage.GetTypedPtr();
-        TypedPtr->~T();
-        TargetSlot->Sequence.store(Pos + INDEX_MASK + 1, std::memory_order_release);
-        return true;
-    }
-
-    /**
      * @brief 清空队列中所有现存元素并执行析构（建议在无并发生产/消费的静默期或析构期调用）
      */
     void Clear() noexcept {
-        while (Pop()) {
+        uint32 Pos = 0;
+        while (FSlot* TargetSlot = TryClaimDequeueSlot(Pos)) {
+            T* TypedPtr = TargetSlot->Storage.GetTypedPtr();
+            TypedPtr->~T();
+            TargetSlot->Sequence.store(Pos + INDEX_MASK + 1, std::memory_order_release);
         }
     }
 
@@ -241,6 +176,55 @@ public:
      */
     [[nodiscard]] static constexpr uint32 GetCapacity() noexcept {
         return Capacity;
+    }
+
+private:
+    /**
+     * @brief CAS 抢占生产队尾槽位
+     * @param OutPos 抢占成功时的生产序号
+     * @return 成功返回目标槽位指针，队列已满返回 nullptr
+     */
+    [[nodiscard]] FSlot* TryClaimEnqueueSlot(uint32& OutPos) noexcept {
+        uint32 Pos = Tail.load(std::memory_order_relaxed);
+        for (;;) {
+            FSlot* TargetSlot = &Slots[Pos & INDEX_MASK];
+            const uint32 Seq = TargetSlot->Sequence.load(std::memory_order_acquire);
+            const int32 Diff = static_cast<int32>(Seq - Pos);
+            if (Diff < 0) {
+                return nullptr;
+            }
+            if (Diff == 0 && Tail.compare_exchange_weak(Pos, Pos + 1, std::memory_order_relaxed)) {
+                OutPos = Pos;
+                return TargetSlot;
+            }
+            if (Diff > 0) {
+                Pos = Tail.load(std::memory_order_relaxed);
+            }
+        }
+    }
+
+    /**
+     * @brief CAS 抢占消费队头槽位
+     * @param OutPos 抢占成功时的消费序号
+     * @return 成功返回目标槽位指针，队列已空返回 nullptr
+     */
+    [[nodiscard]] FSlot* TryClaimDequeueSlot(uint32& OutPos) noexcept {
+        uint32 Pos = Head.load(std::memory_order_relaxed);
+        for (;;) {
+            FSlot* TargetSlot = &Slots[Pos & INDEX_MASK];
+            const uint32 Seq = TargetSlot->Sequence.load(std::memory_order_acquire);
+            const int32 Diff = static_cast<int32>(Seq - (Pos + 1));
+            if (Diff < 0) {
+                return nullptr;
+            }
+            if (Diff == 0 && Head.compare_exchange_weak(Pos, Pos + 1, std::memory_order_relaxed)) {
+                OutPos = Pos;
+                return TargetSlot;
+            }
+            if (Diff > 0) {
+                Pos = Head.load(std::memory_order_relaxed);
+            }
+        }
     }
 
 private:

@@ -274,4 +274,40 @@ bool FScopedFrameScratchpadNewArrayTest::RunTest([[maybe_unused]] const FString&
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    TScratchArraySelfAliasReallocTest,
+    "Game.Core.Memory.ScratchArray.SelfAliasRealloc",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证 TScratchArray 对非平凡元素执行自别名追加（Add(Arr[0])）跨越扩容时的零 UAF 安全性
+ * @param Parameters 自动化测试参数
+ * @return 全部断言通过返回 true
+ */
+bool TScratchArraySelfAliasReallocTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    FLinearArena Arena(8192);
+    FScopedFrameScratchpad Scratch(Arena);
+
+    TScratchArray<FString> Strings(Scratch, 2);
+    const FString LongA = TEXT("GameCore_ScratchArray_SelfAlias_Reallocation_LongPayload_Alpha_0123456789");
+    const FString LongB = TEXT("GameCore_ScratchArray_SelfAlias_Reallocation_LongPayload_Beta_9876543210");
+    Strings.Add(LongA);
+    Strings.Add(LongB);
+    TestEqual(TEXT("触发自别名拷贝扩容前容量已满"), Strings.Num(), Strings.Capacity());
+
+    Strings.Add(Strings[0]);
+    TestEqual(TEXT("自别名拷贝扩容后元素数为 3"), Strings.Num(), 3);
+    TestEqual(TEXT("扩容后原元素 0 保持完整"), Strings[0], LongA);
+    TestEqual(TEXT("扩容后自别名新元素 2 与原元素 0 严格一致"), Strings[2], LongA);
+
+    Strings.Add(Strings[1]);
+    TestEqual(TEXT("填满至容量 4"), Strings.Num(), Strings.Capacity());
+    Strings.Add(MoveTemp(Strings[1]));
+    TestEqual(TEXT("自别名移动扩容后元素数为 5"), Strings.Num(), 5);
+    TestEqual(TEXT("自别名移动扩容新元素 4 完整承接原元素 1 载荷"), Strings[4], LongB);
+
+    return true;
+}
+
 #endif

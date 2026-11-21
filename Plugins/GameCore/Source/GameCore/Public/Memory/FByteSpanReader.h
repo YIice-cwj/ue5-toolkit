@@ -62,10 +62,14 @@ public:
      * @brief 批量读取原始字节数据并拷贝到输出缓冲区
      * @param OutData 输出缓冲区指针
      * @param ByteCount 读取字节数
-     * @return 成功读取返回 true，剩余不足返回 false
+     * @return 成功读取返回 true，负数长度、空指针或剩余不足返回 false
      */
     bool ReadBytes(void* OutData, int32 ByteCount) noexcept {
-        if (ByteCount <= 0) {
+        if (ByteCount < 0) {
+            bHasError = true;
+            return false;
+        }
+        if (ByteCount == 0) {
             return true;
         }
         if (OutData == nullptr || ByteCount > (Buffer.Num() - ReadOffset)) {
@@ -94,7 +98,7 @@ public:
     }
 
     /**
-     * @brief 读取 LEB128 变长 32 位无符号整数
+     * @brief 读取 LEB128 变长 32 位无符号整数（严格校验第 5 字节高位溢出）
      * @param OutValue 传出 32 位无符号整数
      * @return 成功解码返回 true，溢出或越界返回 false
      */
@@ -103,15 +107,19 @@ public:
         int32 Shift = 0;
         while (ReadOffset < Buffer.Num()) {
             const uint8 Byte = Buffer[ReadOffset++];
+            if (Shift == 28) {
+                if ((Byte & 0xF0U) != 0U) {
+                    bHasError = true;
+                    return false;
+                }
+                OutValue |= (static_cast<uint32>(Byte & 0x0FU) << 28);
+                return true;
+            }
             OutValue |= (static_cast<uint32>(Byte & 0x7FU) << Shift);
             if ((Byte & 0x80U) == 0U) {
                 return true;
             }
             Shift += 7;
-            if (Shift >= 35) {
-                bHasError = true;
-                return false;
-            }
         }
         bHasError = true;
         return false;
@@ -174,13 +182,15 @@ public:
     }
 
     /**
-     * @brief 零堆分配读取 UTF-8 字符串切片视图
+     * @brief 零堆分配读取 UTF-8 字符串切片视图（失败时自动回滚读取游标）
      * @param OutUtf8View 传出直接指向源缓冲区的 UTF-8 只读字节切片
      * @return 成功读取返回 true，越界返回 false
      */
     bool ReadUtf8Span(TArrayView<const UTF8CHAR>& OutUtf8View) noexcept {
+        const int32 SavedOffset = ReadOffset;
         uint32 ByteLen = 0U;
         if (!ReadVarUInt32(ByteLen)) {
+            ReadOffset = SavedOffset;
             return false;
         }
         if (ByteLen == 0U) {
@@ -188,6 +198,7 @@ public:
             return true;
         }
         if (ByteLen > static_cast<uint32>(Buffer.Num() - ReadOffset)) {
+            ReadOffset = SavedOffset;
             bHasError = true;
             return false;
         }

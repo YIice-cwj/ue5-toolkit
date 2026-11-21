@@ -8,6 +8,35 @@
 #include "HAL/PlatformTime.h"
 #include "Math/UnrealMathUtility.h"
 
+namespace {
+
+/**
+ * @brief 构造定长批量迭代切片的单步执行闭包
+ * @param TotalCount 迭代总项数
+ * @param PerItemWork 单项处理闭包
+ * @param OnComplete 全部项完成后的可选收尾闭包
+ * @return 单步执行闭包（返回 true 继续保留，返回 false 完成）
+ */
+FTimeSliceScheduler::FStepTaskCallback MakeBatchStepWork(
+    int32 TotalCount,
+    FTimeSliceScheduler::FBatchIterationCallback PerItemWork,
+    FTimeSliceScheduler::FBatchCompleteCallback OnComplete
+) {
+    return [CurrentIndex = 0, TotalCount, ItemFn = MoveTemp(PerItemWork), CompleteFn = MoveTemp(OnComplete)]() mutable -> bool {
+        ItemFn(CurrentIndex);
+        ++CurrentIndex;
+        if (CurrentIndex < TotalCount) {
+            return true;
+        }
+        if (CompleteFn) {
+            CompleteFn();
+        }
+        return false;
+    };
+}
+
+}  // namespace
+
 /**
  * @brief 推进调度器执行队列中的切片任务（采用头游标 O(1) 出队，每步前后检查预算截止时间，支持重入防护）
  * @param CustomBudgetSeconds 可选自定义预算秒数（<= 0 时采用内部设置的 FrameBudgetSeconds）
@@ -169,20 +198,9 @@ uint64 FTimeSliceScheduler::EnqueueBatch(
         return 0ULL;
     }
 
-    int32 CurrentIndex = 0;
     return EnqueueTask(
         Owner,
-        [CurrentIndex, TotalCount, ItemFn = MoveTemp(PerItemWork), CompleteFn = MoveTemp(OnComplete)]() mutable -> bool {
-            ItemFn(CurrentIndex);
-            ++CurrentIndex;
-            if (CurrentIndex < TotalCount) {
-                return true;
-            }
-            if (CompleteFn) {
-                CompleteFn();
-            }
-            return false;
-        }
+        MakeBatchStepWork(TotalCount, MoveTemp(PerItemWork), MoveTemp(OnComplete))
     );
 }
 
@@ -209,19 +227,8 @@ uint64 FTimeSliceScheduler::EnqueueBatch(
         return 0ULL;
     }
 
-    int32 CurrentIndex = 0;
     return EnqueueTask(
-        [CurrentIndex, TotalCount, ItemFn = MoveTemp(PerItemWork), CompleteFn = MoveTemp(OnComplete)]() mutable -> bool {
-            ItemFn(CurrentIndex);
-            ++CurrentIndex;
-            if (CurrentIndex < TotalCount) {
-                return true;
-            }
-            if (CompleteFn) {
-                CompleteFn();
-            }
-            return false;
-        }
+        MakeBatchStepWork(TotalCount, MoveTemp(PerItemWork), MoveTemp(OnComplete))
     );
 }
 

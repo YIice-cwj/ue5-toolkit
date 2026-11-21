@@ -205,8 +205,12 @@ namespace {
 
 static FRWLock GWorldRegistryLock;
 static TMap<TWeakObjectPtr<const UWorld>, TSharedPtr<FConfigRegistry>> GWorldRegistries;
-static bool bHookedWorldDestroy = false;
+static FDelegateHandle GWorldDestroyHandle;
 
+/**
+ * @brief 获取进程级全局根配置注册表共享实例
+ * @return 全局根注册表共享指针
+ */
 static TSharedPtr<FConfigRegistry> GetGlobalShared() {
     static TSharedPtr<FConfigRegistry> GlobalInstance = MakeShared<FConfigRegistry>();
     return GlobalInstance;
@@ -266,12 +270,11 @@ TSharedPtr<FConfigRegistry> FConfigRegistry::GetShared(const UObject* WorldConte
         }
     }
 
-    if (!bHookedWorldDestroy) {
-        FWorldDelegates::OnPreWorldFinishDestroy.AddLambda([](UWorld* DyingWorld) {
+    if (!GWorldDestroyHandle.IsValid()) {
+        GWorldDestroyHandle = FWorldDelegates::OnPreWorldFinishDestroy.AddLambda([](UWorld* DyingWorld) {
             FWriteScopeLock CleanupLock(GWorldRegistryLock);
             GWorldRegistries.Remove(DyingWorld);
         });
-        bHookedWorldDestroy = true;
     }
 
     TSharedPtr<FConfigRegistry> NewRegistry = MakeShared<FConfigRegistry>();
@@ -297,6 +300,22 @@ FConfigRegistry& FConfigRegistry::Get(const UObject* WorldContextObject) {
 void FConfigRegistry::ClearWorldRegistriesForTesting() {
     FWriteScopeLock WriteLock(GWorldRegistryLock);
     GWorldRegistries.Empty();
+}
+
+/**
+ * @brief 模块卸载清理：解绑世界销毁全局委托并释放所有 World 隔离注册表
+ */
+void FConfigRegistry::Shutdown() {
+    FDelegateHandle HandleToRemove;
+    {
+        FWriteScopeLock WriteLock(GWorldRegistryLock);
+        HandleToRemove = GWorldDestroyHandle;
+        GWorldDestroyHandle.Reset();
+        GWorldRegistries.Empty();
+    }
+    if (HandleToRemove.IsValid()) {
+        FWorldDelegates::OnPreWorldFinishDestroy.Remove(HandleToRemove);
+    }
 }
 
 /**

@@ -20,7 +20,9 @@ FPseudoRandomDistribution::FPseudoRandomDistribution(float InNominalProbability)
  * @param InNominalProbability 新标称概率（钳制到 [0.0f, 1.0f]）
  */
 void FPseudoRandomDistribution::SetNominalProbability(float InNominalProbability) noexcept {
-    NominalProbability = FMath::Clamp(InNominalProbability, 0.0f, 1.0f);
+    NominalProbability = FMath::IsFinite(InNominalProbability)
+        ? FMath::Clamp(InNominalProbability, 0.0f, 1.0f)
+        : 0.0f;
     PreciseIncrementConstant = CalculatePreciseConstantForProbability(static_cast<double>(NominalProbability));
     IncrementConstant = static_cast<float>(PreciseIncrementConstant);
 }
@@ -44,7 +46,6 @@ float FPseudoRandomDistribution::GetNextRollProbability() const noexcept {
     if (EffectiveConstant <= 0.0 && NominalProbability > 0.0f) {
         EffectiveConstant = CalculatePreciseConstantForProbability(static_cast<double>(NominalProbability));
         PreciseIncrementConstant = EffectiveConstant;
-        const_cast<FPseudoRandomDistribution*>(this)->IncrementConstant = static_cast<float>(EffectiveConstant);
     }
     const double RawChance = EffectiveConstant * static_cast<double>(NextAttempt);
     return static_cast<float>(FMath::Clamp(RawChance, 0.0, 1.0));
@@ -91,7 +92,7 @@ float FPseudoRandomDistribution::CalculateConstantForProbability(float Probabili
  * @return 双精度步长常数 C
  */
 double FPseudoRandomDistribution::CalculatePreciseConstantForProbability(double Probability) noexcept {
-    if (Probability <= 0.0) {
+    if (!FMath::IsFinite(Probability) || Probability <= 0.0) {
         return 0.0;
     }
     if (Probability >= 1.0) {
@@ -103,7 +104,7 @@ double FPseudoRandomDistribution::CalculatePreciseConstantForProbability(double 
     double High = TargetP;
     double Mid = TargetP;
 
-    for (int32 Iteration = 0; Iteration < 40; ++Iteration) {
+    for (int32 Iteration = 0; Iteration < 60; ++Iteration) {
         Mid = 0.5 * (Low + High);
         const double EffectiveP = EvaluateEffectiveProbability(Mid);
         if (EffectiveP < TargetP) {
@@ -111,29 +112,43 @@ double FPseudoRandomDistribution::CalculatePreciseConstantForProbability(double 
         } else {
             High = Mid;
         }
+        if ((High - Low) <= High * 1e-15) {
+            break;
+        }
     }
 
     return Mid;
 }
 
 /**
- * @brief 评估给定步长常数 C 下的理论宏观有效触发概率
+ * @brief 评估给定步长常数 C 下的理论宏观有效触发概率（极小常数走 O(1) 渐近展开，消除 int32 溢出与主线程卡顿）
  * @param ConstantC 步长常数 C
  * @return 理论有效触发概率
  */
 double FPseudoRandomDistribution::EvaluateEffectiveProbability(double ConstantC) noexcept {
-    if (ConstantC <= 0.0) {
+    if (!FMath::IsFinite(ConstantC) || ConstantC <= 0.0) {
         return 0.0;
     }
-    const int32 MaxAttempts = FMath::CeilToInt(1.0 / ConstantC);
+    if (ConstantC >= 1.0) {
+        return 1.0;
+    }
+    if (ConstantC <= 1e-8) {
+        const double HalfPiOverC = (UE_DOUBLE_PI * 0.5) / ConstantC;
+        const double HalfPiTimesC = (UE_DOUBLE_PI * 0.5) * ConstantC;
+        const double ExpectedTrials =
+            FMath::Sqrt(HalfPiOverC) - (1.0 / 3.0) + (1.0 / 12.0) * FMath::Sqrt(HalfPiTimesC);
+        return ExpectedTrials > 0.0 ? (1.0 / ExpectedTrials) : 0.0;
+    }
+
+    const int64 MaxAttempts = static_cast<int64>(FMath::CeilToDouble(1.0 / ConstantC));
     double ExpectedTrials = 0.0;
     double SurvivalProbability = 1.0;
 
-    for (int32 Attempt = 1; Attempt <= MaxAttempts; ++Attempt) {
+    for (int64 Attempt = 1; Attempt <= MaxAttempts; ++Attempt) {
         const double StepProbability = FMath::Min(1.0, static_cast<double>(Attempt) * ConstantC);
         ExpectedTrials += static_cast<double>(Attempt) * StepProbability * SurvivalProbability;
         SurvivalProbability *= (1.0 - StepProbability);
-        if (SurvivalProbability <= 0.0) {
+        if (SurvivalProbability <= 1e-16) {
             break;
         }
     }
