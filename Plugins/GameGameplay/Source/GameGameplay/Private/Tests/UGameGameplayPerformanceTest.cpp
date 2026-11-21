@@ -374,15 +374,15 @@ bool FGameGameplayBootstrapPoolablePerfTest::RunTest([[maybe_unused]] const FStr
 
     constexpr int32 WarmupIterations = 1000;
     for (int32 Index = 0; Index < WarmupIterations; ++Index) {
-        Poolable->Execute_OnReleaseToPool(Bootstrap);
-        Poolable->Execute_OnAcquireFromPool(Bootstrap);
+        IGamePoolable::Execute_OnReleaseToPool(Bootstrap);
+        IGamePoolable::Execute_OnAcquireFromPool(Bootstrap);
     }
 
     constexpr int32 Iterations = 50000;
     const uint64 StartCycles = FPlatformTime::Cycles64();
     for (int32 Index = 0; Index < Iterations; ++Index) {
-        Poolable->Execute_OnReleaseToPool(Bootstrap);
-        Poolable->Execute_OnAcquireFromPool(Bootstrap);
+        IGamePoolable::Execute_OnReleaseToPool(Bootstrap);
+        IGamePoolable::Execute_OnAcquireFromPool(Bootstrap);
     }
     const uint64 ElapsedCycles = FPlatformTime::Cycles64() - StartCycles;
 

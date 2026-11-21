@@ -39,6 +39,10 @@
         {
             "Name": "GameFeedback",
             "Enabled": true
+        },
+        {
+            "Name": "GamePool",
+            "Enabled": true
         }
     ]
 }

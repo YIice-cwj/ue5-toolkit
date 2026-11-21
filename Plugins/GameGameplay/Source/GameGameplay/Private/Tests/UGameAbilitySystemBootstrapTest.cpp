@@ -254,12 +254,12 @@ bool FGameAbilitySystemBootstrapPoolableTest::RunTest([[maybe_unused]] const FSt
     IGamePoolable* Poolable = Cast<IGamePoolable>(Bootstrap);
     TestNotNull(TEXT("Bootstrap 原生实现 IGamePoolable 接口"), Poolable);
     if (Poolable != nullptr) {
-        Poolable->Execute_OnReleaseToPool(Bootstrap);
+        IGamePoolable::Execute_OnReleaseToPool(Bootstrap);
         TestNull(TEXT("入池释放时清理已授予能力"), ASC->FindAbilitySpecFromClass(UGameplayAbility::StaticClass()));
         TestFalse(TEXT("入池释放时重置能力授予标记"), Bootstrap->IsDefaultAbilitiesGranted());
         TestFalse(TEXT("入池释放时重置属性写入标记"), Bootstrap->IsInitialAttributesWritten());
 
-        Poolable->Execute_OnAcquireFromPool(Bootstrap);
+        IGamePoolable::Execute_OnAcquireFromPool(Bootstrap);
         Bootstrap->EnsureInitialized(Avatar);
         TestEqual(TEXT("从池中复用时再次成功写初值"), WriteCount, 2);
         TestTrue(TEXT("从池中复用时再次授予能力"), Bootstrap->IsDefaultAbilitiesGranted());

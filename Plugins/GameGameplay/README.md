@@ -59,7 +59,7 @@ graph TD
 
 ## 插件依赖
 
-- **公开依赖 (Public)**：`Core`, `CoreUObject`, `Engine`, `GameplayAbilities`, `GameplayTags`, `GameCore`, `GameGameplayCore`
+- **公开依赖 (Public)**：`Core`, `CoreUObject`, `Engine`, `GameplayAbilities`, `GameplayTags`, `GameCore`, `GameMessage`, `GameGameplayCore`, `GamePool`
 - **私有依赖 (Private)**：`GameplayTasks`, `GameLogging`, `GameFeedback`
 - **禁止依赖**：`GameData`（杜绝配置数据与技能框架循环引用）
 - **C++ 标准**：C++20
