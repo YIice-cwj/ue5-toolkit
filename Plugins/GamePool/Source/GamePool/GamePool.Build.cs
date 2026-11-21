@@ -15,6 +15,7 @@ public class GamePool : ModuleRules {
         });
 
         PrivateDependencyModuleNames.AddRange(new string[] {
+            "GameLogging",
         });
     }
 }

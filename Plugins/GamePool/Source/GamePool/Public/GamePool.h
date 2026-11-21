@@ -1,24 +1,23 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
+/**
+ * @file GamePool.h
+ * @brief GamePool 插件主模块入口与公共对外契约聚合头
+ */
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "Modules/ModuleManager.h"
 
+#include "Core/FPoolAcquirePayload.h"
 #include "Core/IGamePoolable.h"
 #include "Core/ObjectPoolTypes.h"
-#include "Handle/PoolGenerationTracker.h"
-#include "Handle/PooledObjectHandle.h"
-#include "Managers/ActorPoolManager.h"
-#include "Managers/UObjectPoolManager.h"
-#include "Managers/PooledActorResetter.h"
-#include "Scheduling/PoolDeferredDispatcher.h"
-#include "Scheduling/PoolEvictionScheduler.h"
-#include "Scheduling/PoolAsyncLoader.h"
-#include "Resilience/PoolResilienceController.h"
+#include "Core/PoolErrorCodes.h"
+#include "Handle/TPooledObjectHandle.h"
+#include "Handle/TScopedPoolRental.h"
+#include "Memory/TScopedStructRental.h"
+#include "Memory/TStructPool.h"
+#include "Subsystem/UObjectPoolSubsystem.h"
 #include "Telemetry/ObjectPoolStats.h"
-#include "Memory/StructPool.h"
-#include "Subsystem/ObjectPoolSubsystem.h"
 
 /**
  * @brief GamePool 插件主模块生命周期管理者

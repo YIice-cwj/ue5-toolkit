@@ -1,21 +1,26 @@
 /**
  * @file GamePoolPerformanceTest.cpp
- * @brief GamePool 核心对象池微基准自动化测试（结构体池 / UObject 池 / Actor 池 vs 原生分配）
+ * @brief GamePool 全组件微基准自动化测试（结构体池 / UObject 池 / Actor 池 / 组件重置 / 句柄校验 / 延迟归还 / 冷淘汰）
  *
- * 遵循通用代码规范与 UE5 性能基准规范：多轮采样消除预热偏差，统计中位数与变异系数 (CV%)。
+ * 遵循通用代码规范与 UE5 性能基准规范：多轮预热与采样（>=5 轮），统计中位数、均值、Min/Max 与变异系数 (CV%)。
  * 预算用于防御数量级性能退化。
  */
 
-#include "Memory/StructPool.h"
-#include "Subsystem/ObjectPoolSubsystem.h"
-#include "Tests/GamePoolableTestActor.h"
+#include "Memory/TStructPool.h"
+#include "Subsystem/UObjectPoolSubsystem.h"
+#include "Tests/AGamePoolableTestActor.h"
 #include "Tests/UGamePoolableTestObject.h"
 
 #if WITH_AUTOMATION_TESTS
 
+#include "Components/AudioComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
+#include "GameFramework/ProjectileMovementComponent.h"
+#include "Logging/GameLogCategories.h"
 #include "Misc/AutomationTest.h"
+#include "Particles/ParticleSystemComponent.h"
 #include "Tests/GamePoolTestUtils.h"
 
 using Game::Pool::TestUtils::GetTestWorld;
@@ -37,6 +42,12 @@ constexpr double ActorPoolBudgetNsPerOp = 50000.0;
 constexpr int32 HandleValidationIterations = 100000;
 constexpr double HandleValidationBudgetNsPerOp = 50.0;
 
+constexpr int32 DeferredReleaseBatchSize = 512;
+constexpr double DeferredReleaseBudgetNsPerOp = 5000.0;
+
+constexpr int32 EvictionBatchSize = 256;
+constexpr double EvictionBatchBudgetNsPerOp = 25000.0;
+
 struct FBenchmarkMetrics {
     double MedianNs = 0.0;
     double MeanNs = 0.0;
@@ -46,15 +57,8 @@ struct FBenchmarkMetrics {
     double OpsPerSec = 0.0;
 };
 
-struct FPerfTestPayload {
-    uint64 FieldA = 0;
-    uint64 FieldB = 0;
-    uint64 FieldC = 0;
-    uint64 FieldD = 0;
-};
-
 /**
- * @brief 执行多轮基准测试，消除预热偏差并统计中位数与离散度 (CV%)
+ * @brief 执行多轮基准测试，消除预热偏差并统计中位数、均值、极值与离散度 (CV%)
  * @tparam TFunc 待测闭包类型
  * @param WarmupRounds 预热轮数（测量后丢弃）
  * @param SampleRounds 正式采样轮数（规范要求 >= 5 轮）
@@ -117,14 +121,21 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 原生结构体池租借/归还对比堆分配 (new/delete) 吞吐基准
+ * @brief 原生结构体池租借/归还对比堆分配 (Malloc/Free) 吞吐基准
  * @param Parameters 自动化框架参数（未使用）
  * @return 预算内且吞吐符合预期返回 true
  */
 bool FGameStructPoolPerfTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    volatile uint64 Sink = 0;
+    struct FPerfTestPayload {
+        uint64 FieldA = 0;
+        uint64 FieldB = 0;
+        uint64 FieldC = 0;
+        uint64 FieldD = 0;
+    };
 
+    volatile uint64 Sink = 0;
     TStructPool<FPerfTestPayload, 2048> StructPool;
+    StructPool.ReserveChunks(1);
 
     const FBenchmarkMetrics PoolMetrics = RunBenchmark(
         DefaultWarmupRounds,
@@ -140,18 +151,29 @@ bool FGameStructPoolPerfTest::RunTest([[maybe_unused]] const FString& Parameters
         }
     );
 
+    const FBenchmarkMetrics ScopedMetrics = RunBenchmark(
+        DefaultWarmupRounds,
+        DefaultSampleRounds,
+        StructPoolIterations,
+        [&StructPool, &Sink](const int32 Iterations) {
+            for (int32 Index = 0; Index < Iterations; ++Index) {
+                TScopedStructRental<FPerfTestPayload, 2048> Rental = StructPool.AcquireScoped();
+                Rental->FieldA = static_cast<uint64>(Index);
+                Sink = Sink + Rental->FieldA;
+            }
+        }
+    );
+
     const FBenchmarkMetrics HeapMetrics = RunBenchmark(
         DefaultWarmupRounds,
         DefaultSampleRounds,
         StructPoolIterations,
         [&Sink](const int32 Iterations) {
             for (int32 Index = 0; Index < Iterations; ++Index) {
-                void* Memory = FMemory::Malloc(sizeof(FPerfTestPayload));
-                FPerfTestPayload* Item = ::new (Memory) FPerfTestPayload();
+                FPerfTestPayload* Item = static_cast<FPerfTestPayload*>(FMemory::Malloc(sizeof(FPerfTestPayload)));
                 Item->FieldA = static_cast<uint64>(Index);
                 Sink = Sink + Item->FieldA;
-                Item->~FPerfTestPayload();
-                FMemory::Free(Memory);
+                FMemory::Free(Item);
             }
         }
     );
@@ -162,16 +184,23 @@ bool FGameStructPoolPerfTest::RunTest([[maybe_unused]] const FString& Parameters
         FString::Printf(TEXT("StructPool 耗时 %.1f ns/op 应低于预算 %.0f ns/op"), PoolMetrics.MedianNs, StructPoolBudgetNsPerOp),
         PoolMetrics.MedianNs < StructPoolBudgetNsPerOp
     );
+    TestTrue(
+        FString::Printf(TEXT("StructPool Scoped RAII 耗时 %.1f ns/op 应低于预算 %.0f ns/op"), ScopedMetrics.MedianNs, StructPoolBudgetNsPerOp),
+        ScopedMetrics.MedianNs < StructPoolBudgetNsPerOp
+    );
 
-    AddInfo(FString::Printf(
-        TEXT("StructPool: %.1f ns/op (CV: %.2f%%, %.1f Mops/s) | Heap new/delete: %.1f ns/op (CV: %.2f%%) | Speedup: %.2fx"),
+    const FString Report = FString::Printf(
+        TEXT("[GamePoolPerf] StructPool Raw: %.2f ns/op (CV: %.2f%%, %.2f Mops/s) | Scoped RAII: %.2f ns/op (CV: %.2f%%) | Heap Malloc/Free: %.2f ns/op | Speedup: %.2fx"),
         PoolMetrics.MedianNs,
         PoolMetrics.CvPercent,
         PoolMetrics.OpsPerSec / 1.0e6,
+        ScopedMetrics.MedianNs,
+        ScopedMetrics.CvPercent,
         HeapMetrics.MedianNs,
-        HeapMetrics.CvPercent,
         SpeedupRatio
-    ));
+    );
+    GAME_LOG(Display, TEXT("%s"), *Report);
+    AddInfo(Report);
 
     return true;
 }
@@ -183,9 +212,9 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief UObject 对象池借出/归还复用对比原生 NewObject 吞吐基准
+ * @brief UObject 对象池借出/归还（含带指纹载荷与 RAII 租约）对比原生 NewObject 吞吐基准
  * @param Parameters 自动化框架参数（未使用）
- * @return 预算内且复用开销优于原生创建返回 true
+ * @return 预算内且复用开销符合预期返回 true
  */
 bool FGameUObjectPoolPerfTest::RunTest([[maybe_unused]] const FString& Parameters) {
     UWorld* World = GetTestWorld();
@@ -217,7 +246,26 @@ bool FGameUObjectPoolPerfTest::RunTest([[maybe_unused]] const FString& Parameter
                     UGamePoolableTestObject* Obj = AcquireResult.GetValue();
                     Obj->PayloadValue = Index;
                     Sink = Sink + Obj->PayloadValue;
-                    Subsystem->ReleaseObject(Obj);
+                    (void)Subsystem->ReleaseObject(Obj);
+                }
+            }
+        }
+    );
+
+    const FBenchmarkMetrics ScopedPayloadMetrics = RunBenchmark(
+        1,
+        DefaultSampleRounds,
+        UObjectPoolIterations,
+        [Subsystem, &Sink](const int32 Iterations) {
+            for (int32 Index = 0; Index < Iterations; ++Index) {
+                TGameStatusResult<TScopedPoolRental<UGamePoolableTestObject>> RentalRes =
+                    Subsystem->AcquireScopedObjectWithPayload<UGamePoolableTestObject>(
+                        UGamePoolableTestObject::StaticClass(),
+                        Index
+                    );
+                if (RentalRes.IsSuccess()) {
+                    TScopedPoolRental<UGamePoolableTestObject> Rental = RentalRes.ExtractValue();
+                    Sink = Sink + Rental->PayloadValue;
                 }
             }
         }
@@ -243,16 +291,23 @@ bool FGameUObjectPoolPerfTest::RunTest([[maybe_unused]] const FString& Parameter
         FString::Printf(TEXT("UObjectPool 耗时 %.1f ns/op 应低于预算 %.0f ns/op"), PoolMetrics.MedianNs, UObjectPoolBudgetNsPerOp),
         PoolMetrics.MedianNs < UObjectPoolBudgetNsPerOp
     );
+    TestTrue(
+        FString::Printf(TEXT("UObjectPool Scoped+Payload 耗时 %.1f ns/op 应低于预算 %.0f ns/op"), ScopedPayloadMetrics.MedianNs, UObjectPoolBudgetNsPerOp),
+        ScopedPayloadMetrics.MedianNs < UObjectPoolBudgetNsPerOp
+    );
 
-    AddInfo(FString::Printf(
-        TEXT("UObjectPool: %.1f ns/op (CV: %.2f%%, %.1f Kops/s) | Native NewObject: %.1f ns/op (CV: %.2f%%) | Speedup: %.2fx"),
+    const FString Report = FString::Printf(
+        TEXT("[GamePoolPerf] UObjectPool: %.1f ns/op (CV: %.2f%%, %.1f Kops/s) | Scoped+Payload: %.1f ns/op (CV: %.2f%%) | Native NewObject: %.1f ns/op | Speedup: %.2fx"),
         PoolMetrics.MedianNs,
         PoolMetrics.CvPercent,
         PoolMetrics.OpsPerSec / 1.0e3,
+        ScopedPayloadMetrics.MedianNs,
+        ScopedPayloadMetrics.CvPercent,
         NativeMetrics.MedianNs,
-        NativeMetrics.CvPercent,
         SpeedupRatio
-    ));
+    );
+    GAME_LOG(Display, TEXT("%s"), *Report);
+    AddInfo(Report);
 
     Subsystem->ClearAllPools();
     return true;
@@ -299,7 +354,7 @@ bool FGameActorPoolPerfTest::RunTest([[maybe_unused]] const FString& Parameters)
                     AGamePoolableTestActor* Actor = AcquireResult.GetValue();
                     Actor->SetActorLocation(FVector(Index, 0.0, 0.0));
                     Sink = Sink + Actor->GetActorLocation().X;
-                    Subsystem->ReleaseActor(Actor);
+                    (void)Subsystem->ReleaseActor(Actor);
                 }
             }
         }
@@ -333,16 +388,119 @@ bool FGameActorPoolPerfTest::RunTest([[maybe_unused]] const FString& Parameters)
         PoolMetrics.MedianNs < ActorPoolBudgetNsPerOp
     );
 
-    AddInfo(FString::Printf(
-        TEXT("ActorPool: %.1f ns/op (CV: %.2f%%, %.1f Ops/s) | Native Spawn/Destroy: %.1f ns/op (CV: %.2f%%) | Speedup: %.2fx"),
+    const FString Report = FString::Printf(
+        TEXT("[GamePoolPerf] ActorPool: %.1f ns/op (CV: %.2f%%, %.1f Kops/s) | Native Spawn/Destroy: %.1f ns/op (CV: %.2f%%) | Speedup: %.2fx"),
         PoolMetrics.MedianNs,
         PoolMetrics.CvPercent,
-        PoolMetrics.OpsPerSec,
+        PoolMetrics.OpsPerSec / 1.0e3,
         NativeMetrics.MedianNs,
         NativeMetrics.CvPercent,
         SpeedupRatio
-    ));
+    );
+    GAME_LOG(Display, TEXT("%s"), *Report);
+    AddInfo(Report);
 
+    Subsystem->ClearAllPools();
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameActorResetFlagsPerfTest,
+    "Game.Pool.Perf.ActorResetFlagsNoneVsAll",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 对比 1-pass 单次遍历 EPoolResetFlags::All 与 EPoolResetFlags::None 在多组件 Actor 上的归还耗时
+ * @param Parameters 自动化框架参数（未使用）
+ * @return 全部基准落在预算内返回 true
+ */
+bool FGameActorResetFlagsPerfTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UWorld* World = GetTestWorld();
+    TestNotNull(TEXT("测试世界有效"), World);
+    if (!World) {
+        return false;
+    }
+
+    UObjectPoolSubsystem* Subsystem = World->GetSubsystem<UObjectPoolSubsystem>();
+    TestNotNull(TEXT("对象池子系统有效"), Subsystem);
+    if (!Subsystem) {
+        return false;
+    }
+
+    const TSubclassOf<AActor> ActorClass = AGamePoolableTestActor::StaticClass();
+    Subsystem->ClearAllPools();
+
+    AGamePoolableTestActor* RichActor = Subsystem->AcquireActor<AGamePoolableTestActor>(ActorClass).GetValue();
+    TestNotNull(TEXT("多组件测试 Actor 借出成功"), RichActor);
+    if (!RichActor) {
+        return false;
+    }
+
+    UProjectileMovementComponent* MoveComp = NewObject<UProjectileMovementComponent>(RichActor);
+    MoveComp->SetUpdatedComponent(RichActor->GetRootComponent());
+    MoveComp->RegisterComponent();
+
+    UAudioComponent* AudioComp = NewObject<UAudioComponent>(RichActor);
+    AudioComp->SetupAttachment(RichActor->GetRootComponent());
+    AudioComp->RegisterComponent();
+
+    UParticleSystemComponent* FXComp = NewObject<UParticleSystemComponent>(RichActor);
+    FXComp->SetupAttachment(RichActor->GetRootComponent());
+    FXComp->RegisterComponent();
+
+    USkeletalMeshComponent* SkelComp = NewObject<USkeletalMeshComponent>(RichActor);
+    SkelComp->SetupAttachment(RichActor->GetRootComponent());
+    SkelComp->RegisterComponent();
+
+    (void)Subsystem->ReleaseActor(RichActor);
+
+    Subsystem->SetPoolResetFlags(ActorClass, EPoolResetFlags::All);
+    const FBenchmarkMetrics AllFlagsMetrics = RunBenchmark(
+        1,
+        DefaultSampleRounds,
+        ActorPoolIterations,
+        [Subsystem, ActorClass](const int32 Iterations) {
+            for (int32 Index = 0; Index < Iterations; ++Index) {
+                AGamePoolableTestActor* Actor = Subsystem->AcquireActor<AGamePoolableTestActor>(ActorClass).GetValue();
+                (void)Subsystem->ReleaseActor(Actor);
+            }
+        }
+    );
+
+    Subsystem->SetPoolResetFlags(ActorClass, EPoolResetFlags::None);
+    const FBenchmarkMetrics NoneFlagsMetrics = RunBenchmark(
+        1,
+        DefaultSampleRounds,
+        ActorPoolIterations,
+        [Subsystem, ActorClass](const int32 Iterations) {
+            for (int32 Index = 0; Index < Iterations; ++Index) {
+                AGamePoolableTestActor* Actor = Subsystem->AcquireActor<AGamePoolableTestActor>(ActorClass).GetValue();
+                (void)Subsystem->ReleaseActor(Actor);
+            }
+        }
+    );
+
+    TestTrue(
+        FString::Printf(TEXT("1-pass ResetFlags::All 耗时 %.1f ns/op 应低于预算 %.0f ns/op"), AllFlagsMetrics.MedianNs, ActorPoolBudgetNsPerOp),
+        AllFlagsMetrics.MedianNs < ActorPoolBudgetNsPerOp
+    );
+    TestTrue(
+        FString::Printf(TEXT("ResetFlags::None 耗时 %.1f ns/op 应低于预算 %.0f ns/op"), NoneFlagsMetrics.MedianNs, ActorPoolBudgetNsPerOp),
+        NoneFlagsMetrics.MedianNs < ActorPoolBudgetNsPerOp
+    );
+
+    const FString Report = FString::Printf(
+        TEXT("[GamePoolPerf] Actor 1-Pass Reset All: %.1f ns/op (CV: %.2f%%) | Reset None: %.1f ns/op (CV: %.2f%%)"),
+        AllFlagsMetrics.MedianNs,
+        AllFlagsMetrics.CvPercent,
+        NoneFlagsMetrics.MedianNs,
+        NoneFlagsMetrics.CvPercent
+    );
+    GAME_LOG(Display, TEXT("%s"), *Report);
+    AddInfo(Report);
+
+    Subsystem->SetPoolResetFlags(ActorClass, EPoolResetFlags::All);
     Subsystem->ClearAllPools();
     return true;
 }
@@ -408,17 +566,169 @@ bool FGameHandleValidationPerfTest::RunTest([[maybe_unused]] const FString& Para
         HandleMetrics.MedianNs < HandleValidationBudgetNsPerOp
     );
 
-    AddInfo(FString::Printf(
-        TEXT("Handle Validation: %.1f ns/op (CV: %.2f%%, %.1f Mops/s) | Raw Pointer Check: %.1f ns/op (CV: %.2f%%) | Overhead: +%.1f ns"),
+    const FString Report = FString::Printf(
+        TEXT("[GamePoolPerf] Handle Validation: %.2f ns/op (CV: %.2f%%, %.2f Mops/s) | Raw Pointer Check: %.2f ns/op (CV: %.2f%%) | Overhead: +%.2f ns"),
         HandleMetrics.MedianNs,
         HandleMetrics.CvPercent,
         HandleMetrics.OpsPerSec / 1.0e6,
         RawMetrics.MedianNs,
         RawMetrics.CvPercent,
         FMath::Max(0.0, HandleMetrics.MedianNs - RawMetrics.MedianNs)
-    ));
+    );
+    GAME_LOG(Display, TEXT("%s"), *Report);
+    AddInfo(Report);
 
-    Subsystem->ReleaseObject(ValidHandle);
+    (void)Subsystem->ReleaseObject(ValidHandle);
+    Subsystem->ClearAllPools();
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameDeferredReleasePerfTest,
+    "Game.Pool.Perf.DeferredReleaseThroughput",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 无锁 MPMC 环形缓冲延迟归还入队与主线程批量收割吞吐微基准
+ * @param Parameters 自动化框架参数（未使用）
+ * @return 预算内返回 true
+ */
+bool FGameDeferredReleasePerfTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UWorld* World = GetTestWorld();
+    TestNotNull(TEXT("测试世界有效"), World);
+    if (!World) {
+        return false;
+    }
+
+    UObjectPoolSubsystem* Subsystem = World->GetSubsystem<UObjectPoolSubsystem>();
+    TestNotNull(TEXT("对象池子系统有效"), Subsystem);
+    if (!Subsystem) {
+        return false;
+    }
+
+    const TSubclassOf<UObject> ObjClass = UGamePoolableTestObject::StaticClass();
+    Subsystem->ClearAllPools();
+    Subsystem->SetMaxObjectPoolCapacity(ObjClass, DeferredReleaseBatchSize);
+    Subsystem->PrewarmObjectPool(ObjClass, DeferredReleaseBatchSize);
+
+    TArray<UGamePoolableTestObject*> Batch;
+    Batch.Reserve(DeferredReleaseBatchSize);
+
+    const FBenchmarkMetrics DeferredMetrics = RunBenchmark(
+        1,
+        DefaultSampleRounds,
+        DeferredReleaseBatchSize,
+        [Subsystem, ObjClass, &Batch](const int32 Iterations) {
+            Batch.Reset();
+            for (int32 Index = 0; Index < Iterations; ++Index) {
+                Batch.Add(Subsystem->AcquireObject<UGamePoolableTestObject>(ObjClass).GetValue());
+            }
+            for (UGamePoolableTestObject* Obj : Batch) {
+                (void)Subsystem->ReleaseObjectDeferred(Obj);
+            }
+            (void)Subsystem->ProcessDeferredReleases(Iterations);
+        }
+    );
+
+    TestTrue(
+        FString::Printf(TEXT("Deferred Acquire+Enqueue+Harvest 耗时 %.1f ns/op 应低于预算 %.0f ns/op"), DeferredMetrics.MedianNs, DeferredReleaseBudgetNsPerOp),
+        DeferredMetrics.MedianNs < DeferredReleaseBudgetNsPerOp
+    );
+
+    const FString Report = FString::Printf(
+        TEXT("[GamePoolPerf] Deferred Release (batch %d): %.1f ns/op (CV: %.2f%%, %.1f Kops/s)"),
+        DeferredReleaseBatchSize,
+        DeferredMetrics.MedianNs,
+        DeferredMetrics.CvPercent,
+        DeferredMetrics.OpsPerSec / 1.0e3
+    );
+    GAME_LOG(Display, TEXT("%s"), *Report);
+    AddInfo(Report);
+
+    Subsystem->SetMaxObjectPoolCapacity(ObjClass, 100);
+    Subsystem->ClearAllPools();
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameEvictionBatchPerfTest,
+    "Game.Pool.Perf.EvictionBatchThroughput",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 大规模空闲 UObject 池 TDeque O(1) FIFO 批量冷淘汰吞吐微基准
+ * @param Parameters 自动化框架参数（未使用）
+ * @return 预算内返回 true
+ */
+bool FGameEvictionBatchPerfTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UWorld* World = GetTestWorld();
+    TestNotNull(TEXT("测试世界有效"), World);
+    if (!World) {
+        return false;
+    }
+
+    UObjectPoolSubsystem* Subsystem = World->GetSubsystem<UObjectPoolSubsystem>();
+    TestNotNull(TEXT("对象池子系统有效"), Subsystem);
+    if (!Subsystem) {
+        return false;
+    }
+
+    const TSubclassOf<UObject> ObjClass = UGamePoolableTestObject::StaticClass();
+    Subsystem->ClearAllPools();
+    Subsystem->SetMaxObjectPoolCapacity(ObjClass, EvictionBatchSize);
+
+    FPoolEvictionSettings Settings;
+    Settings.bEnableEviction = true;
+    Settings.IdleTimeToLiveSeconds = 1.0f;
+    Settings.MinPreservedCount = 0;
+    Subsystem->SetObjectPoolEvictionSettings(ObjClass, Settings);
+
+    TArray<double> SamplesNs;
+    SamplesNs.Reserve(DefaultSampleRounds);
+
+    for (int32 Warmup = 0; Warmup < 1; ++Warmup) {
+        Subsystem->PrewarmObjectPool(ObjClass, EvictionBatchSize);
+        const double FutureNow = FPlatformTime::Seconds() + 10.0;
+        (void)Subsystem->ForceEvictExpired(EvictionBatchSize, FutureNow);
+    }
+
+    double SumNs = 0.0;
+    for (int32 Round = 0; Round < DefaultSampleRounds; ++Round) {
+        Subsystem->PrewarmObjectPool(ObjClass, EvictionBatchSize);
+        const double FutureNow = FPlatformTime::Seconds() + 10.0;
+        const double StartTime = FPlatformTime::Seconds();
+        const int32 Evicted = Subsystem->ForceEvictExpired(EvictionBatchSize, FutureNow);
+        const double ElapsedSec = FPlatformTime::Seconds() - StartTime;
+        TestEqual(TEXT("每轮完整淘汰全部 256 个冷实例"), Evicted, EvictionBatchSize);
+        const double NsPerOp = (ElapsedSec * 1.0e9) / static_cast<double>(EvictionBatchSize);
+        SamplesNs.Add(NsPerOp);
+        SumNs += NsPerOp;
+    }
+
+    SamplesNs.Sort();
+    const double MedianNs = SamplesNs[DefaultSampleRounds / 2];
+    const double MeanNs = SumNs / static_cast<double>(DefaultSampleRounds);
+
+    TestTrue(
+        FString::Printf(TEXT("TDeque FIFO Eviction 耗时 %.1f ns/op 应低于预算 %.0f ns/op"), MedianNs, EvictionBatchBudgetNsPerOp),
+        MedianNs < EvictionBatchBudgetNsPerOp
+    );
+
+    const FString Report = FString::Printf(
+        TEXT("[GamePoolPerf] TDeque FIFO Eviction (batch %d): Median %.1f ns/op | Mean %.1f ns/op | Min %.1f | Max %.1f"),
+        EvictionBatchSize,
+        MedianNs,
+        MeanNs,
+        SamplesNs[0],
+        SamplesNs.Last()
+    );
+    GAME_LOG(Display, TEXT("%s"), *Report);
+    AddInfo(Report);
+
+    Subsystem->SetObjectPoolEvictionSettings(ObjClass, FPoolEvictionSettings{});
+    Subsystem->SetMaxObjectPoolCapacity(ObjClass, 100);
     Subsystem->ClearAllPools();
     return true;
 }

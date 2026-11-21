@@ -3,8 +3,8 @@
  * @brief GamePool 运行期可观测性与遥测监控 (stat GamePool & Telemetry) 单元测试
  */
 
-#include "Subsystem/ObjectPoolSubsystem.h"
-#include "Tests/GamePoolableTestActor.h"
+#include "Subsystem/UObjectPoolSubsystem.h"
+#include "Tests/AGamePoolableTestActor.h"
 #include "Tests/UGamePoolableTestObject.h"
 
 #if WITH_AUTOMATION_TESTS
@@ -23,7 +23,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证对象池命中与穿透计数以及命中率计算的准确性
+ * @brief 验证对象池命中与穿透计数、命中率计算以及失败调用不污染遥测
  * @param Parameters 自动化框架参数（未使用）
  * @return 全部断言通过返回 true
  */
@@ -41,7 +41,6 @@ bool FGamePoolTelemetryHitMissTest::RunTest([[maybe_unused]] const FString& Para
     }
 
     Subsystem->ClearAllPools();
-    Subsystem->ClearAllObjectPools();
     Subsystem->ResetTelemetry();
 
     FPoolTelemetrySnapshot InitialSnapshot = Subsystem->GetTelemetrySnapshot();
@@ -50,12 +49,16 @@ bool FGamePoolTelemetryHitMissTest::RunTest([[maybe_unused]] const FString& Para
     TestEqual(TEXT("初始穿透为0"), InitialSnapshot.CacheMisses, int64(0));
     TestEqual(TEXT("初始命中率为0"), InitialSnapshot.GetHitRatePercentage(), 0.0f);
 
+    TestTrue(TEXT("非法空类借出失败"), Subsystem->AcquireActor<AActor>(nullptr).IsFailure());
+    TestEqual(TEXT("失败借出不污染 TotalAcquires"), Subsystem->GetTelemetrySnapshot().TotalAcquires, int64(0));
+
     Subsystem->Prewarm(AGamePoolableTestActor::StaticClass(), 2);
     FPoolTelemetrySnapshot PrewarmedSnapshot = Subsystem->GetTelemetrySnapshot();
     TestEqual(TEXT("预热后空闲Actor为2"), PrewarmedSnapshot.TotalIdleCount, 2);
     TestEqual(TEXT("预热后借出为0"), PrewarmedSnapshot.TotalAcquires, int64(0));
 
-    TGameStatusResult<AGamePoolableTestActor*> Acq1 = Subsystem->AcquireActor<AGamePoolableTestActor>(AGamePoolableTestActor::StaticClass());
+    TGameStatusResult<AGamePoolableTestActor*> Acq1 =
+        Subsystem->AcquireActor<AGamePoolableTestActor>(AGamePoolableTestActor::StaticClass());
     TestTrue(TEXT("第1次借出成功"), Acq1.IsSuccess());
 
     FPoolTelemetrySnapshot Snapshot1 = Subsystem->GetTelemetrySnapshot();
@@ -64,7 +67,8 @@ bool FGamePoolTelemetryHitMissTest::RunTest([[maybe_unused]] const FString& Para
     TestEqual(TEXT("第1次借出穿透为0"), Snapshot1.CacheMisses, int64(0));
     TestEqual(TEXT("第1次命中率为100%"), Snapshot1.GetHitRatePercentage(), 100.0f);
 
-    TGameStatusResult<AGamePoolableTestActor*> Acq2 = Subsystem->AcquireActor<AGamePoolableTestActor>(AGamePoolableTestActor::StaticClass());
+    TGameStatusResult<AGamePoolableTestActor*> Acq2 =
+        Subsystem->AcquireActor<AGamePoolableTestActor>(AGamePoolableTestActor::StaticClass());
     TestTrue(TEXT("第2次借出成功"), Acq2.IsSuccess());
 
     FPoolTelemetrySnapshot Snapshot2 = Subsystem->GetTelemetrySnapshot();
@@ -73,7 +77,8 @@ bool FGamePoolTelemetryHitMissTest::RunTest([[maybe_unused]] const FString& Para
     TestEqual(TEXT("第2次借出穿透为0"), Snapshot2.CacheMisses, int64(0));
     TestEqual(TEXT("第2次命中率为100%"), Snapshot2.GetHitRatePercentage(), 100.0f);
 
-    TGameStatusResult<AGamePoolableTestActor*> Acq3 = Subsystem->AcquireActor<AGamePoolableTestActor>(AGamePoolableTestActor::StaticClass());
+    TGameStatusResult<AGamePoolableTestActor*> Acq3 =
+        Subsystem->AcquireActor<AGamePoolableTestActor>(AGamePoolableTestActor::StaticClass());
     TestTrue(TEXT("第3次借出成功（池空新生成）"), Acq3.IsSuccess());
 
     FPoolTelemetrySnapshot Snapshot3 = Subsystem->GetTelemetrySnapshot();
@@ -84,13 +89,13 @@ bool FGamePoolTelemetryHitMissTest::RunTest([[maybe_unused]] const FString& Para
     TestNearlyEqual(TEXT("3次借出命中率为66.67%"), Snapshot3.GetHitRatePercentage(), ExpectedHitRate, 0.01f);
 
     if (Acq1.IsSuccess()) {
-        Subsystem->ReleaseActor(Acq1.GetValue());
+        (void)Subsystem->ReleaseActor(Acq1.GetValue());
     }
     if (Acq2.IsSuccess()) {
-        Subsystem->ReleaseActor(Acq2.GetValue());
+        (void)Subsystem->ReleaseActor(Acq2.GetValue());
     }
     if (Acq3.IsSuccess()) {
-        Subsystem->ReleaseActor(Acq3.GetValue());
+        (void)Subsystem->ReleaseActor(Acq3.GetValue());
     }
 
     Subsystem->ClearAllPools();
@@ -122,7 +127,6 @@ bool FGamePoolTelemetryActiveIdleCounterSyncTest::RunTest([[maybe_unused]] const
     }
 
     Subsystem->ClearAllPools();
-    Subsystem->ClearAllObjectPools();
     Subsystem->ResetTelemetry();
 
     Subsystem->Prewarm(AGamePoolableTestActor::StaticClass(), 3);
@@ -132,8 +136,10 @@ bool FGamePoolTelemetryActiveIdleCounterSyncTest::RunTest([[maybe_unused]] const
     TestEqual(TEXT("初始总空闲实例为5 (3 Actor + 2 Object)"), InitialSnapshot.TotalIdleCount, 5);
     TestEqual(TEXT("初始总活跃实例为0"), InitialSnapshot.TotalActiveCount, 0);
 
-    TGameStatusResult<AGamePoolableTestActor*> ActorRes = Subsystem->AcquireActor<AGamePoolableTestActor>(AGamePoolableTestActor::StaticClass());
-    TGameStatusResult<UGamePoolableTestObject*> ObjRes = Subsystem->AcquireObject<UGamePoolableTestObject>(UGamePoolableTestObject::StaticClass());
+    TGameStatusResult<AGamePoolableTestActor*> ActorRes =
+        Subsystem->AcquireActor<AGamePoolableTestActor>(AGamePoolableTestActor::StaticClass());
+    TGameStatusResult<UGamePoolableTestObject*> ObjRes =
+        Subsystem->AcquireObject<UGamePoolableTestObject>(UGamePoolableTestObject::StaticClass());
 
     TestTrue(TEXT("Actor借出成功"), ActorRes.IsSuccess());
     TestTrue(TEXT("UObject借出成功"), ObjRes.IsSuccess());
@@ -145,10 +151,10 @@ bool FGamePoolTelemetryActiveIdleCounterSyncTest::RunTest([[maybe_unused]] const
     TestEqual(TEXT("借出后全命中为2"), MidSnapshot.CacheHits, int64(2));
 
     if (ActorRes.IsSuccess()) {
-        Subsystem->ReleaseActor(ActorRes.GetValue());
+        (void)Subsystem->ReleaseActor(ActorRes.GetValue());
     }
     if (ObjRes.IsSuccess()) {
-        Subsystem->ReleaseObject(ObjRes.GetValue());
+        (void)Subsystem->ReleaseObject(ObjRes.GetValue());
     }
 
     FPoolTelemetrySnapshot FinalSnapshot = Subsystem->GetTelemetrySnapshot();
@@ -156,7 +162,6 @@ bool FGamePoolTelemetryActiveIdleCounterSyncTest::RunTest([[maybe_unused]] const
     TestEqual(TEXT("归还后总空闲实例恢复为5"), FinalSnapshot.TotalIdleCount, 5);
 
     Subsystem->ClearAllPools();
-    Subsystem->ClearAllObjectPools();
     return true;
 }
 
@@ -185,10 +190,10 @@ bool FGamePoolTelemetryResetTest::RunTest([[maybe_unused]] const FString& Parame
     }
 
     Subsystem->ClearAllPools();
-    Subsystem->ClearAllObjectPools();
     Subsystem->ResetTelemetry();
 
-    TGameStatusResult<UGamePoolableTestObject*> ObjRes = Subsystem->AcquireObject<UGamePoolableTestObject>(UGamePoolableTestObject::StaticClass());
+    TGameStatusResult<UGamePoolableTestObject*> ObjRes =
+        Subsystem->AcquireObject<UGamePoolableTestObject>(UGamePoolableTestObject::StaticClass());
     TestTrue(TEXT("借出UObject成功"), ObjRes.IsSuccess());
 
     FPoolTelemetrySnapshot BeforeReset = Subsystem->GetTelemetrySnapshot();
@@ -205,10 +210,10 @@ bool FGamePoolTelemetryResetTest::RunTest([[maybe_unused]] const FString& Parame
     TestEqual(TEXT("活跃实例维持1"), AfterReset.TotalActiveCount, 1);
 
     if (ObjRes.IsSuccess()) {
-        Subsystem->ReleaseObject(ObjRes.GetValue());
+        (void)Subsystem->ReleaseObject(ObjRes.GetValue());
     }
 
-    Subsystem->ClearAllObjectPools();
+    Subsystem->ClearAllPools();
     return true;
 }
 
@@ -237,7 +242,6 @@ bool FGamePoolTelemetryEvictionTrackingTest::RunTest([[maybe_unused]] const FStr
     }
 
     Subsystem->ClearAllPools();
-    Subsystem->ClearAllObjectPools();
     Subsystem->ResetTelemetry();
 
     FPoolEvictionSettings Settings;
@@ -260,7 +264,8 @@ bool FGamePoolTelemetryEvictionTrackingTest::RunTest([[maybe_unused]] const FStr
     TestEqual(TEXT("淘汰后空闲数降为1"), AfterEviction.TotalIdleCount, 1);
     TestEqual(TEXT("淘汰后活跃数仍为0"), AfterEviction.TotalActiveCount, 0);
 
-    TGameStatusResult<AGamePoolableTestActor*> HitRes = Subsystem->AcquireActor<AGamePoolableTestActor>(AGamePoolableTestActor::StaticClass());
+    TGameStatusResult<AGamePoolableTestActor*> HitRes =
+        Subsystem->AcquireActor<AGamePoolableTestActor>(AGamePoolableTestActor::StaticClass());
     TestTrue(TEXT("借出保留实例成功"), HitRes.IsSuccess());
 
     FPoolTelemetrySnapshot HitSnapshot = Subsystem->GetTelemetrySnapshot();
@@ -269,7 +274,8 @@ bool FGamePoolTelemetryEvictionTrackingTest::RunTest([[maybe_unused]] const FStr
     TestEqual(TEXT("池空闲降为0"), HitSnapshot.TotalIdleCount, 0);
     TestEqual(TEXT("池活跃升为1"), HitSnapshot.TotalActiveCount, 1);
 
-    TGameStatusResult<AGamePoolableTestActor*> MissRes = Subsystem->AcquireActor<AGamePoolableTestActor>(AGamePoolableTestActor::StaticClass());
+    TGameStatusResult<AGamePoolableTestActor*> MissRes =
+        Subsystem->AcquireActor<AGamePoolableTestActor>(AGamePoolableTestActor::StaticClass());
     TestTrue(TEXT("再次借出新生成成功"), MissRes.IsSuccess());
 
     FPoolTelemetrySnapshot MissSnapshot = Subsystem->GetTelemetrySnapshot();
@@ -279,12 +285,13 @@ bool FGamePoolTelemetryEvictionTrackingTest::RunTest([[maybe_unused]] const FStr
     TestNearlyEqual(TEXT("命中率50%"), MissSnapshot.GetHitRatePercentage(), 50.0f, 0.01f);
 
     if (HitRes.IsSuccess()) {
-        Subsystem->ReleaseActor(HitRes.GetValue());
+        (void)Subsystem->ReleaseActor(HitRes.GetValue());
     }
     if (MissRes.IsSuccess()) {
-        Subsystem->ReleaseActor(MissRes.GetValue());
+        (void)Subsystem->ReleaseActor(MissRes.GetValue());
     }
 
+    Subsystem->SetActorPoolEvictionSettings(AGamePoolableTestActor::StaticClass(), FPoolEvictionSettings{});
     Subsystem->ClearAllPools();
     return true;
 }
@@ -314,7 +321,6 @@ bool FGamePoolTelemetryHighThroughputBatchMathTest::RunTest([[maybe_unused]] con
     }
 
     Subsystem->ClearAllPools();
-    Subsystem->ClearAllObjectPools();
     Subsystem->ResetTelemetry();
 
     constexpr int32 BatchA = 20;
@@ -325,7 +331,8 @@ bool FGamePoolTelemetryHighThroughputBatchMathTest::RunTest([[maybe_unused]] con
     ActiveActors.Reserve(BatchA + BatchB);
 
     for (int32 Index = 0; Index < BatchA; ++Index) {
-        TGameStatusResult<AGamePoolableTestActor*> Res = Subsystem->AcquireActor<AGamePoolableTestActor>(AGamePoolableTestActor::StaticClass());
+        TGameStatusResult<AGamePoolableTestActor*> Res =
+            Subsystem->AcquireActor<AGamePoolableTestActor>(AGamePoolableTestActor::StaticClass());
         TestTrue(TEXT("批次A借出成功"), Res.IsSuccess());
         if (Res.IsSuccess()) {
             ActiveActors.Add(Res.GetValue());
@@ -340,7 +347,7 @@ bool FGamePoolTelemetryHighThroughputBatchMathTest::RunTest([[maybe_unused]] con
     TestEqual(TEXT("批次A空闲实例为0"), SnapA.TotalIdleCount, 0);
 
     for (int32 Index = 0; Index < ReleaseA; ++Index) {
-        Subsystem->ReleaseActor(ActiveActors[Index]);
+        (void)Subsystem->ReleaseActor(ActiveActors[Index]);
     }
     ActiveActors.RemoveAt(0, ReleaseA);
 
@@ -349,7 +356,8 @@ bool FGamePoolTelemetryHighThroughputBatchMathTest::RunTest([[maybe_unused]] con
     TestEqual(TEXT("部分归还后空闲实例为12"), SnapRel.TotalIdleCount, ReleaseA);
 
     for (int32 Index = 0; Index < BatchB; ++Index) {
-        TGameStatusResult<AGamePoolableTestActor*> Res = Subsystem->AcquireActor<AGamePoolableTestActor>(AGamePoolableTestActor::StaticClass());
+        TGameStatusResult<AGamePoolableTestActor*> Res =
+            Subsystem->AcquireActor<AGamePoolableTestActor>(AGamePoolableTestActor::StaticClass());
         TestTrue(TEXT("批次B借出成功"), Res.IsSuccess());
         if (Res.IsSuccess()) {
             ActiveActors.Add(Res.GetValue());
@@ -362,11 +370,10 @@ bool FGamePoolTelemetryHighThroughputBatchMathTest::RunTest([[maybe_unused]] con
     TestEqual(TEXT("新生成穿透为23"), SnapB.CacheMisses, int64(BatchA + (BatchB - ReleaseA)));
     TestEqual(TEXT("当前活跃为23"), SnapB.TotalActiveCount, (BatchA - ReleaseA) + BatchB);
     TestEqual(TEXT("当前空闲为0"), SnapB.TotalIdleCount, 0);
-
     TestEqual(TEXT("代数守恒：命中加穿透等于总借出"), SnapB.CacheHits + SnapB.CacheMisses, SnapB.TotalAcquires);
 
     for (AGamePoolableTestActor* Actor : ActiveActors) {
-        Subsystem->ReleaseActor(Actor);
+        (void)Subsystem->ReleaseActor(Actor);
     }
     ActiveActors.Empty();
 
@@ -403,7 +410,6 @@ bool FGamePoolTelemetryScopedAndDeferredTest::RunTest([[maybe_unused]] const FSt
     }
 
     Subsystem->ClearAllPools();
-    Subsystem->ClearAllObjectPools();
     Subsystem->ResetTelemetry();
 
     {
@@ -425,7 +431,8 @@ bool FGamePoolTelemetryScopedAndDeferredTest::RunTest([[maybe_unused]] const FSt
     TestEqual(TEXT("跳出作用域后活跃实例自动降为0"), OutScope.TotalActiveCount, 0);
     TestEqual(TEXT("跳出作用域后空闲实例自动升为2"), OutScope.TotalIdleCount, 2);
 
-    TGameStatusResult<AGamePoolableTestActor*> AcqDeferred = Subsystem->AcquireActor<AGamePoolableTestActor>(AGamePoolableTestActor::StaticClass());
+    TGameStatusResult<AGamePoolableTestActor*> AcqDeferred =
+        Subsystem->AcquireActor<AGamePoolableTestActor>(AGamePoolableTestActor::StaticClass());
     TestTrue(TEXT("借出用于延迟归还的Actor成功"), AcqDeferred.IsSuccess());
 
     FPoolTelemetrySnapshot BeforeDeferred = Subsystem->GetTelemetrySnapshot();
@@ -443,7 +450,6 @@ bool FGamePoolTelemetryScopedAndDeferredTest::RunTest([[maybe_unused]] const FSt
     TestEqual(TEXT("延迟收割后空闲实例恢复为2"), AfterDeferred.TotalIdleCount, 2);
 
     Subsystem->ClearAllPools();
-    Subsystem->ClearAllObjectPools();
     return true;
 }
 

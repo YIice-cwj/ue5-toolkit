@@ -1,19 +1,45 @@
 # GamePool 通用对象与内存池 API 参考
 
-`UObjectPoolSubsystem` 是一个世界子系统（`UWorldSubsystem`），负责 `AActor`、非 Actor 纯 `UObject` 的复用、休眠、唤醒、分帧预热与生命周期管理，并配合 `TStructPool<T>` 覆盖非 UObject 纯 C++ 结构体的高性能内存池化，旨在彻底消除高频生成/销毁对象导致的 GC 顿卡、堆碎片与主线程尖峰。
+`UObjectPoolSubsystem` 是一个世界子系统（`UWorldSubsystem`），经由 Pimpl（`TSharedPtr<FImpl>`）将所有底层管理器、调度器与容灾组件完整隐藏至 `Private/`，统一编排 `AActor` 池、非 Actor 纯 `UObject` 池、世代防悬空安全句柄、RAII 租约、事件驱动 C++20 协程预热、TTL 弹性冷淘汰与低内存容灾泄洪（日志统一通过 `GameLogging` 插件以 `LogGamePool` 分类分发）；并配合 `TStructPool<T, BlocksPerChunk>` 覆盖非 UObject 原生 C++ 结构体的高性能内存池化。
 
-头文件：
-- `#include "GamePool.h"`（推荐，一站式汇聚全量池化与生命周期契约接口）
-- `#include "Subsystem/ObjectPoolSubsystem.h"`（世界子系统外观门面）
-- `#include "Core/ObjectPoolTypes.h"`（配置、统计与基础存储桶类型）
-- `#include "Core/IGamePoolable.h"`（生命周期契约接口）
-- `#include "Handle/PooledObjectHandle.h"`（防悬空安全代数句柄）
-- `#include "Memory/StructPool.h"`（定长裸结构体内存池）
+公共头文件：
+- `#include "GamePool.h"`（推荐，一站式汇聚全部公共池化契约接口）
+- `#include "Subsystem/UObjectPoolSubsystem.h"`（世界级对象池外观门面子系统）
+- `#include "Core/IGamePoolable.h"`（生命周期回调与载荷安全解包接口）
+- `#include "Core/FPoolAcquirePayload.h"`（16 字节栈值类型指纹载荷视图）
+- `#include "Core/ObjectPoolTypes.h"`（`EPoolResetFlags`、`FPoolStats`、`FPoolTelemetrySnapshot`、`FPoolEvictionSettings`）
+- `#include "Core/PoolErrorCodes.h"`（`Game::PoolErrorCodes` 强类型错误码常量）
+- `#include "Handle/TPooledObjectHandle.h"`（世代防悬空安全句柄）
+- `#include "Handle/TScopedPoolRental.h"`（池化对象 RAII 作用域自动归还租约）
+- `#include "Memory/TStructPool.h"`（原生 C++ 结构体定长分块内存池）
+- `#include "Memory/TScopedStructRental.h"`（结构体池 RAII 作用域租约）
+- `#include "Telemetry/ObjectPoolStats.h"`（`STATGROUP_GamePool` 引擎统计宏）
 
 ---
 
-## 1. 契约接口 `IGamePoolable`
+## 1. 载荷视图 `FPoolAcquirePayload` 与契约接口 `IGamePoolable`
 
+### 1.1 `FPoolAcquirePayload`
+16 字节栈值非拥有只读视图，内部保存 `const void* Data` 与 `Game::Core::FGameTypeFingerprint TypeFingerprint`（基于 `GameCore` 编译期 FNV-1a 类型指纹），借出期零堆分配传递只读参数：
+
+```cpp
+struct FPoolAcquirePayload {
+    template <typename TPayload>
+    [[nodiscard]] static FPoolAcquirePayload From(const TPayload& InPayload) noexcept;
+
+    [[nodiscard]] constexpr bool IsValid() const noexcept;
+
+    template <typename TPayload>
+    [[nodiscard]] bool IsType() const noexcept;
+
+    template <typename TPayload>
+    [[nodiscard]] const TPayload* Extract() const noexcept;
+
+    [[nodiscard]] constexpr uint64 GetTypeFingerprint() const noexcept;
+};
+```
+
+### 1.2 `IGamePoolable`
 需要接入对象池生命周期回调的 `AActor` 或纯 `UObject` 派生类均可继承并实现此接口：
 
 ```cpp
@@ -26,66 +52,78 @@ class GAMEPOOL_API IGamePoolable {
     GENERATED_BODY()
 
 public:
-    /**
-     * @brief 从对象池借出并激活时的生命周期回调（重置状态、刷新生命周期）
-     */
     UFUNCTION(BlueprintNativeEvent, Category = "GamePool|ObjectPool")
     void OnAcquireFromPool();
     virtual void OnAcquireFromPool_Implementation() {}
 
-    /**
-     * @brief 从对象池借出并携带业务载荷时调用（纯 C++ 零堆分配接口，默认转发至无参虚方法）
-     * @param InPayload 业务载荷不可变指针
-     */
-    virtual void OnAcquireFromPoolWithPayload(const void* InPayload) {
+    virtual void OnAcquireFromPoolWithPayload(FPoolAcquirePayload InPayload) {
         (void)InPayload;
-        OnAcquireFromPool_Implementation();
     }
 
-    /**
-     * @brief 归还至对象池休眠时的生命周期回调（清理引用、重置特效/声音）
-     */
     UFUNCTION(BlueprintNativeEvent, Category = "GamePool|ObjectPool")
     void OnReleaseToPool();
     virtual void OnReleaseToPool_Implementation() {}
+
+    template <typename TPayload>
+    [[nodiscard]] static const TPayload* ExtractPayload(FPoolAcquirePayload InPayload) noexcept {
+        return InPayload.Extract<TPayload>();
+    }
 };
 ```
+
+> **回调顺序契约**：
+> - 无载荷借出时仅触发一次 `OnAcquireFromPool`；
+> - 携带有效载荷借出时，先触发 `OnAcquireFromPool`，确认对象仍在活跃集且有效后再触发 `OnAcquireFromPoolWithPayload(Payload)`，两次回调互不重复调用；
+> - 原生 C++ 类走零反射开销快路径（`OnAcquireFromPool_Implementation` / `OnReleaseToPool_Implementation`），蓝图派生类自动派发 `Execute_OnAcquireFromPool` / `Execute_OnReleaseToPool` 以确保蓝图事件节点生效。
 
 ---
 
 ## 2. 安全代数句柄与 RAII 作用域租约
 
-为彻底根治外部异步闭包、定时器与网络回调在归还后继续持有裸指针导致的 **Use-After-Return** 与野指针窜号覆写灾难，系统提供安全受管句柄与 RAII 租约：
+### 2.1 `TPooledObjectHandle<T>` (`Handle/TPooledObjectHandle.h`)
+直接持有 `FWeakObjectPtr`、弱子系统引用与 `uint32 Generation`（零 `GUObjectArray` 反向索引开销），彻底杜绝 **Use-After-Return** 与跨轮次复用窜号覆写：
+- `bool IsValid() const` / `explicit operator bool() const`
+- `T* Get() const` / `T* operator->() const` / `T& operator*() const`
+- `uint32 GetGeneration() const noexcept`
+- `UObjectPoolSubsystem* GetSubsystem() const`
+- `void Reset() noexcept`
+- `bool operator==(const TPooledObjectHandle& Other) const noexcept`（C++20 自动合成 `!=`）
+
+### 2.2 `TScopedPoolRental<T>` (`Handle/TScopedPoolRental.h`)
+不可拷贝、支持移动语义的 RAII 作用域租约卫士，离开作用域自动根据 `std::is_base_of_v<AActor, T>` 归还至 `ReleaseActor` 或 `ReleaseObject`：
+- `bool IsValid() const` / `explicit operator bool() const`
+- `T* Get() const` / `T* operator->() const` / `T& operator*() const`
+- `const TPooledObjectHandle<T>& GetHandle() const noexcept`
+- `[[nodiscard]] T* ReleaseAndDetach() noexcept`（放弃自动归还并返回底层对象指针，转由调用方手动归还）
+- `void EarlyRelease()`（单次校验直接归还并重置句柄，避免重复句柄查表）
 
 ```cpp
-// 1. 安全代数句柄：内部记录当前借出轮次的 Generation
+// 1. 安全代数句柄
 TGameStatusResult<TPooledObjectHandle<AMyProjectile>> HandleRes =
     Pool.AcquireActorHandle<AMyProjectile>(AMyProjectile::StaticClass(), SpawnTransform);
 if (HandleRes.IsSuccess()) {
     TPooledObjectHandle<AMyProjectile> Handle = HandleRes.GetValue();
-    // 归还前安全访问
     Handle->Fire();
-    
-    Pool.ReleaseActor(Handle);
-    // 归还后自动失效，彻底杜绝悬空覆写
+
+    (void)Pool.ReleaseActor(Handle);
     check(!Handle.IsValid());
     check(Handle.Get() == nullptr);
 }
 
-// 2. RAII 作用域租约：离开大括号作用域自动归还回池
+// 2. RAII 作用域租约
 {
     TGameStatusResult<TScopedPoolRental<AMyProjectile>> RentalRes =
         Pool.AcquireScopedActor<AMyProjectile>(AMyProjectile::StaticClass(), SpawnTransform);
     if (RentalRes.IsSuccess()) {
         TScopedPoolRental<AMyProjectile> Rental = RentalRes.ExtractValue();
         Rental->Fire();
-    } // 离开大括号，析构函数自动安全归还入池！
+    } // 离开作用域自动归还入池
 }
 ```
 
 ---
 
-## 3. `UObjectPoolSubsystem` 类方法
+## 3. `UObjectPoolSubsystem` 公共接口
 
 ```cpp
 UCLASS()
@@ -93,10 +131,12 @@ class GAMEPOOL_API UObjectPoolSubsystem : public UWorldSubsystem {
     GENERATED_BODY()
 
 public:
-    static UObjectPoolSubsystem& Get(const UObject* WorldContextObject);
-    static UObjectPoolSubsystem* GetPtr(const UObject* WorldContextObject);
+    // ==================== 单例获取与 GC 追踪 ====================
+    [[nodiscard]] static UObjectPoolSubsystem& Get(const UObject* WorldContextObject);
+    [[nodiscard]] static UObjectPoolSubsystem* GetPtr(const UObject* WorldContextObject);
+    static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
 
-    // ==================== 预热基础设施 ====================
+    // ==================== Actor 预热与策略配置 ====================
     UFUNCTION(BlueprintCallable, Category = "GamePool|ObjectPool")
     void Prewarm(TSubclassOf<AActor> ActorClass, int32 PrewarmCount);
 
@@ -112,16 +152,26 @@ public:
         int32 MaxSpawnsPerStep = 1,
         FCancellationToken CancellationToken = FCancellationToken::None());
 
-    // ==================== 容量与策略配置 ====================
+    TGameCoroTask<int32> PrewarmAsync(
+        const TSoftClassPtr<AActor>& ActorSoftClass,
+        int32 PrewarmCount,
+        int32 MaxSpawnsPerStep = 1,
+        FCancellationToken CancellationToken = FCancellationToken::None());
+
     UFUNCTION(BlueprintCallable, Category = "GamePool|ObjectPool")
     void SetMaxPoolCapacity(TSubclassOf<AActor> ActorClass, int32 InMaxIdleCount);
 
     void SetPoolResetFlags(TSubclassOf<AActor> ActorClass, EPoolResetFlags InResetFlags);
     [[nodiscard]] EPoolResetFlags GetPoolResetFlags(TSubclassOf<AActor> ActorClass) const;
 
-    // ==================== Actor 借还 ====================
+    // ==================== Actor 借出与归还 ====================
+    UFUNCTION(BlueprintCallable, Category = "GamePool|ObjectPool", meta = (DisplayName = "Acquire Actor", DeterminesOutputType = "ActorClass"))
+    AActor* K2_AcquireActor(TSubclassOf<AActor> ActorClass, const FTransform& SpawnTransform);
+
     template <typename T = AActor>
-    [[nodiscard]] TGameStatusResult<T*> AcquireActor(TSubclassOf<AActor> ActorClass, const FTransform& SpawnTransform = FTransform::Identity);
+    [[nodiscard]] TGameStatusResult<T*> AcquireActor(
+        TSubclassOf<AActor> ActorClass = T::StaticClass(),
+        const FTransform& SpawnTransform = FTransform::Identity);
 
     template <typename T = AActor, typename TPayload>
     [[nodiscard]] TGameStatusResult<T*> AcquireActorWithPayload(
@@ -131,55 +181,106 @@ public:
 
     template <typename T = AActor>
     [[nodiscard]] TGameStatusResult<TPooledObjectHandle<T>> AcquireActorHandle(
-        TSubclassOf<AActor> ActorClass,
+        TSubclassOf<AActor> ActorClass = T::StaticClass(),
         const FTransform& SpawnTransform = FTransform::Identity);
+
+    template <typename T = AActor, typename TPayload>
+    [[nodiscard]] TGameStatusResult<TPooledObjectHandle<T>> AcquireActorHandleWithPayload(
+        TSubclassOf<AActor> ActorClass,
+        const FTransform& SpawnTransform,
+        const TPayload& Payload);
 
     template <typename T = AActor>
     [[nodiscard]] TGameStatusResult<TScopedPoolRental<T>> AcquireScopedActor(
-        TSubclassOf<AActor> ActorClass,
+        TSubclassOf<AActor> ActorClass = T::StaticClass(),
         const FTransform& SpawnTransform = FTransform::Identity);
+
+    template <typename T = AActor, typename TPayload>
+    [[nodiscard]] TGameStatusResult<TScopedPoolRental<T>> AcquireScopedActorWithPayload(
+        TSubclassOf<AActor> ActorClass,
+        const FTransform& SpawnTransform,
+        const TPayload& Payload);
+
+    UFUNCTION(BlueprintCallable, Category = "GamePool|ObjectPool", meta = (DisplayName = "Release Actor"))
+    void K2_ReleaseActor(AActor* Actor);
 
     TGameStatusResult<void> ReleaseActor(AActor* Actor);
 
     template <typename T>
     TGameStatusResult<void> ReleaseActor(const TPooledObjectHandle<T>& Handle);
 
-    // ==================== 跨线程无锁延迟回收与静默预充 ====================
     TGameStatusResult<void> ReleaseActorDeferred(AActor* Actor);
-    int32 ProcessDeferredReleases(int32 MaxProcessCount = 64);
-    TGameStatusResult<void> SpawnIdleActorToPool(TSubclassOf<AActor> ActorClass, const FTransform& SpawnTransform = FTransform::Identity);
-    TGameStatusResult<void> SpawnIdleObjectToPool(TSubclassOf<UObject> ObjectClass);
 
-    // ==================== 纯 UObject 池化 ====================
+    // ==================== 纯 UObject 预热、借出与归还 ====================
+    UFUNCTION(BlueprintCallable, Category = "GamePool|ObjectPool")
     void PrewarmObjectPool(TSubclassOf<UObject> ObjectClass, int32 PrewarmCount);
-    
+
     TGameCoroTask<int32> PrewarmObjectPoolAsync(
         TSubclassOf<UObject> ObjectClass,
         int32 PrewarmCount,
         int32 MaxSpawnsPerStep = 4,
         FCancellationToken CancellationToken = FCancellationToken::None());
 
-    TGameCoroTask<int32> PrewarmObjectPoolByPathAsync(
+    TGameCoroTask<int32> PrewarmObjectPoolAsync(
         const FSoftObjectPath& ObjectClassPath,
         int32 PrewarmCount,
         int32 MaxSpawnsPerStep = 4,
         FCancellationToken CancellationToken = FCancellationToken::None());
 
+    TGameCoroTask<int32> PrewarmObjectPoolAsync(
+        const TSoftClassPtr<UObject>& ObjectSoftClass,
+        int32 PrewarmCount,
+        int32 MaxSpawnsPerStep = 4,
+        FCancellationToken CancellationToken = FCancellationToken::None());
+
+    UFUNCTION(BlueprintCallable, Category = "GamePool|ObjectPool")
     void SetMaxObjectPoolCapacity(TSubclassOf<UObject> ObjectClass, int32 InMaxIdleCount);
+
+    UFUNCTION(BlueprintCallable, Category = "GamePool|ObjectPool", meta = (DisplayName = "Acquire Object", DeterminesOutputType = "ObjectClass"))
+    UObject* K2_AcquireObject(TSubclassOf<UObject> ObjectClass);
 
     template <typename T = UObject>
     [[nodiscard]] TGameStatusResult<T*> AcquireObject(TSubclassOf<UObject> ObjectClass = T::StaticClass());
 
-    template <typename T = UObject>
-    [[nodiscard]] TGameStatusResult<TPooledObjectHandle<T>> AcquireObjectHandle(TSubclassOf<UObject> ObjectClass = T::StaticClass());
+    template <typename T = UObject, typename TPayload>
+    [[nodiscard]] TGameStatusResult<T*> AcquireObjectWithPayload(
+        TSubclassOf<UObject> ObjectClass,
+        const TPayload& Payload);
 
     template <typename T = UObject>
-    [[nodiscard]] TGameStatusResult<TScopedPoolRental<T>> AcquireScopedObject(TSubclassOf<UObject> ObjectClass = T::StaticClass());
+    [[nodiscard]] TGameStatusResult<TPooledObjectHandle<T>> AcquireObjectHandle(
+        TSubclassOf<UObject> ObjectClass = T::StaticClass());
+
+    template <typename T = UObject, typename TPayload>
+    [[nodiscard]] TGameStatusResult<TPooledObjectHandle<T>> AcquireObjectHandleWithPayload(
+        TSubclassOf<UObject> ObjectClass,
+        const TPayload& Payload);
+
+    template <typename T = UObject>
+    [[nodiscard]] TGameStatusResult<TScopedPoolRental<T>> AcquireScopedObject(
+        TSubclassOf<UObject> ObjectClass = T::StaticClass());
+
+    template <typename T = UObject, typename TPayload>
+    [[nodiscard]] TGameStatusResult<TScopedPoolRental<T>> AcquireScopedObjectWithPayload(
+        TSubclassOf<UObject> ObjectClass,
+        const TPayload& Payload);
+
+    UFUNCTION(BlueprintCallable, Category = "GamePool|ObjectPool", meta = (DisplayName = "Release Object"))
+    void K2_ReleaseObject(UObject* Object);
 
     TGameStatusResult<void> ReleaseObject(UObject* Object);
 
     template <typename T>
     TGameStatusResult<void> ReleaseObject(const TPooledObjectHandle<T>& Handle);
+
+    TGameStatusResult<void> ReleaseObjectDeferred(UObject* Object);
+
+    // ==================== 无锁延迟归还收割 ====================
+    UFUNCTION(BlueprintCallable, Category = "GamePool|Deferred")
+    int32 ProcessDeferredReleases(int32 MaxProcessCount = 64);
+
+    UFUNCTION(BlueprintPure, Category = "GamePool|Deferred")
+    [[nodiscard]] int32 GetPendingDeferredReleaseCount() const noexcept;
 
     // ==================== 弹性缩容与冷数据淘汰 (TTL) ====================
     UFUNCTION(BlueprintCallable, Category = "GamePool|Eviction")
@@ -197,7 +298,13 @@ public:
     UFUNCTION(BlueprintCallable, Category = "GamePool|Eviction")
     int32 ForceEvictExpired(int32 MaxEvictionsPerStep = 32, double CustomNowSeconds = 0.0);
 
-    // ==================== 弹性抗压与系统内存修剪响应 ====================
+    // ==================== 遥测监控与容灾泄洪 ====================
+    UFUNCTION(BlueprintPure, Category = "GamePool|Telemetry")
+    [[nodiscard]] FPoolTelemetrySnapshot GetTelemetrySnapshot() const;
+
+    UFUNCTION(BlueprintCallable, Category = "GamePool|Telemetry")
+    void ResetTelemetry();
+
     UFUNCTION(BlueprintCallable, Category = "GamePool|Resilience")
     int32 FlushAllIdleInstances(bool bPreserveMinCount = false);
 
@@ -218,7 +325,13 @@ public:
     void ClearPool(TSubclassOf<AActor> ActorClass);
 
     UFUNCTION(BlueprintCallable, Category = "GamePool|ObjectPool")
+    void ClearAllActorPools();
+
+    UFUNCTION(BlueprintCallable, Category = "GamePool|ObjectPool")
     void ClearObjectPool(TSubclassOf<UObject> ObjectClass);
+
+    UFUNCTION(BlueprintCallable, Category = "GamePool|ObjectPool")
+    void ClearAllObjectPools();
 
     UFUNCTION(BlueprintCallable, Category = "GamePool|ObjectPool")
     void ClearAllPools();
@@ -227,146 +340,100 @@ public:
 
 ---
 
-## 4. 弹性缩容与冷数据淘汰数据结构 (`FPoolEvictionSettings`)
+## 4. 错误码契约 (`Game::PoolErrorCodes`)
+
+全部错误均绑定 `Game::ModuleId::Pool`（定义于 `Public/Core/PoolErrorCodes.h`）：
+
+| 错误码 | 名称 | 说明 |
+|:---:|---|---|
+| `5001` | `InvalidClass` | 类型为空、抽象类，或向纯 UObject 池传入 `AActor` 派生类 |
+| `5002` | `TypeMismatch` | 传入类与强类型模板参数 `T` 不兼容 |
+| `5003` | `InvalidContext` | `World` / `Outer` / `UObjectPoolSubsystem` 未初始化或已销毁 |
+| `5004` | `SpawnFailed` | `SpawnActor` 或 `NewObject` 返回空指针 |
+| `5005` | `InvalidatedDuringAcquire` | 实例在借出回调（`OnAcquireFromPool` / `OnAcquireFromPoolWithPayload`）中自归还或自销毁 |
+| `5006` | `InvalidInstance` | 待归还实例为空或已标记垃圾回收 |
+| `5007` | `NotOwnedActiveInstance` | 实例不属于当前对象池的活跃借出成员 |
+| `5008` | `InvalidHandle` | 安全句柄无效、世代过期或归属其他子系统实例 |
+| `5009` | `CapacityLimitReached` | 空闲池已达 `MaxIdleCount` 上限 |
+| `5010` | `DeferredQueueFull` | 跨线程无锁延迟归还环形缓冲（1024 槽位）已满或未初始化 |
+
+---
+
+## 5. 弹性淘汰配置 (`FPoolEvictionSettings`) 与重置掩码 (`EPoolResetFlags`)
 
 ```cpp
 USTRUCT(BlueprintType)
 struct GAMEPOOL_API FPoolEvictionSettings {
     GENERATED_BODY()
 
-    /** 是否启用闲置超时自动淘汰（默认关闭） */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GamePool|Eviction")
     bool bEnableEviction = false;
 
-    /** 实例闲置生存期（秒）。超过此时间未被借出的实例将被平滑淘汰（默认 60.0s） */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GamePool|Eviction", meta = (ClampMin = "0.1"))
     float IdleTimeToLiveSeconds = 60.0f;
 
-    /** 保底保留的最小空闲实例数（防止全部淘汰导致下次借出时冷启动，默认 0） */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GamePool|Eviction", meta = (ClampMin = "0"))
     int32 MinPreservedCount = 0;
 
-    /** 自动检测与平滑淘汰心跳周期（秒，默认 5.0s） */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GamePool|Eviction", meta = (ClampMin = "0.1"))
     float CheckIntervalSeconds = 5.0f;
 
-    /** 单步平滑销毁最大实例配额（默认每步销毁 2 个，防止单步 GC 尖刺） */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GamePool|Eviction", meta = (ClampMin = "1"))
     int32 MaxEvictionsPerStep = 2;
 };
 ```
 
+`EPoolResetFlags`（`uint16` 位掩码，默认 `EPoolResetFlags::All`）：
+- `None`：跳过全部组件自动重置
+- `Timers`：清理挂接在 Actor 上的全部 World 定时器（`ClearAllTimersForObject`）
+- `Physics`：仅对 `IsSimulatingPhysics()` 的 `UPrimitiveComponent` 清零线/角速度
+- `Movement`：停止 `UMovementComponent` 惯性速度（`StopMovementImmediately()`）
+- `Audio`：单次遍历直接停止活跃 `UAudioComponent`（零中间数组堆分配）
+- `FXSystem`：单次遍历直接对 `UFXSystemComponent` 调用 `DeactivateImmediate()`（覆盖 Niagara 与 Cascade）
+- `Animation`：仅在存在有效 `SkeletalMesh` 或 `AnimInstance` 时重置 `USkeletalMeshComponent`（`Stop()` + `ClearAnimScriptInstance()` + `InitAnim(true)`）
+- `PawnAndAI`：若为 `APawn` 且绑定 `Controller`，执行 `Controller->UnPossess()`
+
 ---
 
-## 5. 运行期可观测性与遥测监控 (`FPoolTelemetrySnapshot` & `stat GamePool`)
+## 6. 运行期可观测性 (`stat GamePool`、Unreal Insights 与 `FPoolTelemetrySnapshot`)
 
-### 5.1 控制台命令与 UE Stats 监控组
-在编辑器或非 Shipping 构建控制台中输入：
-```bash
-stat GamePool
-```
-可在屏幕上实时显示 GamePool 的运行期耗时（Cycle Stats）与实例数量/命中统计（Counter Stats）：
-
+### 6.1 引擎 Stats 组 (`stat GamePool`)
 | 统计指标 | 类型 | 含义说明 |
 |---|---|---|
-| `Acquire Actor Total` | Cycle Stat | 借出 Actor 实例耗时（含复用唤醒与新生成） |
-| `Release Actor Total` | Cycle Stat | 归还 Actor 实例耗时 |
-| `Acquire UObject Total` | Cycle Stat | 借出纯 UObject 实例耗时 |
-| `Release UObject Total` | Cycle Stat | 归还纯 UObject 实例耗时 |
-| `Component Deep Reset` | Cycle Stat | 归还时执行的组件自动深层重置耗时 |
-| `Prewarm Step Time` | Cycle Stat | 协程流式分帧预热单步耗时 |
+| `Acquire Actor Total` | Cycle Stat | 借出 Actor 总耗时 |
+| `Release Actor Total` | Cycle Stat | 归还 Actor 总耗时 |
+| `Acquire UObject Total` | Cycle Stat | 借出纯 UObject 总耗时 |
+| `Release UObject Total` | Cycle Stat | 归还纯 UObject 总耗时 |
+| `Component Deep Reset` | Cycle Stat | 1-Pass 组件深层重置耗时 |
+| `Prewarm Step Time` | Cycle Stat | 协程分帧预热单步耗时 |
 | `Eviction Step Time` | Cycle Stat | TTL 冷实例平滑淘汰单步耗时 |
-| `Active Actors` | Counter | 当前处于借出激活态的 Actor 实例总数 |
-| `Idle Actors` | Counter | 当前处于池内休眠待复用的 Actor 实例总数 |
-| `Active UObjects` | Counter | 当前处于借出激活态的 UObject 实例总数 |
-| `Idle UObjects` | Counter | 当前处于池内休眠待复用的 UObject 实例总数 |
-| `Pool Cache Hits` | Counter | 借出复用命中次数（直接复用池中闲置对象） |
-| `Pool Cache Misses` | Counter | 借出穿透新生成次数（池空触发动态实例化） |
+| `Active Actors` / `Idle Actors` | Counter | 当前活跃与空闲 Actor 总数（`Deinitialize` 自动清零平衡） |
+| `Active UObjects` / `Idle UObjects` | Counter | 当前活跃与空闲 UObject 总数（`Deinitialize` 自动清零平衡） |
+| `Pool Cache Hits` / `Pool Cache Misses` | Counter | 借出复用命中与穿透新生成计数 |
 
-> **零开销设计**：所有 `STATGROUP_GamePool` 与 `TRACE_CPUPROFILER_EVENT_SCOPE` 宏在 Shipping 构建下均被引擎自动编译剔除，达成 0 额外 CPU/内存开销。
+### 6.2 Unreal Insights CPU Trace 作用域与统一日志
+- `GamePool_AcquireActor` / `GamePool_ReleaseActor`
+- `GamePool_AcquireObject` / `GamePool_ReleaseObject`
+- `GamePool_ResetActorComponents`
+- `GamePool_PrewarmStep` / `GamePool_PrewarmObjectStep`
+- `GamePool_EvictActors` / `GamePool_EvictObjects`
+- `GamePool_ProcessDeferredReleases`
+- 模块日志统一通过 `GameLogging` 插件注册分类 `LogGamePool` 并经 `GAME_LOG` 输出（Shipping 下编译期自动零开销剥离）。
 
-### 5.2 运行时遥测数据结构 (`FPoolTelemetrySnapshot`)
-```cpp
-USTRUCT(BlueprintType)
-struct GAMEPOOL_API FPoolTelemetrySnapshot {
-    GENERATED_BODY()
-
-    UPROPERTY(BlueprintReadOnly, Category = "GamePool|Telemetry")
-    int64 TotalAcquires = 0;      // 累计借出请求总次数
-
-    UPROPERTY(BlueprintReadOnly, Category = "GamePool|Telemetry")
-    int64 CacheHits = 0;          // 累计命中复用次数
-
-    UPROPERTY(BlueprintReadOnly, Category = "GamePool|Telemetry")
-    int64 CacheMisses = 0;        // 累计穿透新生成次数
-
-    UPROPERTY(BlueprintReadOnly, Category = "GamePool|Telemetry")
-    int32 TotalActiveCount = 0;   // 当前全池活跃实例总数
-
-    UPROPERTY(BlueprintReadOnly, Category = "GamePool|Telemetry")
-    int32 TotalIdleCount = 0;     // 当前全池空闲实例总数
-
-    /** 计算缓存命中率（百分比 0.0 ~ 100.0%） */
-    [[nodiscard]] float GetHitRatePercentage() const noexcept;
-};
-```
-
-### 5.3 获取与重置遥测快照接口
-```cpp
-// C++ 获取遥测快照
-FPoolTelemetrySnapshot Snapshot = PoolSubsystem->GetTelemetrySnapshot();
-float HitRate = Snapshot.GetHitRatePercentage();
-UE_LOG(LogTemp, Log, TEXT("Pool Hit Rate: %.2f%%, Active: %d, Idle: %d"),
-    HitRate, Snapshot.TotalActiveCount, Snapshot.TotalIdleCount);
-
-// 重置计数器（测试基准或关卡切换时）
-PoolSubsystem->ResetTelemetry();
-```
+### 6.3 遥测快照 (`FPoolTelemetrySnapshot`)
+包含 `TotalAcquires`、`CacheHits`、`CacheMisses`、`TotalActiveCount`、`TotalIdleCount` 与 `GetHitRatePercentage()`。仅在成功实例化后递增统计（`SpawnActor` / `NewObject` 失败不污染命中率）。
 
 ---
 
-## 6. 原生 C++ 结构体与高频数据内存池 `TStructPool<T>`
+## 7. 原生 C++ 结构体内存池 (`TStructPool<T, BlocksPerChunk>` & `TScopedStructRental<T, BlocksPerChunk>`)
 
-针对非 UObject 的高频事件、网络解包结构、几何射线查询结果等，采用基于 GameCore `TFixedBlockAllocator` 构建的泛型结构体池：
+基于 `GameCore::TFixedSizePool<T, BlocksPerChunk>` 实现（头文件 `Memory/TStructPool.h` 与 `Memory/TScopedStructRental.h`）：
+- `Acquire(TArgs&&... Args)`：分配定长内存块并原地构造 `T`
+- `AcquireScoped(TArgs&&... Args)`：返回移动语义 RAII 租约 `TScopedStructRental<T, BlocksPerChunk>`
+- `Release(T* Instance)`：原地析构并归还至自由链表（允许安全传入 `nullptr`）
+- `ReserveChunks(size_t TargetChunkCount)`：预分配整块连续内存
+- `Clear()` / `IsEmpty()`：清空底层 Chunk 与判空检查
+- `GetAllocatedCount()` / `GetFreeCount()` / `GetChunkCount()` / `GetTotalCapacity()`：实时活跃、空闲、Chunk 数与总槽位统计
+- `TScopedStructRental<T, BlocksPerChunk>`：支持 `IsValid()`、`operator bool()`、`Get()`、`operator->()`、`operator*()`、`EarlyRelease()` 与 `[[nodiscard]] T* ReleaseAndDetach()`
 
-```cpp
-struct FCombatEvent {
-    int32 SourceId = 0;
-    int32 TargetId = 0;
-    float Damage = 0.0f;
-};
-
-// 构造单块 64 实例的大块内存池
-TStructPool<FCombatEvent, 64> EventPool;
-
-// 1. 原地构造借出
-FCombatEvent* Evt = EventPool.Acquire();
-Evt->Damage = 99.0f;
-EventPool.Release(Evt); // 析构并纳秒级回收至空闲链表
-
-// 2. RAII 作用域租约
-{
-    TScopedStructRental<FCombatEvent, 64> ScopedEvt = EventPool.AcquireScoped();
-    ScopedEvt->Damage = 50.0f;
-} // 自动析构并归还回池
-```
-
----
-
-## 7. 核心行为细节与安全保障
-
-1. **按位可裁剪深层状态重置 (`EPoolResetFlags`)**：
-   - `ReleaseActor` 时支持以下掩码位：
-     - `Timers`：清理挂接在 Actor 上的全部定时器（`ClearAllTimersForObject`）；
-     - `Physics`：清零根组件物理线速度与角速度；
-     - `Movement`：停止移动组件惯性速度（`UMovementComponent::StopMovementImmediately`）；
-     - `Audio`：经栈内联数组零堆分配停止播放中的音效；
-     - `FXSystem`：统一调用 `DeactivateImmediate()`（覆盖 `UNiagaraComponent` 与 `UParticleSystemComponent`）；
-     - `Animation`：重置所有骨骼网格组件，调用 `Stop()`、`ClearAnimScriptInstance()` 与 `InitAnim(true)`，杜绝借出首帧 T-Pose 闪烁；
-     - `PawnAndAI`：对 APawn 实例自动执行 `Controller->UnPossess()`，解除控制附身。
-2. **软引用流式分级预热 (`PrewarmAsync`)**：
-   - 支持传入 `FSoftObjectPath`，通过 C++20 协程在后台发起异步流式加载，结合时间分片平滑分批实例化，并接入 `FCancellationToken`，在大世界跨区域或玩家撤离时安全提前熔断停机。
-3. **多线程并发延迟回收 (`ReleaseActorDeferred`)**：
-   - 工作线程（物理模拟、TaskGraph、网络解包）可无锁压入待归还 Actor 至 `TLockFreeRingBuffer`，主线程在帧首统一调用 `ProcessDeferredReleases()` 批量收割并安全完成组件重置。
-4. **世代版本代数校验（Generational Handle Protection）**：
-   - 每次借出生成唯一 Generation。当对象归还或池销毁时 Generation 递增。历史句柄若尝试访问已复用给其他逻辑的实例，自动判定为失效并返回 `nullptr`，彻底免疫野指针覆写。
+> **生命周期契约**：在所有借出的指针及 `TScopedStructRental` 归还或析构前，`TStructPool` 宿主不得移动或销毁；`TStructPool` 自身支持移动构造与移动赋值，但移动时要求 `IsEmpty() == true`（`GetAllocatedCount() == 0`）。

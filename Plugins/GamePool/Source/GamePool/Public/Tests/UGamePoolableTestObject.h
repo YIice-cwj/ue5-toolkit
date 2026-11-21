@@ -1,6 +1,6 @@
 /**
  * @file UGamePoolableTestObject.h
- * @brief 非 Actor UObject 对象池单元测试专用受管对象
+ * @brief 非 Actor UObject 对象池单元测试专用受管对象载体（单文件单类）
  */
 
 #pragma once
@@ -12,7 +12,7 @@
 #include "UGamePoolableTestObject.generated.h"
 
 /**
- * @brief 对象池单元测试专用纯 UObject（实现 IGamePoolable 生命周期回调）
+ * @brief 对象池单元测试专用纯 UObject（实现 IGamePoolable 生命周期回调与载荷验证）
  */
 UCLASS()
 class GAMEPOOL_API UGamePoolableTestObject : public UObject, public IGamePoolable {
@@ -22,7 +22,7 @@ public:
     /**
      * @brief 从对象池借出激活回调
      */
-    void OnAcquireFromPool_Implementation() override {
+    virtual void OnAcquireFromPool_Implementation() override {
         ++AcquireCount;
         if (AcquireCallback) {
             AcquireCallback(this);
@@ -32,7 +32,7 @@ public:
     /**
      * @brief 归还回对象池休眠回调
      */
-    void OnReleaseToPool_Implementation() override {
+    virtual void OnReleaseToPool_Implementation() override {
         ++ReleaseCount;
         if (ReleaseCallback) {
             ReleaseCallback(this);
@@ -41,17 +41,23 @@ public:
 
     /**
      * @brief 借出携带业务载荷回调
-     * @param InPayload 业务载荷指针
+     * @param InPayload 带类型指纹的业务载荷视图
      */
-    void OnAcquireFromPoolWithPayload(const void* InPayload) override {
+    virtual void OnAcquireFromPoolWithPayload(FPoolAcquirePayload InPayload) override {
+        ++PayloadAcquireCount;
         if (const int32* ValuePtr = IGamePoolable::ExtractPayload<int32>(InPayload)) {
             PayloadValue = *ValuePtr;
+        }
+        if (PayloadAcquireCallback) {
+            PayloadAcquireCallback(this);
         }
     }
 
     int32 AcquireCount = 0;
     int32 ReleaseCount = 0;
+    int32 PayloadAcquireCount = 0;
     int32 PayloadValue = 0;
     TFunction<void(UGamePoolableTestObject*)> AcquireCallback;
+    TFunction<void(UGamePoolableTestObject*)> PayloadAcquireCallback;
     TFunction<void(UGamePoolableTestObject*)> ReleaseCallback;
 };

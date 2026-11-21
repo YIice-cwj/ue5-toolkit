@@ -1,9 +1,11 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
+/**
+ * @file ObjectPoolTypes.h
+ * @brief GamePool 对外公共配置、策略位掩码与统计遥测快照数据结构定义
+ */
 
 #pragma once
 
 #include "CoreMinimal.h"
-#include "GameFramework/Actor.h"
 #include "Misc/EnumClassFlags.h"
 
 #include "ObjectPoolTypes.generated.h"
@@ -25,41 +27,65 @@ enum class EPoolResetFlags : uint16 {
 ENUM_CLASS_FLAGS(EPoolResetFlags)
 
 /**
- * @brief 对象池容量与活跃实例统计快照
+ * @brief 单个对象池的容量与活跃实例统计快照
  */
 USTRUCT(BlueprintType)
 struct GAMEPOOL_API FPoolStats {
     GENERATED_BODY()
 
+    /**
+     * @brief 池管理的实例总数（活跃数 + 空闲数）
+     */
     UPROPERTY(BlueprintReadOnly, Category = "GamePool|ObjectPool")
     int32 TotalCount = 0;
 
+    /**
+     * @brief 当前已借出处于活跃态的实例数
+     */
     UPROPERTY(BlueprintReadOnly, Category = "GamePool|ObjectPool")
     int32 ActiveCount = 0;
 
+    /**
+     * @brief 当前在池中休眠待复用的空闲实例数
+     */
     UPROPERTY(BlueprintReadOnly, Category = "GamePool|ObjectPool")
     int32 IdleCount = 0;
 };
 
 /**
- * @brief 对象池运行时高层遥测与命中率统计快照
+ * @brief 对象池运行时全局遥测与命中率统计快照
  */
 USTRUCT(BlueprintType)
 struct GAMEPOOL_API FPoolTelemetrySnapshot {
     GENERATED_BODY()
 
+    /**
+     * @brief 累计成功借出总次数（CacheHits + CacheMisses）
+     */
     UPROPERTY(BlueprintReadOnly, Category = "GamePool|Telemetry")
     int64 TotalAcquires = 0;
 
+    /**
+     * @brief 累计复用池内闲置实例的命中次数
+     */
     UPROPERTY(BlueprintReadOnly, Category = "GamePool|Telemetry")
     int64 CacheHits = 0;
 
+    /**
+     * @brief 累计池空触发新生成的穿透次数
+     */
     UPROPERTY(BlueprintReadOnly, Category = "GamePool|Telemetry")
     int64 CacheMisses = 0;
 
+    /**
+     * @brief 当前全部对象池活跃实例总数
+     */
     UPROPERTY(BlueprintReadOnly, Category = "GamePool|Telemetry")
     int32 TotalActiveCount = 0;
 
+    /**
+     * @brief 当前全部对象池空闲实例总数
+     */
     UPROPERTY(BlueprintReadOnly, Category = "GamePool|Telemetry")
     int32 TotalIdleCount = 0;
 
@@ -76,7 +102,7 @@ struct GAMEPOOL_API FPoolTelemetrySnapshot {
 };
 
 /**
- * @brief 对象池闲置弹性缩容与冷数据淘汰配置
+ * @brief 对象池闲置弹性缩容与冷数据淘汰策略配置
  */
 USTRUCT(BlueprintType)
 struct GAMEPOOL_API FPoolEvictionSettings {
@@ -89,101 +115,26 @@ struct GAMEPOOL_API FPoolEvictionSettings {
     bool bEnableEviction = false;
 
     /**
-     * @brief 实例闲置生存期（秒）。超过此时间未被借出的实例将被平滑淘汰（默认 60.0s）
+     * @brief 实例闲置生存期（秒）。超过此时间未被借出的冷实例将被平滑淘汰（默认 60.0s）
      */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GamePool|Eviction", meta = (ClampMin = "0.1"))
     float IdleTimeToLiveSeconds = 60.0f;
 
     /**
-     * @brief 保底保留的最小空闲实例数（防止全部淘汰导致下次借出时冷启动，默认 0）
+     * @brief 保底保留的最小空闲实例数（在 TTL 淘汰与保底泄洪时优先保留，防冷启动抖动，默认 0）
      */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GamePool|Eviction", meta = (ClampMin = "0"))
     int32 MinPreservedCount = 0;
 
     /**
-     * @brief 自动检测与平滑淘汰心跳周期（秒，默认 5.0s）
+     * @brief 自动检测与平滑淘汰心跳周期（秒，多池并存时调度器取活跃池中的最小周期，默认 5.0s）
      */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GamePool|Eviction", meta = (ClampMin = "0.1"))
     float CheckIntervalSeconds = 5.0f;
 
     /**
-     * @brief 单步平滑销毁最大实例配额（默认每步销毁 2 个，防止单步 GC 尖刺）
+     * @brief 本池单步平滑销毁最大实例配额（防止单帧 GC 尖刺，默认每步最多销毁 2 个）
      */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GamePool|Eviction", meta = (ClampMin = "1"))
     int32 MaxEvictionsPerStep = 2;
-};
-
-/**
- * @brief 单个 Actor 类别的对象池空闲与活跃实例存储桶
- */
-USTRUCT()
-struct GAMEPOOL_API FPoolBucket {
-    GENERATED_BODY()
-
-    UPROPERTY()
-    TArray<TObjectPtr<AActor>> IdleActors;
-
-    TArray<double> IdleReturnTimestamps;
-
-    UPROPERTY()
-    TSet<TObjectPtr<AActor>> ActiveActorSet;
-
-    /**
-     * @brief 获取当前存储桶的活跃实例总数
-     * @return 活跃实例数
-     */
-    [[nodiscard]] int32 GetActiveCount() const noexcept {
-        return ActiveActorSet.Num();
-    }
-
-    /**
-     * @brief 单类对象池最大空闲缓存数（<=0 表示不限制容量，默认 100）
-     */
-    int32 MaxIdleCount = 100;
-
-    /**
-     * @brief 归还入池时执行的组件重置策略掩码（默认全量重置）
-     */
-    EPoolResetFlags ResetFlags = EPoolResetFlags::All;
-
-    /**
-     * @brief 闲置弹性缩容与冷数据淘汰策略配置
-     */
-    UPROPERTY(EditAnywhere, Category = "GamePool|Eviction")
-    FPoolEvictionSettings EvictionSettings;
-};
-
-/**
- * @brief 单个非 Actor UObject 类别的对象池空闲与活跃实例存储桶
- */
-USTRUCT()
-struct GAMEPOOL_API FObjectPoolBucket {
-    GENERATED_BODY()
-
-    UPROPERTY()
-    TArray<TObjectPtr<UObject>> IdleObjects;
-
-    TArray<double> IdleReturnTimestamps;
-
-    UPROPERTY()
-    TSet<TObjectPtr<UObject>> ActiveObjectSet;
-
-    /**
-     * @brief 获取当前存储桶的活跃实例总数
-     * @return 活跃实例数
-     */
-    [[nodiscard]] int32 GetActiveCount() const noexcept {
-        return ActiveObjectSet.Num();
-    }
-
-    /**
-     * @brief 单类对象池最大空闲缓存数（<=0 表示不限制容量，默认 100）
-     */
-    int32 MaxIdleCount = 100;
-
-    /**
-     * @brief 闲置弹性缩容与冷数据淘汰策略配置
-     */
-    UPROPERTY(EditAnywhere, Category = "GamePool|Eviction")
-    FPoolEvictionSettings EvictionSettings;
 };

@@ -1,15 +1,20 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
+/**
+ * @file UObjectPoolTest.cpp
+ * @brief 非 Actor 纯 UObject 对象池生命周期、容量约束、载荷指纹、回调重入与 GC 保护自动化测试
+ */
 
-#include "Subsystem/ObjectPoolSubsystem.h"
+#include "Subsystem/UObjectPoolSubsystem.h"
 
-#include "Tests/GamePoolableTestActor.h"
+#include "Tests/AGamePoolableTestActor.h"
 #include "Tests/UGamePoolableTestObject.h"
 
 #if WITH_AUTOMATION_TESTS
 
+#include "Components/SceneComponent.h"
 #include "Engine/Engine.h"
 #include "Misc/AutomationTest.h"
 #include "Tests/GamePoolTestUtils.h"
+#include "UObject/UObjectGlobals.h"
 
 using Game::Pool::TestUtils::GetTestWorld;
 
@@ -20,7 +25,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证非 Actor 纯 UObject 对象池预热、借出、复用、容量上限裁剪、回调重入防护及 AActor 类型隔离
+ * @brief 验证非 Actor 纯 UObject 对象池预热、借出、复用、容量上限裁剪、回调重入防护、载荷与 GC 强引用保护
  * @param Parameters 自动化框架参数（未使用）
  * @return 全部断言通过返回 true
  */
@@ -41,10 +46,11 @@ bool FGameNonActorUObjectPoolTest::RunTest([[maybe_unused]] const FString& Param
     Pool->ClearObjectPool(ObjClass);
     Pool->SetMaxObjectPoolCapacity(ObjClass, 100);
 
-    TestTrue(
-        TEXT("拒绝使用 AcquireObject 借出 AActor 派生类"),
-        Pool->AcquireObject(AGamePoolableTestActor::StaticClass()).IsFailure()
-    );
+    const TGameStatusResult<UObject*> RejectActorRes = Pool->AcquireObject(AGamePoolableTestActor::StaticClass());
+    TestTrue(TEXT("拒绝使用 AcquireObject 借出 AActor 派生类"), RejectActorRes.IsFailure());
+    TestEqual(TEXT("错误归属 ModuleId::Pool"), RejectActorRes.GetError().ModuleId, Game::ModuleId::Pool);
+    TestEqual(TEXT("错误码为 InvalidClass"), RejectActorRes.GetError().ErrorCode, Game::PoolErrorCodes::InvalidClass);
+
     TestTrue(TEXT("空类型借出返回失败"), Pool->AcquireObject(nullptr).IsFailure());
 
     Pool->PrewarmObjectPool(ObjClass, 3);
@@ -83,11 +89,18 @@ bool FGameNonActorUObjectPoolTest::RunTest([[maybe_unused]] const FString& Param
     TestEqual(TEXT("受容量上限 1 约束仅保留 1 个空闲实例"), Stats.IdleCount, 1);
     TestEqual(TEXT("全部归还后活跃数为 0"), Stats.ActiveCount, 0);
 
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    TestTrue(TEXT("触发全量 GC 后池内空闲 UObject 仍受 AddReferencedObjects 保护存活且不被常规 GC Trim 误清"), IsValid(ObjA));
+    TestEqual(TEXT("常规全量 GC 后池内空闲数维持 1"), Pool->GetObjectPoolStats(ObjClass).IdleCount, 1);
+
     const TGameStatusResult<UGamePoolableTestObject*> ReusedObjRes = Pool->AcquireObject<UGamePoolableTestObject>();
     TestTrue(TEXT("复用借出成功"), ReusedObjRes.IsSuccess());
     UGamePoolableTestObject* ReusedObj = ReusedObjRes.GetValue();
     TestEqual(TEXT("再次借出精确复用池内缓存的同一 UObject 指针"), ReusedObj, ObjA);
     TestEqual(TEXT("复用实例累计借出计数为 2"), ReusedObj->AcquireCount, 2);
+
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    TestTrue(TEXT("触发全量 GC 后活跃借出态 UObject 同样受 AddReferencedObjects 保护存活"), IsValid(ReusedObj));
     TestTrue(TEXT("归还复用对象成功"), Pool->ReleaseObject(ReusedObj).IsSuccess());
 
     UGamePoolableTestObject* ExternalObj = NewObject<UGamePoolableTestObject>(World);
@@ -96,7 +109,7 @@ bool FGameNonActorUObjectPoolTest::RunTest([[maybe_unused]] const FString& Param
 
     Pool->SetMaxObjectPoolCapacity(ObjClass, 10);
     ReusedObj->AcquireCallback = [Pool](UGamePoolableTestObject* Self) {
-        Pool->ReleaseObject(Self);
+        (void)Pool->ReleaseObject(Self);
     };
     const TGameStatusResult<UGamePoolableTestObject*> SelfReleasedRes = Pool->AcquireObject<UGamePoolableTestObject>();
     TestTrue(TEXT("OnAcquire 内自归还的 UObject 返回失败"), SelfReleasedRes.IsFailure());
@@ -104,6 +117,16 @@ bool FGameNonActorUObjectPoolTest::RunTest([[maybe_unused]] const FString& Param
     TestEqual(TEXT("自归还后活跃数为 0"), Stats.ActiveCount, 0);
     TestEqual(TEXT("自归还后空闲数为 1"), Stats.IdleCount, 1);
 
+    ReusedObj->AcquireCallback = nullptr;
+    ReusedObj->PayloadAcquireCallback = [Pool](UGamePoolableTestObject* Self) {
+        (void)Pool->ReleaseObject(Self);
+    };
+    const TGameStatusResult<UGamePoolableTestObject*> PayloadSelfReleaseRes =
+        Pool->AcquireObjectWithPayload<UGamePoolableTestObject>(ObjClass, 555);
+    TestTrue(TEXT("OnAcquireFromPoolWithPayload 内自归还被拦截为失败"), PayloadSelfReleaseRes.IsFailure());
+    TestEqual(TEXT("载荷回调自归还后活跃数为 0"), Pool->GetObjectPoolStats(ObjClass).ActiveCount, 0);
+
+    ReusedObj->PayloadAcquireCallback = nullptr;
     ReusedObj->AcquireCallback = [](UGamePoolableTestObject* Self) {
         Self->MarkAsGarbage();
     };
@@ -133,10 +156,53 @@ bool FGameNonActorUObjectPoolTest::RunTest([[maybe_unused]] const FString& Param
     TestTrue(TEXT("安全句柄有效"), PayloadHandle.IsValid());
     TestEqual(TEXT("句柄对象载荷分发正确"), PayloadHandle.Get()->PayloadValue, 888);
 
+    {
+        TGameStatusResult<TScopedPoolRental<UGamePoolableTestObject>> ScopedPayloadRes =
+            Pool->AcquireScopedObjectWithPayload<UGamePoolableTestObject>(ObjClass, 999);
+        TestTrue(TEXT("带载荷借出 RAII UObject 租约成功"), ScopedPayloadRes.IsSuccess());
+        TScopedPoolRental<UGamePoolableTestObject> ScopedPayload = ScopedPayloadRes.ExtractValue();
+        TestEqual(TEXT("RAII 租约载荷分发正确"), (*ScopedPayload).PayloadValue, 999);
+    }
+
     TestTrue(TEXT("延迟归还句柄对象成功"), Pool->ReleaseObjectDeferred(PayloadHandle.Get()).IsSuccess());
     TestTrue(TEXT("延迟归还普通对象成功"), Pool->ReleaseObjectDeferred(PayloadObj).IsSuccess());
     const int32 HarvestedCount = Pool->ProcessDeferredReleases(64);
     TestEqual(TEXT("批量处理延迟归还收割2个UObject实例"), HarvestedCount, 2);
+
+    UGamePoolableTestObject* ReenterObj = Pool->AcquireObject<UGamePoolableTestObject>(ObjClass).GetValue();
+    TestNotNull(TEXT("UObject 跨类重入测试对象有效"), ReenterObj);
+    if (ReenterObj != nullptr) {
+        UObject* NestedAcquiredDuringRelease = nullptr;
+        UObject* NestedAcquiredDuringAcquire = nullptr;
+        ReenterObj->ReleaseCallback = [Pool, &NestedAcquiredDuringRelease](UGamePoolableTestObject*) {
+            TGameStatusResult<USceneComponent*> Nested = Pool->AcquireObject<USceneComponent>(USceneComponent::StaticClass());
+            if (Nested.IsSuccess()) {
+                NestedAcquiredDuringRelease = Nested.GetValue();
+            }
+        };
+        ReenterObj->AcquireCallback = [Pool, &NestedAcquiredDuringAcquire](UGamePoolableTestObject*) {
+            TGameStatusResult<USceneComponent*> Nested = Pool->AcquireObject<USceneComponent>(USceneComponent::StaticClass());
+            if (Nested.IsSuccess()) {
+                NestedAcquiredDuringAcquire = Nested.GetValue();
+            }
+        };
+        TestTrue(TEXT("UObject 归还回调内重入新类别成功且不悬空"), Pool->ReleaseObject(ReenterObj).IsSuccess());
+        TestNotNull(TEXT("OnReleaseToPool 内重入借出纯 UObject 成功"), NestedAcquiredDuringRelease);
+
+        TGameStatusResult<UGamePoolableTestObject*> ReacquiredObj = Pool->AcquireObject<UGamePoolableTestObject>(ObjClass);
+        TestTrue(TEXT("UObject 借出回调内重入新类别成功且不悬空"), ReacquiredObj.IsSuccess());
+        TestNotNull(TEXT("OnAcquireFromPool 内重入借出纯 UObject 成功"), NestedAcquiredDuringAcquire);
+
+        ReenterObj->ReleaseCallback = nullptr;
+        ReenterObj->AcquireCallback = nullptr;
+        (void)Pool->ReleaseObject(ReenterObj);
+        if (NestedAcquiredDuringRelease != nullptr) {
+            (void)Pool->ReleaseObject(NestedAcquiredDuringRelease);
+        }
+        if (NestedAcquiredDuringAcquire != nullptr) {
+            (void)Pool->ReleaseObject(NestedAcquiredDuringAcquire);
+        }
+    }
 
     Pool->ClearAllPools();
     return true;
