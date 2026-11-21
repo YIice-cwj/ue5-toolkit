@@ -185,10 +185,26 @@ public:
     }
 
     /**
+     * @brief 预先开辟指定数量的 Chunk 内存块以消除热路径首次扩容抖动
+     * @param TargetChunkCount 目标 Chunk 总数
+     */
+    void ReserveChunks(size_t TargetChunkCount) {
+        InternalPool.ReserveChunks(TargetChunkCount);
+    }
+
+    /**
      * @brief 清空内存池分配的全部底极大块
      */
     void Clear() {
         InternalPool.Reset();
+    }
+
+    /**
+     * @brief 检查当前是否无借出的活跃实例
+     * @return 无活跃借出实例返回 true
+     */
+    [[nodiscard]] bool IsEmpty() const noexcept {
+        return InternalPool.IsEmpty();
     }
 
     /**
