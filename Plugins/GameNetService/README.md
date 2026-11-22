@@ -20,8 +20,8 @@
 
 ## 插件依赖
 
-- **引擎模块**：`Core`, `CoreUObject`, `Engine`, `GameplayTags`, `GameplayMessageRuntime`, `WebSockets`
-- **内部插件**：`GameCore`, `GameLogging`, `GameNetCore`
+- **引擎模块**：`Core`, `CoreUObject`, `Engine`, `GameplayTags`, `WebSockets`
+- **内部插件**：`GameCore`, `GameMessage`, `GameLogging`, `GameNetCore`
 
 ---
 

@@ -1,13 +1,13 @@
 /**
  * @file NetMessageBusBridge.h
- * @brief 网络服务与 GameCore GameplayMessageSubsystem 解耦事件总线的双向桥接器
+ * @brief 网络服务与 GameMessage GameplayMessageSubsystem 解耦事件总线的双向桥接器
  */
 
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Message/FGameplayMessageListenerHandle.h"
 #include "Message/GameNetworkMessageTypes.h"
-#include "Message/GameplayMessageTypes.h"
 #include "Packet/NetPacketTypes.h"
 #include "Types/NetConnectionTypes.h"
 
