@@ -1,12 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+/**
+ * @file FModuleLogRegistrar.h
+ * @brief 模块日志 RAII 自动注册守卫声明（零模块名重复拷贝，O(1) 析构恢复）
+ */
+
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Containers/Array.h"
 #include "Logging/LogCategory.h"
 
 namespace Game::Log {
+
+struct FModuleLogSlotRecord;
 
 /**
  * @brief 模块日志 RAII 自动注册器，严格嵌套作用域退出时恢复前一项登记
@@ -16,44 +22,26 @@ namespace Game::Log {
 class GAMELOGGING_API FModuleLogRegistrar final {
 public:
     /**
-     * @brief 拷贝模块名并立即注册分类，同时保存被覆盖的前一项分类
+     * @brief 立即注册模块日志分类并保存槽位记录与被覆盖的前一项分类
      * @param InModuleName 非空模块名；为空指针或空字符串时不注册
      * @param InCategory 日志分类指针；为空时不注册
      */
     FModuleLogRegistrar(const char* InModuleName, FLogCategoryBase* InCategory);
 
     /**
-     * @brief 注销当前实例仍持有的登记，并恢复构造前的前一项分类
+     * @brief 注销当前实例仍持有的登记，并恢复构造前的前一项分类或兜底分类
      */
     ~FModuleLogRegistrar();
 
-    /**
-     * @brief 禁止拷贝构造，避免重复注销同一登记
-     */
     FModuleLogRegistrar(const FModuleLogRegistrar&) = delete;
-
-    /**
-     * @brief 禁止拷贝赋值，避免重复注销同一登记
-     * @return 禁止调用
-     */
     FModuleLogRegistrar& operator=(const FModuleLogRegistrar&) = delete;
-
-    /**
-     * @brief 禁止移动构造，保持登记所有权唯一
-     */
     FModuleLogRegistrar(FModuleLogRegistrar&&) = delete;
-
-    /**
-     * @brief 禁止移动赋值，保持登记所有权唯一
-     * @return 禁止调用
-     */
     FModuleLogRegistrar& operator=(FModuleLogRegistrar&&) = delete;
 
 private:
-    TArray<ANSICHAR> ModuleName;
+    FModuleLogSlotRecord* SlotRecord = nullptr;
     FLogCategoryBase* Category = nullptr;
     FLogCategoryBase* PreviousCategory = nullptr;
 };
 
 } // namespace Game::Log
-

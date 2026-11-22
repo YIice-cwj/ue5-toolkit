@@ -1,9 +1,9 @@
 {
     "FileVersion": 3,
     "Version": 2,
-    "VersionName": "2.0.0",
+    "VersionName": "2.1.0",
     "FriendlyName": "Game Logging",
-    "Description": "Game global log categories (bottom-layer infrastructure).",
+    "Description": "Global module-aware logging infrastructure and zero-network-coupling remote logging pipeline.",
     "Category": "Game",
     "CreatedBy": "Taoist Decree Team",
     "CanContainContent": false,

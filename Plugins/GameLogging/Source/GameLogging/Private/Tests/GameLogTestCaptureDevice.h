@@ -1,5 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+/**
+ * @file GameLogTestCaptureDevice.h
+ * @brief 线程安全测试日志捕获输出设备（供自动化测试断言精确输出次数、分类、级别与正文）
+ */
+
 #pragma once
 
 #include "CoreMinimal.h"
@@ -11,7 +16,7 @@
 namespace Game::Log::Test {
 
 /**
- * @brief 捕获匹配指定文本的真实日志，供测试断言分类与精确输出次数
+ * @brief 捕获匹配指定文本的真实日志，供测试断言分类、级别、正文与精确输出次数
  */
 class FGameLogCaptureDevice final : public FOutputDevice {
 public:
@@ -22,9 +27,7 @@ public:
     explicit FGameLogCaptureDevice(const TCHAR* InMessageFilter)
         : MessageFilter(InMessageFilter) {
         FOutputDeviceRedirector::Get()->AddOutputDevice(this);
-        FScopeLock ScopeLock(&Lock);
-        TotalCount = 0;
-        LastCategory = NAME_None;
+        Reset();
     }
 
     /**
@@ -34,6 +37,11 @@ public:
         FOutputDeviceRedirector::Get()->RemoveOutputDevice(this);
     }
 
+    FGameLogCaptureDevice(const FGameLogCaptureDevice&) = delete;
+    FGameLogCaptureDevice& operator=(const FGameLogCaptureDevice&) = delete;
+    FGameLogCaptureDevice(FGameLogCaptureDevice&&) = delete;
+    FGameLogCaptureDevice& operator=(FGameLogCaptureDevice&&) = delete;
+
     /**
      * @brief 捕获匹配文本的日志分类并累加输出次数
      * @param Text 日志文本
@@ -41,19 +49,33 @@ public:
      * @param Category 日志分类
      */
     void Serialize(const TCHAR* Text, ELogVerbosity::Type Verbosity, const FName& Category) override {
-        if (FCString::Strstr(Text, *MessageFilter) != nullptr) {
-            FScopeLock ScopeLock(&Lock);
-            ++TotalCount;
-            LastCategory = Category;
+        if (Text == nullptr || FCString::Strstr(Text, *MessageFilter) == nullptr) {
+            return;
         }
+        FScopeLock ScopeLock(&Lock);
+        ++TotalCount;
+        LastCategory = Category;
+        LastVerbosity = Verbosity;
+        LastMessage = Text;
     }
 
     /**
      * @brief 声明捕获器支持多线程同时写入
      * @return 始终返回 true
      */
-    bool CanBeUsedOnMultipleThreads() const override {
+    [[nodiscard]] bool CanBeUsedOnMultipleThreads() const override {
         return true;
+    }
+
+    /**
+     * @brief 清空已捕获计数与末次状态
+     */
+    void Reset() {
+        FScopeLock ScopeLock(&Lock);
+        TotalCount = 0;
+        LastCategory = NAME_None;
+        LastVerbosity = ELogVerbosity::NoLogging;
+        LastMessage.Empty();
     }
 
     /**
@@ -74,11 +96,31 @@ public:
         return LastCategory;
     }
 
+    /**
+     * @brief 获取最近一次匹配日志的详细级别
+     * @return 日志详细级别
+     */
+    [[nodiscard]] ELogVerbosity::Type GetLastVerbosity() const {
+        FScopeLock ScopeLock(&Lock);
+        return LastVerbosity;
+    }
+
+    /**
+     * @brief 获取最近一次匹配日志的完整正文
+     * @return 日志正文
+     */
+    [[nodiscard]] FString GetLastMessage() const {
+        FScopeLock ScopeLock(&Lock);
+        return LastMessage;
+    }
+
 private:
     FString MessageFilter;
     mutable FCriticalSection Lock;
     int32 TotalCount = 0;
     FName LastCategory = NAME_None;
+    ELogVerbosity::Type LastVerbosity = ELogVerbosity::NoLogging;
+    FString LastMessage;
 };
 
 } // namespace Game::Log::Test

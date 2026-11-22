@@ -1,72 +1,35 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+/**
+ * @file GameRemoteLogOutputDevice.cpp
+ * @brief 线程安全远程日志捕获输出设备实现（TLockFreeRingBuffer + 原子容量预留 + L1 内联黑名单）
+ */
+
 #include "Remote/GameRemoteLogOutputDevice.h"
 
 #include "HAL/PlatformTime.h"
+#include "Misc/ScopeRWLock.h"
+#include "Remote/FRemoteLogReentrancyScope.h"
 
 namespace {
-thread_local bool bThreadIsHandlingRemoteLog = false;
+constexpr double UnspecifiedTimestampSentinel = -1.0;
 } // namespace
 
-/**
- * @brief 构造守卫并记录进入当前线程重入状态
- */
-FRemoteLogReentrancyScope::FRemoteLogReentrancyScope()
-    : bPreviousState(bThreadIsHandlingRemoteLog) {
-    bThreadIsHandlingRemoteLog = true;
+FGameRemoteLogOutputDevice::FGameRemoteLogOutputDevice()
+    : RingBuffer(MakeUnique<FRingBuffer>()) {
+    IgnoredCategories.Add(FName(TEXT("LogGameMessage")));
+    IgnoredCategories.Add(FName(TEXT("LogGameNetService")));
+    IgnoredCategories.Add(FName(TEXT("LogGameNetCore")));
 }
 
-/**
- * @brief 析构守卫并恢复前序重入状态
- */
-FRemoteLogReentrancyScope::~FRemoteLogReentrancyScope() {
-    bThreadIsHandlingRemoteLog = bPreviousState;
-}
-
-/**
- * @brief 查询当前调用线程是否处于日志拦截或派发重入上下文中
- * @return 处于重入上下文中返回 true
- */
-bool FRemoteLogReentrancyScope::IsHandling() noexcept {
-    return bThreadIsHandlingRemoteLog;
-}
-
-/**
- * @brief 构造函数实现：设置默认级别阈值与默认忽略的反射循环分类
- */
-FGameRemoteLogOutputDevice::FGameRemoteLogOutputDevice() {
-    FIgnoredCategoriesSnapshot* Initial = new FIgnoredCategoriesSnapshot();
-    Initial->Categories.Add(FName(TEXT("LogGameplayMessage")));
-    Initial->Categories.Add(FName(TEXT("LogGameLogging")));
-    Initial->Categories.Add(FName(TEXT("LogGameNetService")));
-    IgnoredSnapshot.store(Initial, std::memory_order_release);
-}
-
-/**
- * @brief 析构函数实现：清空队列中待发条目并释放快照内存
- */
 FGameRemoteLogOutputDevice::~FGameRemoteLogOutputDevice() {
     Clear();
-    const FIgnoredCategoriesSnapshot* Current = IgnoredSnapshot.exchange(nullptr, std::memory_order_acq_rel);
-    delete Current;
-    RetiredSnapshots.Empty();
 }
 
-/**
- * @brief 声明支持多线程调用实现
- * @return 恒为 true
- */
 bool FGameRemoteLogOutputDevice::CanBeUsedOnMultipleThreads() const {
     return true;
 }
 
-/**
- * @brief 拦截带显式时间戳日志
- * @param V 日志文本指针
- * @param Verbosity 详细级别
- * @param Category 分类名称
- * @param Time 时间戳
- */
 void FGameRemoteLogOutputDevice::Serialize(
     const TCHAR* V,
     ELogVerbosity::Type Verbosity,
@@ -76,67 +39,14 @@ void FGameRemoteLogOutputDevice::Serialize(
     EnqueueLogInternal(V, Verbosity, Category, Time);
 }
 
-/**
- * @brief 拦截未指定时间戳日志（由平台时钟补充）
- * @param V 日志文本指针
- * @param Verbosity 详细级别
- * @param Category 分类名称
- */
 void FGameRemoteLogOutputDevice::Serialize(
     const TCHAR* V,
     ELogVerbosity::Type Verbosity,
     const class FName& Category
 ) {
-    EnqueueLogInternal(V, Verbosity, Category, FPlatformTime::Seconds());
+    EnqueueLogInternal(V, Verbosity, Category, UnspecifiedTimestampSentinel);
 }
 
-/**
- * @brief 核心入队逻辑实现（涵盖级别过滤、防重入、COW 无锁忽略名单排查与队列上限保护）
- * @param V 日志正文
- * @param Verbosity 日志级别
- * @param Category 分类
- * @param Time 时间戳
- */
-void FGameRemoteLogOutputDevice::EnqueueLogInternal(
-    const TCHAR* V,
-    ELogVerbosity::Type Verbosity,
-    const class FName& Category,
-    double Time
-) {
-    if (FRemoteLogReentrancyScope::IsHandling()) {
-        return;
-    }
-    const FRemoteLogReentrancyScope ReentrancyGuard;
-
-    const uint8 PureVerbosity = static_cast<uint8>(Verbosity & ELogVerbosity::VerbosityMask);
-    if (PureVerbosity > MinVerbosity.load(std::memory_order_relaxed)) {
-        return;
-    }
-
-    if (const FIgnoredCategoriesSnapshot* Snapshot = IgnoredSnapshot.load(std::memory_order_acquire)) {
-        if (Snapshot->Categories.Contains(Category)) {
-            return;
-        }
-    }
-
-    const int32 CurrentCapacity = MaxCapacity.load(std::memory_order_relaxed);
-    if (QueuedCount.load(std::memory_order_relaxed) >= CurrentCapacity) {
-        DroppedCount.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-
-    const int64 Frame = static_cast<int64>(GFrameCounter);
-    FString Content(V != nullptr ? V : TEXT(""));
-    LogQueue.Enqueue(FGameRemoteLogEntry(Category, PureVerbosity, MoveTemp(Content), Time, Frame));
-    QueuedCount.fetch_add(1, std::memory_order_relaxed);
-}
-
-/**
- * @brief 批量排出日志队列条目实现（合并单次原子扣减）
- * @param OutBatch 目标数组
- * @param MaxCount 最大排出数量
- * @return 实际排出数量
- */
 int32 FGameRemoteLogOutputDevice::DrainBatch(TArray<FGameRemoteLogEntry>& OutBatch, int32 MaxCount) {
     if (MaxCount <= 0) {
         return 0;
@@ -149,26 +59,37 @@ int32 FGameRemoteLogOutputDevice::DrainBatch(TArray<FGameRemoteLogEntry>& OutBat
     }
 
     int32 Drained = 0;
-    while (Drained < MaxCount) {
-        FGameRemoteLogEntry Item;
-        if (!LogQueue.Dequeue(Item)) {
-            break;
-        }
+    FGameRemoteLogEntry Item;
+    while (Drained < MaxCount && RingBuffer->Dequeue(Item)) {
         OutBatch.Add(MoveTemp(Item));
         ++Drained;
     }
 
     if (Drained > 0) {
-        QueuedCount.fetch_sub(Drained, std::memory_order_relaxed);
+        QueuedCount.fetch_sub(Drained, std::memory_order_release);
     }
 
     return Drained;
 }
 
-/**
- * @brief 设置最低采集级别阈值实现
- * @param InMinVerbosity 阈值枚举
- */
+int32 FGameRemoteLogOutputDevice::DiscardBatch(int32 MaxCount) {
+    if (MaxCount <= 0) {
+        return 0;
+    }
+
+    int32 Discarded = 0;
+    FGameRemoteLogEntry Dump;
+    while (Discarded < MaxCount && RingBuffer->Dequeue(Dump)) {
+        ++Discarded;
+    }
+
+    if (Discarded > 0) {
+        QueuedCount.fetch_sub(Discarded, std::memory_order_release);
+    }
+
+    return Discarded;
+}
+
 void FGameRemoteLogOutputDevice::SetMinVerbosity(ELogVerbosity::Type InMinVerbosity) noexcept {
     MinVerbosity.store(
         static_cast<uint8>(InMinVerbosity & ELogVerbosity::VerbosityMask),
@@ -176,97 +97,106 @@ void FGameRemoteLogOutputDevice::SetMinVerbosity(ELogVerbosity::Type InMinVerbos
     );
 }
 
-/**
- * @brief 查询当前最低采集级别阈值实现
- * @return 阈值枚举
- */
 ELogVerbosity::Type FGameRemoteLogOutputDevice::GetMinVerbosity() const noexcept {
     return static_cast<ELogVerbosity::Type>(MinVerbosity.load(std::memory_order_relaxed));
 }
 
-/**
- * @brief 设定队列安全容量上限实现
- * @param InCapacity 容量数值
- */
 void FGameRemoteLogOutputDevice::SetMaxCapacity(int32 InCapacity) noexcept {
     if (InCapacity > 0) {
-        MaxCapacity.store(InCapacity, std::memory_order_relaxed);
+        MaxCapacity.store(FMath::Min(InCapacity, MAX_CAPACITY), std::memory_order_relaxed);
     }
 }
 
-/**
- * @brief 查询队列条目估算数量实现
- * @return 条目数
- */
+int32 FGameRemoteLogOutputDevice::GetMaxCapacity() const noexcept {
+    return MaxCapacity.load(std::memory_order_relaxed);
+}
+
+bool FGameRemoteLogOutputDevice::IsEmpty() const noexcept {
+    return RingBuffer->IsEmpty();
+}
+
 int32 FGameRemoteLogOutputDevice::GetQueuedCount() const noexcept {
     return FMath::Max(0, QueuedCount.load(std::memory_order_relaxed));
 }
 
-/**
- * @brief 查询丢弃累计数实现
- * @return 丢弃计数
- */
 int64 FGameRemoteLogOutputDevice::GetDroppedCount() const noexcept {
     return DroppedCount.load(std::memory_order_relaxed);
 }
 
-/**
- * @brief 添加忽略日志分类实现（COW 无锁快照替换）
- * @param CategoryName 分类名称
- */
 void FGameRemoteLogOutputDevice::AddIgnoredCategory(FName CategoryName) {
     if (CategoryName.IsNone()) {
         return;
     }
-    FScopeLock Lock(&IgnoredCategoriesMutex);
-    const FIgnoredCategoriesSnapshot* Old = IgnoredSnapshot.load(std::memory_order_relaxed);
-    if (Old != nullptr && Old->Categories.Contains(CategoryName)) {
-        return;
-    }
-
-    FIgnoredCategoriesSnapshot* NewSnapshot = new FIgnoredCategoriesSnapshot();
-    if (Old != nullptr) {
-        NewSnapshot->Categories = Old->Categories;
-    }
-    NewSnapshot->Categories.Add(CategoryName);
-    IgnoredSnapshot.store(NewSnapshot, std::memory_order_release);
-    if (Old != nullptr) {
-        RetiredSnapshots.Add(TUniquePtr<const FIgnoredCategoriesSnapshot>(Old));
-    }
+    FWriteScopeLock WriteLock(IgnoredCategoriesLock);
+    IgnoredCategories.AddUnique(CategoryName);
 }
 
-/**
- * @brief 移除忽略日志分类实现（COW 无锁快照替换）
- * @param CategoryName 分类名称
- */
 void FGameRemoteLogOutputDevice::RemoveIgnoredCategory(FName CategoryName) {
     if (CategoryName.IsNone()) {
         return;
     }
-    FScopeLock Lock(&IgnoredCategoriesMutex);
-    const FIgnoredCategoriesSnapshot* Old = IgnoredSnapshot.load(std::memory_order_relaxed);
-    if (Old == nullptr || !Old->Categories.Contains(CategoryName)) {
+    FWriteScopeLock WriteLock(IgnoredCategoriesLock);
+    IgnoredCategories.RemoveSingleSwap(CategoryName);
+}
+
+bool FGameRemoteLogOutputDevice::IsCategoryIgnored(FName CategoryName) const {
+    if (CategoryName.IsNone()) {
+        return false;
+    }
+    FReadScopeLock ReadLock(IgnoredCategoriesLock);
+    return IgnoredCategories.Contains(CategoryName);
+}
+
+void FGameRemoteLogOutputDevice::Clear() {
+    (void)DiscardBatch(MAX_CAPACITY);
+    DroppedCount.store(0, std::memory_order_relaxed);
+}
+
+void FGameRemoteLogOutputDevice::EnqueueLogInternal(
+    const TCHAR* V,
+    ELogVerbosity::Type Verbosity,
+    const class FName& Category,
+    double Time
+) {
+    const uint8 PureVerbosity = static_cast<uint8>(Verbosity & ELogVerbosity::VerbosityMask);
+    if (PureVerbosity == ELogVerbosity::NoLogging || PureVerbosity > MinVerbosity.load(std::memory_order_relaxed)) {
         return;
     }
 
-    FIgnoredCategoriesSnapshot* NewSnapshot = new FIgnoredCategoriesSnapshot();
-    NewSnapshot->Categories = Old->Categories;
-    NewSnapshot->Categories.Remove(CategoryName);
-    IgnoredSnapshot.store(NewSnapshot, std::memory_order_release);
-    RetiredSnapshots.Add(TUniquePtr<const FIgnoredCategoriesSnapshot>(Old));
+    if (Game::Log::Private::FRemoteLogReentrancyScope::IsHandling()) {
+        return;
+    }
+    const Game::Log::Private::FRemoteLogReentrancyScope ReentrancyGuard;
+
+    if (IsCategoryIgnored(Category)) {
+        return;
+    }
+
+    if (!TryReserveCapacitySlot()) {
+        DroppedCount.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+
+    const double ResolvedTime = (Time >= 0.0) ? Time : FPlatformTime::Seconds();
+    const int64 Frame = static_cast<int64>(GFrameCounter);
+    if (!RingBuffer->Emplace(Category, PureVerbosity, FString(V != nullptr ? V : TEXT("")), ResolvedTime, Frame)) {
+        QueuedCount.fetch_sub(1, std::memory_order_release);
+        DroppedCount.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
-/**
- * @brief 清空队列并重置状态实现（支持并发入队条目计数平滑扣减）
- */
-void FGameRemoteLogOutputDevice::Clear() {
-    FGameRemoteLogEntry Dump;
-    int32 DrainedInClear = 0;
-    while (LogQueue.Dequeue(Dump)) {
-        ++DrainedInClear;
+bool FGameRemoteLogOutputDevice::TryReserveCapacitySlot() noexcept {
+    int32 CurrentQueued = QueuedCount.load(std::memory_order_relaxed);
+    const int32 CapacityLimit = MaxCapacity.load(std::memory_order_relaxed);
+    while (CurrentQueued < CapacityLimit) {
+        if (QueuedCount.compare_exchange_weak(
+                CurrentQueued,
+                CurrentQueued + 1,
+                std::memory_order_acquire,
+                std::memory_order_relaxed
+            )) {
+            return true;
+        }
     }
-    if (DrainedInClear > 0) {
-        QueuedCount.fetch_sub(DrainedInClear, std::memory_order_relaxed);
-    }
-    DroppedCount.store(0, std::memory_order_relaxed);
+    return false;
 }

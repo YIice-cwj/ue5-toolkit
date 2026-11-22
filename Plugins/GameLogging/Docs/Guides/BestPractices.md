@@ -1,50 +1,40 @@
 # GameLogging 最佳实践与性能指南
 
-## 1. 警惕高频 Tick 日志，强制使用 `GAME_LOG_THROTTLE`
+## 1. 警惕高频 Tick 日志，优先使用 `GAME_LOG_THROTTLE`
 
 ### ❌ 错误做法：Tick 中直接使用 `GAME_LOG`
 ```cpp
-void AProjectile::Tick(float DeltaTime)
-{
+void AProjectile::Tick(float DeltaTime) {
     Super::Tick(DeltaTime);
-    // 危险：成百上千个弹道每帧写日志，导致 I/O 拥塞甚至卡顿丢帧！
     GAME_LOG(Verbose, TEXT("Velocity: %s"), *GetVelocity().ToString());
 }
 ```
 
 ### ✅ 正确做法：使用 `GAME_LOG_THROTTLE` 限频
 ```cpp
-void AProjectile::Tick(float DeltaTime)
-{
+void AProjectile::Tick(float DeltaTime) {
     Super::Tick(DeltaTime);
-    // 安全：每 1 秒最多仅输出一次该弹道当前速度
+    // 抑制态零时钟/零 CAS 开销；开启 Verbose 后首帧即打，后续每 1 秒至多输出一次
     GAME_LOG_THROTTLE(1.0, Verbose, TEXT("Velocity: %s"), *GetVelocity().ToString());
 }
 ```
 
 ---
 
-## 2. 纯静态优化：关键高频热点指定 `GAME_CURRENT_MODULE_LOG`
+## 2. 纯静态优化：极致热点指定 `GAME_CURRENT_MODULE_LOG`
 
-动态分发通过原子操作读取局部缓存，开销仅为 1~2ns。但在物理每子步或每帧数万次调用的核心内循环中，如果追求完全的静态内联编译，可在该源文件最上方显式定义：
+常驻槽位动态分发在热路径仅需 2 次内联原子读（约 1~2ns）。若需在极端高频内循环彻底静态直连原生 `UE_LOG`，可在独立 `.cpp` 顶部显式定义（注意在 Unity Build 环境下应避免跨文件污染，确保在包含任何日志头前定义并在文件尾 `#undef`）：
 
 ```cpp
-// 在该 .cpp 的首行 include 之前定义
 #define GAME_CURRENT_MODULE_LOG LogMyModule
-#include "Logging/GameLogCategories.h"
-
-void HeavyMathLoop()
-{
-    // 此时宏直接展开为 UE_LOG(LogMyModule, ...)，零任何原子读指令与动态分发
-    GAME_LOG(VeryVerbose, TEXT("Iteration count..."));
-}
+#include "Logging/GameLogMacros.h"
 ```
 
 ---
 
 ## 3. Shipping 包零开销控制
 
-`GameLogging` 与 `GameCore/Public/Config/GameCompileSwitches.h` 紧密结合：
+`GameLogging` 与 `GameCore/Public/Config/GameCompileSwitches.h` 联动：
 
 ```cpp
 #ifndef GAME_ENABLE_LOG
@@ -52,44 +42,36 @@ void HeavyMathLoop()
 #endif
 ```
 
-在 Shipping 构建中，引擎默认将 `NO_LOGGING` 设为 `1`，从而 `bEnableLog` 自动为 `false`。
-通过 C++20 `if constexpr` 分支判定，所有 `GAME_LOG`、`GAME_LOG_THROTTLE` 调用会被编译器前端全部擦除，不残留字符串与任何指令。
+在 Shipping 构建中 `NO_LOGGING` 默认为 `1`，`Game::Config::bEnableLog` 自动为 `false`，所有 `GAME_LOG*` 分支由 `if constexpr` 静态裁剪。可通过 `Target.cs` 显式覆写：
 
-如果项目需要在 Shipping 构建中彻底移除或开启日志支持，可通过 Target.cs 或 Build.cs 统一修改预编译宏定义：
 ```csharp
-// 在 Target.cs 中
-GlobalDefinitions.Add("GAME_ENABLE_LOG=0"); // 强制彻底关闭所有日志宏
+GlobalDefinitions.Add("GAME_ENABLE_LOG=0");
 ```
 
 ---
 
 ## 4. 远程日志收集与网络上报最佳实践
 
-`GameLogging` 内建了由 `FGameRemoteLogOutputDevice` 与 `UGameLoggingSubsystem` 驱动的远程日志管道，使用时建议遵循以下原则：
-
-### 4.1 保持默认的高级别过滤阈值
-
-远程日志设备默认的最低输出冗余级别为 `ELogVerbosity::Warning`。
-- **最佳实践**：严禁在生产构建中将 `MinVerbosity` 降为 `Log` 或 `Verbose`，否则每秒可能产生数千条常规日志塞满队列，甚至造成主线程总线广播开销急剧攀升。
-- **动态调节**：仅在内部联调或 QA 专项测试时，通过 `UGameLoggingSubsystem::GetOutputDevice()->SetMinVerbosity(ELogVerbosity::Log)` 临时放宽阈值。
-
-### 4.2 使用黑名单（Ignored Categories）压制噪音
-
-如果个别底层系统（如物理、动画或第三方 SDK）持续打印无害但高频的 Warning，应将其加入忽略黑名单：
+### 4.1 保持默认高级别过滤阈值
+远程日志默认最低采集级别为 `ELogVerbosity::Warning`，严禁在生产环境长期降为 `Log` / `Verbose`。联调时通过子系统门面动态调整：
 
 ```cpp
-if (UGameLoggingSubsystem* Subsystem = GameInstance->GetSubsystem<UGameLoggingSubsystem>())
-{
-    if (FGameRemoteLogOutputDevice* Device = Subsystem->GetOutputDevice())
-    {
-        Device->AddIgnoredCategory(TEXT("LogThirdPartySDK"));
-    }
+if (UGameLoggingSubsystem* Subsystem = UGameLoggingSubsystem::GetPtr(this)) {
+    Subsystem->SetMinVerbosity(ELogVerbosity::Log);
+}
+```
+
+### 4.2 使用子系统门面配置黑名单压制噪音
+设备已默认忽略 `LogGameMessage`、`LogGameNetService` 与 `LogGameNetCore`。如需压制第三方噪音分类，直接调用子系统统一门面：
+
+```cpp
+if (UGameLoggingSubsystem* Subsystem = UGameLoggingSubsystem::GetPtr(this)) {
+    Subsystem->AddIgnoredCategory(FName(TEXT("LogThirdPartySDK")));
 }
 ```
 
 ### 4.3 零耦合单向监听，严禁反向引用
-
-`GameLogging` 本身不依赖任何网络模块（如 `GameNetCore`、`GameNetService`）。网络服务层或远程监控插件应当通过 `UGameplayMessageSubsystem` 注册监听 `TAG_Game_Log_Remote` 标签，实现纯粹的单向观察者模式，保证底层基础设施核心的绝对独立。
+`GameLogging` 不依赖任何网络模块或 `GamePool`。外部网络或遥测插件只需包含 `Remote/GameRemoteLogTypes.h` 并通过 `UGameplayMessageSubsystem` 订阅 `TAG_Game_Log_Remote` 即可。
 
 ---
 
@@ -97,8 +79,7 @@ if (UGameLoggingSubsystem* Subsystem = GameInstance->GetSubsystem<UGameLoggingSu
 
 ### Q1: 为什么我的日志都输出到了 `LogGame` 而不是自定义的模块名？
 - **原因**：当前模块尚未调用 `GAME_REGISTER_MODULE_LOG(LogYourModule)`。
-- **解决**：在模块主 cpp（如 `YourModule.cpp`）中加入 `GAME_REGISTER_MODULE_LOG(LogYourModule)` 即可。
+- **解决**：在模块主 cpp（如 `YourModule.cpp`）顶层加入 `GAME_REGISTER_MODULE_LOG(LogYourModule);`。
 
-### Q2: 出现模块名大小写或跨平台识别问题？
-- **机制**：注册表比较采用 `FCStringAnsi::Strcmp` 区分大小写的精确匹配。UBT 传入的 `UE_MODULE_NAME` 与注册时的宏参数必须一致。
-
+### Q2: 出现模块名大小写识别问题？
+- **机制**：注册表采用区分大小写的字节精确比较（`FMemory::Memcmp`），模块名必须与 UBT 注入的 `UE_MODULE_NAME` 大小写完全一致。

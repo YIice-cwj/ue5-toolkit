@@ -1,23 +1,27 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+/**
+ * @file FModuleLogRegistrar.cpp
+ * @brief 模块日志 RAII 自动注册守卫实现
+ */
+
 #include "Logging/FModuleLogRegistrar.h"
+
 #include "Logging/FGameLogRegistry.h"
 
 namespace Game::Log {
 
 FModuleLogRegistrar::FModuleLogRegistrar(const char* InModuleName, FLogCategoryBase* InCategory) {
-    if (InModuleName != nullptr && InModuleName[0] != '\0' && InCategory != nullptr) {
-        ModuleName = FGameLogRegistry::MakeAnsiName(InModuleName);
+    SlotRecord = FGameLogRegistry::RegisterScopedCategory(InModuleName, InCategory, PreviousCategory);
+    if (SlotRecord != nullptr) {
         Category = InCategory;
-        PreviousCategory = FGameLogRegistry::RegisterScopedCategory(ModuleName.GetData(), InCategory);
     }
 }
 
 FModuleLogRegistrar::~FModuleLogRegistrar() {
-    if (Category != nullptr) {
-        FGameLogRegistry::UnregisterScopedCategory(ModuleName.GetData(), Category, PreviousCategory);
+    if (SlotRecord != nullptr) {
+        FGameLogRegistry::UnregisterScopedCategory(SlotRecord, Category, PreviousCategory);
     }
 }
 
 } // namespace Game::Log
-

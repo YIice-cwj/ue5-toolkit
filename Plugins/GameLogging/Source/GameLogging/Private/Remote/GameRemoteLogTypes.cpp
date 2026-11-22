@@ -1,5 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+/**
+ * @file GameRemoteLogTypes.cpp
+ * @brief 远程日志数据契约载荷与通道标签定义
+ */
+
 #include "Remote/GameRemoteLogTypes.h"
 
 UE_DEFINE_GAMEPLAY_TAG(TAG_Game_Log_Remote, "Game.Log.Remote");
@@ -10,7 +15,7 @@ UE_DEFINE_GAMEPLAY_TAG(TAG_Game_Log_Remote, "Game.Log.Remote");
  * @param InVerbosity 日志详细级别
  * @param InMessage 日志正文内容
  * @param InTimestamp 日志发生时钟秒数
- * @param InFrameNumber 日志发生时的渲染/引擎帧序号
+ * @param InFrameNumber 日志发生时的引擎帧序号
  */
 FGameRemoteLogEntry::FGameRemoteLogEntry(
     FName InCategory,
@@ -20,7 +25,7 @@ FGameRemoteLogEntry::FGameRemoteLogEntry(
     int64 InFrameNumber
 )
     : Category(InCategory)
-    , Verbosity(InVerbosity)
+    , Verbosity(static_cast<uint8>(InVerbosity & ELogVerbosity::VerbosityMask))
     , Message(MoveTemp(InMessage))
     , Timestamp(InTimestamp)
     , FrameNumber(InFrameNumber) {
@@ -31,7 +36,7 @@ FGameRemoteLogEntry::FGameRemoteLogEntry(
  * @return 详细级别枚举值
  */
 ELogVerbosity::Type FGameRemoteLogEntry::GetVerbosity() const noexcept {
-    return static_cast<ELogVerbosity::Type>(Verbosity);
+    return static_cast<ELogVerbosity::Type>(Verbosity & ELogVerbosity::VerbosityMask);
 }
 
 /**
@@ -40,9 +45,9 @@ ELogVerbosity::Type FGameRemoteLogEntry::GetVerbosity() const noexcept {
  * @return 所有关键字段均一致时返回 true
  */
 bool FGameRemoteLogEntry::operator==(const FGameRemoteLogEntry& Other) const noexcept {
-    return Category == Other.Category &&
-           Verbosity == Other.Verbosity &&
-           Message == Other.Message &&
-           FMath::IsNearlyEqual(Timestamp, Other.Timestamp) &&
-           FrameNumber == Other.FrameNumber;
+    return Category == Other.Category
+        && Verbosity == Other.Verbosity
+        && Message.Equals(Other.Message, ESearchCase::CaseSensitive)
+        && FMath::IsNearlyEqual(Timestamp, Other.Timestamp)
+        && FrameNumber == Other.FrameNumber;
 }

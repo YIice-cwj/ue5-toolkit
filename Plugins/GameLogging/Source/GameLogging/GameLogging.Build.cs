@@ -14,6 +14,9 @@ public class GameLogging : ModuleRules {
             "Engine",
             "GameplayTags",
             "GameCore",
+        });
+
+        PrivateDependencyModuleNames.AddRange(new string[] {
             "GameMessage",
         });
 

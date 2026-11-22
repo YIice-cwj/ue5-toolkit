@@ -1,218 +1,242 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+/**
+ * @file GameLoggingSubsystem.cpp
+ * @brief 游戏实例级远程日志常驻子系统实现
+ */
+
 #include "Remote/GameLoggingSubsystem.h"
 
+#include "Engine/Engine.h"
+#include "Engine/GameInstance.h"
+#include "Engine/World.h"
 #include "Message/GameplayMessageSubsystem.h"
+#include "Remote/FRemoteLogReentrancyScope.h"
 
-/**
- * @brief 构造函数实现
- */
-UGameLoggingSubsystem::UGameLoggingSubsystem()
-    : OutputDevice(MakeUnique<FGameRemoteLogOutputDevice>()) {
-}
-
-/**
- * @brief 析构函数实现：解绑设备并清理定时器
- */
 UGameLoggingSubsystem::~UGameLoggingSubsystem() {
-    if (TickerHandle.IsValid()) {
-        FTSTicker::GetCoreTicker().RemoveTicker(TickerHandle);
-        TickerHandle.Reset();
-    }
-    DetachDevice();
+    StopCapture();
 }
 
-/**
- * @brief 子系统初始化实现：挂载定时器并在启用时附着 GLog
- * @param Collection 子系统容器
- */
+UGameLoggingSubsystem& UGameLoggingSubsystem::Get(const UObject* WorldContextObject) {
+    UGameLoggingSubsystem* Subsystem = GetPtr(WorldContextObject);
+    checkf(
+        Subsystem != nullptr,
+        TEXT("UGameLoggingSubsystem::Get failed: WorldContextObject '%s' has no valid GameInstance."),
+        *GetNameSafe(WorldContextObject)
+    );
+    return *Subsystem;
+}
+
+UGameLoggingSubsystem* UGameLoggingSubsystem::GetPtr(const UObject* WorldContextObject) {
+    if (WorldContextObject == nullptr) {
+        return nullptr;
+    }
+    if (const UGameInstance* GameInstance = Cast<UGameInstance>(WorldContextObject)) {
+        return GameInstance->GetSubsystem<UGameLoggingSubsystem>();
+    }
+    if (const UGameInstanceSubsystem* OtherSubsystem = Cast<UGameInstanceSubsystem>(WorldContextObject)) {
+        const UGameInstance* GameInstance = OtherSubsystem->GetGameInstance();
+        return (GameInstance != nullptr) ? GameInstance->GetSubsystem<UGameLoggingSubsystem>() : nullptr;
+    }
+    if (GEngine == nullptr) {
+        return nullptr;
+    }
+    const UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::ReturnNull);
+    const UGameInstance* GameInstance = (World != nullptr) ? World->GetGameInstance() : nullptr;
+    return (GameInstance != nullptr) ? GameInstance->GetSubsystem<UGameLoggingSubsystem>() : nullptr;
+}
+
 void UGameLoggingSubsystem::Initialize(FSubsystemCollectionBase& Collection) {
     Super::Initialize(Collection);
+    Collection.InitializeDependency<UGameplayMessageSubsystem>();
 
-    if (!OutputDevice.IsValid()) {
-        OutputDevice = MakeUnique<FGameRemoteLogOutputDevice>();
-    }
-
-    TickerHandle = FTSTicker::GetCoreTicker().AddTicker(
-        FTickerDelegate::CreateUObject(this, &UGameLoggingSubsystem::HandleTicker),
-        0.0f
-    );
+    OutputDevice = MakeUnique<FGameRemoteLogOutputDevice>();
+    OutputDevice->SetMinVerbosity(DesiredMinVerbosity);
+    OutputDevice->SetMaxCapacity(DesiredMaxQueueCapacity);
+    bInitialized = true;
 
     if (bRemoteLoggingEnabled) {
-        AttachDevice();
+        StartCapture();
     }
 }
 
-/**
- * @brief 子系统卸载实现：脱钩输出设备并最后清空队列
- */
 void UGameLoggingSubsystem::Deinitialize() {
-    if (TickerHandle.IsValid()) {
-        FTSTicker::GetCoreTicker().RemoveTicker(TickerHandle);
-        TickerHandle.Reset();
-    }
-
-    DetachDevice();
+    StopCapture();
     FlushQueue();
+    bInitialized = false;
+    ReusableBatch.Empty();
     OutputDevice.Reset();
 
     Super::Deinitialize();
 }
 
-/**
- * @brief 判定是否创建子系统实现
- * @param Outer 宿主对象
- * @return 恒为 true
- */
-bool UGameLoggingSubsystem::ShouldCreateSubsystem(UObject* Outer) const {
-    return true;
-}
-
-/**
- * @brief 设置启用状态并动态同步 GLog 挂载状态实现
- * @param bEnabled 是否启用
- */
 void UGameLoggingSubsystem::SetRemoteLoggingEnabled(bool bEnabled) {
+    check(IsInGameThread());
     if (bRemoteLoggingEnabled == bEnabled) {
         return;
     }
 
     bRemoteLoggingEnabled = bEnabled;
+    if (!bInitialized) {
+        return;
+    }
+
     if (bRemoteLoggingEnabled) {
-        AttachDevice();
+        StartCapture();
     } else {
-        DetachDevice();
+        StopCapture();
     }
 }
 
-/**
- * @brief 查询当前启用状态实现
- * @return 是否启用
- */
 bool UGameLoggingSubsystem::IsRemoteLoggingEnabled() const noexcept {
     return bRemoteLoggingEnabled;
 }
 
-/**
- * @brief 设置最低抓取严重级别实现
- * @param MinVerbosity 严重级别枚举
- */
-void UGameLoggingSubsystem::SetMinVerbosity(ELogVerbosity::Type MinVerbosity) {
+void UGameLoggingSubsystem::SetMinVerbosity(ELogVerbosity::Type InMinVerbosity) noexcept {
+    DesiredMinVerbosity = static_cast<ELogVerbosity::Type>(InMinVerbosity & ELogVerbosity::VerbosityMask);
     if (OutputDevice.IsValid()) {
-        OutputDevice->SetMinVerbosity(MinVerbosity);
+        OutputDevice->SetMinVerbosity(DesiredMinVerbosity);
     }
 }
 
-/**
- * @brief 查询最低抓取严重级别实现
- * @return 严重级别枚举
- */
 ELogVerbosity::Type UGameLoggingSubsystem::GetMinVerbosity() const noexcept {
     if (OutputDevice.IsValid()) {
         return OutputDevice->GetMinVerbosity();
     }
-    return ELogVerbosity::Warning;
+    return DesiredMinVerbosity;
 }
 
-/**
- * @brief 设置每帧最大排空条数实现
- * @param InMaxDrain 单帧上限
- */
 void UGameLoggingSubsystem::SetMaxDrainBatchPerTick(int32 InMaxDrain) noexcept {
     if (InMaxDrain > 0) {
         MaxDrainBatchPerTick = InMaxDrain;
     }
 }
 
-/**
- * @brief 获取每帧最大排空条数实现
- * @return 单帧上限
- */
 int32 UGameLoggingSubsystem::GetMaxDrainBatchPerTick() const noexcept {
     return MaxDrainBatchPerTick;
 }
 
-/**
- * @brief 立即排空队列并广播实现
- * @return 排出并广播的条数
- */
+void UGameLoggingSubsystem::SetMaxQueueCapacity(int32 InCapacity) noexcept {
+    if (InCapacity <= 0) {
+        return;
+    }
+    DesiredMaxQueueCapacity = FMath::Min(InCapacity, FGameRemoteLogOutputDevice::MAX_CAPACITY);
+    if (OutputDevice.IsValid()) {
+        OutputDevice->SetMaxCapacity(DesiredMaxQueueCapacity);
+    }
+}
+
+int32 UGameLoggingSubsystem::GetMaxQueueCapacity() const noexcept {
+    if (OutputDevice.IsValid()) {
+        return OutputDevice->GetMaxCapacity();
+    }
+    return DesiredMaxQueueCapacity;
+}
+
+void UGameLoggingSubsystem::AddIgnoredCategory(FName CategoryName) {
+    if (OutputDevice.IsValid()) {
+        OutputDevice->AddIgnoredCategory(CategoryName);
+    }
+}
+
+void UGameLoggingSubsystem::RemoveIgnoredCategory(FName CategoryName) {
+    if (OutputDevice.IsValid()) {
+        OutputDevice->RemoveIgnoredCategory(CategoryName);
+    }
+}
+
+bool UGameLoggingSubsystem::IsCategoryIgnored(FName CategoryName) const {
+    return OutputDevice.IsValid() && OutputDevice->IsCategoryIgnored(CategoryName);
+}
+
+int32 UGameLoggingSubsystem::GetQueuedCount() const noexcept {
+    return OutputDevice.IsValid() ? OutputDevice->GetQueuedCount() : 0;
+}
+
+int64 UGameLoggingSubsystem::GetDroppedCount() const noexcept {
+    return OutputDevice.IsValid() ? OutputDevice->GetDroppedCount() : 0;
+}
+
 int32 UGameLoggingSubsystem::FlushQueue() {
+    check(IsInGameThread());
     if (!OutputDevice.IsValid()) {
         return 0;
     }
-    return DrainAndBroadcast(OutputDevice->GetQueuedCount());
-}
 
-/**
- * @brief 获取底层输出设备裸指针实现
- * @return 设备指针
- */
-FGameRemoteLogOutputDevice* UGameLoggingSubsystem::GetOutputDevice() const noexcept {
-    return OutputDevice.Get();
-}
-
-/**
- * @brief 内部批量排空队列并广播至消息总线实现（带重入免疫防自激雪崩保护与无监听者快速路径）
- * @param MaxCount 最大排空数量
- * @return 实际排空并广播的条目数量
- */
-int32 UGameLoggingSubsystem::DrainAndBroadcast(int32 MaxCount) {
-    if (!OutputDevice.IsValid() || MaxCount <= 0) {
-        return 0;
+    const int32 FlushBudget = FMath::Max(OutputDevice->GetMaxCapacity(), OutputDevice->GetQueuedCount());
+    int32 TotalFlushed = 0;
+    while (TotalFlushed < FlushBudget) {
+        const int32 BatchSize = FMath::Min(MaxDrainBatchPerTick, FlushBudget - TotalFlushed);
+        const int32 Drained = DrainAndBroadcast(BatchSize);
+        if (Drained <= 0) {
+            break;
+        }
+        TotalFlushed += Drained;
     }
 
-    TArray<FGameRemoteLogEntry> Batch;
-    const int32 Drained = OutputDevice->DrainBatch(Batch, MaxCount);
-    if (Drained <= 0) {
+    return TotalFlushed;
+}
+
+void UGameLoggingSubsystem::ClearQueue() {
+    if (OutputDevice.IsValid()) {
+        OutputDevice->Clear();
+    }
+}
+
+int32 UGameLoggingSubsystem::DrainAndBroadcast(int32 MaxCount) {
+    check(IsInGameThread());
+    if (!OutputDevice.IsValid() || MaxCount <= 0 || OutputDevice->IsEmpty()) {
+        return 0;
+    }
+    if (Game::Log::Private::FRemoteLogReentrancyScope::IsHandling()) {
         return 0;
     }
 
     UGameplayMessageSubsystem* MessageBus = UGameplayMessageSubsystem::GetPtr(this);
-    if (MessageBus == nullptr) {
-        return Drained;
+    if (MessageBus == nullptr || !MessageBus->HasListener(TAG_Game_Log_Remote)) {
+        return OutputDevice->DiscardBatch(MaxCount);
     }
 
-    if (!MessageBus->HasListener(TAG_Game_Log_Remote)) {
-        return Drained;
+    ReusableBatch.Reset();
+    const int32 Drained = OutputDevice->DrainBatch(ReusableBatch, MaxCount);
+    if (Drained <= 0) {
+        return 0;
     }
 
-    const FRemoteLogReentrancyScope BroadcastReentrancyGuard;
-    for (const FGameRemoteLogEntry& Entry : Batch) {
+    const Game::Log::Private::FRemoteLogReentrancyScope BroadcastReentrancyGuard;
+    for (const FGameRemoteLogEntry& Entry : ReusableBatch) {
         MessageBus->BroadcastMessage(TAG_Game_Log_Remote, Entry);
     }
+    ReusableBatch.Reset();
 
     return Drained;
 }
 
-/**
- * @brief 主线程定时器回调排空队列并广播实现
- * @param DeltaTime 帧时间
- * @return 恒为 true
- */
 bool UGameLoggingSubsystem::HandleTicker([[maybe_unused]] float DeltaTime) {
-    if (bRemoteLoggingEnabled) {
-        DrainAndBroadcast(MaxDrainBatchPerTick);
-    }
+    DrainAndBroadcast(MaxDrainBatchPerTick);
     return true;
 }
 
-/**
- * @brief 挂载设备至全局 GLog 实现
- */
-void UGameLoggingSubsystem::AttachDevice() {
+void UGameLoggingSubsystem::StartCapture() {
     if (GLog != nullptr && OutputDevice.IsValid() && !bDeviceAttached) {
         GLog->AddOutputDevice(OutputDevice.Get());
         bDeviceAttached = true;
     }
+    if (!TickerHandle.IsValid()) {
+        TickerHandle = FTSTicker::GetCoreTicker().AddTicker(
+            FTickerDelegate::CreateUObject(this, &UGameLoggingSubsystem::HandleTicker),
+            0.0f
+        );
+    }
 }
 
-/**
- * @brief 从全局 GLog 注销设备实现
- */
-void UGameLoggingSubsystem::DetachDevice() {
+void UGameLoggingSubsystem::StopCapture() {
+    if (TickerHandle.IsValid()) {
+        FTSTicker::GetCoreTicker().RemoveTicker(TickerHandle);
+        TickerHandle.Reset();
+    }
     if (GLog != nullptr && OutputDevice.IsValid() && bDeviceAttached) {
         GLog->RemoveOutputDevice(OutputDevice.Get());
         bDeviceAttached = false;
     }
 }
-

@@ -1,5 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+/**
+ * @file GameRemoteLogTypes.h
+ * @brief 远程日志解耦数据契约结构体与消息总线通道标签声明
+ */
+
 #pragma once
 
 #include "CoreMinimal.h"
@@ -18,34 +23,18 @@ struct GAMELOGGING_API FGameRemoteLogEntry {
     GENERATED_BODY()
 
 public:
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Logging")
-    FName Category;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Logging")
-    uint8 Verbosity{static_cast<uint8>(ELogVerbosity::Log)};
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Logging")
-    FString Message;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Logging")
-    double Timestamp{0.0};
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Logging")
-    int64 FrameNumber{0};
-
-public:
     /**
      * @brief 默认构造函数
      */
     FGameRemoteLogEntry() = default;
 
     /**
-     * @brief 带参全字段构造函数
+     * @brief 带参全字段构造函数（自动对 Verbosity 应用 VerbosityMask 清除非级别标志位）
      * @param InCategory 日志分类名称
      * @param InVerbosity 日志详细级别
      * @param InMessage 日志正文内容
      * @param InTimestamp 日志发生时钟秒数
-     * @param InFrameNumber 日志发生时的渲染/引擎帧序号
+     * @param InFrameNumber 日志发生时的引擎帧序号
      */
     FGameRemoteLogEntry(
         FName InCategory,
@@ -62,9 +51,25 @@ public:
     [[nodiscard]] ELogVerbosity::Type GetVerbosity() const noexcept;
 
     /**
-     * @brief 相等性比较操作符
+     * @brief 相等性比较操作符（正文采用精确大小写敏感匹配，时间戳采用浮点容差比较）
      * @param Other 待比较的另一日志条目
      * @return 所有关键字段均一致时返回 true
      */
     [[nodiscard]] bool operator==(const FGameRemoteLogEntry& Other) const noexcept;
+
+public:
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Logging")
+    FName Category;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Logging")
+    uint8 Verbosity{static_cast<uint8>(ELogVerbosity::Log)};
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Logging")
+    FString Message;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Logging")
+    double Timestamp{0.0};
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Logging")
+    int64 FrameNumber{0};
 };
