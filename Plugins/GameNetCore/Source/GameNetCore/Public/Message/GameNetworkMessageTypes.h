@@ -1,6 +1,6 @@
 /**
  * @file GameNetworkMessageTypes.h
- * @brief 网络事件总线通道标签与通用解耦信封数据契约（基于 GameCore GameplayMessageSubsystem 广播互通）
+ * @brief 网络事件总线通道标签与通用解耦信封数据契约（基于 GameMessage GameplayMessageSubsystem 广播互通）
  */
 
 #pragma once

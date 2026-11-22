@@ -38,6 +38,7 @@ graph TD
         GameNetCore["GameNetCore<br>16B 线格式 / 传输与序列化契约 / 预留协议 / 单机内存回环"]
         GamePool["GamePool<br>Actor/UObject 双轨池 / 世代句柄 / 协程预热 / TStructPool"]
         GameLogging["GameLogging<br>双轨分发日志 / Epoch 缓存 / 远程日志管道"]
+        GameMessage["GameMessage<br>GameplayTag 消息总线 / 零分配祖先匹配 / 跨线程 MPSC / 蓝图节点"]
     end
 
     subgraph Layer0["基础设施核心层 (零外部依赖)"]
@@ -56,11 +57,14 @@ graph TD
     GameGameplay --> GameGameplayCore
     GameGameplay --> GameFeedback
     GameGameplay --> GameLogging
+    GameGameplay --> GameMessage
     GameGameplay --> GamePool
     GameFeedback --> GameGameplayCore
     GameFeedback --> GameLogging
+    GameFeedback --> GameMessage
     GameFeedback --> GameCore
     GameNetService --> GameNetCore
+    GameNetService --> GameMessage
     GameNetSession --> GameNetCore
     GameNetCore --> GameCore
     GameNetCore --> GameLogging
@@ -72,11 +76,14 @@ graph TD
     GameDataCore --> GameCore
     GameDataCore --> GameLogging
     GameLogging --> GameCore
+    GameLogging --> GameMessage
+    GameMessage --> GameCore
 ```
 
 | 插件名称 | 职责定位 | 核心特性 | 依赖关系 | 文档入口 |
 | :--- | :--- | :--- | :--- | :--- |
 | [**GameCore**](Plugins/GameCore/README.md) | 底层基础设施 | 宏真源编译开关、配置中心与 INI/CLI 桥接、PCG32 确定性随机流与防脸黑抽卡、`TGameResult` 与代际 `TSlotMap`、轻量状态机与帧率无关阻尼数学、`FListenerHub`、`FObservableRegistry`、无锁环形缓冲与定长池分配器、C++20 协程原语、节流心跳与主线程时间切片 | 零外部依赖 (仅依赖引擎基础库) | [文档中心](Plugins/GameCore/Docs/Architecture/Overview.md) |
+| [**GameMessage**](Plugins/GameMessage/README.md) | 全局消息总线 | Pimpl 零 CDO 堆分配、GameplayTag 精确与零堆分配祖先树 `PartialMatch`、单层 Thunk + `CGameplayMessageStruct` 约束、重入安全栈内联快照、无竞态 `ActiveEpoch` RAII 句柄、ARM64 `seq_cst` 跨线程 MPSC 入队、`FStructOnScope` GC 安全蓝图节点 | `GameCore` | [API 参考](Plugins/GameMessage/Docs/API/GameplayMessageSubsystem.md) |
 | [**GameLogging**](Plugins/GameLogging/README.md) | 全局日志中枢 | 模块分类一键 RAII 注册、动态容量注册表、双轨分发架构、Epoch 纪元安全缓存、`GAME_LOG_THROTTLE` 限频、Shipping 零开销、零网络耦合远程日志管道（MPSC 队列 / GLog 挂载 / 总线广播） | `GameCore`, `GameMessage` | [文档中心](Plugins/GameLogging/Docs/Architecture/Overview.md) |
 | [**GamePool**](Plugins/GamePool/README.md) | 通用对象与内存池 | Actor/UObject 双轨对象池（Pimpl 隐藏、1-Pass 组件重置、GC 强引用追踪）、16B 编译期指纹载荷视图、世代防悬空安全句柄与 RAII 租约、事件驱动 C++20 协程预热、`TDeque` TTL 冷淘汰、无锁 MPMC 延迟归还、GC 安全低内存泄洪、原生 `TStructPool` | `GameCore`, `GameLogging` | [API 参考](Plugins/GamePool/Docs/API/ObjectPoolSubsystem.md) |
 | [**GameGameplayCore**](Plugins/GameGameplayCore/README.md) | 战斗核心契约 | 零 GAS 强依赖、`IDamageable` 泛型可受击契约、闭环同步打击反馈、通用数值 `UGameStatComponent`（属性字典 / 修正器 / 按 Tag 订阅）、生命组件 `UGameVitalComponent`（存活状态机 / 复活）、通用 Buff `UGameBuffComponent`（全员实现 `IGamePoolable`） | `GameCore`, `GamePool`, `GameLogging` | [文档中心](Plugins/GameGameplayCore/Docs/Architecture/Overview.md) |
@@ -86,7 +93,7 @@ graph TD
 | [**GameData**](Plugins/GameData/README.md) | 业务宿主与云同步 | 由 Excel 管线写入 `Public/Generated`、`Private/Generated`；提供 `UGameCloudSaveSubsystem` 强类型 RPC 云存档上传/拉取/落盘热应用门面 | `GameDataCore`, `GameNetCore`, `GameNetService` | [GameData 文档](Plugins/GameData/Docs/Architecture/Overview.md) |
 | [**GameDataSamples**](Plugins/GameDataSamples/README.md) | 示例插件 | Item / Shop 生成域、PlayerProfile 存档段适配器与示例测试；`install.py --all` 默认跳过 | `GameData`, `GameCore`, `GameLogging` | [README](Plugins/GameDataSamples/README.md) |
 | [**GameNetCore**](Plugins/GameNetCore/README.md) | 网络核心契约 | 16 字节线格式报文头、环形粘包/半包解包器、`INetTransport` / `INetSerializer` 契约、JSON 与二进制 Archive 序列化器、单机零开销回环 `FMockNetTransport` | `GameCore`, `GameLogging` | [文档中心](Plugins/GameNetCore/Docs/Architecture/Overview.md) |
-| [**GameNetService**](Plugins/GameNetService/README.md) | 业务长连接服务 | 跨关卡 `UGameNetServiceSubsystem`、WebSocket (WSS) 驱动、无锁 GameThread 派发、指数退避抖动重连、动态心跳 RTT、异步 Request-Response、`GameCore` 消息总线双向桥接、远程日志自动转发 | `GameNetCore`, `GameCore`, `GameLogging`, `WebSockets`, `GameplayMessageRuntime` | [文档中心](Plugins/GameNetService/Docs/Architecture/Overview.md) |
+| [**GameNetService**](Plugins/GameNetService/README.md) | 业务长连接服务 | 跨关卡 `UGameNetServiceSubsystem`、WebSocket (WSS) 驱动、无锁 GameThread 派发、指数退避抖动重连、动态心跳 RTT、异步 Request-Response、`GameMessage` 消息总线双向桥接、远程日志自动转发 | `GameNetCore`, `GameCore`, `GameMessage`, `GameLogging`, `WebSockets` | [文档中心](Plugins/GameNetService/Docs/Architecture/Overview.md) |
 | [**GameNetSession**](Plugins/GameNetSession/README.md) | 房间会话与发现 | 零平台 SDK 局域网非阻塞 UDP 房间发现（`FLanBeaconBroadcaster`）、`IOnlineSubsystem` 在线房间封装、防注入 `ServerTravel` / `ClientTravel` 握手工具 | `GameNetCore`, `GameCore`, `GameLogging`, `OnlineSubsystem` | [文档中心](Plugins/GameNetSession/Docs/Architecture/Overview.md) |
 
 ---
@@ -168,7 +175,8 @@ python3 .scripts/verify_package.py --project /path/to/EmptyProject --client-conf
 UEToolkit/
 ├── Plugins/                         # 模块化插件集合
 │   ├── GameCore/                    # [Layer 0] 通用基础设施 (零外部依赖)
-│   ├── GameLogging/                 # [Layer 1] 全局日志分发
+│   ├── GameMessage/                 # [Layer 1] GameplayTag 消息总线与蓝图异步节点
+│   ├── GameLogging/                 # [Layer 1] 全局日志分发与远程日志管道
 │   ├── GamePool/                    # [Layer 1] Actor/UObject 对象池与原生结构体内存池
 │   ├── GameGameplayCore/            # [Layer 1] 战斗契约 / 通用数值与 Buff
 │   ├── GameGameplay/                # [Layer 2] GAS 业务绑定与引导组件

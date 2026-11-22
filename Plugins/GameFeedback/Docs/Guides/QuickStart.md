@@ -23,7 +23,7 @@
 PrivateDependencyModuleNames.AddRange(new string[] {
     "GameFeedback",
     "GameplayTags",
-    "GameplayMessageRuntime"
+    "GameMessage"
 });
 ```
 
