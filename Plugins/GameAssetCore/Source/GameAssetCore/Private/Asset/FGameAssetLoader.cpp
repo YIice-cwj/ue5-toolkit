@@ -17,28 +17,9 @@ FGameAssetLoadHandle FGameAssetLoader::LoadBatchAsync(
         return FGameAssetLoadHandle();
     }
 
-    TArray<FSoftObjectPath> ValidPaths;
-    ValidPaths.Reserve(AssetPaths.Num());
-    TSet<FSoftObjectPath> SeenPaths;
-    SeenPaths.Reserve(AssetPaths.Num());
-    for (const FSoftObjectPath& Path : AssetPaths) {
-        if (Path.IsValid() && !SeenPaths.Contains(Path)) {
-            SeenPaths.Add(Path);
-            ValidPaths.Add(Path);
-        }
-    }
-
-    if (ValidPaths.IsEmpty()) {
-        if (OnProgress) {
-            OnProgress(1.0f);
-        }
-        OnAllLoaded();
-        return FGameAssetLoadHandle();
-    }
-
     bool bAllResident = true;
-    for (const FSoftObjectPath& Path : ValidPaths) {
-        if (Path.ResolveObject() == nullptr) {
+    for (const FSoftObjectPath& Path : AssetPaths) {
+        if (Path.IsValid() && Path.ResolveObject() == nullptr) {
             bAllResident = false;
             break;
         }
@@ -50,6 +31,21 @@ FGameAssetLoadHandle FGameAssetLoader::LoadBatchAsync(
         }
         OnAllLoaded();
         return FGameAssetLoadHandle();
+    }
+
+    TArray<FSoftObjectPath> ValidPaths;
+    ValidPaths.Reserve(AssetPaths.Num());
+    TSet<FSoftObjectPath> SeenPaths;
+    SeenPaths.Reserve(AssetPaths.Num());
+    for (const FSoftObjectPath& Path : AssetPaths) {
+        if (!Path.IsValid()) {
+            continue;
+        }
+        bool bAlreadyInSet = false;
+        SeenPaths.Add(Path, &bAlreadyInSet);
+        if (!bAlreadyInSet) {
+            ValidPaths.Add(Path);
+        }
     }
 
     struct FBatchRequestContext {

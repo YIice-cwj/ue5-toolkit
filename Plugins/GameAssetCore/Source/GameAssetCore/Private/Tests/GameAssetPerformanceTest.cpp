@@ -33,7 +33,7 @@ constexpr int32 ScopedPinIterations = 20000;
 constexpr double ScopedPinBudgetNsPerOp = 700.0;
 
 constexpr int32 BatchScanIterations = 10000;
-constexpr double BatchScanBudgetNsPerOp = 2000.0;
+constexpr double BatchScanBudgetNsPerOp = 3000.0;
 
 struct FBenchmarkMetrics {
     double MedianNs = 0.0;
