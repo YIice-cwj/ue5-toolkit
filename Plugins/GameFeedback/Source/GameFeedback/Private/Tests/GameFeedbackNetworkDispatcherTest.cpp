@@ -23,6 +23,7 @@
 #include "GameFramework/PlayerController.h"
 #include "GameplayTagsManager.h"
 #include "Message/GameplayMessageSubsystem.h"
+#include "Misc/ScopeExit.h"
 #include "Network/GameFeedbackReceiverComponent.h"
 
 namespace {
@@ -37,6 +38,42 @@ UGameFeedbackDefinition* CreateDispatcherDefinitionAtPath(const FString& ObjectP
     FString ObjectName;
     ObjectPath.Split(TEXT("."), &PackageName, &ObjectName);
     return NewObject<UGameFeedbackDefinition>(CreatePackage(*PackageName), *ObjectName);
+}
+
+/**
+ * @brief 安全清理测试用未初始化模拟网络连接，避免 GC 时在 UNetConnection::Close 越界访问空 Channels
+ * @param Connection 待清理的模拟网络连接
+ */
+void CleanupSimulatedConnection(USimulatedClientNetConnection* Connection) {
+    if (!Connection) {
+        return;
+    }
+    Connection->SetConnectionState(USOCK_Closed);
+    Connection->SetClientLoginState(EClientLoginState::CleanedUp);
+    Connection->OwningActor = nullptr;
+    Connection->PlayerController = nullptr;
+    Connection->PackageMap = nullptr;
+    Connection->Driver = nullptr;
+    Connection->MarkAsGarbage();
+}
+
+/**
+ * @brief 解除测试用 DemoNetDriver 与 World 及 WorldContext 的绑定并标记回收
+ * @param Driver 待清理的测试网络驱动
+ * @param WorldContext 关联的世界上下文
+ */
+void CleanupTestDemoNetDriver(UDemoNetDriver* Driver, FWorldContext* WorldContext) {
+    if (!Driver) {
+        return;
+    }
+    Driver->SendRPCDel.Unbind();
+    if (WorldContext) {
+        WorldContext->ActiveNetDrivers.RemoveAll([Driver](const FNamedNetDriver& Entry) {
+            return Entry.NetDriver == Driver;
+        });
+    }
+    Driver->World = nullptr;
+    Driver->MarkAsGarbage();
 }
 
 }  // namespace
@@ -88,6 +125,7 @@ bool FGameFeedbackNetworkDispatcherRateAndCullTest::RunTest([[maybe_unused]] con
     FWorldContext* WorldContext = GEngine->GetWorldContextFromWorld(World);
     TestNotNull(TEXT("WorldContext 有效"), WorldContext);
     if (!WorldContext) {
+        CleanupTestDemoNetDriver(Driver, nullptr);
         Settings->GlobalRegistry = PrevRegistry;
         Settings->MaxDispatchPerFrame = PrevMaxDispatch;
         Settings->DefaultNetworkCullDistance = PrevCullDist;
@@ -161,13 +199,22 @@ bool FGameFeedbackNetworkDispatcherRateAndCullTest::RunTest([[maybe_unused]] con
     Dispatcher->RegisterComponent();
     Dispatcher->BeginPlay();
 
-    UGameplayMessageSubsystem* Bus = GameInstance->GetSubsystem<UGameplayMessageSubsystem>();
-    TestNotNull(TEXT("消息总线有效"), Bus);
-    if (!Bus) {
+    ON_SCOPE_EXIT {
+        Dispatcher->EndPlay(EEndPlayReason::Destroyed);
+        NearPC->Player = nullptr;
+        FarPC->Player = nullptr;
+        CleanupSimulatedConnection(ConnectionNear);
+        CleanupSimulatedConnection(ConnectionFar);
+        CleanupTestDemoNetDriver(Driver, WorldContext);
         Settings->GlobalRegistry = PrevRegistry;
         Settings->MaxDispatchPerFrame = PrevMaxDispatch;
         Settings->DefaultNetworkCullDistance = PrevCullDist;
         GameInstance->Shutdown();
+    };
+
+    UGameplayMessageSubsystem* Bus = GameInstance->GetSubsystem<UGameplayMessageSubsystem>();
+    TestNotNull(TEXT("消息总线有效"), Bus);
+    if (!Bus) {
         return false;
     }
 
@@ -187,12 +234,6 @@ bool FGameFeedbackNetworkDispatcherRateAndCullTest::RunTest([[maybe_unused]] con
     Bus->BroadcastMessage(TAG_Feedback_Channel_Play, Msg);
     TestEqual(TEXT("跨帧后配额重置允许再次派发"), NearDispatches, 2);
 
-    Dispatcher->EndPlay(EEndPlayReason::Destroyed);
-
-    Settings->GlobalRegistry = PrevRegistry;
-    Settings->MaxDispatchPerFrame = PrevMaxDispatch;
-    Settings->DefaultNetworkCullDistance = PrevCullDist;
-    GameInstance->Shutdown();
     return true;
 }
 

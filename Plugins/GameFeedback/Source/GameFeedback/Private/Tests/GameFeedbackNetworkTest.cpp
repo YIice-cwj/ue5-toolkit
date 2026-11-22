@@ -26,6 +26,7 @@
 #include "GameFramework/PlayerController.h"
 #include "GameplayTagsManager.h"
 #include "Message/GameplayMessageSubsystem.h"
+#include "Misc/ScopeExit.h"
 #include "Network/GameFeedbackEventNet.h"
 #include "Network/GameFeedbackReceiverComponent.h"
 #include "Serialization/MemoryReader.h"
@@ -47,6 +48,42 @@ UGameFeedbackDefinition* CreateNetworkDefinitionAtPath(const FString& ObjectPath
     FString ObjectName;
     ObjectPath.Split(TEXT("."), &PackageName, &ObjectName);
     return NewObject<UGameFeedbackDefinition>(CreatePackage(*PackageName), *ObjectName);
+}
+
+/**
+ * @brief 安全清理测试用未初始化模拟网络连接，避免 GC 时在 UNetConnection::Close 越界访问空 Channels
+ * @param Connection 待清理的模拟网络连接
+ */
+void CleanupSimulatedConnection(USimulatedClientNetConnection* Connection) {
+    if (!Connection) {
+        return;
+    }
+    Connection->SetConnectionState(USOCK_Closed);
+    Connection->SetClientLoginState(EClientLoginState::CleanedUp);
+    Connection->OwningActor = nullptr;
+    Connection->PlayerController = nullptr;
+    Connection->PackageMap = nullptr;
+    Connection->Driver = nullptr;
+    Connection->MarkAsGarbage();
+}
+
+/**
+ * @brief 解除测试用 DemoNetDriver 与 World 及 WorldContext 的绑定并标记回收
+ * @param Driver 待清理的测试网络驱动
+ * @param WorldContext 可选的世界上下文（非空时同步从 ActiveNetDrivers 移除）
+ */
+void CleanupTestDemoNetDriver(UDemoNetDriver* Driver, FWorldContext* WorldContext = nullptr) {
+    if (!Driver) {
+        return;
+    }
+    Driver->SendRPCDel.Unbind();
+    if (WorldContext) {
+        WorldContext->ActiveNetDrivers.RemoveAll([Driver](const FNamedNetDriver& Entry) {
+            return Entry.NetDriver == Driver;
+        });
+    }
+    Driver->World = nullptr;
+    Driver->MarkAsGarbage();
 }
 
 }  // namespace
@@ -74,6 +111,12 @@ bool FGameFeedbackNetSerializeTest::RunTest([[maybe_unused]] const FString& Para
     UPackageMapClient* PackageMap = NewObject<UPackageMapClient>(Connection);
     PackageMap->Initialize(Connection, GuidCache);
     Connection->PackageMap = PackageMap;
+    ON_SCOPE_EXIT {
+        CleanupSimulatedConnection(Connection);
+        CleanupTestDemoNetDriver(Driver);
+        World->DestroyWorld(false);
+        World->RemoveFromRoot();
+    };
 
     AActor* Instigator = World->SpawnActor<AActor>();
     AActor* DamageCauser = World->SpawnActor<AActor>();
@@ -83,8 +126,6 @@ bool FGameFeedbackNetSerializeTest::RunTest([[maybe_unused]] const FString& Para
     USkeletalMesh* SkeletalMesh = LoadObject<USkeletalMesh>(nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
     TestNotNull(TEXT("骨骼测试资产可用"), SkeletalMesh);
     if (!SkeletalMesh) {
-        World->DestroyWorld(false);
-        World->RemoveFromRoot();
         return false;
     }
     HitComponent->SetSkeletalMeshAsset(SkeletalMesh);
@@ -92,8 +133,6 @@ bool FGameFeedbackNetSerializeTest::RunTest([[maybe_unused]] const FString& Para
     HitComponent->RegisterComponent();
     TestTrue(TEXT("骨骼测试资产至少包含两根骨骼"), HitComponent->GetNumBones() > 1);
     if (HitComponent->GetNumBones() <= 1) {
-        World->DestroyWorld(false);
-        World->RemoveFromRoot();
         return false;
     }
 
@@ -189,8 +228,6 @@ bool FGameFeedbackNetSerializeTest::RunTest([[maybe_unused]] const FString& Para
     AddInfo(FString::Printf(TEXT("真实 PackageMap 典型事件载荷：%d 字节"), TypicalBytes));
     TestTrue(TEXT("典型网络载荷必须满足预算 <= 64 字节"), TypicalBytes <= 64);
 
-    World->DestroyWorld(false);
-    World->RemoveFromRoot();
     return true;
 }
 
@@ -350,10 +387,9 @@ bool FGameFeedbackNetworkDefinitionContractTest::RunTest([[maybe_unused]] const 
     TestEqual(TEXT("过期映射版本不得回灌"), ReceivedCount, 1);
 
     Dispatcher->EndPlay(EEndPlayReason::Destroyed);
-    Driver->SendRPCDel.Unbind();
-    WorldContext->ActiveNetDrivers.RemoveAll([Driver](const FNamedNetDriver& Entry) {
-        return Entry.NetDriver == Driver;
-    });
+    PC->Player = nullptr;
+    CleanupSimulatedConnection(Connection);
+    CleanupTestDemoNetDriver(Driver, WorldContext);
     Handle.Unregister();
     Settings->GlobalRegistry = PreviousRegistry;
     GameInstance->Shutdown();

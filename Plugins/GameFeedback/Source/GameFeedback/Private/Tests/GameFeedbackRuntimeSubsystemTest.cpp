@@ -50,6 +50,8 @@ bool FGameFeedbackRuntimeSubsystemTest::RunTest([[maybe_unused]] const FString& 
     FWorldContext* WorldContext = GEngine->GetWorldContextFromWorld(World);
     TestNotNull(TEXT("WorldContext 有效"), WorldContext);
     if (!WorldContext) {
+        Driver->World = nullptr;
+        Driver->MarkAsGarbage();
         GameInstance->Shutdown();
         return false;
     }
@@ -87,6 +89,11 @@ bool FGameFeedbackRuntimeSubsystemTest::RunTest([[maybe_unused]] const FString& 
         GameState->FindComponentByClass<UGameFeedbackWorldComponent>());
 
     Subsystem->Deinitialize();
+    WorldContext->ActiveNetDrivers.RemoveAll([Driver](const FNamedNetDriver& Entry) {
+        return Entry.NetDriver == Driver;
+    });
+    Driver->World = nullptr;
+    Driver->MarkAsGarbage();
     GameInstance->Shutdown();
     return true;
 }
