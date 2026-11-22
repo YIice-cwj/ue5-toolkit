@@ -55,13 +55,12 @@ struct FEnemyKilledMessage {
 void UAchievementSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
     Super::Initialize(Collection);
+    Collection.InitializeDependency<UGameplayMessageSubsystem>();
 
-    // 监听所有击杀事件
     KilledListenerHandle = UGameplayMessageSubsystem::Get(this).RegisterListener<FEnemyKilledMessage>(
         FGameplayTag::RequestGameplayTag(TEXT("Event.Combat.EnemyKilled")),
-        [this](FGameplayTag Channel, const FEnemyKilledMessage& Message) {
-            this->OnEnemyDefeated(Message.EnemyId, Message.ExpReward);
-        }
+        this,
+        &UAchievementSubsystem::OnEnemyDefeated
     );
 }
 

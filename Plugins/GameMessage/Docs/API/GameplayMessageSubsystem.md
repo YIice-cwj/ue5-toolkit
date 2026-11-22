@@ -1,35 +1,71 @@
 # GameMessage Gameplay 消息总线 API 参考
 
-`UGameplayMessageSubsystem` 是基于 GameplayTag 层级寻址与 `UScriptStruct` 强类型校验的解耦消息通信中枢。
+`UGameplayMessageSubsystem` 是基于 `GameplayTag` 层级寻址与 `UScriptStruct` 强类型校验的全局解耦消息通信中枢。
 
 头文件：
 - `#include "Message/GameplayMessageSubsystem.h"`
+- `#include "Message/FGameplayMessageListenerHandle.h"`
 - `#include "Message/GameplayMessageTypes.h"`
+- `#include "Message/MessageErrorCodes.h"`
 - `#include "Message/AsyncAction_ListenForGameplayMessage.h"`
 基类：`UGameInstanceSubsystem`
 
 ---
 
-## 1. 核心枚举与类型
+## 1. 核心概念、枚举与错误码
 
-### 1.1 `EGameplayMessageMatch`
+### 1.1 `CGameplayMessageStruct`
+C++20 编译期载荷约束，要求目标类型为 `USTRUCT` 或已特化 `TBaseStructure<T>` 的引擎核心结构体（如 `FVector`）：
+```cpp
+template <typename T>
+concept CGameplayMessageStruct = requires {
+    { TBaseStructure<std::remove_cvref_t<T>>::Get() } -> std::convertible_to<const UScriptStruct*>;
+};
+```
+
+### 1.2 `EGameplayMessageMatch`
 标签匹配规则：
 ```cpp
 UENUM(BlueprintType)
 enum class EGameplayMessageMatch : uint8 {
-    ExactMatch,   // 严格精确匹配（仅当前 Tag 完全一致才触发）
-    PartialMatch, // 层级父子匹配（广播通道为监听通道的子标签时亦会触发）
+    ExactMatch,   // 严格精确匹配（仅当广播通道与监听通道完全相同时触发）
+    PartialMatch, // 层级父子匹配（广播通道与监听通道相同或其子标签时均会触发）
 };
 ```
 
-### 1.2 `FGameplayMessageListenerHandle`
-监听器句柄（RAII 守卫），用于控制退订生命周期：
+### 1.3 `Game::MessageErrorCodes`
+统一配合 `Game::ModuleId::Message (7)` 写入 `FGameError`：
+
+| 常量 | 数值 | 语义说明 |
+|---|---:|---|
+| `InvalidChannel` | `7001` | 消息通道 `GameplayTag` 无效或为空 |
+| `InvalidStructType` | `7002` | 消息载荷 `UScriptStruct` 反射元数据为空 |
+| `InvalidPayload` | `7003` | 消息载荷指针或任务闭包为空 |
+| `SubsystemShuttingDown` | `7004` | 消息子系统尚未初始化、正在关闭或已注销 |
+
+### 1.4 `FGameplayMessageListenerHandle`
+监听器 RAII 句柄（支持安全拷贝、哈希容器存储、跨线程退订与子系统 `Deinitialize()` 即刻失效感知）：
 ```cpp
+USTRUCT(BlueprintType)
 struct GAMEMESSAGE_API FGameplayMessageListenerHandle {
+    GENERATED_BODY()
+
+public:
+    FGameplayMessageListenerHandle() = default;
+
     void Unregister();
     [[nodiscard]] bool IsValid() const noexcept;
+    [[nodiscard]] explicit operator bool() const noexcept;
+
+    [[nodiscard]] bool operator==(const FGameplayMessageListenerHandle& Other) const noexcept;
+    [[nodiscard]] bool operator!=(const FGameplayMessageListenerHandle& Other) const noexcept;
+    [[nodiscard]] friend uint32 GetTypeHash(const FGameplayMessageListenerHandle& Handle) noexcept;
 };
 ```
+
+- 内部共享不可变注册态与原子 `ListenerId`，任意线程调用 `IsValid()` 与 `Unregister()` 均无数据竞争；
+- **最后一份副本析构时**自动注销；也可提前调用 `Unregister()` 显式注销并清空句柄；
+- 所属 `UGameplayMessageSubsystem::Deinitialize()` 执行后，关联运行纪元立即作废，存量句柄 `IsValid()` 即刻返回 `false` 且不会误伤后续 `Initialize()` 新建的同 ID 监听器。
 
 ---
 
@@ -44,32 +80,21 @@ public:
     static UGameplayMessageSubsystem& Get(const UObject* WorldContextObject);
     static UGameplayMessageSubsystem* GetPtr(const UObject* WorldContextObject);
 
-    /**
-     * @brief 广播强类型消息（主线程同步派发，内部采用栈内联数组 + TSharedPtr 零闭包拷贝快照）
-     * @tparam TMessageStructType 必须是带有 USTRUCT() 的反射结构体
-     * @param Channel 寻址通道 GameplayTag
-     * @param Message 消息结构体实例
-     * @return 派发状态结果（通道无效或未指定反射结构体时返回失败）
-     */
-    template <typename TMessageStructType>
+    void Initialize(FSubsystemCollectionBase& Collection) override;
+    void Deinitialize() override;
+
+    UFUNCTION(BlueprintPure, Category = "GameMessage|Message")
+    bool HasListener(FGameplayTag Channel) const;
+
+    template <CGameplayMessageStruct TMessageStructType>
     TGameStatusResult<void> BroadcastMessage(FGameplayTag Channel, const TMessageStructType& Message);
 
-    /**
-     * @brief 跨线程安全异步入队强类型消息（可在任意后台工作线程调用，经无锁 MPSC 队列合并投递回 GameThread 串行派发）
-     * @return 入队状态结果
-     */
-    template <typename TMessageStructType>
+    template <CGameplayMessageStruct TMessageStructType>
     TGameStatusResult<void> EnqueueMessage(FGameplayTag Channel, TMessageStructType Message);
 
-    /**
-     * @brief 在主线程立即排空并派发所有待处理的跨线程消息
-     */
     int32 FlushPendingMessages();
 
-    /**
-     * @brief 注册成员函数监听器（仅接收通道与载荷）
-     */
-    template <typename TMessageStructType, typename TOwner>
+    template <CGameplayMessageStruct TMessageStructType, typename TOwner>
     [[nodiscard]] FGameplayMessageListenerHandle RegisterListener(
         FGameplayTag Channel,
         TOwner* ListenerObject,
@@ -77,10 +102,7 @@ public:
         EGameplayMessageMatch MatchRule = EGameplayMessageMatch::ExactMatch
     );
 
-    /**
-     * @brief 注册成员函数监听器（仅接收载荷）
-     */
-    template <typename TMessageStructType, typename TOwner>
+    template <CGameplayMessageStruct TMessageStructType, typename TOwner>
     [[nodiscard]] FGameplayMessageListenerHandle RegisterListener(
         FGameplayTag Channel,
         TOwner* ListenerObject,
@@ -88,44 +110,34 @@ public:
         EGameplayMessageMatch MatchRule = EGameplayMessageMatch::ExactMatch
     );
 
-    /**
-     * @brief 注册通用 Lambda / TFunction 监听器
-     */
-    template <typename TMessageStructType>
+    template <CGameplayMessageStruct TMessageStructType>
     [[nodiscard]] FGameplayMessageListenerHandle RegisterListener(
         FGameplayTag Channel,
         TFunction<void(FGameplayTag, const TMessageStructType&)> Callback,
         EGameplayMessageMatch MatchRule = EGameplayMessageMatch::ExactMatch
     );
 
-    /**
-     * @brief 手动注销指定通道上的监听器 ID（升级 64 位整型，防止长时间运行符号溢出）
-     * @return 注销状态结果（通道无效或未找到监听器时返回对应错误）
-     */
-    TGameStatusResult<void> UnregisterListener(FGameplayTag Channel, int64 ListenerId);
+    template <CGameplayMessageStruct TMessageStructType>
+    [[nodiscard]] FGameplayMessageListenerHandle RegisterListener(
+        FGameplayTag Channel,
+        TFunction<void(const TMessageStructType&)> Callback,
+        EGameplayMessageMatch MatchRule = EGameplayMessageMatch::ExactMatch
+    );
 
-    /**
-     * @brief 检查指定通道是否存在任何监听器
-     */
-    UFUNCTION(BlueprintPure, Category = "GameCore|Message")
-    bool HasListener(FGameplayTag Channel, EGameplayMessageMatch MatchRule = EGameplayMessageMatch::ExactMatch) const;
-
-    /**
-     * @brief 查询当前已注册的监听器总数
-     */
     [[nodiscard]] int32 GetListenerCount() const;
 };
 ```
 
-### 监听句柄的拷贝语义
-
-`FGameplayMessageListenerHandle` 内部持有 `TSharedPtr` 注册对象，可安全拷贝；**最后一份副本析构时**才通过共享引用自动注销，`Unregister()` 可提前显式注销并清空句柄。
+### 核心语义约定
+- **路由一致性**：`HasListener(Channel)` 与 `BroadcastMessage(Channel, ...)` 共享同一套精确 + 祖先 `PartialMatch` 查找逻辑，广播端可在打包昂贵载荷前安全短路。
+- **结构体继承多态**：广播派生 `USTRUCT` 时，订阅基类 `USTRUCT` 的监听器通过 `UScriptStruct::IsChildOf` 自动命中。
+- **重入安全**：广播期间允许回调内自退订、注销其他监听器（被注销监听当轮即刻静默，绝不 UAF）、动态注册新监听器（自下一轮生效）以及嵌套广播。
+- **统一退订入口**：外部退订统一通过 `FGameplayMessageListenerHandle::Unregister()` 或句柄作用域析构触发，不暴露底层 `int64 ListenerId`。
+- **上下文直通**：`Get` / `GetPtr` 支持传入 `UWorld`、`UGameInstance`、`UGameInstanceSubsystem`（无 `UWorld` 时亦可直通）以及任意具备 `World` 的场景 `UObject`。
 
 ---
 
 ## 3. 蓝图异步监听节点 (`UAsyncAction_ListenForGameplayMessage`)
-
-在蓝图中，可通过 `ListenForGameplayMessages` 异步节点直接监听通道消息：
 
 ```cpp
 UCLASS()
@@ -136,14 +148,31 @@ public:
     UPROPERTY(BlueprintAssignable)
     FAsyncGameplayMessageDelegate OnMessageReceived;
 
-    UFUNCTION(BlueprintCallable, Category = "GameCore|Message", meta = (WorldContext = "WorldContextObject", BlueprintInternalUseOnly = "true"))
+    UFUNCTION(BlueprintCallable, Category = "GameMessage|Message", meta = (WorldContext = "WorldContextObject", BlueprintInternalUseOnly = "true"))
     static UAsyncAction_ListenForGameplayMessage* ListenForGameplayMessages(
         UObject* WorldContextObject,
         FGameplayTag Channel,
         EGameplayMessageMatch MatchRule = EGameplayMessageMatch::ExactMatch
     );
+
+    static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
+    void Activate() override;
+    void SetReadyToDestroy() override;
+    void BeginDestroy() override;
+
+    UFUNCTION(BlueprintCallable, Category = "GameMessage|Message", meta = (DisplayName = "Cancel Message Listener"))
+    void Cancel();
+
+    UFUNCTION(BlueprintCallable, CustomThunk, Category = "GameMessage|Message", meta = (CustomStructureParam = "OutPayload"))
+    bool GetPayload(UPARAM(ref) int32& OutPayload);
+
+    template <CGameplayMessageStruct TMessageStructType>
+    bool GetPayloadTyped(TMessageStructType& OutPayload) const;
 };
 ```
+
+- 内部以引擎 `FStructOnScope` 按 `GetMinAlignment()` 缓存最近一条载荷，并在 `AddReferencedObjects` 中完整追踪载荷内 `UPROPERTY() UObject*` 与动态 `UScriptStruct` 引用，在 `BeginDestroy()` 中兜底释放监听句柄与结构体内存；
+- `Activate()` 幂等，重复激活不会重复注册监听器；无效通道或缺失子系统时自动调用 `SetReadyToDestroy()`。
 
 ---
 
@@ -175,23 +204,25 @@ struct FPlayerKillMessage {
 FGameplayMessageListenerHandle KillHandle = UGameplayMessageSubsystem::Get(this).RegisterListener<FPlayerKillMessage>(
     FGameplayTag::RequestGameplayTag(TEXT("Event.Combat.Kill")),
     [this](FGameplayTag Channel, const FPlayerKillMessage& Payload) {
-        UE_LOG(LogTemp, Log, TEXT("Kill recorded: Score +%d"), Payload.ScoreGained);
+        OnKillRecorded(Channel, Payload.ScoreGained);
     }
 );
 
-// 手动退订（或随 KillHandle 离开作用域析构自动退订）
 KillHandle.Unregister();
 ```
 
-### 4.3 广播消息
+### 4.3 同步广播与跨线程入队
 ```cpp
 FPlayerKillMessage Msg;
 Msg.Killer = PlayerA;
 Msg.Victim = PlayerB;
 Msg.ScoreGained = 100;
 
-UGameplayMessageSubsystem::Get(this).BroadcastMessage(
-    FGameplayTag::RequestGameplayTag(TEXT("Event.Combat.Kill")),
-    Msg
-);
+UGameplayMessageSubsystem& Bus = UGameplayMessageSubsystem::Get(this);
+if (Bus.HasListener(TAG_Event_Combat_Kill)) {
+    Bus.BroadcastMessage(TAG_Event_Combat_Kill, Msg);
+}
+
+// 后台工作线程安全入队，自动合并调度至 GameThread 串行派发
+Bus.EnqueueMessage(TAG_Event_Combat_Kill, MoveTemp(Msg));
 ```

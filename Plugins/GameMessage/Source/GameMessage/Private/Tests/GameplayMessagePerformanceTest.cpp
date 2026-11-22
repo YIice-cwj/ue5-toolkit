@@ -1,19 +1,19 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
+/**
+ * @file GameplayMessagePerformanceTest.cpp
+ * @brief UGameplayMessageSubsystem 全热路径微基准性能回归测试套件
+ */
 
 #include "Message/GameplayMessageSubsystem.h"
 
-#include "Tests/GameMessageTestReceiver.h"
+#include "Tests/FTestGameplayMessage.h"
+#include "Tests/UGameMessageTestReceiver.h"
 
 #if WITH_AUTOMATION_TESTS
 
 #include <atomic>
 
-#include "Async/Async.h"
 #include "Async/ParallelFor.h"
-#include "Async/TaskGraphInterfaces.h"
-#include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
-#include "Engine/World.h"
 #include "GameplayTagsManager.h"
 #include "HAL/PlatformTime.h"
 #include "Math/UnrealMathUtility.h"
@@ -38,6 +38,16 @@ constexpr double CrossThreadBudgetNsPerOp = 1000.0;
 
 constexpr int32 ChurnIterations = 50000;
 constexpr double ChurnBudgetNsPerOp = 600.0;
+
+constexpr int32 NoListenerIterations = 100000;
+constexpr double NoListenerBudgetNsPerOp = 150.0;
+
+constexpr int32 MultiChannelCount = 64;
+constexpr int32 MultiChannelPartialIterations = 50000;
+constexpr double MultiChannelPartialBudgetNsPerOp = 600.0;
+
+constexpr int32 MemberDispatchIterations = 100000;
+constexpr double MemberDispatchBudgetNsPerOp = 300.0;
 
 struct FBenchmarkMetrics {
     double MedianNs = 0.0;
@@ -161,6 +171,8 @@ bool FGameMessageExactMatchBroadcastPerfTest::RunTest([[maybe_unused]] const FSt
         Sink
     ));
 
+    Subsystem->MarkAsGarbage();
+    GameInstance->MarkAsGarbage();
     return true;
 }
 
@@ -228,13 +240,16 @@ bool FGameMessageFanOutScalabilityPerfTest::RunTest([[maybe_unused]] const FStri
 
     AddInfo(FString::Printf(
         TEXT("Fan-Out Scaling: [1 Listener: %.1f ns (%.2f Mops/s)] | [4: %.1f ns] | [8: %.1f ns] | [16 (Inline Limit): %.1f ns] | [32 (Heap Fallback): %.1f ns]"),
-        M1.MedianNs, M1.OpsPerSec / 1.0e6,
+        M1.MedianNs,
+        M1.OpsPerSec / 1.0e6,
         M4.MedianNs,
         M8.MedianNs,
         M16.MedianNs,
         M32.MedianNs
     ));
 
+    Subsystem->MarkAsGarbage();
+    GameInstance->MarkAsGarbage();
     return true;
 }
 
@@ -245,12 +260,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 层级父子标签前缀匹配 vs 精确匹配开销微基准（验证 PartialMatch 计数快速路径优化收益）
- *
- * 测试执行两阶段对比：
- * 阶段 1：仅存在精确匹配监听器时（触发 PartialMatchListenerCount == 0 快速路径）；
- * 阶段 2：存在父标签前缀匹配监听器时（走完整父标签树提取与逐级查找）。
- *
+ * @brief 层级父子标签前缀匹配 vs 精确匹配开销微基准（验证零分配树节点父链遍历与快速路径收益）
  * @param Parameters 自动化框架参数（未使用）
  * @return 预算内且部分匹配开销符合预期返回 true
  */
@@ -311,7 +321,7 @@ bool FGameMessagePartialMatchPerfTest::RunTest([[maybe_unused]] const FString& P
     );
 
     const double OverheadNs = HierarchyMetrics.MedianNs - FastPathMetrics.MedianNs;
-    const double FastPathSpeedup = (HierarchyMetrics.MedianNs > 0.0) ? (HierarchyMetrics.MedianNs / FastPathMetrics.MedianNs) : 0.0;
+    const double FastPathSpeedup = (FastPathMetrics.MedianNs > 0.0) ? (HierarchyMetrics.MedianNs / FastPathMetrics.MedianNs) : 0.0;
 
     AddInfo(FString::Printf(
         TEXT("Fast-Path (Exact): %.1f ns/op (%.2f Mops/s) | Hierarchy Traversal (Partial): %.1f ns/op | Tag Tree Overhead: +%.1f ns | Fast-Path Speedup: %.2fx"),
@@ -322,6 +332,8 @@ bool FGameMessagePartialMatchPerfTest::RunTest([[maybe_unused]] const FString& P
         FastPathSpeedup
     ));
 
+    Subsystem->MarkAsGarbage();
+    GameInstance->MarkAsGarbage();
     return true;
 }
 
@@ -386,6 +398,8 @@ bool FGameMessageCrossThreadEnqueuePerfTest::RunTest([[maybe_unused]] const FStr
         ReceivedSum.load(std::memory_order_relaxed)
     ));
 
+    Subsystem->MarkAsGarbage();
+    GameInstance->MarkAsGarbage();
     return true;
 }
 
@@ -440,6 +454,234 @@ bool FGameMessageRegisterUnregisterPerfTest::RunTest([[maybe_unused]] const FStr
         Subsystem->GetListenerCount()
     ));
 
+    Subsystem->MarkAsGarbage();
+    GameInstance->MarkAsGarbage();
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameMessageNoListenerFastPathPerfTest,
+    "Game.Message.Perf.NoListenerFastPath",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 多活跃通道背景下静默未订阅通道的广播短路耗时微基准
+ * @param Parameters 自动化框架参数（未使用）
+ * @return 预算内返回 true
+ */
+bool FGameMessageNoListenerFastPathPerfTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UGameInstance* GameInstance = NewObject<UGameInstance>();
+    UGameplayMessageSubsystem* Subsystem = NewObject<UGameplayMessageSubsystem>(GameInstance);
+
+    TArray<FGameplayMessageListenerHandle> SiblingHandles;
+    SiblingHandles.Reserve(MultiChannelCount);
+    for (int32 Index = 0; Index < MultiChannelCount; ++Index) {
+        const FGameplayTag SiblingTag = UGameplayTagsManager::Get().AddNativeGameplayTag(
+            FName(*FString::Printf(TEXT("Perf.Message.QuietSibling.Ch%d"), Index))
+        );
+        SiblingHandles.Add(Subsystem->RegisterListener<FTestGameplayMessage>(
+            SiblingTag,
+            [](const FTestGameplayMessage&) {}
+        ));
+    }
+
+    const FGameplayTag QuietChannel = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Perf.Message.QuietTarget")));
+    FTestGameplayMessage Message;
+    Message.Value = 1;
+
+    const FBenchmarkMetrics Metrics = RunBenchmark(
+        DefaultWarmupRounds,
+        DefaultSampleRounds,
+        NoListenerIterations,
+        [Subsystem, QuietChannel, &Message](const int32 Iterations) {
+            for (int32 Index = 0; Index < Iterations; ++Index) {
+                Subsystem->BroadcastMessage(QuietChannel, Message);
+            }
+        }
+    );
+
+    for (FGameplayMessageListenerHandle& Handle : SiblingHandles) {
+        Handle.Unregister();
+    }
+
+    TestTrue(
+        FString::Printf(TEXT("静默通道广播耗时 %.1f ns/op 应低于预算 %.0f ns/op"), Metrics.MedianNs, NoListenerBudgetNsPerOp),
+        Metrics.MedianNs < NoListenerBudgetNsPerOp
+    );
+
+    AddInfo(FString::Printf(
+        TEXT("No-Listener Fast-Path (%d sibling channels): %.1f ns/op (CV: %.2f%%, %.2f Mops/s)"),
+        MultiChannelCount,
+        Metrics.MedianNs,
+        Metrics.CvPercent,
+        Metrics.OpsPerSec / 1.0e6
+    ));
+
+    Subsystem->MarkAsGarbage();
+    GameInstance->MarkAsGarbage();
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameMessageMultiChannelPartialMatchPerfTest,
+    "Game.Message.Perf.MultiChannelPartialMatch",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 64 通道规模 + 4 层深层标签层级 PartialMatch 广播微基准
+ * @param Parameters 自动化框架参数（未使用）
+ * @return 预算内返回 true
+ */
+bool FGameMessageMultiChannelPartialMatchPerfTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UGameInstance* GameInstance = NewObject<UGameInstance>();
+    UGameplayMessageSubsystem* Subsystem = NewObject<UGameplayMessageSubsystem>(GameInstance);
+
+    TArray<FGameplayMessageListenerHandle> Handles;
+    Handles.Reserve(MultiChannelCount + 1);
+    for (int32 Index = 0; Index < MultiChannelCount; ++Index) {
+        const FGameplayTag ChannelTag = UGameplayTagsManager::Get().AddNativeGameplayTag(
+            FName(*FString::Printf(TEXT("Perf.Multi.Other.Ch%d"), Index))
+        );
+        Handles.Add(Subsystem->RegisterListener<FTestGameplayMessage>(
+            ChannelTag,
+            [](const FTestGameplayMessage&) {}
+        ));
+    }
+
+    const FGameplayTag RootChannel = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Perf.Multi.Root")));
+    const FGameplayTag DeepLeafChannel = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Perf.Multi.Root.L1.L2.L3")));
+
+    volatile int64 Sink = 0;
+    Handles.Add(Subsystem->RegisterListener<FTestGameplayMessage>(
+        RootChannel,
+        [&Sink](const FTestGameplayMessage& Payload) {
+            Sink = Sink + Payload.Value;
+        },
+        EGameplayMessageMatch::PartialMatch
+    ));
+
+    FTestGameplayMessage Message;
+    Message.Value = 1;
+
+    const FBenchmarkMetrics Metrics = RunBenchmark(
+        DefaultWarmupRounds,
+        DefaultSampleRounds,
+        MultiChannelPartialIterations,
+        [Subsystem, DeepLeafChannel, &Message](const int32 Iterations) {
+            for (int32 Index = 0; Index < Iterations; ++Index) {
+                Subsystem->BroadcastMessage(DeepLeafChannel, Message);
+            }
+        }
+    );
+
+    for (FGameplayMessageListenerHandle& Handle : Handles) {
+        Handle.Unregister();
+    }
+
+    TestTrue(
+        FString::Printf(TEXT("64 通道 4 层 PartialMatch 耗时 %.1f ns/op 应低于预算 %.0f ns/op"), Metrics.MedianNs, MultiChannelPartialBudgetNsPerOp),
+        Metrics.MedianNs < MultiChannelPartialBudgetNsPerOp
+    );
+
+    AddInfo(FString::Printf(
+        TEXT("Multi-Channel PartialMatch (%d channels, 4-level tag): %.1f ns/op (CV: %.2f%%, %.2f Mops/s, Sink: %lld)"),
+        MultiChannelCount,
+        Metrics.MedianNs,
+        Metrics.CvPercent,
+        Metrics.OpsPerSec / 1.0e6,
+        Sink
+    ));
+
+    Subsystem->MarkAsGarbage();
+    GameInstance->MarkAsGarbage();
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameMessageMemberAndPayloadOnlyPerfTest,
+    "Game.Message.Perf.MemberAndPayloadOnlyDispatch",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证消除双层 Thunk 包装后的成员函数监听器与单参载荷 Lambda 派发延迟微基准
+ * @param Parameters 自动化框架参数（未使用）
+ * @return 预算内返回 true
+ */
+bool FGameMessageMemberAndPayloadOnlyPerfTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UGameInstance* GameInstance = NewObject<UGameInstance>();
+    UGameplayMessageSubsystem* Subsystem = NewObject<UGameplayMessageSubsystem>(GameInstance);
+    UGameMessageTestReceiver* Receiver = NewObject<UGameMessageTestReceiver>(GameInstance);
+
+    const FGameplayTag MemberChannel = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Perf.Message.MemberDispatch")));
+    const FGameplayTag PayloadOnlyChannel = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Perf.Message.PayloadOnlyDispatch")));
+
+    FGameplayMessageListenerHandle MemberHandle = Subsystem->RegisterListener<FTestGameplayMessage>(
+        MemberChannel,
+        Receiver,
+        &UGameMessageTestReceiver::OnPayloadOnlyReceived
+    );
+
+    volatile int64 Sink = 0;
+    FGameplayMessageListenerHandle PayloadOnlyHandle = Subsystem->RegisterListener<FTestGameplayMessage>(
+        PayloadOnlyChannel,
+        [&Sink](const FTestGameplayMessage& Payload) {
+            Sink = Sink + Payload.Value;
+        }
+    );
+
+    FTestGameplayMessage Message;
+    Message.Value = 1;
+
+    const FBenchmarkMetrics MemberMetrics = RunBenchmark(
+        DefaultWarmupRounds,
+        DefaultSampleRounds,
+        MemberDispatchIterations,
+        [Subsystem, MemberChannel, &Message](const int32 Iterations) {
+            for (int32 Index = 0; Index < Iterations; ++Index) {
+                Subsystem->BroadcastMessage(MemberChannel, Message);
+            }
+        }
+    );
+
+    const FBenchmarkMetrics PayloadOnlyMetrics = RunBenchmark(
+        DefaultWarmupRounds,
+        DefaultSampleRounds,
+        MemberDispatchIterations,
+        [Subsystem, PayloadOnlyChannel, &Message](const int32 Iterations) {
+            for (int32 Index = 0; Index < Iterations; ++Index) {
+                Subsystem->BroadcastMessage(PayloadOnlyChannel, Message);
+            }
+        }
+    );
+
+    MemberHandle.Unregister();
+    PayloadOnlyHandle.Unregister();
+
+    TestTrue(
+        FString::Printf(TEXT("成员函数监听器派发耗时 %.1f ns/op 应低于预算 %.0f ns/op"), MemberMetrics.MedianNs, MemberDispatchBudgetNsPerOp),
+        MemberMetrics.MedianNs < MemberDispatchBudgetNsPerOp
+    );
+    TestTrue(
+        FString::Printf(TEXT("单参 Lambda 监听器派发耗时 %.1f ns/op 应低于预算 %.0f ns/op"), PayloadOnlyMetrics.MedianNs, MemberDispatchBudgetNsPerOp),
+        PayloadOnlyMetrics.MedianNs < MemberDispatchBudgetNsPerOp
+    );
+
+    AddInfo(FString::Printf(
+        TEXT("Single-Thunk Dispatch: [UObject Member: %.1f ns/op (%.2f Mops/s, Count=%d)] | [Payload-Only Lambda: %.1f ns/op (%.2f Mops/s, Sink=%lld)]"),
+        MemberMetrics.MedianNs,
+        MemberMetrics.OpsPerSec / 1.0e6,
+        Receiver->ReceivedCount,
+        PayloadOnlyMetrics.MedianNs,
+        PayloadOnlyMetrics.OpsPerSec / 1.0e6,
+        Sink
+    ));
+
+    Receiver->MarkAsGarbage();
+    Subsystem->MarkAsGarbage();
+    GameInstance->MarkAsGarbage();
     return true;
 }
 

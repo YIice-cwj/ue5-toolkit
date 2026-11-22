@@ -1,8 +1,12 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
+/**
+ * @file GameplayMessageSubsystemTest.cpp
+ * @brief UGameplayMessageSubsystem 核心路由、重入安全、生命周期、错误契约与跨线程自动化测试
+ */
 
 #include "Message/GameplayMessageSubsystem.h"
 
-#include "Tests/GameMessageTestReceiver.h"
+#include "Tests/FTestGameplayMessage.h"
+#include "Tests/UGameMessageTestReceiver.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -16,6 +20,9 @@
 #include "Engine/World.h"
 #include "GameplayTagsManager.h"
 #include "Misc/AutomationTest.h"
+#include "Subsystems/SubsystemCollection.h"
+#include "UObject/StrongObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
 
 namespace {
 
@@ -57,7 +64,6 @@ bool FGameMessageBroadcastAndListenTest::RunTest([[maybe_unused]] const FString&
     int32 HitCount = 0;
     int32 LastHitValue = 0;
     FString LastHitText;
-
     int32 HealCount = 0;
 
     FGameplayMessageListenerHandle HitHandle = Subsystem->RegisterListener<FTestGameplayMessage>(
@@ -108,6 +114,8 @@ bool FGameMessageBroadcastAndListenTest::RunTest([[maybe_unused]] const FString&
     PayloadOnlyHandle.Unregister();
     TestEqual(TEXT("注销后监听器清空"), Subsystem->GetListenerCount(), 0);
 
+    Subsystem->MarkAsGarbage();
+    GameInstance->MarkAsGarbage();
     return true;
 }
 
@@ -118,7 +126,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证父标签部分匹配（MatchesTag）机制
+ * @brief 验证多层父子标签前缀匹配（零分配树节点遍历）与 HasListener 祖先路由一致性
  * @param Parameters 自动化测试参数
  * @return 全部断言通过返回 true
  */
@@ -126,40 +134,59 @@ bool FGameMessagePartialMatchTest::RunTest([[maybe_unused]] const FString& Param
     UGameInstance* GameInstance = NewObject<UGameInstance>();
     UGameplayMessageSubsystem* Subsystem = NewObject<UGameplayMessageSubsystem>(GameInstance);
 
-    const FGameplayTag ParentChannel = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("UnitTest.Combat")));
-    const FGameplayTag ChildChannel = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("UnitTest.Combat.Damage")));
+    const FGameplayTag RootChannel = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("UnitTest.Combat")));
+    const FGameplayTag MidChannel = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("UnitTest.Combat.Skill")));
+    const FGameplayTag LeafChannel = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("UnitTest.Combat.Skill.Damage")));
 
-    int32 ParentSeenCount = 0;
-    int32 ChildSeenCount = 0;
+    int32 RootSeenCount = 0;
+    int32 MidExactSeenCount = 0;
+    int32 LeafSeenCount = 0;
 
-    FGameplayMessageListenerHandle ParentHandle = Subsystem->RegisterListener<FTestGameplayMessage>(
-        ParentChannel,
-        [&ParentSeenCount]([[maybe_unused]] FGameplayTag Channel, [[maybe_unused]] const FTestGameplayMessage& Payload) {
-            ++ParentSeenCount;
+    FGameplayMessageListenerHandle RootHandle = Subsystem->RegisterListener<FTestGameplayMessage>(
+        RootChannel,
+        [&RootSeenCount]([[maybe_unused]] FGameplayTag Channel, [[maybe_unused]] const FTestGameplayMessage& Payload) {
+            ++RootSeenCount;
         },
         EGameplayMessageMatch::PartialMatch
     );
 
-    FGameplayMessageListenerHandle ChildHandle = Subsystem->RegisterListener<FTestGameplayMessage>(
-        ChildChannel,
-        [&ChildSeenCount]([[maybe_unused]] FGameplayTag Channel, [[maybe_unused]] const FTestGameplayMessage& Payload) {
-            ++ChildSeenCount;
+    TestTrue(TEXT("仅父标签有 PartialMatch 监听时，子通道 HasListener 必须与广播路由一致返回 true"), Subsystem->HasListener(LeafChannel));
+    TestTrue(TEXT("仅父标签有 PartialMatch 监听时，中间通道 HasListener 返回 true"), Subsystem->HasListener(MidChannel));
+
+    FGameplayMessageListenerHandle MidExactHandle = Subsystem->RegisterListener<FTestGameplayMessage>(
+        MidChannel,
+        [&MidExactSeenCount]([[maybe_unused]] FGameplayTag Channel, [[maybe_unused]] const FTestGameplayMessage& Payload) {
+            ++MidExactSeenCount;
+        },
+        EGameplayMessageMatch::ExactMatch
+    );
+
+    FGameplayMessageListenerHandle LeafHandle = Subsystem->RegisterListener<FTestGameplayMessage>(
+        LeafChannel,
+        [&LeafSeenCount]([[maybe_unused]] FGameplayTag Channel, [[maybe_unused]] const FTestGameplayMessage& Payload) {
+            ++LeafSeenCount;
         },
         EGameplayMessageMatch::ExactMatch
     );
 
     FTestGameplayMessage Msg;
     Msg.Value = 10;
-    Subsystem->BroadcastMessage(ChildChannel, Msg);
+    Subsystem->BroadcastMessage(LeafChannel, Msg);
 
-    TestEqual(TEXT("子标签广播精确触发子监听器"), ChildSeenCount, 1);
-    TestEqual(TEXT("父标签监听器通过 PartialMatch 捕获子通道广播"), ParentSeenCount, 1);
+    TestEqual(TEXT("叶子标签广播精确触发叶子监听器"), LeafSeenCount, 1);
+    TestEqual(TEXT("中间 ExactMatch 监听器不得拦截子标签广播"), MidExactSeenCount, 0);
+    TestEqual(TEXT("根标签 PartialMatch 监听器跨多级捕获叶子广播"), RootSeenCount, 1);
 
-    Subsystem->BroadcastMessage(ParentChannel, Msg);
-    TestEqual(TEXT("直接向父标签广播时 PartialMatch 监听器仅触发一次（无自身重复捕获）"), ParentSeenCount, 2);
+    Subsystem->BroadcastMessage(RootChannel, Msg);
+    TestEqual(TEXT("直接向父标签广播时 PartialMatch 监听器仅触发一次（无自身重复捕获）"), RootSeenCount, 2);
 
-    ParentHandle.Unregister();
-    ChildHandle.Unregister();
+    RootHandle.Unregister();
+    MidExactHandle.Unregister();
+    LeafHandle.Unregister();
+    TestFalse(TEXT("全部退订后叶子通道 HasListener 恢复为 false"), Subsystem->HasListener(LeafChannel));
+
+    Subsystem->MarkAsGarbage();
+    GameInstance->MarkAsGarbage();
     return true;
 }
 
@@ -170,7 +197,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证句柄作用域离开自动退订、无效通道容错与类型安全过滤
+ * @brief 验证句柄作用域离开自动退订、空通道/全重载空回调安全拦截与类型安全过滤
  * @param Parameters 自动化测试参数
  * @return 全部断言通过返回 true
  */
@@ -194,7 +221,7 @@ bool FGameMessageRAIIUnregisterTest::RunTest([[maybe_unused]] const FString& Par
         TestTrue(TEXT("作用域内广播成功派发"), Subsystem->BroadcastMessage(Channel, Msg).IsSuccess());
         TestEqual(TEXT("作用域内广播成功送达"), ReceivedCount, 1);
 
-        FVector WrongPayload(1.0f, 2.0f, 3.0f);
+        const FVector WrongPayload(1.0f, 2.0f, 3.0f);
         Subsystem->BroadcastMessage(Channel, WrongPayload);
         TestEqual(TEXT("类型不匹配载荷被安全忽略"), ReceivedCount, 1);
     }
@@ -205,16 +232,50 @@ bool FGameMessageRAIIUnregisterTest::RunTest([[maybe_unused]] const FString& Par
     Subsystem->BroadcastMessage(Channel, AfterMsg);
     TestEqual(TEXT("退订后广播不再被接收"), ReceivedCount, 1);
 
-    FGameplayMessageListenerHandle InvalidHandle = Subsystem->RegisterListener<FTestGameplayMessage>(
+    FGameplayMessageListenerHandle InvalidChannelHandle = Subsystem->RegisterListener<FTestGameplayMessage>(
         FGameplayTag(),
         [](FGameplayTag, const FTestGameplayMessage&) {}
     );
-    TestFalse(TEXT("空通道注册返回无效句柄"), InvalidHandle.IsValid());
+    TestFalse(TEXT("空通道注册返回无效句柄"), InvalidChannelHandle.IsValid());
+
+    TFunction<void(FGameplayTag, const FTestGameplayMessage&)> EmptyTwoParamCallback;
+    FGameplayMessageListenerHandle EmptyTwoParamHandle = Subsystem->RegisterListener<FTestGameplayMessage>(
+        Channel,
+        MoveTemp(EmptyTwoParamCallback)
+    );
+    TestFalse(TEXT("双参空 TFunction 注册必须被拦截并返回无效句柄"), EmptyTwoParamHandle.IsValid());
+
+    TFunction<void(const FTestGameplayMessage&)> EmptyOneParamCallback;
+    FGameplayMessageListenerHandle EmptyOneParamHandle = Subsystem->RegisterListener<FTestGameplayMessage>(
+        Channel,
+        MoveTemp(EmptyOneParamCallback)
+    );
+    TestFalse(TEXT("单参空 TFunction 注册必须被拦截并返回无效句柄"), EmptyOneParamHandle.IsValid());
+
+    UGameMessageTestReceiver* Receiver = NewObject<UGameMessageTestReceiver>(GameInstance);
+    void (UGameMessageTestReceiver::*NullTwoParamMethod)(FGameplayTag, const FTestGameplayMessage&) = nullptr;
+    FGameplayMessageListenerHandle NullMethodHandleA = Subsystem->RegisterListener<FTestGameplayMessage>(
+        Channel,
+        Receiver,
+        NullTwoParamMethod
+    );
+    TestFalse(TEXT("双参空成员函数指针必须被拦截"), NullMethodHandleA.IsValid());
+
+    void (UGameMessageTestReceiver::*NullOneParamMethod)(const FTestGameplayMessage&) = nullptr;
+    FGameplayMessageListenerHandle NullMethodHandleB = Subsystem->RegisterListener<FTestGameplayMessage>(
+        Channel,
+        Receiver,
+        NullOneParamMethod
+    );
+    TestFalse(TEXT("单参空成员函数指针必须被拦截"), NullMethodHandleB.IsValid());
+
+    TestEqual(TEXT("全部非法注册均未污染监听器计数"), Subsystem->GetListenerCount(), 0);
     TestTrue(TEXT("空通道广播返回 Failure"), Subsystem->BroadcastMessage(FGameplayTag(), AfterMsg).IsFailure());
     TestTrue(TEXT("空通道入队返回 Failure"), Subsystem->EnqueueMessage(FGameplayTag(), AfterMsg).IsFailure());
-    TestTrue(TEXT("无效 ID 注销返回 Failure"), Subsystem->UnregisterListener(Channel, 0).IsFailure());
-    TestTrue(TEXT("不存在 ID 注销返回 Failure"), Subsystem->UnregisterListener(Channel, 99999).IsFailure());
 
+    Receiver->MarkAsGarbage();
+    Subsystem->MarkAsGarbage();
+    GameInstance->MarkAsGarbage();
     return true;
 }
 
@@ -225,7 +286,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证 HasListener 状态判定与 TGameStatusResult 失败分支中文提示
+ * @brief 验证 HasListener 状态判定与 Game::ModuleId::Message 结构化错误契约
  * @param Parameters 自动化测试参数
  * @return 全部断言通过返回 true
  */
@@ -234,6 +295,7 @@ bool FGameMessageHasListenerAndStatusResultTest::RunTest([[maybe_unused]] const 
     UGameplayMessageSubsystem* Subsystem = NewObject<UGameplayMessageSubsystem>(GameInstance);
     const FGameplayTag Channel = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("UnitTest.Message.StatusResult")));
 
+    TestFalse(TEXT("空标签 HasListener 返回 false"), Subsystem->HasListener(FGameplayTag()));
     TestFalse(TEXT("初始状态 HasListener 为 false"), Subsystem->HasListener(Channel));
 
     FGameplayMessageListenerHandle Handle = Subsystem->RegisterListener<FTestGameplayMessage>(
@@ -242,30 +304,230 @@ bool FGameMessageHasListenerAndStatusResultTest::RunTest([[maybe_unused]] const 
     );
     TestTrue(TEXT("注册后 HasListener 为 true"), Subsystem->HasListener(Channel));
 
-    const auto InvalidIdUnreg = Subsystem->UnregisterListener(Channel, 0);
-    TestTrue(TEXT("0 句柄 ID 注销失败"), InvalidIdUnreg.IsFailure());
-    TestEqual(TEXT("0 句柄 ID 错误码一致"), InvalidIdUnreg.GetError().ErrorCode, 1);
-    TestEqual(TEXT("0 句柄 ID 中文提示一致"), InvalidIdUnreg.GetError().Message, TEXT("监听器句柄 ID 为 0"));
-
-    const auto NonExistentUnreg = Subsystem->UnregisterListener(Channel, 88888);
-    TestTrue(TEXT("不存在 ID 注销失败"), NonExistentUnreg.IsFailure());
-    TestEqual(TEXT("不存在 ID 错误码一致"), NonExistentUnreg.GetError().ErrorCode, 2);
-    TestTrue(TEXT("不存在 ID 中文提示包含未找到监听器"), NonExistentUnreg.GetError().Message.Contains(TEXT("未找到监听器")));
-
     FTestGameplayMessage Msg;
-    const auto InvalidTagBroadcast = Subsystem->BroadcastMessage(FGameplayTag(), Msg);
+    const TGameStatusResult<void> InvalidTagBroadcast = Subsystem->BroadcastMessage(FGameplayTag(), Msg);
     TestTrue(TEXT("无效标签广播失败"), InvalidTagBroadcast.IsFailure());
-    TestEqual(TEXT("无效标签错误码一致"), InvalidTagBroadcast.GetError().ErrorCode, 1);
-    TestEqual(TEXT("无效标签中文提示一致"), InvalidTagBroadcast.GetError().Message, TEXT("消息通道标签无效"));
+    TestEqual(TEXT("无效标签广播 ModuleId 为 Game::ModuleId::Message"), InvalidTagBroadcast.GetError().ModuleId, Game::ModuleId::Message);
+    TestEqual(TEXT("无效标签广播错误码一致"), InvalidTagBroadcast.GetError().ErrorCode, Game::MessageErrorCodes::InvalidChannel);
 
-    const auto InvalidTagEnqueue = Subsystem->EnqueueMessage(FGameplayTag(), Msg);
+    const TGameStatusResult<void> InvalidTagEnqueue = Subsystem->EnqueueMessage(FGameplayTag(), Msg);
     TestTrue(TEXT("无效标签入队失败"), InvalidTagEnqueue.IsFailure());
-    TestEqual(TEXT("无效标签入队错误码一致"), InvalidTagEnqueue.GetError().ErrorCode, 1);
-    TestEqual(TEXT("无效标签入队中文提示一致"), InvalidTagEnqueue.GetError().Message, TEXT("消息通道标签无效"));
+    TestEqual(TEXT("无效标签入队 ModuleId 为 Game::ModuleId::Message"), InvalidTagEnqueue.GetError().ModuleId, Game::ModuleId::Message);
+    TestEqual(TEXT("无效标签入队错误码一致"), InvalidTagEnqueue.GetError().ErrorCode, Game::MessageErrorCodes::InvalidChannel);
 
     Handle.Unregister();
     TestFalse(TEXT("注销后 HasListener 恢复为 false"), Subsystem->HasListener(Channel));
 
+    Subsystem->Deinitialize();
+    const TGameStatusResult<void> ShuttingDownEnqueue = Subsystem->EnqueueMessage(Channel, Msg);
+    TestTrue(TEXT("关闭态入队失败"), ShuttingDownEnqueue.IsFailure());
+    TestEqual(TEXT("关闭态入队 ModuleId 为 Game::ModuleId::Message"), ShuttingDownEnqueue.GetError().ModuleId, Game::ModuleId::Message);
+    TestEqual(TEXT("关闭态入队错误码一致"), ShuttingDownEnqueue.GetError().ErrorCode, Game::MessageErrorCodes::SubsystemShuttingDown);
+
+    Subsystem->MarkAsGarbage();
+    GameInstance->MarkAsGarbage();
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameMessageReentrancyAndPolymorphismTest,
+    "Game.Message.ReentrancyAndPolymorphism",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证广播期重入注销他方监听器静默守卫、重入注册、嵌套广播、USTRUCT 继承多态与死 UObject 自动跳过
+ * @param Parameters 自动化测试参数
+ * @return 全部断言通过返回 true
+ */
+bool FGameMessageReentrancyAndPolymorphismTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    TStrongObjectPtr<UGameInstance> GameInstance(NewObject<UGameInstance>());
+    TStrongObjectPtr<UGameplayMessageSubsystem> Subsystem(NewObject<UGameplayMessageSubsystem>(GameInstance.Get()));
+    const FGameplayTag Channel = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("UnitTest.Message.Reentrancy")));
+    const FGameplayTag NestedChannel = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("UnitTest.Message.Reentrancy.Nested")));
+
+    int32 ListenerACount = 0;
+    int32 ListenerBCount = 0;
+    int32 DynamicListenerCCount = 0;
+    int32 NestedSeenCount = 0;
+
+    FGameplayMessageListenerHandle HandleB;
+    FGameplayMessageListenerHandle DynamicHandleC;
+
+    FGameplayMessageListenerHandle HandleA = Subsystem->RegisterListener<FTestGameplayMessage>(
+        Channel,
+        [&](FGameplayTag, const FTestGameplayMessage& Payload) {
+            ++ListenerACount;
+            HandleB.Unregister();
+            if (!DynamicHandleC.IsValid()) {
+                DynamicHandleC = Subsystem->RegisterListener<FTestGameplayMessage>(
+                    Channel,
+                    [&DynamicListenerCCount](const FTestGameplayMessage&) {
+                        ++DynamicListenerCCount;
+                    }
+                );
+            }
+            if (Payload.Value == 1) {
+                FTestGameplayMessage InnerMsg;
+                InnerMsg.Value = 99;
+                Subsystem->BroadcastMessage(NestedChannel, InnerMsg);
+            }
+        }
+    );
+
+    HandleB = Subsystem->RegisterListener<FTestGameplayMessage>(
+        Channel,
+        [&ListenerBCount](const FTestGameplayMessage&) {
+            ++ListenerBCount;
+        }
+    );
+
+    FGameplayMessageListenerHandle NestedHandle = Subsystem->RegisterListener<FTestGameplayMessage>(
+        NestedChannel,
+        [&NestedSeenCount](const FTestGameplayMessage& Payload) {
+            if (Payload.Value == 99) {
+                ++NestedSeenCount;
+            }
+        }
+    );
+
+    FTestGameplayMessage Msg1;
+    Msg1.Value = 1;
+    Subsystem->BroadcastMessage(Channel, Msg1);
+    TestEqual(TEXT("监听器 A 执行一次"), ListenerACount, 1);
+    TestEqual(TEXT("同轮中被 A 注销的监听器 B 绝不得再被回调"), ListenerBCount, 0);
+    TestEqual(TEXT("同轮中动态注册的监听器 C 不在当轮触发"), DynamicListenerCCount, 0);
+    TestEqual(TEXT("回调内嵌套广播正常送达"), NestedSeenCount, 1);
+
+    FTestGameplayMessage Msg2;
+    Msg2.Value = 2;
+    Subsystem->BroadcastMessage(Channel, Msg2);
+    TestEqual(TEXT("第二轮动态监听器 C 正常生效"), DynamicListenerCCount, 1);
+    TestEqual(TEXT("已注销的监听器 B 持续保持静默"), ListenerBCount, 0);
+
+    HandleA.Unregister();
+    DynamicHandleC.Unregister();
+    NestedHandle.Unregister();
+
+    int32 BaseSeenValue = 0;
+    FString BaseSeenText;
+    FGameplayMessageListenerHandle BaseHandle = Subsystem->RegisterListener<FTestGameplayMessage>(
+        Channel,
+        [&BaseSeenValue, &BaseSeenText](const FTestGameplayMessage& BasePayload) {
+            BaseSeenValue = BasePayload.Value;
+            BaseSeenText = BasePayload.Text;
+        }
+    );
+
+    FDerivedTestGameplayMessage DerivedMsg;
+    DerivedMsg.Value = 777;
+    DerivedMsg.Text = TEXT("DerivedPayload");
+    DerivedMsg.ExtraCode = 999;
+    TestTrue(TEXT("广播派生结构体成功"), Subsystem->BroadcastMessage(Channel, DerivedMsg).IsSuccess());
+    TestEqual(TEXT("基类监听器成功按 IsChildOf 接收派生载荷 Value"), BaseSeenValue, 777);
+    TestEqual(TEXT("基类监听器成功按 IsChildOf 接收派生载荷 Text"), BaseSeenText, TEXT("DerivedPayload"));
+    BaseHandle.Unregister();
+
+    UGameMessageTestReceiver* EphemeralReceiver = NewObject<UGameMessageTestReceiver>(GetTransientPackage());
+    FGameplayMessageListenerHandle DeadOwnerHandle = Subsystem->RegisterListener<FTestGameplayMessage>(
+        Channel,
+        EphemeralReceiver,
+        &UGameMessageTestReceiver::OnPayloadOnlyReceived
+    );
+    EphemeralReceiver->MarkAsGarbage();
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    TestTrue(TEXT("宿主被 GC 回收后广播安全跳过不崩溃"), Subsystem->BroadcastMessage(Channel, Msg2).IsSuccess());
+    DeadOwnerHandle.Unregister();
+
+    Subsystem->MarkAsGarbage();
+    GameInstance->MarkAsGarbage();
+    Subsystem.Reset();
+    GameInstance.Reset();
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameMessageLifecycleDeinitAndReinitTest,
+    "Game.Message.LifecycleDeinitAndReinit",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证 Deinitialize 丢弃队列与纪元作废、Re-Initialize 恢复能力、跨纪元 ABA 防护与 GetPtr 上下文边界
+ * @param Parameters 自动化测试参数
+ * @return 全部断言通过返回 true
+ */
+bool FGameMessageLifecycleDeinitAndReinitTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    TestNull(TEXT("GetPtr(nullptr) 安全返回 nullptr"), UGameplayMessageSubsystem::GetPtr(nullptr));
+
+    UGameInstance* GameInstance = NewObject<UGameInstance>(GEngine);
+    GameInstance->InitializeStandalone(FName(TEXT("GameplayMessageLifecycleTestWorld")));
+    UWorld* World = GameInstance->GetWorld();
+    TestNotNull(TEXT("测试世界有效"), World);
+    if (World == nullptr) {
+        GameInstance->Shutdown();
+        return false;
+    }
+
+    UGameplayMessageSubsystem* Subsystem = UGameplayMessageSubsystem::GetPtr(World);
+    TestNotNull(TEXT("通过 World 获取子系统有效"), Subsystem);
+    if (Subsystem == nullptr) {
+        GameInstance->Shutdown();
+        return false;
+    }
+
+    TestEqual(TEXT("Get(World) 返回同一子系统实例"), &UGameplayMessageSubsystem::Get(World), Subsystem);
+    TestEqual(TEXT("通过同类 GameInstanceSubsystem 直通获取子系统"), UGameplayMessageSubsystem::GetPtr(Subsystem), Subsystem);
+
+    const FGameplayTag Channel = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("UnitTest.Message.Lifecycle")));
+    int32 Epoch1Count = 0;
+    FGameplayMessageListenerHandle Epoch1Handle = Subsystem->RegisterListener<FTestGameplayMessage>(
+        Channel,
+        [&Epoch1Count](const FTestGameplayMessage&) {
+            ++Epoch1Count;
+        }
+    );
+
+    FTestGameplayMessage QueuedBeforeShutdown;
+    QueuedBeforeShutdown.Value = 11;
+    TestTrue(TEXT("关闭前 EnqueueMessage 成功"), Subsystem->EnqueueMessage(Channel, QueuedBeforeShutdown).IsSuccess());
+
+    Subsystem->Deinitialize();
+    TestFalse(TEXT("Deinitialize 后旧纪元句柄即刻失效"), Epoch1Handle.IsValid());
+    TestEqual(TEXT("Deinitialize 后监听器计数归零"), Subsystem->GetListenerCount(), 0);
+    TestEqual(TEXT("Deinitialize 后 FlushPendingMessages 排空 0 条（残留任务已丢弃）"), Subsystem->FlushPendingMessages(), 0);
+    TestEqual(TEXT("Deinitialize 丢弃的残留任务未触发旧回调"), Epoch1Count, 0);
+
+    FGameplayMessageListenerHandle ShutDownRegisterHandle = Subsystem->RegisterListener<FTestGameplayMessage>(
+        Channel,
+        [](const FTestGameplayMessage&) {}
+    );
+    TestFalse(TEXT("关闭态拒绝新注册监听器并返回无效句柄"), ShutDownRegisterHandle.IsValid());
+    TestEqual(TEXT("关闭态拒绝注册后监听器计数仍为 0"), Subsystem->GetListenerCount(), 0);
+
+    FObjectSubsystemCollection<UGameInstanceSubsystem> ReinitCollection;
+    Subsystem->Initialize(ReinitCollection);
+    int32 Epoch2Count = 0;
+    FGameplayMessageListenerHandle Epoch2Handle = Subsystem->RegisterListener<FTestGameplayMessage>(
+        Channel,
+        [&Epoch2Count](const FTestGameplayMessage&) {
+            ++Epoch2Count;
+        }
+    );
+    TestTrue(TEXT("Re-Initialize 后新纪元句柄有效"), Epoch2Handle.IsValid());
+
+    Epoch1Handle.Unregister();
+    TestTrue(TEXT("销毁旧纪元句柄绝不误伤新纪元同 ID 监听器（防跨纪元 ABA）"), Epoch2Handle.IsValid());
+    TestEqual(TEXT("新纪元监听器计数保持 1"), Subsystem->GetListenerCount(), 1);
+
+    FTestGameplayMessage Epoch2Msg;
+    Epoch2Msg.Value = 22;
+    TestTrue(TEXT("Re-Initialize 后 EnqueueMessage 恢复正常"), Subsystem->EnqueueMessage(Channel, Epoch2Msg).IsSuccess());
+    TestEqual(TEXT("Re-Initialize 后主线程排空 1 条消息"), Subsystem->FlushPendingMessages(), 1);
+    TestEqual(TEXT("新纪元回调准确触发 1 次"), Epoch2Count, 1);
+
+    Epoch2Handle.Unregister();
+    GameInstance->Shutdown();
     return true;
 }
 
@@ -487,6 +749,8 @@ bool FGameMessageCrossThreadHandleLifecycleTest::RunTest([[maybe_unused]] const 
 
     TestEqual(TEXT("跨线程安全退订后子系统监听器清空"), Subsystem->GetListenerCount(), 0);
 
+    Subsystem->MarkAsGarbage();
+    GameInstance->MarkAsGarbage();
     return true;
 }
 

@@ -1,11 +1,16 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
+/**
+ * @file AsyncAction_ListenForGameplayMessage.h
+ * @brief 蓝图异步监听 GameplayTag 消息动作节点声明（基于 FStructOnScope 实现对齐安全与全属性 GC 追踪）
+ */
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "GameplayTagContainer.h"
 #include "Kismet/BlueprintAsyncActionBase.h"
+#include "Message/FGameplayMessageListenerHandle.h"
 #include "Message/GameplayMessageTypes.h"
+#include "UObject/StructOnScope.h"
 
 #include "AsyncAction_ListenForGameplayMessage.generated.h"
 
@@ -22,11 +27,17 @@ class GAMEMESSAGE_API UAsyncAction_ListenForGameplayMessage : public UBlueprintA
 
 public:
     /**
+     * @brief 收到匹配消息时触发的蓝图执行引脚
+     */
+    UPROPERTY(BlueprintAssignable)
+    FAsyncGameplayMessageDelegate OnMessageReceived;
+
+    /**
      * @brief 异步监听指定通道的消息广播（蓝图可直接使用）
      * @param WorldContextObject 关联的世界上下文对象
      * @param Channel 监听通道 GameplayTag
      * @param MatchRule 匹配模式（默认精确匹配）
-     * @return 异步操作对象
+     * @return 异步操作对象，世界上下文无效时返回 nullptr
      */
     UFUNCTION(BlueprintCallable, Category = "GameMessage|Message", meta = (WorldContext = "WorldContextObject", BlueprintInternalUseOnly = "true"))
     static UAsyncAction_ListenForGameplayMessage* ListenForGameplayMessages(
@@ -36,20 +47,26 @@ public:
     );
 
     /**
-     * @brief 收到匹配消息时触发的蓝图执行引脚
+     * @brief 向 UE GC 报告缓存载荷结构体及其内部全部 UObject 强引用，防止悬垂指针与动态结构体误回收
+     * @param InThis 当前动作节点实例
+     * @param Collector GC 引用收集器
      */
-    UPROPERTY(BlueprintAssignable)
-    FAsyncGameplayMessageDelegate OnMessageReceived;
+    static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
 
     /**
-     * @brief 节点激活回调：注册通道消息监听并将命中的消息转发至 OnMessageReceived 委托
+     * @brief 节点激活回调（幂等）：注册通道消息监听并将命中消息转发至 OnMessageReceived 委托
      */
     void Activate() override;
 
     /**
-     * @brief 终止异步操作并安全注销监听句柄
+     * @brief 终止异步操作、安全注销监听句柄并销毁缓存载荷
      */
     void SetReadyToDestroy() override;
+
+    /**
+     * @brief UObject 销毁兜底回调：确保未经显式 Cancel 回收时亦释放监听句柄与缓存结构体资源
+     */
+    void BeginDestroy() override;
 
     /**
      * @brief 手动终止并清理异步动作节点（供蓝图调用）
@@ -67,32 +84,37 @@ public:
     DECLARE_FUNCTION(execGetPayload);
 
     /**
-     * @brief C++ 辅助方法：从上一次收到的消息中提取强类型载荷结构体
-     * @tparam TMessageStructType 目标载荷结构体类型
+     * @brief C++ 辅助方法：从上一次收到的消息中提取强类型载荷结构体（支持 USTRUCT 与引擎核心结构体）
+     * @tparam TMessageStructType 满足 CGameplayMessageStruct 的目标载荷结构体类型
      * @param OutPayload 接收载荷的结构体引用
      * @return 成功提取且类型匹配返回 true，类型不匹配或无载荷返回 false
      */
-    template <typename TMessageStructType>
+    template <CGameplayMessageStruct TMessageStructType>
     bool GetPayloadTyped(TMessageStructType& OutPayload) const {
-        const UScriptStruct* TargetStruct = TBaseStructure<TMessageStructType>::Get();
-        if (TargetStruct == nullptr) {
-            TargetStruct = TMessageStructType::StaticStruct();
-        }
-        const UScriptStruct* ReceivedStruct = ReceivedPayloadStructType.Get();
-        if (TargetStruct != nullptr && ReceivedStruct != nullptr && (ReceivedStruct == TargetStruct || ReceivedStruct->IsChildOf(TargetStruct)) && ReceivedPayloadData.Num() > 0) {
-            TargetStruct->CopyScriptStruct(&OutPayload, ReceivedPayloadData.GetData());
-            return true;
-        }
-        return false;
+        return CopyReceivedPayloadTo(TBaseStructure<TMessageStructType>::Get(), &OutPayload);
     }
 
 private:
-    void ClearReceivedPayload();
+    /**
+     * @brief 主线程消息命中内部处理函数：刷新对齐缓存并广播蓝图引脚
+     * @param InChannel 实际广播通道
+     * @param StructType 载荷反射结构体类型
+     * @param PayloadPtr 载荷数据内存地址
+     */
+    void HandleMessageReceived(FGameplayTag InChannel, const UScriptStruct* StructType, const void* PayloadPtr);
 
+    /**
+     * @brief 将当前缓存载荷按反射类型兼容性拷贝至目标地址
+     * @param TargetStruct 目标结构体反射元数据
+     * @param DestAddress 目标实例内存地址
+     * @return 类型兼容且拷贝成功返回 true
+     */
+    [[nodiscard]] bool CopyReceivedPayloadTo(const UScriptStruct* TargetStruct, void* DestAddress) const;
+
+private:
     TWeakObjectPtr<UObject> WorldContextObjectWeak;
     FGameplayTag TargetChannel;
     EGameplayMessageMatch TargetMatchRule = EGameplayMessageMatch::ExactMatch;
     FGameplayMessageListenerHandle ListenerHandle;
-    TWeakObjectPtr<const UScriptStruct> ReceivedPayloadStructType;
-    TArray<uint8> ReceivedPayloadData;
+    FStructOnScope ReceivedPayload;
 };

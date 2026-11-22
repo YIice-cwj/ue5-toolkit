@@ -1,8 +1,14 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
+/**
+ * @file GameMessage.h
+ * @brief GameMessage 插件模块运行时入口与共享日志分类声明
+ */
 
 #pragma once
 
+#include "CoreMinimal.h"
 #include "Modules/ModuleManager.h"
+
+GAMEMESSAGE_API DECLARE_LOG_CATEGORY_EXTERN(LogGameMessage, Log, All);
 
 /**
  * @brief GameMessage 模块运行时入口

@@ -1,7 +1,7 @@
 {
     "FileVersion": 3,
-    "Version": 1,
-    "VersionName": "1.0.0",
+    "Version": 2,
+    "VersionName": "2.0.0",
     "FriendlyName": "Game Message",
     "Description": "GameplayTag-addressed decoupled asynchronous and synchronous message bus subsystem (based on UScriptStruct type safety).",
     "Category": "Game",

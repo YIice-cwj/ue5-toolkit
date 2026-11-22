@@ -1,32 +1,22 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
+/**
+ * @file UGameMessageTestReceiver.h
+ * @brief GameMessage 自动化测试专用 UObject 接收器声明（仅供模块私有测试使用，不暴露于 Public）
+ */
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "GameplayTagContainer.h"
+#include "Tests/FTestGameplayMessage.h"
 #include "UObject/Object.h"
 
-#include "GameMessageTestReceiver.generated.h"
+#include "UGameMessageTestReceiver.generated.h"
 
 /**
- * @brief 消息总线测试载荷结构体
+ * @brief 异步消息动作与成员函数监听器测试接收器
  */
-USTRUCT(BlueprintType)
-struct GAMEMESSAGE_API FTestGameplayMessage {
-    GENERATED_BODY()
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GameMessage|Test")
-    int32 Value = 0;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GameMessage|Test")
-    FString Text;
-};
-
-/**
- * @brief 异步消息动作测试接收器
- */
-UCLASS()
-class GAMEMESSAGE_API UGameMessageTestReceiver : public UObject {
+UCLASS(NotBlueprintable, Hidden)
+class UGameMessageTestReceiver : public UObject {
     GENERATED_BODY()
 
 public:
@@ -59,6 +49,9 @@ public:
         ++ReceivedCount;
         LastPayloadValue = Payload.Value;
     }
+
+    UPROPERTY()
+    FTestGameplayMessage ExtractedPayloadSlot;
 
     int32 ReceivedCount = 0;
     int32 LastPayloadValue = 0;

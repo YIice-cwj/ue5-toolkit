@@ -20,7 +20,6 @@ public class GameMessage : ModuleRules {
         });
 
         PublicIncludePaths.AddRange(new string[] {
-            ModuleDirectory,
             Path.Combine(ModuleDirectory, "Public"),
         });
     }
