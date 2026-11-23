@@ -25,58 +25,7 @@
 #include "Message/GameplayMessageSubsystem.h"
 #include "Misc/ScopeExit.h"
 #include "Network/GameFeedbackReceiverComponent.h"
-
-namespace {
-
-/**
- * @brief 创建具有稳定资产路径的测试 Definition
- * @param ObjectPath 完整对象路径（Package.Object）
- * @return 测试 Definition
- */
-UGameFeedbackDefinition* CreateDispatcherDefinitionAtPath(const FString& ObjectPath) {
-    FString PackageName;
-    FString ObjectName;
-    ObjectPath.Split(TEXT("."), &PackageName, &ObjectName);
-    return NewObject<UGameFeedbackDefinition>(CreatePackage(*PackageName), *ObjectName);
-}
-
-/**
- * @brief 安全清理测试用未初始化模拟网络连接，避免 GC 时在 UNetConnection::Close 越界访问空 Channels
- * @param Connection 待清理的模拟网络连接
- */
-void CleanupSimulatedConnection(USimulatedClientNetConnection* Connection) {
-    if (!Connection) {
-        return;
-    }
-    Connection->SetConnectionState(USOCK_Closed);
-    Connection->SetClientLoginState(EClientLoginState::CleanedUp);
-    Connection->OwningActor = nullptr;
-    Connection->PlayerController = nullptr;
-    Connection->PackageMap = nullptr;
-    Connection->Driver = nullptr;
-    Connection->MarkAsGarbage();
-}
-
-/**
- * @brief 解除测试用 DemoNetDriver 与 World 及 WorldContext 的绑定并标记回收
- * @param Driver 待清理的测试网络驱动
- * @param WorldContext 关联的世界上下文
- */
-void CleanupTestDemoNetDriver(UDemoNetDriver* Driver, FWorldContext* WorldContext) {
-    if (!Driver) {
-        return;
-    }
-    Driver->SendRPCDel.Unbind();
-    if (WorldContext) {
-        WorldContext->ActiveNetDrivers.RemoveAll([Driver](const FNamedNetDriver& Entry) {
-            return Entry.NetDriver == Driver;
-        });
-    }
-    Driver->World = nullptr;
-    Driver->MarkAsGarbage();
-}
-
-}  // namespace
+#include "Tests/GameFeedbackNetworkTestHelpers.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameFeedbackNetworkDispatcherRateAndCullTest,
@@ -90,7 +39,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
  * @return 测试是否通过
  */
 bool FGameFeedbackNetworkDispatcherRateAndCullTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UGameFeedbackDefinition* Definition = CreateDispatcherDefinitionAtPath(TEXT("/Game/Feedback/DispatchTest/Def.Def"));
+    UGameFeedbackDefinition* Definition = GameFeedbackNetworkTestHelpers::CreateDefinitionAtPath(TEXT("/Game/Feedback/DispatchTest/Def.Def"));
     UGameFeedbackRegistry* Registry = NewObject<UGameFeedbackRegistry>();
     const FGameplayTag Channel = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Damage.Test.Dispatch.Channel")));
     Registry->ExactChannelMap.Add(Channel, Definition);
@@ -125,7 +74,7 @@ bool FGameFeedbackNetworkDispatcherRateAndCullTest::RunTest([[maybe_unused]] con
     FWorldContext* WorldContext = GEngine->GetWorldContextFromWorld(World);
     TestNotNull(TEXT("WorldContext 有效"), WorldContext);
     if (!WorldContext) {
-        CleanupTestDemoNetDriver(Driver, nullptr);
+        GameFeedbackNetworkTestHelpers::CleanupTestDemoNetDriver(Driver);
         Settings->GlobalRegistry = PrevRegistry;
         Settings->MaxDispatchPerFrame = PrevMaxDispatch;
         Settings->DefaultNetworkCullDistance = PrevCullDist;
@@ -203,9 +152,9 @@ bool FGameFeedbackNetworkDispatcherRateAndCullTest::RunTest([[maybe_unused]] con
         Dispatcher->EndPlay(EEndPlayReason::Destroyed);
         NearPC->Player = nullptr;
         FarPC->Player = nullptr;
-        CleanupSimulatedConnection(ConnectionNear);
-        CleanupSimulatedConnection(ConnectionFar);
-        CleanupTestDemoNetDriver(Driver, WorldContext);
+        GameFeedbackNetworkTestHelpers::CleanupSimulatedConnection(ConnectionNear);
+        GameFeedbackNetworkTestHelpers::CleanupSimulatedConnection(ConnectionFar);
+        GameFeedbackNetworkTestHelpers::CleanupTestDemoNetDriver(Driver, WorldContext);
         Settings->GlobalRegistry = PrevRegistry;
         Settings->MaxDispatchPerFrame = PrevMaxDispatch;
         Settings->DefaultNetworkCullDistance = PrevCullDist;

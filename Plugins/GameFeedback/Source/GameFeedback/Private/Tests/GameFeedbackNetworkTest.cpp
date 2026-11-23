@@ -29,64 +29,12 @@
 #include "Misc/ScopeExit.h"
 #include "Network/GameFeedbackEventNet.h"
 #include "Network/GameFeedbackReceiverComponent.h"
-#include "Serialization/MemoryReader.h"
-#include "Serialization/MemoryWriter.h"
 #include "System/GameFeedbackDefinitionProvider.h"
 #include "System/GameFeedbackHitStopService.h"
+#include "Tests/GameFeedbackNetworkTestHelpers.h"
 #include "Time/TimeDilationSubsystem.h"
 #include "UObject/Package.h"
-
-namespace {
-
-/**
- * @brief 创建具有稳定资产路径的测试 Definition
- * @param ObjectPath 完整对象路径（Package.Object）
- * @return 测试 Definition
- */
-UGameFeedbackDefinition* CreateNetworkDefinitionAtPath(const FString& ObjectPath) {
-    FString PackageName;
-    FString ObjectName;
-    ObjectPath.Split(TEXT("."), &PackageName, &ObjectName);
-    return NewObject<UGameFeedbackDefinition>(CreatePackage(*PackageName), *ObjectName);
-}
-
-/**
- * @brief 安全清理测试用未初始化模拟网络连接，避免 GC 时在 UNetConnection::Close 越界访问空 Channels
- * @param Connection 待清理的模拟网络连接
- */
-void CleanupSimulatedConnection(USimulatedClientNetConnection* Connection) {
-    if (!Connection) {
-        return;
-    }
-    Connection->SetConnectionState(USOCK_Closed);
-    Connection->SetClientLoginState(EClientLoginState::CleanedUp);
-    Connection->OwningActor = nullptr;
-    Connection->PlayerController = nullptr;
-    Connection->PackageMap = nullptr;
-    Connection->Driver = nullptr;
-    Connection->MarkAsGarbage();
-}
-
-/**
- * @brief 解除测试用 DemoNetDriver 与 World 及 WorldContext 的绑定并标记回收
- * @param Driver 待清理的测试网络驱动
- * @param WorldContext 可选的世界上下文（非空时同步从 ActiveNetDrivers 移除）
- */
-void CleanupTestDemoNetDriver(UDemoNetDriver* Driver, FWorldContext* WorldContext = nullptr) {
-    if (!Driver) {
-        return;
-    }
-    Driver->SendRPCDel.Unbind();
-    if (WorldContext) {
-        WorldContext->ActiveNetDrivers.RemoveAll([Driver](const FNamedNetDriver& Entry) {
-            return Entry.NetDriver == Driver;
-        });
-    }
-    Driver->World = nullptr;
-    Driver->MarkAsGarbage();
-}
-
-}  // namespace
+#include "UObject/SoftObjectPtr.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameFeedbackNetSerializeTest,
@@ -99,8 +47,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
  * @param Parameters 自动化测试参数
  * @return 测试是否通过
  */
-bool FGameFeedbackNetSerializeTest::RunTest([[maybe_unused]] const FString& Parameters)
-{
+bool FGameFeedbackNetSerializeTest::RunTest([[maybe_unused]] const FString& Parameters) {
     UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
     UDemoNetDriver* Driver = NewObject<UDemoNetDriver>(GetTransientPackage());
     Driver->World = World;
@@ -112,8 +59,8 @@ bool FGameFeedbackNetSerializeTest::RunTest([[maybe_unused]] const FString& Para
     PackageMap->Initialize(Connection, GuidCache);
     Connection->PackageMap = PackageMap;
     ON_SCOPE_EXIT {
-        CleanupSimulatedConnection(Connection);
-        CleanupTestDemoNetDriver(Driver);
+        GameFeedbackNetworkTestHelpers::CleanupSimulatedConnection(Connection);
+        GameFeedbackNetworkTestHelpers::CleanupTestDemoNetDriver(Driver);
         World->DestroyWorld(false);
         World->RemoveFromRoot();
     };
@@ -123,7 +70,8 @@ bool FGameFeedbackNetSerializeTest::RunTest([[maybe_unused]] const FString& Para
     AActor* Target = World->SpawnActor<AActor>();
     USkeletalMeshComponent* HitComponent = NewObject<USkeletalMeshComponent>(Target);
     Target->SetRootComponent(HitComponent);
-    USkeletalMesh* SkeletalMesh = LoadObject<USkeletalMesh>(nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
+    const TSoftObjectPtr<USkeletalMesh> SkeletalMeshRef(FSoftObjectPath(TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube")));
+    USkeletalMesh* SkeletalMesh = SkeletalMeshRef.LoadSynchronous();
     TestNotNull(TEXT("骨骼测试资产可用"), SkeletalMesh);
     if (!SkeletalMesh) {
         return false;
@@ -242,11 +190,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
  * @param Parameters 自动化测试参数
  * @return 测试是否通过
  */
-bool FGameFeedbackNetworkDefinitionContractTest::RunTest([[maybe_unused]] const FString& Parameters)
-{
+bool FGameFeedbackNetworkDefinitionContractTest::RunTest([[maybe_unused]] const FString& Parameters) {
     UGameFeedbackRegistry* Registry = NewObject<UGameFeedbackRegistry>();
-    UGameFeedbackDefinition* Definition = CreateNetworkDefinitionAtPath(TEXT("/Game/Feedback/Network/Resolved.Resolved"));
-    UGameFeedbackDefinition* OverrideDefinition = CreateNetworkDefinitionAtPath(TEXT("/Game/Feedback/Network/Override.Override"));
+    UGameFeedbackDefinition* Definition = GameFeedbackNetworkTestHelpers::CreateDefinitionAtPath(TEXT("/Game/Feedback/Network/Resolved.Resolved"));
+    UGameFeedbackDefinition* OverrideDefinition = GameFeedbackNetworkTestHelpers::CreateDefinitionAtPath(TEXT("/Game/Feedback/Network/Override.Override"));
     const FGameplayTag ChannelTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Damage.Test.Network.Resolved")));
     const FGameplayTag OverrideTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Feedback.Test.Network.Override")));
     Registry->ExactChannelMap.Add(ChannelTag, Definition);
@@ -283,6 +230,12 @@ bool FGameFeedbackNetworkDefinitionContractTest::RunTest([[maybe_unused]] const 
     TestNull(TEXT("映射版本不一致必须拒绝解析"), Provider->ResolveById(DefinitionId, MappingVersion + 1));
 
     UGameplayMessageSubsystem* Bus = GameInstance->GetSubsystem<UGameplayMessageSubsystem>();
+    TestNotNull(TEXT("消息总线有效"), Bus);
+    if (!Bus) {
+        Settings->GlobalRegistry = PreviousRegistry;
+        GameInstance->Shutdown();
+        return false;
+    }
     int32 ReceivedCount = 0;
     FGameFeedbackNetworkMessage ReceivedMessage;
     FGameplayMessageListenerHandle Handle = Bus->RegisterListener<FGameFeedbackNetworkMessage>(
@@ -296,6 +249,13 @@ bool FGameFeedbackNetworkDefinitionContractTest::RunTest([[maybe_unused]] const 
     World->WorldType = EWorldType::PIE;
     World->SetPlayInEditorInitialNetMode(NM_DedicatedServer);
     FWorldContext* WorldContext = GEngine->GetWorldContextFromWorld(World);
+    TestNotNull(TEXT("WorldContext 有效"), WorldContext);
+    if (!WorldContext) {
+        Handle.Unregister();
+        Settings->GlobalRegistry = PreviousRegistry;
+        GameInstance->Shutdown();
+        return false;
+    }
     UDemoNetDriver* Driver = NewObject<UDemoNetDriver>(GetTransientPackage());
     Driver->NetDriverName = NAME_GameNetDriver;
     Driver->World = World;
@@ -364,7 +324,7 @@ bool FGameFeedbackNetworkDefinitionContractTest::RunTest([[maybe_unused]] const 
     }
 
     FGameFeedbackMessage UnregisteredMessage = RegularMessage;
-    UnregisteredMessage.OverrideDefinition = CreateNetworkDefinitionAtPath(TEXT("/Game/Feedback/Network/Unregistered.Unregistered"));
+    UnregisteredMessage.OverrideDefinition = GameFeedbackNetworkTestHelpers::CreateDefinitionAtPath(TEXT("/Game/Feedback/Network/Unregistered.Unregistered"));
     Bus->BroadcastMessage(TAG_Feedback_Channel_Play, UnregisteredMessage);
     TestEqual(TEXT("未登记 Override 不得进行远端派发"), DispatchedEvents.Num(), 2);
 
@@ -388,8 +348,8 @@ bool FGameFeedbackNetworkDefinitionContractTest::RunTest([[maybe_unused]] const 
 
     Dispatcher->EndPlay(EEndPlayReason::Destroyed);
     PC->Player = nullptr;
-    CleanupSimulatedConnection(Connection);
-    CleanupTestDemoNetDriver(Driver, WorldContext);
+    GameFeedbackNetworkTestHelpers::CleanupSimulatedConnection(Connection);
+    GameFeedbackNetworkTestHelpers::CleanupTestDemoNetDriver(Driver, WorldContext);
     Handle.Unregister();
     Settings->GlobalRegistry = PreviousRegistry;
     GameInstance->Shutdown();
@@ -407,10 +367,9 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
  * @param Parameters 自动化测试参数
  * @return 测试是否通过
  */
-bool FGameFeedbackDedicatedServerServicesTest::RunTest([[maybe_unused]] const FString& Parameters)
-{
+bool FGameFeedbackDedicatedServerServicesTest::RunTest([[maybe_unused]] const FString& Parameters) {
     UGameFeedbackRegistry* Registry = NewObject<UGameFeedbackRegistry>();
-    UGameFeedbackDefinition* Definition = CreateNetworkDefinitionAtPath(TEXT("/Game/Feedback/Lifetime/DedicatedServer.DedicatedServer"));
+    UGameFeedbackDefinition* Definition = GameFeedbackNetworkTestHelpers::CreateDefinitionAtPath(TEXT("/Game/Feedback/Lifetime/DedicatedServer.DedicatedServer"));
     Definition->HitStop.bEnable = true;
     Definition->HitStop.VictimDuration = 0.08f;
     Definition->HitStop.AttackerDuration = 0.0f;
