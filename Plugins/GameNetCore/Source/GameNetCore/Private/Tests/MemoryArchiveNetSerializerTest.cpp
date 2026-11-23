@@ -10,6 +10,7 @@
 
 #include "Serializer/MemoryArchiveNetSerializer.h"
 #include "Tests/GameNetCoreTestTypes.h"
+#include "Types/NetErrorCodes.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameNetMemoryArchiveSerializerTest,
@@ -18,7 +19,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证二进制 Archive 序列化器的复杂结构体往返一致性、半包截断拦截与尾部脏字节拒绝
+ * @brief 验证二进制 Archive 序列化器的复杂结构体往返一致性、错误码归属、半包截断拦截与尾部脏字节拒绝
  * @param Parameters 自动化测试参数
  * @return 测试是否全部通过
  */
@@ -35,7 +36,16 @@ bool FGameNetMemoryArchiveSerializerTest::RunTest([[maybe_unused]] const FString
     const UScriptStruct* StructMeta = FGameNetTestPurchaseRsp::StaticStruct();
     const FMemoryArchiveNetSerializer BinarySerializer;
 
-    TestTrue(TEXT("二进制序列化空数据指针返回失败态"), BinarySerializer.Serialize(nullptr, StructMeta).IsFailure());
+    TArray<uint8> DirtyBuffer = {0xAA, 0xBB};
+    const TGameStatusResult<void> NullDataRes = BinarySerializer.SerializeToBuffer(nullptr, StructMeta, DirtyBuffer);
+    TestTrue(TEXT("二进制序列化空数据指针返回失败态"), NullDataRes.IsFailure());
+    TestEqual(TEXT("失败时清空脏目标缓冲"), DirtyBuffer.Num(), 0);
+    TestEqual(TEXT("错误归属为 Game::ModuleId::Net"), NullDataRes.GetError().ModuleId, Game::ModuleId::Net);
+    TestEqual(
+        TEXT("错误码为 SerializationFailed"),
+        NullDataRes.GetError().ErrorCode,
+        Game::NetErrorCodes::SerializationFailed
+    );
     TestTrue(TEXT("二进制序列化空类型指针返回失败态"), BinarySerializer.Serialize(&Expected, nullptr).IsFailure());
 
     const TGameStatusResult<TArray<uint8>> BinaryBytes = BinarySerializer.SerializeStruct(Expected);
@@ -91,4 +101,3 @@ bool FGameNetMemoryArchiveSerializerTest::RunTest([[maybe_unused]] const FString
 }
 
 #endif
-

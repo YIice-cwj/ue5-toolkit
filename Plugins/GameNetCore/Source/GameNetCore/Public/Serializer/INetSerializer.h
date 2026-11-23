@@ -17,32 +17,17 @@ public:
     virtual ~INetSerializer() = default;
 
     /**
-     * @brief 将反射结构体实例编码为二进制字节数组
+     * @brief 将反射结构体编码并就地写入外部提供的复用字节缓冲区（避免重复堆分配，子类唯一序列化虚接口）
      * @param StructData 待序列化的结构体实例内存首地址
      * @param StructType 对应的 UStruct 反射元数据指针
-     * @return 编码成功返回包含字节数组的成功态，元数据为空或编码失败返回对应失败态
-     */
-    [[nodiscard]] virtual TGameStatusResult<TArray<uint8>> Serialize(const void* StructData, const UStruct* StructType) const = 0;
-
-    /**
-     * @brief 将反射结构体编码并就地写入外部提供的复用字节缓冲区（避免重复堆分配）
-     * @param StructData 待序列化的结构体实例内存首地址
-     * @param StructType 对应的 UStruct 反射元数据指针
-     * @param OutBytes 目标写入字节数组（自动重置并写入）
-     * @return 编码成功返回成功态，失败返回对应错误
+     * @param OutBytes 目标写入字节数组（自动重置并写入；失败时保持清空）
+     * @return 编码成功返回成功态，失败返回携带 Game::ModuleId::Net 的对应错误
      */
     [[nodiscard]] virtual TGameStatusResult<void> SerializeToBuffer(
         const void* StructData,
         const UStruct* StructType,
         TArray<uint8>& OutBytes
-    ) const {
-        const TGameStatusResult<TArray<uint8>> Res = Serialize(StructData, StructType);
-        if (Res.IsFailure()) {
-            return TGameStatusResult<void>::Failure(Res.GetError());
-        }
-        OutBytes = Res.GetValue();
-        return TGameStatusResult<void>::Success();
-    }
+    ) const = 0;
 
     /**
      * @brief 将接收到的二进制字节切片解码填充至目标反射结构体实例
@@ -51,7 +36,26 @@ public:
      * @param OutStructData 已构造的目标结构体实例内存首地址
      * @return 解码成功且数据合法返回成功态，格式畸形或类型不匹配返回对应失败态
      */
-    virtual TGameStatusResult<void> Deserialize(TConstArrayView<uint8> InBytes, const UStruct* StructType, void* OutStructData) const = 0;
+    [[nodiscard]] virtual TGameStatusResult<void> Deserialize(
+        TConstArrayView<uint8> InBytes,
+        const UStruct* StructType,
+        void* OutStructData
+    ) const = 0;
+
+    /**
+     * @brief 便捷封装：将反射结构体实例编码为新建二进制字节数组
+     * @param StructData 待序列化的结构体实例内存首地址
+     * @param StructType 对应的 UStruct 反射元数据指针
+     * @return 编码成功返回包含字节数组的成功态，失败返回对应错误
+     */
+    [[nodiscard]] TGameStatusResult<TArray<uint8>> Serialize(const void* StructData, const UStruct* StructType) const {
+        TArray<uint8> OutBytes;
+        const TGameStatusResult<void> Result = SerializeToBuffer(StructData, StructType, OutBytes);
+        if (Result.IsFailure()) {
+            return TGameStatusResult<TArray<uint8>>::Failure(Result.GetError());
+        }
+        return TGameStatusResult<TArray<uint8>>::Success(MoveTemp(OutBytes));
+    }
 
     /**
      * @brief 泛型便捷封装：将强类型 USTRUCT 实例编码为字节数组
@@ -116,4 +120,3 @@ template <typename TStruct>
 TGameStatusResult<void> INetSerializer::DeserializeStructTo(TConstArrayView<uint8> InBytes, TStruct& OutData) const {
     return Deserialize(InBytes, TBaseStructure<TStruct>::Get(), &OutData);
 }
-

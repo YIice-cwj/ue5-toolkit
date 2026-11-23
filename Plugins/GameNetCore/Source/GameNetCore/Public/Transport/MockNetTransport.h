@@ -159,6 +159,14 @@ public:
 
 private:
     /**
+     * @brief 尝试将上行报文派发至已注册的模拟处理器（先快照路由再回调以保障重入安全）
+     * @param OutboundHeader 归一化后的上行报文头
+     * @param Payload 负载二进制切片
+     * @return 命中已注册路由返回 true，未命中返回 false
+     */
+    bool TryDispatchMockRoute(const FNetPacketHeader& OutboundHeader, TConstArrayView<uint8> Payload);
+
+    /**
      * @brief 变更连接状态并在状态实际发生变化时触发广播
      * @param NewState 目标新状态
      */

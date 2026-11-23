@@ -17,7 +17,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证 16 字节小端序线格式编码、反解、边界阈值与畸形头校验
+ * @brief 验证 16 字节小端序线格式就地编码、反解、边界阈值与畸形头校验
  * @param Parameters 自动化测试参数
  * @return 测试是否全部通过
  */
@@ -60,59 +60,39 @@ bool FGameNetPacketCodecTest::RunTest([[maybe_unused]] const FString& Parameters
         ENetFrameParseStatus::InvalidHeaderSize
     );
 
-    const TArray<uint8> WireHeader = FNetPacketCodec::EncodeHeader(Original);
-    TestEqual(TEXT("线格式报文头固定为 16 字节"), WireHeader.Num(), 16);
-    TestEqual(TEXT("小端序 Magic 低字节为 0x45 ('E')"), WireHeader[0], static_cast<uint8>(0x45));
-    TestEqual(TEXT("小端序 Magic 高字节为 0x55 ('U')"), WireHeader[1], static_cast<uint8>(0x55));
-    TestEqual(TEXT("小端序 MessageId 首字节为 0x04"), WireHeader[8], static_cast<uint8>(0x04));
-    TestEqual(TEXT("小端序 MessageId 末字节为 0x01"), WireHeader[11], static_cast<uint8>(0x01));
-
-    TestTrue(TEXT("空切片反解报文头返回失败态"), FNetPacketCodec::TryDecodeHeader({}).IsFailure());
-    TestTrue(
-        TEXT("不足 16 字节切片反解返回失败态"),
-        FNetPacketCodec::TryDecodeHeader(TConstArrayView<uint8>(WireHeader.GetData(), 15)).IsFailure()
-    );
-
-    const TGameStatusResult<FNetPacketHeader> Decoded = FNetPacketCodec::TryDecodeHeader(WireHeader);
-    TestTrue(TEXT("完整 16 字节切片成功反解"), Decoded.IsSuccess());
-    if (Decoded.IsFailure()) {
-        return false;
-    }
-    TestTrue(TEXT("反解后的报文头与原始结构严格相等"), Decoded.GetValue() == Original);
-
-    const TArray<uint8> EmptyFrame = FNetPacketCodec::EncodeFrame(Original, {});
-    TestEqual(TEXT("空负载帧总长度为 16 字节"), EmptyFrame.Num(), 16);
-    const TGameStatusResult<FNetPacketHeader> EmptyDecoded = FNetPacketCodec::TryDecodeHeader(EmptyFrame);
-    TestTrue(TEXT("空负载帧头自动归一化 PayloadLength 为 0"), EmptyDecoded.IsSuccess() && EmptyDecoded.GetValue().PayloadLength == 0);
-
-    const uint8 SamplePayload[] = {10, 20, 30, 40, 50};
-    const TArray<uint8> FullFrame = FNetPacketCodec::EncodeFrame(Original, SamplePayload);
-    TestEqual(TEXT("带 5 字节负载的完整帧长度为 21"), FullFrame.Num(), 21);
-    const TGameStatusResult<FNetPacketHeader> FullDecoded = FNetPacketCodec::TryDecodeHeader(FullFrame);
-    TestTrue(TEXT("带负载帧头 PayloadLength 归一化为 5"), FullDecoded.IsSuccess() && FullDecoded.GetValue().PayloadLength == 5);
-
-    FNetPacketHeader FastHeader;
-    TestFalse(TEXT("空指针快速反解返回 false"), FNetPacketCodec::TryDecodeHeaderFast(nullptr, 16, FastHeader));
-    TestFalse(TEXT("不足 16 字节快速反解返回 false"), FNetPacketCodec::TryDecodeHeaderFast(FullFrame.GetData(), 15, FastHeader));
-    TestTrue(TEXT("有效缓冲区快速反解返回 true"), FNetPacketCodec::TryDecodeHeaderFast(FullFrame.GetData(), FullFrame.Num(), FastHeader));
-    TestTrue(TEXT("快速反解报文头字段与编码一致"), FastHeader == FullDecoded.GetValue());
-
-    FNetPacketHeader ViewFastHeader;
-    TestTrue(TEXT("切片快速反解返回 true"), FNetPacketCodec::TryDecodeHeaderFast(FullFrame, ViewFastHeader));
-    TestTrue(TEXT("切片快速反解与指针快速反解一致"), ViewFastHeader == FastHeader);
-
-    TArray<uint8> ReusedBuffer;
-    ReusedBuffer.Reserve(64);
-    FNetPacketCodec::EncodeFrameTo(Original, SamplePayload, ReusedBuffer);
-    TestEqual(TEXT("复用缓冲区 EncodeFrameTo 产物与 EncodeFrame 完全一致"), ReusedBuffer, FullFrame);
-
     uint8 StackHeaderBytes[FNetPacketHeader::WIRE_HEADER_BYTES];
     FNetPacketCodec::EncodeHeaderTo(Original, StackHeaderBytes);
-    TestEqual(
-        TEXT("栈缓冲区 EncodeHeaderTo 产物与 EncodeHeader 完全一致"),
-        FMemory::Memcmp(StackHeaderBytes, WireHeader.GetData(), FNetPacketHeader::WIRE_HEADER_BYTES),
-        0
+    TestEqual(TEXT("小端序 Magic 低字节为 0x45 ('E')"), StackHeaderBytes[0], static_cast<uint8>(0x45));
+    TestEqual(TEXT("小端序 Magic 高字节为 0x55 ('U')"), StackHeaderBytes[1], static_cast<uint8>(0x55));
+    TestEqual(TEXT("小端序 MessageId 首字节为 0x04"), StackHeaderBytes[8], static_cast<uint8>(0x04));
+    TestEqual(TEXT("小端序 MessageId 末字节为 0x01"), StackHeaderBytes[11], static_cast<uint8>(0x01));
+
+    FNetPacketHeader Decoded;
+    TestFalse(TEXT("空切片反解报文头返回 false"), FNetPacketCodec::TryDecodeHeader({}, Decoded));
+    TestFalse(
+        TEXT("不足 16 字节切片反解返回 false"),
+        FNetPacketCodec::TryDecodeHeader(TConstArrayView<uint8>(StackHeaderBytes, 15), Decoded)
     );
+    TestTrue(TEXT("完整 16 字节切片成功反解"), FNetPacketCodec::TryDecodeHeader(StackHeaderBytes, Decoded));
+    TestTrue(TEXT("反解后的报文头与原始结构严格相等"), Decoded == Original);
+
+    TArray<uint8> EmptyFrame;
+    FNetPacketCodec::EncodeFrameTo(Original, {}, EmptyFrame);
+    TestEqual(TEXT("空负载帧总长度为 16 字节"), EmptyFrame.Num(), 16);
+    FNetPacketHeader EmptyDecoded;
+    TestTrue(TEXT("空负载帧头反解成功"), FNetPacketCodec::TryDecodeHeader(EmptyFrame, EmptyDecoded));
+    TestEqual(TEXT("空负载帧头自动归一化 PayloadLength 为 0"), EmptyDecoded.PayloadLength, 0u);
+
+    const uint8 SamplePayload[] = {10, 20, 30, 40, 50};
+    TArray<uint8> FullFrame;
+    FullFrame.Reserve(64);
+    FNetPacketCodec::EncodeFrameTo(Original, SamplePayload, FullFrame);
+    TestEqual(TEXT("带 5 字节负载的完整帧长度为 21"), FullFrame.Num(), 21);
+
+    FNetPacketHeader FullDecoded;
+    TestTrue(TEXT("带负载帧头反解成功"), FNetPacketCodec::TryDecodeHeader(FullFrame, FullDecoded));
+    TestEqual(TEXT("带负载帧头 PayloadLength 归一化为 5"), FullDecoded.PayloadLength, 5u);
+    TestEqual(TEXT("带负载帧负载末字节一致"), FullFrame[20], static_cast<uint8>(50));
 
     FNetPacket ValuePacket(Original, SamplePayload);
     TestEqual(TEXT("带参构造 FNetPacket 报文头一致"), ValuePacket.Header, Original);
@@ -127,4 +107,3 @@ bool FGameNetPacketCodecTest::RunTest([[maybe_unused]] const FString& Parameters
 }
 
 #endif
-

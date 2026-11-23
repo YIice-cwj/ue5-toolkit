@@ -2,34 +2,18 @@
 
 #include "Serializer/MemoryArchiveNetSerializer.h"
 
+#include "Logging/GameLogCategories.h"
 #include "Memory/MemoryView.h"
 #include "Serialization/MemoryReader.h"
 #include "Serialization/MemoryWriter.h"
 #include "Serialization/ObjectAndNameAsStringProxyArchive.h"
-
-/**
- * @brief 将反射结构体通过二进制属性流高速序列化为字节数组
- * @param StructData 待序列化的结构体实例首地址
- * @param StructType 结构体反射元数据指针
- * @return 写入成功且无归档错误时返回包含字节数组的成功态，失败返回对应错误
- */
-TGameStatusResult<TArray<uint8>> FMemoryArchiveNetSerializer::Serialize(
-    const void* StructData,
-    const UStruct* StructType
-) const {
-    TArray<uint8> OutBytes;
-    const TGameStatusResult<void> Result = SerializeToBuffer(StructData, StructType, OutBytes);
-    if (Result.IsFailure()) {
-        return TGameStatusResult<TArray<uint8>>::Failure(Result.GetError());
-    }
-    return TGameStatusResult<TArray<uint8>>::Success(MoveTemp(OutBytes));
-}
+#include "Types/NetErrorCodes.h"
 
 /**
  * @brief 将反射结构体通过二进制属性流高速序列化并写入外部复用字节数组
  * @param StructData 待序列化的结构体实例首地址
  * @param StructType 结构体反射元数据指针
- * @param OutBytes 目标写入字节数组（就地清空并复用已有容量，避免重新分配堆内存）
+ * @param OutBytes 目标写入字节数组（就地清空并复用已有容量；失败时保持清空）
  * @return 写入成功且无归档错误时返回成功态，失败返回对应错误
  */
 TGameStatusResult<void> FMemoryArchiveNetSerializer::SerializeToBuffer(
@@ -38,8 +22,11 @@ TGameStatusResult<void> FMemoryArchiveNetSerializer::SerializeToBuffer(
     TArray<uint8>& OutBytes
 ) const {
     if (StructData == nullptr || StructType == nullptr) {
+        OutBytes.Reset();
         return TGameStatusResult<void>::Failure(
-            FGameError::Make(Game::ModuleId::Net, 2004, TEXT("StructData or StructType is null"))
+            Game::ModuleId::Net,
+            Game::NetErrorCodes::SerializationFailed,
+            TEXT("StructData or StructType is null")
         );
     }
 
@@ -50,15 +37,19 @@ TGameStatusResult<void> FMemoryArchiveNetSerializer::SerializeToBuffer(
 
     const_cast<UStruct*>(StructType)->SerializeBin(ProxyWriter, const_cast<void*>(StructData));
     if (MemoryWriter.IsError() || ProxyWriter.IsError()) {
+        OutBytes.Reset();
+        GAME_LOG_THROTTLE(1.0, Warning, TEXT("[ArchiveSerializer] 二进制归档写入出错: Target=%s"), *StructType->GetName());
         return TGameStatusResult<void>::Failure(
-            FGameError::Make(Game::ModuleId::Net, 2004, TEXT("Binary serialization archive error"))
+            Game::ModuleId::Net,
+            Game::NetErrorCodes::SerializationFailed,
+            TEXT("Binary serialization archive error")
         );
     }
     return TGameStatusResult<void>::Success();
 }
 
 /**
- * @brief 从二进制切片完整还原目标反射结构体（严格校验截断越界与尾部脏字节）
+ * @brief 从二进制切片完整还原目标反射结构体（严格校验截断越界与尾部脏字节，禁止隐式磁盘加载）
  * @param InBytes 二进制负载字节视图
  * @param StructType 目标结构体反射元数据指针
  * @param OutStructData 已初始化的目标结构体内存首地址
@@ -71,7 +62,9 @@ TGameStatusResult<void> FMemoryArchiveNetSerializer::Deserialize(
 ) const {
     if (StructType == nullptr || OutStructData == nullptr) {
         return TGameStatusResult<void>::Failure(
-            FGameError::Make(Game::ModuleId::Net, 2004, TEXT("StructType or OutStructData is null"))
+            Game::ModuleId::Net,
+            Game::NetErrorCodes::SerializationFailed,
+            TEXT("StructType or OutStructData is null")
         );
     }
 
@@ -79,23 +72,40 @@ TGameStatusResult<void> FMemoryArchiveNetSerializer::Deserialize(
     const int64 SafeMaxSerializeBytes = FMath::Max<int64>(static_cast<int64>(InBytes.Num()) * 4 + 256, 4096);
     MemoryReader.ArMaxSerializeSize = SafeMaxSerializeBytes;
 
-    FObjectAndNameAsStringProxyArchive ProxyReader(MemoryReader, true);
+    FObjectAndNameAsStringProxyArchive ProxyReader(MemoryReader, false);
     ProxyReader.ArMaxSerializeSize = SafeMaxSerializeBytes;
     ProxyReader.SetWantBinaryPropertySerialization(true);
 
     const_cast<UStruct*>(StructType)->SerializeBin(ProxyReader, OutStructData);
     if (MemoryReader.IsError() || ProxyReader.IsError()) {
+        GAME_LOG_THROTTLE(
+            1.0,
+            Warning,
+            TEXT("[ArchiveSerializer] 二进制归档反序列化损坏或截断: Target=%s, Bytes=%d"),
+            *StructType->GetName(),
+            InBytes.Num()
+        );
         return TGameStatusResult<void>::Failure(
-            FGameError::Make(Game::ModuleId::Net, 2004, TEXT("Binary deserialization archive corrupted"))
+            Game::ModuleId::Net,
+            Game::NetErrorCodes::SerializationFailed,
+            TEXT("Binary deserialization archive corrupted")
         );
     }
 
     if (!MemoryReader.AtEnd()) {
+        GAME_LOG_THROTTLE(
+            1.0,
+            Warning,
+            TEXT("[ArchiveSerializer] 二进制流末尾存在未消费脏字节: Target=%s, TotalBytes=%d"),
+            *StructType->GetName(),
+            InBytes.Num()
+        );
         return TGameStatusResult<void>::Failure(
-            FGameError::Make(Game::ModuleId::Net, 2004, TEXT("Trailing unexpected bytes in archive stream"))
+            Game::ModuleId::Net,
+            Game::NetErrorCodes::SerializationFailed,
+            TEXT("Trailing unexpected bytes in archive stream")
         );
     }
 
     return TGameStatusResult<void>::Success();
 }
-

@@ -1,12 +1,11 @@
 /**
  * @file NetCodecTypes.h
- * @brief 二进制报文帧流解析状态枚举与解包结果值对象定义
+ * @brief 二进制报文帧流解析状态枚举定义
  */
 
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Packet/NetPacketTypes.h"
 
 #include "NetCodecTypes.generated.h"
 
@@ -21,12 +20,3 @@ enum class ENetFrameParseStatus : uint8 {
     InvalidHeaderSize UMETA(DisplayName = "InvalidHeaderSize"),
     PayloadExceedsLimit UMETA(DisplayName = "PayloadExceedsLimit")
 };
-
-/**
- * @brief 流缓冲区单次解包结果值对象
- */
-struct GAMENETCORE_API FNetFrameDecodeOutcome {
-    ENetFrameParseStatus Status{ENetFrameParseStatus::NeedMoreData};
-    FNetPacket Packet;
-};
-

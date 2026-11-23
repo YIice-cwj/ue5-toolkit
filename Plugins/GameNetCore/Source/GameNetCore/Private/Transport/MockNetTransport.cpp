@@ -3,6 +3,8 @@
 #include "Transport/MockNetTransport.h"
 
 #include "Codec/NetPacketCodec.h"
+#include "Logging/GameLogCategories.h"
+#include "Types/NetErrorCodes.h"
 
 /**
  * @brief 建立内存虚拟回环连接（受 SetAcceptConnections 开关控制）
@@ -11,28 +13,38 @@
  */
 TGameStatusResult<void> FMockNetTransport::Connect(const FString& Endpoint) {
     if (Endpoint.IsEmpty()) {
+        GAME_LOG(Warning, TEXT("[MockTransport] 拒绝空端点连接请求。"));
         TransportErrorEvent.Broadcast(TEXT("MockNetTransport rejected empty endpoint."));
         return TGameStatusResult<void>::Failure(
-            FGameError::Make(Game::ModuleId::Net, 2001, TEXT("MockNetTransport rejected empty endpoint"))
+            Game::ModuleId::Net,
+            Game::NetErrorCodes::InvalidEndpoint,
+            TEXT("MockNetTransport rejected empty endpoint")
         );
     }
     if (CurrentState == ENetConnectionState::Connected || CurrentState == ENetConnectionState::Connecting) {
         return TGameStatusResult<void>::Failure(
-            FGameError::Make(Game::ModuleId::Net, 2002, TEXT("Connection already established or in progress"))
+            Game::ModuleId::Net,
+            Game::NetErrorCodes::AlreadyConnected,
+            TEXT("Connection already established or in progress")
         );
     }
 
     TransitionState(ENetConnectionState::Connecting);
     if (!bAcceptConnections) {
         TransitionState(ENetConnectionState::Disconnected);
-        TransportErrorEvent.Broadcast(FString::Printf(TEXT("MockNetTransport refused connection to '%s'."), *Endpoint));
+        const FString ErrorMsg = FString::Printf(TEXT("MockNetTransport refused connection to '%s'"), *Endpoint);
+        GAME_LOG(Warning, TEXT("[MockTransport] 模拟端点拒绝连接: %s"), *Endpoint);
+        TransportErrorEvent.Broadcast(ErrorMsg);
         return TGameStatusResult<void>::Failure(
-            FGameError::Make(Game::ModuleId::Net, 2001, FString::Printf(TEXT("MockNetTransport refused connection to '%s'"), *Endpoint))
+            Game::ModuleId::Net,
+            Game::NetErrorCodes::ConnectionRefused,
+            ErrorMsg
         );
     }
 
     ConnectedEndpoint = Endpoint;
     TransitionState(ENetConnectionState::Connected);
+    GAME_LOG(Verbose, TEXT("[MockTransport] 已建立内存回环连接: %s"), *Endpoint);
     return TGameStatusResult<void>::Success();
 }
 
@@ -61,44 +73,37 @@ void FMockNetTransport::Disconnect([[maybe_unused]] int32 ReasonCode, [[maybe_un
 TGameStatusResult<void> FMockNetTransport::Send(const FNetPacketHeader& Header, TConstArrayView<uint8> Payload) {
     if (CurrentState != ENetConnectionState::Connected) {
         return TGameStatusResult<void>::Failure(
-            FGameError::Make(Game::ModuleId::Net, 2002, TEXT("Transport is not connected"))
+            Game::ModuleId::Net,
+            Game::NetErrorCodes::NotConnected,
+            TEXT("Transport is not connected")
         );
     }
 
     FNetPacketHeader OutboundHeader = Header;
     OutboundHeader.PayloadLength = static_cast<uint32>(Payload.Num());
     if (!FNetPacketCodec::IsValidHeader(OutboundHeader)) {
+        GAME_LOG_THROTTLE(
+            1.0,
+            Warning,
+            TEXT("[MockTransport] 发送报文头校验失败: Magic=0x%04X, PayloadLen=%u"),
+            OutboundHeader.Magic,
+            OutboundHeader.PayloadLength
+        );
         return TGameStatusResult<void>::Failure(
-            FGameError::Make(Game::ModuleId::Net, 2003, TEXT("Invalid packet header"))
+            Game::ModuleId::Net,
+            Game::NetErrorCodes::InvalidPacketHeader,
+            TEXT("Invalid packet header")
         );
     }
 
     ++SentPacketCount;
 
-    if (const FRegisteredMockRoute* Route = MockRoutes.Find(OutboundHeader.MessageId)) {
-        if (Route->Handler) {
-            TOptional<TArray<uint8>> ResponsePayload = Route->Handler(OutboundHeader, Payload);
-            if (ResponsePayload.IsSet()) {
-                FNetPacket InboundPacket;
-                InboundPacket.Header.Magic = FNetPacketHeader::PACKET_MAGIC;
-                InboundPacket.Header.HeaderSize = FNetPacketHeader::WIRE_HEADER_BYTES;
-                InboundPacket.Header.MessageId = Route->ResponseMessageId;
-                InboundPacket.Header.SequenceId = OutboundHeader.SequenceId;
-                InboundPacket.Header.PayloadLength = static_cast<uint32>(ResponsePayload->Num());
-                InboundPacket.Payload = MoveTemp(*ResponsePayload);
-                PendingInboundQueue.Enqueue(MoveTemp(InboundPacket));
-            }
-        }
+    if (TryDispatchMockRoute(OutboundHeader, Payload)) {
         return TGameStatusResult<void>::Success();
     }
 
     if (bEchoUnregistered) {
-        FNetPacket EchoPacket;
-        EchoPacket.Header = OutboundHeader;
-        if (!Payload.IsEmpty()) {
-            EchoPacket.Payload.SetNumUninitialized(Payload.Num());
-            FMemory::Memcpy(EchoPacket.Payload.GetData(), Payload.GetData(), Payload.Num());
-        }
+        FNetPacket EchoPacket(OutboundHeader, Payload);
         PendingInboundQueue.Enqueue(MoveTemp(EchoPacket));
     }
     return TGameStatusResult<void>::Success();
@@ -163,20 +168,15 @@ bool FMockNetTransport::SimulateServerPush(uint32 MessageId, TConstArrayView<uin
         return false;
     }
 
-    FNetPacket PushPacket;
-    PushPacket.Header.Magic = FNetPacketHeader::PACKET_MAGIC;
-    PushPacket.Header.HeaderSize = FNetPacketHeader::WIRE_HEADER_BYTES;
-    PushPacket.Header.PayloadLength = static_cast<uint32>(Payload.Num());
-    PushPacket.Header.MessageId = MessageId;
-    PushPacket.Header.SequenceId = SequenceId;
-    if (!FNetPacketCodec::IsValidHeader(PushPacket.Header)) {
+    FNetPacketHeader PushHeader;
+    PushHeader.PayloadLength = static_cast<uint32>(Payload.Num());
+    PushHeader.MessageId = MessageId;
+    PushHeader.SequenceId = SequenceId;
+    if (!FNetPacketCodec::IsValidHeader(PushHeader)) {
         return false;
     }
 
-    if (!Payload.IsEmpty()) {
-        PushPacket.Payload.SetNumUninitialized(Payload.Num());
-        FMemory::Memcpy(PushPacket.Payload.GetData(), Payload.GetData(), Payload.Num());
-    }
+    FNetPacket PushPacket(PushHeader, Payload);
     PendingInboundQueue.Enqueue(MoveTemp(PushPacket));
     return true;
 }
@@ -197,6 +197,38 @@ void FMockNetTransport::SimulateRemoteDisconnect(const FString& ErrorDetail) {
 }
 
 /**
+ * @brief 尝试将上行报文派发至已注册的模拟处理器（先快照路由再回调以保障重入安全）
+ * @param OutboundHeader 归一化后的上行报文头
+ * @param Payload 负载二进制切片
+ * @return 命中已注册路由返回 true，未命中返回 false
+ */
+bool FMockNetTransport::TryDispatchMockRoute(const FNetPacketHeader& OutboundHeader, TConstArrayView<uint8> Payload) {
+    const FRegisteredMockRoute* Route = MockRoutes.Find(OutboundHeader.MessageId);
+    if (Route == nullptr) {
+        return false;
+    }
+
+    const uint32 ResponseMessageId = Route->ResponseMessageId;
+    const FMockRequestHandler HandlerCopy = Route->Handler;
+    if (!HandlerCopy) {
+        return true;
+    }
+
+    TOptional<TArray<uint8>> ResponsePayload = HandlerCopy(OutboundHeader, Payload);
+    if (!ResponsePayload.IsSet() || CurrentState != ENetConnectionState::Connected) {
+        return true;
+    }
+
+    FNetPacket InboundPacket;
+    InboundPacket.Header.MessageId = ResponseMessageId;
+    InboundPacket.Header.SequenceId = OutboundHeader.SequenceId;
+    InboundPacket.Header.PayloadLength = static_cast<uint32>(ResponsePayload->Num());
+    InboundPacket.Payload = MoveTemp(*ResponsePayload);
+    PendingInboundQueue.Enqueue(MoveTemp(InboundPacket));
+    return true;
+}
+
+/**
  * @brief 变更连接状态并在状态实际发生变化时触发广播
  * @param NewState 目标新状态
  */
@@ -207,4 +239,3 @@ void FMockNetTransport::TransitionState(ENetConnectionState NewState) {
     CurrentState = NewState;
     StateChangedEvent.Broadcast(CurrentState);
 }
-

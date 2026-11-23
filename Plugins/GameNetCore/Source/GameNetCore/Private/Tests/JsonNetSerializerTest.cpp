@@ -10,6 +10,7 @@
 
 #include "Serializer/JsonNetSerializer.h"
 #include "Tests/GameNetCoreTestTypes.h"
+#include "Types/NetErrorCodes.h"
 
 namespace {
 
@@ -29,7 +30,7 @@ FGameNetTestPurchaseRsp BuildSampleJsonPurchaseRsp() {
     return Sample;
 }
 
-}
+}  // namespace
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameNetJsonSerializerTest,
@@ -38,7 +39,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证 JSON 序列化器的复杂结构体往返一致性、向前兼容模式、严格模式及畸形输入防御
+ * @brief 验证 JSON 序列化器的复杂结构体往返一致性、错误码归属、向前兼容模式、严格模式及畸形输入防御
  * @param Parameters 自动化测试参数
  * @return 测试是否全部通过
  */
@@ -49,7 +50,14 @@ bool FGameNetJsonSerializerTest::RunTest([[maybe_unused]] const FString& Paramet
     const FJsonNetSerializer DefaultJsonSerializer;
     TestFalse(TEXT("默认 JSON 序列化器关闭严格模式以保持向前兼容"), DefaultJsonSerializer.IsStrictMode());
 
-    TestTrue(TEXT("JSON 序列化空数据指针返回失败态"), DefaultJsonSerializer.Serialize(nullptr, StructMeta).IsFailure());
+    const TGameStatusResult<TArray<uint8>> NullDataRes = DefaultJsonSerializer.Serialize(nullptr, StructMeta);
+    TestTrue(TEXT("JSON 序列化空数据指针返回失败态"), NullDataRes.IsFailure());
+    TestEqual(TEXT("失败错误 ModuleId 精确为 Game::ModuleId::Net"), NullDataRes.GetError().ModuleId, Game::ModuleId::Net);
+    TestEqual(
+        TEXT("失败错误码为 SerializationFailed"),
+        NullDataRes.GetError().ErrorCode,
+        Game::NetErrorCodes::SerializationFailed
+    );
     TestTrue(TEXT("JSON 序列化空类型指针返回失败态"), DefaultJsonSerializer.Serialize(&Expected, nullptr).IsFailure());
 
     const TGameStatusResult<TArray<uint8>> JsonBytes = DefaultJsonSerializer.SerializeStruct(Expected);
@@ -132,4 +140,3 @@ bool FGameNetJsonSerializerTest::RunTest([[maybe_unused]] const FString& Paramet
 }
 
 #endif
-
