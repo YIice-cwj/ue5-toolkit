@@ -11,7 +11,7 @@
 ```cpp
 void UShopManager::ProcessPurchase(FName GoodsKey)
 {
-    UStaticDataSubsystem* StaticData = UStaticDataSubsystem::Get(this);
+    UStaticDataSubsystem* StaticData = UStaticDataSubsystem::GetPtr(this);
     if (!StaticData) return;
 
     const TSharedPtr<const FStaticDataSnapshot> Snapshot = StaticData->GetSnapshot();
@@ -42,9 +42,9 @@ void UShopManager::ProcessPurchase(FName GoodsKey)
 | :--- | :--- | :--- |
 | `F{Stem}Query::FindByKey(Snapshot, Key)` | 单表主键查询 | `TSharedPtr<const F{Stem}Row>` |
 | `F{Domain}StaticDataInterface::FindCompositeData(Snapshot, Key)` | 跨表聚合查询 | `TSharedPtr<const F{Domain}CompositeData>` |
-| `F{Domain}CompositeService` | 批量/条件查询等业务扩展 | 由业务扩展定义 |
+| `F{Domain}Service` | 批量/条件查询等无状态业务扩展 | 由业务扩展定义 |
 
-- `FindByKey` 的键类型随 `row_key_mode`：默认 `FName`；`enum` 模式为 `E{Stem}Key`。
+- `FindByKey` 参数统一为 `const FName&`；在 `row_key_mode = "enum"` 模式下可配合生成的 `ToRowName(E{Stem}Key)` 传入，或调用 `F{Domain}StaticData::Find(E{Stem}Key)`。
 - 每张表首次生成时创建查询脚手架 `F{Stem}Query`，后续重生成不会覆盖；可在其中扩展外键反查、字段过滤、范围查询等该表专属方法。
 - 聚合查询按主表全键预热缓存（`FVersionedCache`），发布后只读。
 
@@ -98,4 +98,4 @@ FItemRowView::FItemRowView(UStaticDataSubsystem* InStaticData)
 | 缓存 `const FItemRow*` 到成员变量 | 热更后悬垂 | 缓存 `TSharedPtr<const FItemRow>`，或缓存键并在用时重查 |
 | 跨逻辑栈复用同一 `Snapshot` | 读到过期数据 | 每个逻辑入口重新 `GetSnapshot()` |
 | 在非主线程查询 | 未定义行为 | 查询只在游戏线程进行 |
-| 用 `enum` 键模式承载超过 255 行 | 生成期报错 | 改用 `row_key_mode = "fname"` |
+| 用 `enum` 键模式承载超过 254 行（含 `None` 共 255 枚举项） | 生成期报错 | 改用 `row_key_mode = "fname"` |

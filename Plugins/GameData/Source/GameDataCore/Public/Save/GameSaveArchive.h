@@ -19,12 +19,12 @@ class GAMEDATACORE_API UGameSaveArchive : public USaveGame {
     GENERATED_BODY()
 
 public:
-    UGameSaveArchive() = default;
-
     /**
      * @brief 归档格式主版本常量
      */
     static constexpr int32 CurrentArchiveVersion = 1;
+
+    UGameSaveArchive() = default;
 
     /**
      * @brief 槽位元信息

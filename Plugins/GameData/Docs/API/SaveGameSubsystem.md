@@ -1,6 +1,6 @@
 # GameData 存档子系统 API 参考
 
-`USaveGameSubsystem`（`GameDataCore`）是零业务字段的通用分段存档调度器。
+`USaveGameSubsystem`（`GameDataCore`）是零业务字段的通用分段存档调度器。所有错误均统一归属 `Game::ModuleId::Data` 并携带强类型 `Game::DataErrorCodes` 错误码（定义于 `Core/DataErrorCodes.h`）。
 
 头文件：`#include "Save/USaveGameSubsystem.h"`
 
@@ -42,7 +42,7 @@ struct GAMEDATACORE_API FGameSaveSegmentPayload {
 ```cpp
 struct GAMEDATACORE_API FGameSaveSegment {
     FName SegmentName;
-    int32 SegmentVersion = 1;
+    int32 SegmentVersion = 1; // 必须 > 0
     TFunction<void(FArchive&)> Save;
     TFunction<bool(FArchive&, int32 StoredVersion)> Load;
 };
@@ -78,23 +78,28 @@ class GAMEDATACORE_API USaveGameSubsystem : public UGameInstanceSubsystem {
     GENERATED_BODY()
 
 public:
-    void SetSaveGameClass(TSubclassOf<UGameSaveArchive> InSaveGameClass);
+    void Initialize(FSubsystemCollectionBase& Collection) override;
+    void Deinitialize() override;
+
+    void SetSaveGameClass(TSubclassOf<UGameSaveArchive> InSaveGameClass); // 拒绝空类及 CLASS_Abstract
     TSubclassOf<UGameSaveArchive> GetSaveGameClass() const;
 
-    void RegisterSegment(const FGameSaveSegment& Segment);
-    TGameStatusResult<void> UnregisterSegment(FName SegmentName);
-    bool HasSegment(FName SegmentName) const;
+    [[nodiscard]] TGameStatusResult<void> RegisterSegment(const FGameSaveSegment& Segment);
+    [[nodiscard]] TGameStatusResult<void> UnregisterSegment(FName SegmentName);
+    [[nodiscard]] bool HasSegment(FName SegmentName) const;
 
     void SetAllowedSlotNames(const TArray<FString>& InAllowedSlotNames);
     bool IsSlotNameAllowed(const FString& SlotName) const;
 
-    // C++ 强契约主接口
+    // C++ 强契约主接口（统一返回 TGameStatusResult，携带 Game::ModuleId::Data 与 Game::DataErrorCodes）
     [[nodiscard]] TGameStatusResult<void> SaveGameToSlot(const FString& SlotName);
     [[nodiscard]] TGameStatusResult<void> LoadGameFromSlot(const FString& SlotName);
+    [[nodiscard]] TGameStatusResult<UGameSaveArchive*> DeserializeAndValidateArchive(const FString& SlotName, const TArray<uint8>& Bytes) const;
+    [[nodiscard]] TGameStatusResult<void> ApplyArchiveToSegments(const FString& SlotName, const UGameSaveArchive& Archive);
     [[nodiscard]] TGameStatusResult<void> SaveObjectToSlot(const FString& SlotName, USaveGame* SaveGameObject);
-    [[nodiscard]] TGameResult<USaveGame*, FGameError> LoadObjectFromSlot(const FString& SlotName, TSubclassOf<USaveGame> SaveGameClassToLoad);
+    [[nodiscard]] TGameStatusResult<USaveGame*> LoadObjectFromSlot(const FString& SlotName, TSubclassOf<USaveGame> SaveGameClassToLoad);
     template <typename TSaveGameClass>
-    [[nodiscard]] TGameResult<TSaveGameClass*, FGameError> LoadObjectFromSlot(const FString& SlotName);
+    [[nodiscard]] TGameStatusResult<TSaveGameClass*> LoadObjectFromSlot(const FString& SlotName);
     [[nodiscard]] TGameStatusResult<void> DeleteSaveSlot(const FString& SlotName);
 
     // 蓝图反射外观方法（内部转发并返回 bool）
@@ -113,7 +118,7 @@ public:
     UFUNCTION(BlueprintCallable, Category = "GameData|Save", meta = (DisplayName = "Delete Save Slot"))
     bool K2_DeleteSaveSlot(const FString& SlotName);
 
-    // 异步分段任务接口
+    // 异步分段任务接口（Deinitialize 自动经 FCancellationTokenSource 取消在途回调）
     bool SaveGameToSlotAsync(const FString& SlotName);
     bool LoadGameFromSlotAsync(const FString& SlotName);
     bool DoesSaveSlotExist(const FString& SlotName) const;
@@ -131,21 +136,23 @@ public:
 ```cpp
 class GAMEDATACORE_API FSaveGameFileIO {
 public:
-    static FString GetSaveSlotFilePath(const FString& SlotName);
-    static FString GetSaveSlotTempFilePath(const FString& SlotName);
+    FSaveGameFileIO() = delete;
 
-    static bool IsSlotNameAllowed(const FString& SlotName, const TSet<FString>& AllowedSlotNames);
-    static bool DoesSaveSlotExist(const FString& SlotName);
-    static TGameStatusResult<void> DeleteSaveSlot(const FString& SlotName);
+    [[nodiscard]] static FString GetSaveSlotFilePath(const FString& SlotName);
+    [[nodiscard]] static FString GetSaveSlotTempFilePath(const FString& SlotName);
 
-    static TGameResult<TArray<uint8>, FGameError> SerializeObject(USaveGame* SaveGameObject);
+    [[nodiscard]] static bool IsSlotNameAllowed(const FString& SlotName, const TSet<FString>& AllowedSlotNames);
+    [[nodiscard]] static bool DoesSaveSlotExist(const FString& SlotName);
+    [[nodiscard]] static TGameStatusResult<void> DeleteSaveSlot(const FString& SlotName);
 
-    static uint64 IssueSlotSaveGeneration(const FString& SlotName);
+    [[nodiscard]] static TGameStatusResult<TArray<uint8>> SerializeObject(USaveGame* SaveGameObject);
+
+    [[nodiscard]] static uint64 IssueSlotSaveGeneration(const FString& SlotName);
     static void InvalidateSlotSaveGeneration(const FString& SlotName);
 
-    static TGameStatusResult<void> WriteSlotBytes(const FString& SlotName, const TArray<uint8>& Bytes, uint64 SaveGeneration = 0);
-    static TGameResult<TArray<uint8>, FGameError> ReadSlotBytes(const FString& SlotName);
-    static bool HasValidSaveGameHeader(const TArray<uint8>& Bytes, const FString& SlotName);
+    [[nodiscard]] static TGameStatusResult<void> WriteSlotBytes(const FString& SlotName, const TArray<uint8>& Bytes, uint64 SaveGeneration = 0, bool* bOutSkippedStale = nullptr);
+    [[nodiscard]] static TGameStatusResult<TArray<uint8>> ReadSlotBytes(const FString& SlotName);
+    [[nodiscard]] static bool HasValidSaveGameHeader(const TArray<uint8>& Bytes, const FString& SlotName);
 };
 ```
 
@@ -154,10 +161,11 @@ public:
 ```cpp
 class GAMEDATACORE_API FSaveGameSegmentRegistry {
 public:
-    void RegisterSegment(const FGameSaveSegment& Segment);
-    TGameStatusResult<void> UnregisterSegment(FName SegmentName);
+    [[nodiscard]] TGameStatusResult<void> RegisterSegment(const FGameSaveSegment& Segment);
+    [[nodiscard]] TGameStatusResult<void> UnregisterSegment(FName SegmentName);
     [[nodiscard]] bool HasSegment(FName SegmentName) const;
 
+    [[nodiscard]] TGameStatusResult<void> ValidateArchiveCompatibility(const UGameSaveArchive& Archive) const;
     [[nodiscard]] TGameStatusResult<void> BuildArchive(const FString& SlotName, UGameSaveArchive& OutArchive) const;
     [[nodiscard]] TGameStatusResult<void> ApplyArchive(const FString& SlotName, const UGameSaveArchive& Archive);
     void ClearPreservedSegmentsForSlot(const FString& SlotName);
@@ -171,16 +179,18 @@ public:
 
 | 接口 | 语义 |
 | :--- | :--- |
-| `RegisterSegment` | 按段名覆盖注册；段名、保存委托、加载委托缺一不可 |
-| `SaveGameToSlot` | 主线程逐段捕获并原子写盘 |
-| `SaveGameToSlotAsync` | 主线程捕获段字节，后台写盘；完成后广播 `OnSaveComplete` |
-| `LoadGameFromSlot` | 同步读取并逐段应用；损坏档返回 `false` |
+| `RegisterSegment` | 按段名覆盖注册；校验段名非空、`SegmentVersion > 0` 及保存/加载委托均有效，不满足返回 `InvalidSegment` |
+| `SaveGameToSlot` | 主线程逐段捕获并原子写盘；返回 `TGameStatusResult<void>` |
+| `SaveGameToSlotAsync` | 主线程捕获段字节，后台写盘；完成后广播 `OnSaveComplete`，`Deinitialize` 取消在途回调 |
+| `LoadGameFromSlot` | 同步读取、校验并逐段应用；损坏或版本不兼容返回带具体错误码的 `Failure` |
+| `DeserializeAndValidateArchive` | 纯内存反序列化与归档/段版本预检（零磁盘 I/O 与零状态变更），供云存档先验后落盘复用 |
+| `ApplyArchiveToSegments` | 直接应用已校验的内存归档，消除落盘后的二次读盘 |
 | `LoadGameFromSlotAsync` | 后台读盘，回主线程反序列化并逐段应用；同槽位仅最新请求可应用，过期请求以 `OnLoadComplete(SlotName, false)` 取消 |
 | `SaveObjectToSlot` | 任意 `USaveGame` 对象的存取逃生口，不走段注册 |
-| `DoesSaveSlotExist` | 正式 `.sav` 或可抢救的 `.sav.tmp` 存在即返回 true |
-| `DeleteSaveSlot` | 删除正式档与临时档并保留保存代次高水位，阻止在途异步写复活槽位；同时使在途异步加载失效。发现至少一个文件且全部删除成功才返回 `true` |
+| `DoesSaveSlotExist` | 正式 `.sav` 或可抢救的 `.sav.tmp` 存在即返回 `true` |
+| `DeleteSaveSlot` | 在同一把槽位 I/O 锁内原子完成代次高水位推进与文件删除，阻止在途异步写复活槽位 |
 
-`OnSaveComplete` / `OnLoadComplete` 仅异步路径广播；同步路径由返回值判定。
+`OnSaveComplete` / `OnLoadComplete` 仅异步路径广播；同步路径由 `TGameStatusResult` 返回值判定。
 
 ---
 
@@ -189,23 +199,41 @@ public:
 `IsSlotNameAllowed` 规则：
 
 1. 非空且长度不超过 64；
-2. 不含 `/`、`\`、`.`；
+2. 不含首尾空白、控制字符（`< 0x20` 或 `0x7F`）及 `/`、`\`、`.`、`:`、`*`、`?`、`"`、`<`、`>`、`|`；
 3. 白名单非空时必须命中白名单。
 
-不合法槽位在保存/加载/删除入口直接拒绝并记录 Warning。
+不合法槽位在同步保存/加载/删除入口直接返回 `InvalidSlotName`（`DoesSaveSlotExist` 返回 `false`；异步接口记录 Warning 并立即广播 `false`）。
 
 ---
 
-## 5. 损坏档防护与灾备恢复机制
+## 5. 并发锁分层与灾备恢复机制
 
-`ReadSlotBytes` 在进入引擎反序列化前校验：
+1. **双层锁隔离（零主线程 I/O 阻塞）**：`FSaveGameFileIO` 将轻量的内存元数据锁（保护代次表与槽位锁映射）与**按槽位隔离的 I/O 互斥锁**分离；`IssueSlotSaveGeneration` 在主线程纯内存纳秒级完成，绝不被其他槽位磁盘写阻塞，且多槽位可并行读写；
+2. **自动临时档抢救**：若正式档 `.sav` 损坏、截断或缺失，自动回退读取 `.sav.tmp` 副本；仅在临时副本格式合法且成功原子换入正式档后返回 `Success`；
+3. **写失败清理 / 换入失败保留**：`WriteSlotBytes` 借助 `TCancelableScopeGuard`，若写入 `.tmp` 阶段失败自动清理残缺 `.tmp`；若 `.tmp` 写完整但原子 `Move` 失败，则保留完整 `.tmp` 供后续自动抢救恢复；
+4. **高水位代次防穿透与 ABA 免疫**：`DeleteSaveSlot` 持槽位锁同步推进签发与已提交水位并删盘，`WriteSlotBytes` 采用 `*Committed >= SaveGeneration` 拦截一切过期写，且 `IsSlotSaveGenerationSuperseded` 可检测后台落盘至主线程热应用窗口期内的新写/删槽超越，彻底消除旧归档复活或倒灌的竞态窗口。
 
-- 文件类型 tag（`0x53415647`，即 `"SAVG"`）；
-- 最小头长度 64 字节。
+---
 
-**灾备恢复与断电保护机制**：
-1. **自动临时档抢救**：若正式档 `.sav` 损坏、截断或缺失，自动回退读取未完成移动的 `.sav.tmp` 副本。临时副本格式合法且成功换入正式档后才返回成功；换入失败则本次读取返回 `false`；
-2. **移动失败保留副本**：`WriteSlotBytes` 中若原子移动失败，不再直接删除临时文件，保留现场以便灾备抢救与排查；
-3. **分段保护**：在分段归档时，若外部注册系统或对象指针失效，主动调用 `Ar.SetError()` 终止写入，杜绝向磁盘写入空白数据导致旧存档被覆盖清空；
-4. **高水位代次防穿透与 ABA 免疫**：`InvalidateSlotSaveGeneration` 将槽位已提交代次推至当前签发水位（`CurrentIssued`），`WriteSlotBytes` 采用 `*Committed >= SaveGeneration` 进行绝对拦截。即使旧写抢在新写提交前到达，也因代次不满足条件而被安全吸收，杜绝槽位被意外复活；
-5. **故障分支缓冲区安全重置**：`ReadSlotBytes` 在正式档损坏、临时档缺失、临时档损坏或原子重命名换入失败的所有异常分支，均显式调用 `OutBytes.Reset()`，杜绝截断或损坏数据在缓冲区残留。
+## 6. 持久化错误码速查表 (`Game::DataErrorCodes`)
+
+| 错误码常量 | 数值 | 触发场景 |
+| :--- | :---: | :--- |
+| `InvalidSlotName` | `10020` | 槽位名为空、超长（>64）、含非法字符或不在白名单内 |
+| `InvalidSaveObject` | `10021` | 待序列化的 `USaveGame*` 对象为空 |
+| `InvalidSaveClass` | `10022` | 目标存档 `UClass` 为空或包含 `CLASS_Abstract` 抽象标志 |
+| `SaveSerializeFailed` | `10023` | `UGameplayStatics::SaveGameToMemory` 序列化失败 |
+| `SaveDeserializeFailed` | `10024` | `UGameplayStatics::LoadGameFromMemory` 反序列化失败 |
+| `SaveTypeMismatch` | `10025` | 反序列化出的对象类型与期望的 `SaveGameClass` 不匹配 |
+| `ArchiveVersionMismatch` | `10026` | 归档主版本 `ArchiveVersion <= 0` 或高于 `CurrentArchiveVersion` |
+| `SaveSlotNotFound` | `10027` | 指定槽位的 `.sav` 与 `.sav.tmp` 均不存在 |
+| `DeleteSlotFailed` | `10028` | 槽位物理文件存在但文件系统删除失败 |
+| `WriteTempFileFailed` | `10029` | 写入 `.sav.tmp` 临时存档文件失败 |
+| `CommitTempFileFailed` | `10030` | 将 `.sav.tmp` 原子替换为正式 `.sav` 失败 |
+| `CorruptedSaveFile` | `10031` | 正式档与临时档魔数头（`0x53415647`）或长度校验均不通过 |
+| `RecoveryMoveFailed` | `10032` | 自合法 `.sav.tmp` 抢救恢复并原子换入正式 `.sav` 失败 |
+| `InvalidSegment` | `10033` | 待注册存档段名为空、`SegmentVersion <= 0` 或读写委托缺失 |
+| `SegmentNotFound` | `10034` | 注销未注册的存档段名 |
+| `SegmentSaveFailed` | `10035` | 存档段 `Save(FArchive&)` 置位 `Ar.IsError()` |
+| `SegmentVersionMismatch` | `10036` | 存档段存储版本 `<= 0` 或高于当前注册的 `SegmentVersion` |
+| `SegmentLoadFailed` | `10037` | 存档段 `Load` 返回 `false`、`Ar.IsError()` 或触发 `ArMaxSerializeSize` 越界保护 |

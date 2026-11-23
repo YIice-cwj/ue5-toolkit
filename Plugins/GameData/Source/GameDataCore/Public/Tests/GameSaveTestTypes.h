@@ -1,12 +1,13 @@
 /**
  * @file GameSaveTestTypes.h
- * @brief 存档子系统自动化测试专用 USaveGame 派生类
+ * @brief 存档子系统自动化测试专用 USaveGame 派生类与异步事件监听器
  */
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "GameFramework/SaveGame.h"
+#include "Save/GameSaveArchive.h"
 
 #include "GameSaveTestTypes.generated.h"
 
@@ -26,6 +27,14 @@ public:
 };
 
 /**
+ * @brief 存档子系统测试用抽象归档子类（验证 SetSaveGameClass 拒绝 CLASS_Abstract 契约）
+ */
+UCLASS(Abstract)
+class GAMEDATACORE_API UGameSaveAbstractArchive : public UGameSaveArchive {
+    GENERATED_BODY()
+};
+
+/**
  * @brief 存档子系统异步事件测试监听器
  */
 UCLASS()
@@ -34,9 +43,9 @@ class GAMEDATACORE_API UGameSaveTestEventListener : public UObject {
 
 public:
     /**
-     * @brief 记录一次异步加载完成结果
+     * @brief 记录一次异步加载或保存完成结果
      * @param SlotName 完成回调对应的槽位名称
-     * @param bSuccess 加载是否成功
+     * @param bSuccess 操作是否成功
      */
     UFUNCTION()
     void RecordLoadComplete(const FString& SlotName, bool bSuccess);

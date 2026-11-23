@@ -41,12 +41,12 @@ void AMyGameMode::CheckPlayerItem(FName ItemId)
     const TSharedPtr<const FItemRow> ItemRow = FItemQuery::FindByKey(Snapshot, ItemId);
     if (!ItemRow) return;
 
-    GAME_LOG(Log, TEXT("Item %s: Name=%s, GoldCost=%.1f"),
-        *ItemId.ToString(), *ItemRow->ItemName, ItemRow->GoldCost);
+    GAME_LOG(Log, TEXT("Item %s: Name=%s, GoldCost=%.1f, BaseAttack=%d"),
+        *ItemId.ToString(), *ItemRow->ItemName, ItemRow->GoldCost, ItemRow->BaseAttack);
 }
 ```
 
-- 键类型由生成配置 `row_key_mode` 决定：`fname`（默认）用 `FName`，`enum` 用生成的 `E{Stem}Key`。
+- `F{Stem}Query::FindByKey` 统一接收 `const FName&`；当生成配置 `row_key_mode` 为 `"enum"` 时，还会额外生成 `E{Stem}Key` 枚举、`ToRowName(E{Stem}Key)` 转换辅助以及 `F{Domain}StaticData::Find(E{Stem}Key)` 重载。
 - 需要跨表聚合时改用 `FItemStaticDataInterface::FindCompositeData(Snapshot, Key)`。
 - 订阅数据版本变化可用 `StaticData->GetDataVersionObserver()`，或绑定 `OnStaticDataReloaded`。
 
@@ -84,7 +84,7 @@ void UMyProgressSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
     if (USaveGameSubsystem* SaveSys = GetGameInstance()->GetSubsystem<USaveGameSubsystem>())
     {
-        SaveSys->RegisterSegment(BuildProgressSegment());
+        (void)SaveSys->RegisterSegment(BuildProgressSegment());
     }
 }
 
@@ -96,8 +96,8 @@ void UMyProgressSubsystem::SaveProgress()
     PlayerLevel += 1;
     GoldCoins += 500;
 
-    const bool bSuccess = SaveSys->SaveGameToSlot(TEXT("SaveSlot_01"));
-    GAME_LOG(Log, TEXT("Save game result: %s"), bSuccess ? TEXT("Success") : TEXT("Failed"));
+    const TGameStatusResult<void> SaveRes = SaveSys->SaveGameToSlot(TEXT("SaveSlot_01"));
+    GAME_LOG(Log, TEXT("Save game result: %s"), SaveRes.IsSuccess() ? TEXT("Success") : TEXT("Failed"));
 }
 ```
 

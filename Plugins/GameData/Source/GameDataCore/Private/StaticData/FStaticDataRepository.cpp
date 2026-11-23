@@ -5,50 +5,22 @@
 
 #include "StaticData/FStaticDataRepository.h"
 
+#include "Logging/GameLogCategories.h"
 #include "Misc/FileHelper.h"
 #include "Serialization/MemoryReader.h"
 #include "Serialization/MemoryWriter.h"
 
-#include "StaticData/FStaticDataBinCodec.h"
-
-#include "Logging/GameLogCategories.h"
-
-FStaticDataRepository::FStaticDataRepository(const FStaticDataRepository& Other)
-    : Tables(Other.Tables)
-    , RowPayloadFuncs(Other.RowPayloadFuncs)
-    , LastError(Other.LastError.load(std::memory_order_relaxed)) {
-}
-
-FStaticDataRepository& FStaticDataRepository::operator=(const FStaticDataRepository& Other) {
-    if (this != &Other) {
-        Tables = Other.Tables;
-        RowPayloadFuncs = Other.RowPayloadFuncs;
-        LastError.store(Other.LastError.load(std::memory_order_relaxed), std::memory_order_relaxed);
-    }
-    return *this;
-}
-
-FStaticDataRepository::FStaticDataRepository(FStaticDataRepository&& Other) noexcept
-    : Tables(MoveTemp(Other.Tables))
-    , RowPayloadFuncs(MoveTemp(Other.RowPayloadFuncs))
-    , LastError(Other.LastError.load(std::memory_order_relaxed)) {
-}
-
-FStaticDataRepository& FStaticDataRepository::operator=(FStaticDataRepository&& Other) noexcept {
-    if (this != &Other) {
-        Tables = MoveTemp(Other.Tables);
-        RowPayloadFuncs = MoveTemp(Other.RowPayloadFuncs);
-        LastError.store(Other.LastError.load(std::memory_order_relaxed), std::memory_order_relaxed);
-    }
-    return *this;
-}
-
 /**
- * @brief 登记某行结构的生成式负载读写器（同结构重复登记即覆盖）
- * @param StructName 行结构名（与 RowType::StaticStruct()->GetName() 严格一致）
+ * @brief 登记某行结构的生成式负载读写器（同结构重复登记即覆盖，拒绝空名或空函数指针）
+ * @param StructName 行结构名（与 TRowType::StaticStruct()->GetName() 严格一致）
  * @param PayloadFunc 行负载读写函数（由数据表生成管线产出）
  */
 void FStaticDataRepository::RegisterRowSerializer(const FName& StructName, FRowPayloadFunc PayloadFunc) {
+    if (StructName.IsNone() || PayloadFunc == nullptr) {
+        GAME_LOG(Warning, TEXT("【静态数据仓库】忽略无效行序列化器注册: 结构体=[%s], 函数指针为空=%s。"),
+            *StructName.ToString(), PayloadFunc == nullptr ? TEXT("True") : TEXT("False"));
+        return;
+    }
     RowPayloadFuncs.Add(StructName, PayloadFunc);
     GAME_LOG(Verbose, TEXT("【静态数据仓库】注册行序列化器: 结构体=[%s]。"), *StructName.ToString());
 }
@@ -62,34 +34,31 @@ int32 FStaticDataRepository::TableCount() const noexcept {
 }
 
 /**
- * @brief 清空全部装载数据并复位错误码（已登记的负载读写器保留）
+ * @brief 清空全部装载数据（已登记的负载读写器保留）
  */
 void FStaticDataRepository::Reset() noexcept {
     Tables.Empty();
-    LastError.store(EStaticDataBinError::None, std::memory_order_relaxed);
 }
 
 /**
  * @brief 导出全部装载表至 .bin 文件（脱机导出，Cook 前置；字节编码委托 FStaticDataBinCodec）
  * @param FilePath 目标文件绝对路径
- * @return 成功返回 Success；编码或写盘失败返回 Failure
+ * @return 成功返回 Success；编码或写盘失败返回含 Game::DataErrorCodes 的 Failure
  */
 TGameStatusResult<void> FStaticDataRepository::ExportToFile(const FString& FilePath) const {
-    auto EncodeResult = FStaticDataBinCodec::Encode(Tables);
+    TGameResult<TArray<uint8>, EStaticDataBinError> EncodeResult = FStaticDataBinCodec::Encode(Tables);
     if (EncodeResult.IsFailure()) {
         const EStaticDataBinError ErrorCode = EncodeResult.GetError();
-        LastError.store(ErrorCode, std::memory_order_relaxed);
-        GAME_LOG(Error, TEXT("【静态数据仓库】导出二进制失败：编码器异常 (路径: %s)。"), *FilePath);
-        return TGameStatusResult<void>::Failure(static_cast<int32>(ErrorCode), FStaticDataBinCodec::DescribeError(ErrorCode));
+        GAME_LOG(Error, TEXT("【静态数据仓库】导出二进制失败：编码器异常 (%s, 路径: %s)。"),
+            *FStaticDataBinCodec::DescribeError(ErrorCode), *FilePath);
+        return TGameStatusResult<void>::Failure(FStaticDataBinCodec::MakeError(ErrorCode));
     }
 
     const TArray<uint8>& FileBytes = EncodeResult.GetValue();
     if (!FFileHelper::SaveArrayToFile(FileBytes, *FilePath)) {
-        LastError.store(EStaticDataBinError::IoFailure, std::memory_order_relaxed);
         GAME_LOG(Error, TEXT("【静态数据仓库】导出二进制失败：写盘 I/O 错误 (路径: %s)。"), *FilePath);
-        return TGameStatusResult<void>::Failure(static_cast<int32>(EStaticDataBinError::IoFailure), FStaticDataBinCodec::DescribeError(EStaticDataBinError::IoFailure));
+        return TGameStatusResult<void>::Failure(FStaticDataBinCodec::MakeError(EStaticDataBinError::IoFailure));
     }
-    LastError.store(EStaticDataBinError::None, std::memory_order_relaxed);
     GAME_LOG(Log, TEXT("【静态数据仓库】导出二进制成功: 表数量=%d, 字节大小=%d (路径: %s)。"),
         Tables.Num(), FileBytes.Num(), *FilePath);
     return TGameStatusResult<void>::Success();
@@ -98,38 +67,27 @@ TGameStatusResult<void> FStaticDataRepository::ExportToFile(const FString& FileP
 /**
  * @brief 自 .bin 文件装载全部表（校验 Magic / 版本 / CRC，失败保持原状）
  * @param FilePath 源文件绝对路径
- * @return 成功返回包含装载表数的 Result，失败返回错误枚举
+ * @return 成功返回装载表数，失败返回含 Game::DataErrorCodes 的 Failure
  */
-TGameResult<int32, EStaticDataBinError> FStaticDataRepository::ImportFromFile(const FString& FilePath) {
+TGameStatusResult<int32> FStaticDataRepository::ImportFromFile(const FString& FilePath) {
     TArray<uint8> FileBytes;
     if (!FFileHelper::LoadFileToArray(FileBytes, *FilePath)) {
-        LastError.store(EStaticDataBinError::IoFailure, std::memory_order_relaxed);
         GAME_LOG(Warning, TEXT("【静态数据仓库】导入二进制失败：文件不存在或无法读取 (路径: %s)。"), *FilePath);
-        return TGameResult<int32, EStaticDataBinError>::Failure(EStaticDataBinError::IoFailure);
+        return TGameStatusResult<int32>::Failure(FStaticDataBinCodec::MakeError(EStaticDataBinError::IoFailure));
     }
 
-    auto DecodeResult = FStaticDataBinCodec::Decode(FileBytes);
+    TGameResult<TMap<FName, FStaticDataBinaryTable>, EStaticDataBinError> DecodeResult = FStaticDataBinCodec::Decode(FileBytes);
     if (DecodeResult.IsFailure()) {
         const EStaticDataBinError ErrorCode = DecodeResult.GetError();
-        LastError.store(ErrorCode, std::memory_order_relaxed);
         GAME_LOG(Warning, TEXT("【静态数据仓库】导入二进制失败：%s (路径: %s)。"),
             *FStaticDataBinCodec::DescribeError(ErrorCode), *FilePath);
-        return TGameResult<int32, EStaticDataBinError>::Failure(ErrorCode);
+        return TGameStatusResult<int32>::Failure(FStaticDataBinCodec::MakeError(ErrorCode));
     }
 
     Tables = DecodeResult.ExtractValue();
-    LastError.store(EStaticDataBinError::None, std::memory_order_relaxed);
     GAME_LOG(Log, TEXT("【静态数据仓库】导入二进制成功: 成功装载 %d 张表 (路径: %s)。"),
         Tables.Num(), *FilePath);
-    return TGameResult<int32, EStaticDataBinError>::Success(Tables.Num());
-}
-
-/**
- * @brief 获取最近一次失败的错误码
- * @return 错误码（无错误为 None）
- */
-EStaticDataBinError FStaticDataRepository::GetLastError() const noexcept {
-    return LastError.load(std::memory_order_relaxed);
+    return TGameStatusResult<int32>::Success(Tables.Num());
 }
 
 /**
@@ -141,49 +99,35 @@ FStaticDataContentDigest FStaticDataRepository::ComputeContentDigest() const {
 }
 
 /**
- * @brief 行结构体二进制序列化（经登记读写器，无类型知识）
- * @param StructName 行结构名（须已登记读写器）
+ * @brief 按结构体名查找已登记的行负载读写器
+ * @param StructName 行结构体名
+ * @return 已登记读写器函数指针，未登记返回 nullptr
+ */
+FStaticDataRepository::FRowPayloadFunc FStaticDataRepository::FindRowSerializer(const FName& StructName) const {
+    return RowPayloadFuncs.FindRef(StructName);
+}
+
+/**
+ * @brief 行结构体二进制序列化（使用调用前已解析的读写器，避免热循环重复哈希查找）
+ * @param PayloadFunc 非空行负载读写器函数指针
  * @param RowPtr 行数据指针（读写器只读，不修改行数据）
  * @param OutPayload 输出二进制负载
- * @param OutError 输出错误枚举
- * @return 序列化成功返回 true；未登记读写器或归档写出失败返回 false
+ * @return 序列化成功返回 true，归档写出失败返回 false
  */
-bool FStaticDataRepository::SerializeRowToPayload(const FName& StructName, void* RowPtr, TArray<uint8>& OutPayload, EStaticDataBinError& OutError) const {
-    const FRowPayloadFunc PayloadFunc = RowPayloadFuncs.FindRef(StructName);
-    if (PayloadFunc == nullptr) {
-        OutError = EStaticDataBinError::SerializerNotFound;
-        return false;
-    }
-
+bool FStaticDataRepository::SerializeRowWithFunc(FRowPayloadFunc PayloadFunc, void* RowPtr, TArray<uint8>& OutPayload) {
     FMemoryWriter PayloadWriter(OutPayload, false, true);
-    if (!PayloadFunc(PayloadWriter, RowPtr)) {
-        OutError = EStaticDataBinError::IoFailure;
-        return false;
-    }
-    OutError = EStaticDataBinError::None;
-    return true;
+    return PayloadFunc(PayloadWriter, RowPtr) && !PayloadWriter.IsError();
 }
 
 /**
  * @brief 行二进制负载反序列化（越界/损坏经 FMemoryReader::IsError 检出）
- * @param StructName 行结构名（须已登记读写器）
+ * @param PayloadFunc 非空行负载读写器函数指针
  * @param InPayload 输入二进制负载
  * @param OutRowPtr 输出行数据缓冲
- * @param OutError 输出错误枚举
- * @return 反序列化成功返回 true；未登记读写器或负载损坏返回 false
+ * @return 反序列化成功返回 true，负载损坏返回 false
  */
-bool FStaticDataRepository::DeserializeRowFromPayload(const FName& StructName, const TArray<uint8>& InPayload, void* OutRowPtr, EStaticDataBinError& OutError) const {
-    const FRowPayloadFunc PayloadFunc = RowPayloadFuncs.FindRef(StructName);
-    if (PayloadFunc == nullptr) {
-        OutError = EStaticDataBinError::SerializerNotFound;
-        return false;
-    }
-
+bool FStaticDataRepository::DeserializeRowWithFunc(FRowPayloadFunc PayloadFunc, const TArray<uint8>& InPayload, void* OutRowPtr) {
     FMemoryReader PayloadReader(InPayload);
-    if (!PayloadFunc(PayloadReader, OutRowPtr)) {
-        OutError = EStaticDataBinError::RowDeserializeFailed;
-        return false;
-    }
-    OutError = EStaticDataBinError::None;
-    return true;
+    PayloadReader.ArMaxSerializeSize = FMath::Max<int64>(1, InPayload.Num());
+    return PayloadFunc(PayloadReader, OutRowPtr) && !PayloadReader.IsError() && PayloadReader.AtEnd();
 }

@@ -28,14 +28,15 @@ public:
 
 ## 2. 聚合数据与接口
 
-每张分表对应一个 `F{Domain}CompositeData`，每个域对应一个缓存与接口：
+每个业务域对应一个 `F{Domain}CompositeData`（汇集该域所有分表的单行数据）、一个缓存与一个业务接口：
 
 ```cpp
 USTRUCT(BlueprintType)
 struct GAMEDATA_API FItemCompositeData {
     GENERATED_BODY()
 
-    UPROPERTY(BlueprintReadOnly)
+public:
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item|Composite")
     FItemRow Item;
 };
 
@@ -66,13 +67,13 @@ public:
 #include "Generated/Data/StaticData/Item/ItemStaticDataInterface.h"
 
 TSharedPtr<const FStaticDataSnapshot> Snapshot = StaticDataSubsystem->GetSnapshot();
-const TSharedPtr<const FItemRow> Row = FItemQuery::FindByKey(Snapshot, FName(TEXT("1001")));
-const TSharedPtr<const FItemCompositeData> Composite = FItemStaticDataInterface::FindCompositeData(Snapshot, FName(TEXT("1001")));
+const TSharedPtr<const FItemRow> Row = FItemQuery::FindByKey(Snapshot, FName(TEXT("Item_Sword")));
+const TSharedPtr<const FItemCompositeData> Composite = FItemStaticDataInterface::FindCompositeData(Snapshot, FName(TEXT("Item_Sword")));
 ```
 
 ---
 
 ## 4. 键模式
 
-- `row_key_mode = "fname"`（默认）：`FindByKey` 使用 `FName`，行数不受 255 限制。
-- `row_key_mode = "enum"`：生成 `E{Stem}Key : uint8` 枚举键；超过 255 行会在生成期明确报错，应改用 `fname`。
+- `row_key_mode = "fname"`（默认）：`FindByKey` 使用 `FName`，行数不受限制。
+- `row_key_mode = "enum"`：额外生成 `E{Stem}Key : uint8` 枚举键、`ToRowName(E{Stem}Key)` 及 `F{Domain}StaticData::Find(E{Stem}Key)`；超过 254 行有效数据（含 `None = 0` 共 255 枚举项）会在生成期明确报错，应改用 `fname`。

@@ -63,7 +63,7 @@ graph TD
 
 - 子系统零业务字段：业务方通过 `RegisterSegment` 注册段名、段版本与保存/加载委托。
 - 保存时主线程捕获各段字节到内存归档，后台线程写 `.sav.tmp` 并原子替换 `.sav`。
-- 加载时先校验文件 magic 与最小头长度，再反序列化；正式档缺失时尝试从 `.sav.tmp` 抢救。
+- 加载时先校验文件 magic、最小头长度与全段版本兼容性预检，再反序列化并应用业务段；正式档缺失或损坏时尝试从 `.sav.tmp` 抢救。
 - 段版本由业务方迁移；槽位名默认校验非法字符，可选白名单。
 
 ---
@@ -71,8 +71,8 @@ graph TD
 ## 4. 云端同步原则
 
 - **分层解耦**：底层 `GameDataCore` 严格维持零网络类型；云端网络同步作为高层门面置于 `GameData` 模块。
-- **坏档前置拦截**：云端下载字节包在接触本地磁盘前，必须通过 `FSaveGameFileIO::HasValidSaveGameHeader` 校验魔数与最小包体，避免网络坏包破坏本地好档。
-- **原子落盘与内存热加载**：下载数据经校验后，由 `FSaveGameFileIO::WriteSlotBytes` 安全原子写入磁盘；若开启 `bAutoApplyToSubsystem`，自动调度 `USaveGameSubsystem::LoadGameFromSlot` 反解并即时更新各业务内存段。
+- **坏档与高版本前置拦截**：云端下载字节包在接触本地磁盘前，必须在内存中完成 `FSaveGameFileIO::HasValidSaveGameHeader` 头部校验以及 `USaveGameSubsystem::DeserializeAndValidateArchive` 反序列化与归档/全段版本兼容性预检，杜绝损坏包或不兼容高版本包覆盖本地好档。
+- **原子落盘与零二次读盘热应用**：下载数据经预检通过后，由 `FSaveGameFileIO::WriteSlotBytes` 带单调代次安全原子写入磁盘；若开启 `bAutoApplyToSubsystem`，直接将内存中已校验的 `UGameSaveArchive` 交由 `USaveGameSubsystem::ApplyArchiveToSegments` 即时更新各业务内存段，无需二次读盘。
 
 ---
 

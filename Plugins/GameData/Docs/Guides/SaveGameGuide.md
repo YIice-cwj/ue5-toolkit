@@ -13,7 +13,7 @@ void UMyGameInstance::Init() {
     Super::Init();
 
     USaveGameSubsystem* SaveSubsystem = GetSubsystem<USaveGameSubsystem>();
-    SaveSubsystem->RegisterSegment(BuildProfileSegment());
+    (void)SaveSubsystem->RegisterSegment(BuildProfileSegment());
     SaveSubsystem->SetAllowedSlotNames({TEXT("Slot_1"), TEXT("Slot_2"), TEXT("Slot_3")});
 }
 
@@ -54,7 +54,7 @@ FGameSaveSegment UMyGameInstance::BuildProfileSegment() {
 
 - `Save` 在主线程被调用，只做内存序列化，不要执行磁盘 I/O。
 - `Save` 若检测到依赖的外部数据源或弱引用失效，应主动调用 `Ar.SetError()` 终止归档，防止写入空白数据导致原有存档被覆盖清空。
-- `Load` 收到的 `StoredVersion` 是落盘版本；版本高于当前段版本时子系统会拒绝该段。
+- `Load` 收到的 `StoredVersion` 是落盘版本；若任何段落盘版本高于当前代码注册版本，子系统在 `ValidateArchiveCompatibility` 只读预检阶段即整档拒绝（返回 `SegmentVersionMismatch`），不会产生半应用状态。
 - 段名稳定不变；新增段不会破坏旧档。
 
 ---
@@ -63,7 +63,7 @@ FGameSaveSegment UMyGameInstance::BuildProfileSegment() {
 
 ```cpp
 SaveSubsystem->SaveGameToSlotAsync(TEXT("Slot_1"));
-SaveSubsystem->LoadGameFromSlot(TEXT("Slot_1"));
+const TGameStatusResult<void> LoadRes = SaveSubsystem->LoadGameFromSlot(TEXT("Slot_1"));
 ```
 
 异步路径广播：
@@ -73,7 +73,7 @@ SaveSubsystem->OnSaveComplete.AddDynamic(this, &UMyHud::HandleSaveComplete);
 SaveSubsystem->OnLoadComplete.AddDynamic(this, &UMyHud::HandleLoadComplete);
 ```
 
-同步路径通过返回值判断；失败原因见日志。
+同步路径通过 `TGameStatusResult` 返回值（`IsSuccess()` / `GetError()`）判断；失败原因同时记录到日志。
 
 ---
 
@@ -81,10 +81,10 @@ SaveSubsystem->OnLoadComplete.AddDynamic(this, &UMyHud::HandleLoadComplete);
 
 ```cpp
 const bool bExists = SaveSubsystem->DoesSaveSlotExist(TEXT("Slot_1"));
-SaveSubsystem->DeleteSaveSlot(TEXT("Slot_1"));
+const TGameStatusResult<void> DelRes = SaveSubsystem->DeleteSaveSlot(TEXT("Slot_1"));
 ```
 
-槽位名默认拒绝空名、超长名、`/`、`\`、`.`；白名单为空表示不额外限制。
+槽位名默认拒绝空名、超长名、首尾空白、控制字符及 `/`、`\`、`.`、`:`、`*`、`?`、`"`、`<`、`>`、`|`；白名单为空表示不额外限制。
 `DeleteSaveSlot` 删除正式档与临时档并保留保存代次高水位（`CurrentIssued`），写入门禁采用 `>=`（`*Committed >= SaveGeneration`）彻底杜绝在途旧写穿透复活槽位；同槽位仅最新异步加载请求可应用业务段，删除也会使在途加载失效。读取异常分支自动重置缓冲区。
 
 ---
@@ -114,10 +114,9 @@ SaveSubsystem->SetSaveGameClass(UMySaveArchive::StaticClass());
 
 ```cpp
 USaveGameSubsystem* SaveSubsystem = GetSubsystem<USaveGameSubsystem>();
-SaveSubsystem->SaveObjectToSlot(TEXT("Settings"), SettingsObject);
+const TGameStatusResult<void> SaveObjRes = SaveSubsystem->SaveObjectToSlot(TEXT("Settings"), SettingsObject);
 
-USaveGame* Loaded = nullptr;
-SaveSubsystem->LoadObjectFromSlot(TEXT("Settings"), UMySettings::StaticClass(), Loaded);
+const TGameStatusResult<UMySettings*> LoadObjRes = SaveSubsystem->LoadObjectFromSlot<UMySettings>(TEXT("Settings"));
 ```
 
 该路径同样带 `.sav.tmp` 原子替换与损坏档前置校验。
@@ -128,6 +127,6 @@ SaveSubsystem->LoadObjectFromSlot(TEXT("Settings"), UMySettings::StaticClass(), 
 
 | 现象 | 原因 | 处理 |
 | :--- | :--- | :--- |
-| 保存返回 false | 段未注册 / 槽位名非法 / 磁盘写失败 | 检查 `HasSegment`、`IsSlotNameAllowed` 与日志 |
-| 加载返回 false | 档损坏 / 段版本高于当前 / 文件缺失 | 查看 Warning；确认段版本只增不减 |
+| 保存返回 `IsFailure()` | 槽位名非法 / 段保存出错 / 磁盘写失败 | 检查 `GetError().ErrorCode`、`IsSlotNameAllowed` 与日志 |
+| 加载返回 `IsFailure()` | 档损坏 / 段版本高于当前 / 文件缺失 | 查看 `GetError().ErrorCode` 与日志；确认段版本只增不减 |
 | 读取后旧段丢失 | 注册段名与保存时不一致 | 段名视为持久化契约，禁止随版本重命名 |

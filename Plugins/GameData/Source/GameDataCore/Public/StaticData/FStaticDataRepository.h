@@ -2,24 +2,20 @@
  * @file FStaticDataRepository.h
  * @brief 类型擦除泛型静态数据仓库（纯 C++ 脱机可实例化，行负载容器与序列化器注册）
  *
- * 设计思路：仓库对行类型零知识——所有行以二进制负载存储，负载读写由**生成式序列化器**
+ * 设计思路：仓库对行类型零知识——所有行以二进制负载存储，负载读写由生成式序列化器
  * （数据表生成管线的 serialization_generator 产出，经 RegisterRowSerializer 登记）承担，
  * 仓库仅按结构名调度，全程不经 UScriptStruct 反射；不依赖 UWorld/UGameInstance，可脱机实例化。
- * 边界声明：本仓库不携带数据版本（版本仍归 FStaticDataSnapshot），不接入运行时查询路径；
- * `.bin` 文件格式编解码（Magic / 版本 / CRC32 / 摘要）由 `FStaticDataBinCodec` 承担。
+ * 边界声明：本仓库不携带数据版本（版本归 TStaticDataSnapshotStore / FStaticDataSnapshot），
+ * 不接入运行时查询路径；.bin 文件格式编解码由 FStaticDataBinCodec 承担。
  */
 
 #pragma once
 
 #include "CoreMinimal.h"
-#include "UObject/Class.h"
-#include "StaticData/FStaticDataRepositoryTypes.h"
 #include "StaticData/FStaticDataBinCodec.h"
+#include "StaticData/FStaticDataRepositoryTypes.h"
 #include "Types/TGameResult.h"
-
-#include <atomic>
-
-class FMemoryReader;
+#include "UObject/Class.h"
 
 /**
  * @brief 类型擦除泛型静态数据仓库（.bin 行负载容器，纯 C++ 可脱机实例化）
@@ -31,40 +27,44 @@ public:
      */
     using FRowPayloadFunc = bool (*)(FArchive& Ar, void* RowPtr);
 
-public:
     FStaticDataRepository() = default;
     ~FStaticDataRepository() = default;
-    FStaticDataRepository(const FStaticDataRepository& Other);
-    FStaticDataRepository& operator=(const FStaticDataRepository& Other);
-    FStaticDataRepository(FStaticDataRepository&& Other) noexcept;
-    FStaticDataRepository& operator=(FStaticDataRepository&& Other) noexcept;
+    FStaticDataRepository(const FStaticDataRepository&) = default;
+    FStaticDataRepository& operator=(const FStaticDataRepository&) = default;
+    FStaticDataRepository(FStaticDataRepository&&) noexcept = default;
+    FStaticDataRepository& operator=(FStaticDataRepository&&) noexcept = default;
 
     /**
-     * @brief 登记某行结构的生成式负载读写器（同结构重复登记即覆盖）
-     * @param StructName 行结构名（与 RowType::StaticStruct()->GetName() 严格一致）
+     * @brief 登记某行结构的生成式负载读写器（同结构重复登记即覆盖，拒绝空名或空函数指针）
+     * @param StructName 行结构名（与 TRowType::StaticStruct()->GetName() 严格一致）
      * @param PayloadFunc 行负载读写函数（由数据表生成管线产出）
      */
     void RegisterRowSerializer(const FName& StructName, FRowPayloadFunc PayloadFunc);
 
     /**
-     * @brief 写入一表（同结构重复写入即整体覆盖）
+     * @brief 按行结构体类型登记生成式负载读写器（自动取 TRowType::StaticStruct()->GetName() 避免字面量漂移）
+     * @tparam TRowType 反射行结构体类型
+     * @param PayloadFunc 行负载读写函数
+     */
+    template <typename TRowType>
+    void RegisterRowSerializer(FRowPayloadFunc PayloadFunc);
+
+    /**
+     * @brief 写入一表（同结构重复写入即整体覆盖，空表亦校验读写器是否已登记）
      * @tparam TRowType 行结构体类型（其结构名须已登记负载读写器）
      * @param InRows 待写入行表（RowName -> 行结构体）
-     * @return 成功返回 Success；未登记读写器或任一行序列化失败返回 Failure
-     *
-     * 实现思路：结构名取自 TRowType::StaticStruct()->GetName()；负载由登记读写器生成，
-     * 故 FArchive 的 FString/FName/bool 运算符仅有非 const 重载，此处对行做一次只读的 const 去除。
+     * @return 成功返回 Success；未登记读写器或任一行序列化失败返回含 Game::DataErrorCodes 的 Failure
      */
     template <typename TRowType>
     [[nodiscard]] TGameStatusResult<void> AddTable(const TMap<FName, TRowType>& InRows);
 
     /**
-     * @brief 提取一表
+     * @brief 提取一表（空表亦校验读写器是否已登记）
      * @tparam TRowType 行结构体类型（以 StaticStruct 名匹配仓库内镜像）
-     * @return 成功返回包含行表的 Result，失败返回错误枚举
+     * @return 成功返回包含行表的 TGameStatusResult，失败返回含 Game::DataErrorCodes 的 Failure
      */
     template <typename TRowType>
-    [[nodiscard]] TGameResult<TMap<FName, TRowType>, EStaticDataBinError> ExtractTable() const;
+    [[nodiscard]] TGameStatusResult<TMap<FName, TRowType>> ExtractTable() const;
 
     /**
      * @brief 查询当前装载表数
@@ -73,103 +73,110 @@ public:
     [[nodiscard]] int32 TableCount() const noexcept;
 
     /**
-     * @brief 清空全部装载数据并复位错误码（已登记的负载读写器保留）
+     * @brief 清空全部装载数据（已登记的负载读写器保留）
      */
     void Reset() noexcept;
 
     /**
      * @brief 导出全部装载表至 .bin 文件（脱机导出，Cook 前置；字节编码委托 FStaticDataBinCodec）
      * @param FilePath 目标文件绝对路径
-     * @return 成功返回 Success；编码或写盘失败返回 Failure
+     * @return 成功返回 Success；编码或写盘失败返回含 Game::DataErrorCodes 的 Failure
      */
     [[nodiscard]] TGameStatusResult<void> ExportToFile(const FString& FilePath) const;
 
     /**
      * @brief 自 .bin 文件装载全部表（校验 Magic / 版本 / CRC，失败保持原状）
      * @param FilePath 源文件绝对路径
-     * @return 成功返回包含装载表数的 Result，失败返回错误枚举
+     * @return 成功返回装载表数，失败返回含 Game::DataErrorCodes 的 Failure
      */
-    [[nodiscard]] TGameResult<int32, EStaticDataBinError> ImportFromFile(const FString& FilePath);
-
-    /**
-     * @brief 获取最近一次失败的错误码
-     * @return 错误码（无错误为 None）
-     */
-    [[nodiscard]] EStaticDataBinError GetLastError() const noexcept;
+    [[nodiscard]] TGameStatusResult<int32> ImportFromFile(const FString& FilePath);
 
     /**
      * @brief 计算仓库内容摘要（与装载顺序无关，供双通道数据一致性对拍）
      * @return 表数、总行数与 SHA-1 摘要；空仓库返回 SHA-1 空输入摘要
-     *
-     * 实现思路：摘要计算委托 FStaticDataBinCodec，表按结构名、行按行键排序后并入字节流
      */
     [[nodiscard]] FStaticDataContentDigest ComputeContentDigest() const;
 
 private:
     /**
-     * @brief 行结构体二进制序列化（经登记读写器，无类型知识）
-     * @param StructName 行结构名（须已登记读写器）
+     * @brief 按结构体名查找已登记的行负载读写器
+     * @param StructName 行结构体名
+     * @return 已登记读写器函数指针，未登记返回 nullptr
+     */
+    [[nodiscard]] FRowPayloadFunc FindRowSerializer(const FName& StructName) const;
+
+    /**
+     * @brief 行结构体二进制序列化（使用调用前已解析的读写器，避免热循环重复哈希查找）
+     * @param PayloadFunc 非空行负载读写器函数指针
      * @param RowPtr 行数据指针（读写器只读，不修改行数据）
      * @param OutPayload 输出二进制负载
-     * @param OutError 输出错误枚举
-     * @return 序列化成功返回 true；未登记读写器或归档写出失败返回 false
+     * @return 序列化成功返回 true，归档写出失败返回 false
      */
-    bool SerializeRowToPayload(const FName& StructName, void* RowPtr, TArray<uint8>& OutPayload, EStaticDataBinError& OutError) const;
+    static bool SerializeRowWithFunc(FRowPayloadFunc PayloadFunc, void* RowPtr, TArray<uint8>& OutPayload);
 
     /**
      * @brief 行二进制负载反序列化（越界/损坏经 FMemoryReader::IsError 检出）
-     * @param StructName 行结构名（须已登记读写器）
+     * @param PayloadFunc 非空行负载读写器函数指针
      * @param InPayload 输入二进制负载
      * @param OutRowPtr 输出行数据缓冲
-     * @param OutError 输出错误枚举
-     * @return 反序列化成功返回 true；未登记读写器或负载损坏返回 false
+     * @return 反序列化成功返回 true，负载损坏返回 false
      */
-    bool DeserializeRowFromPayload(const FName& StructName, const TArray<uint8>& InPayload, void* OutRowPtr, EStaticDataBinError& OutError) const;
+    static bool DeserializeRowWithFunc(FRowPayloadFunc PayloadFunc, const TArray<uint8>& InPayload, void* OutRowPtr);
 
     TMap<FName, FStaticDataBinaryTable> Tables;
     TMap<FName, FRowPayloadFunc> RowPayloadFuncs;
-    mutable std::atomic<EStaticDataBinError> LastError{EStaticDataBinError::None};
 };
+
+template <typename TRowType>
+void FStaticDataRepository::RegisterRowSerializer(FRowPayloadFunc PayloadFunc) {
+    RegisterRowSerializer(FName(TRowType::StaticStruct()->GetName()), PayloadFunc);
+}
 
 template <typename TRowType>
 TGameStatusResult<void> FStaticDataRepository::AddTable(const TMap<FName, TRowType>& InRows) {
     const FName StructName(TRowType::StaticStruct()->GetName());
+    const FRowPayloadFunc PayloadFunc = FindRowSerializer(StructName);
+    if (PayloadFunc == nullptr) {
+        return TGameStatusResult<void>::Failure(FStaticDataBinCodec::MakeError(EStaticDataBinError::SerializerNotFound));
+    }
+
     FStaticDataBinaryTable Table;
     Table.StructName = StructName.ToString();
     Table.Rows.Reserve(InRows.Num());
     for (const TPair<FName, TRowType>& Pair : InRows) {
+        if (Pair.Key.IsNone()) {
+            return TGameStatusResult<void>::Failure(FStaticDataBinCodec::MakeError(EStaticDataBinError::IoFailure));
+        }
         TArray<uint8>& Payload = Table.Rows.Emplace(Pair.Key);
-        EStaticDataBinError ErrorCode = EStaticDataBinError::None;
-        if (!SerializeRowToPayload(StructName, const_cast<TRowType*>(&Pair.Value), Payload, ErrorCode)) {
-            LastError.store(ErrorCode, std::memory_order_relaxed);
-            return TGameStatusResult<void>::Failure(static_cast<int32>(ErrorCode), FStaticDataBinCodec::DescribeError(ErrorCode));
+        if (!SerializeRowWithFunc(PayloadFunc, const_cast<TRowType*>(&Pair.Value), Payload)) {
+            return TGameStatusResult<void>::Failure(FStaticDataBinCodec::MakeError(EStaticDataBinError::IoFailure));
         }
     }
     Tables.Add(StructName, MoveTemp(Table));
-    LastError.store(EStaticDataBinError::None, std::memory_order_relaxed);
     return TGameStatusResult<void>::Success();
 }
 
 template <typename TRowType>
-TGameResult<TMap<FName, TRowType>, EStaticDataBinError> FStaticDataRepository::ExtractTable() const {
+TGameStatusResult<TMap<FName, TRowType>> FStaticDataRepository::ExtractTable() const {
     const FName StructName(TRowType::StaticStruct()->GetName());
     const FStaticDataBinaryTable* Table = Tables.Find(StructName);
     if (Table == nullptr) {
-        LastError.store(EStaticDataBinError::TableNotFound, std::memory_order_relaxed);
-        return TGameResult<TMap<FName, TRowType>, EStaticDataBinError>::Failure(EStaticDataBinError::TableNotFound);
+        return TGameStatusResult<TMap<FName, TRowType>>::Failure(FStaticDataBinCodec::MakeError(EStaticDataBinError::TableNotFound));
+    }
+
+    const FRowPayloadFunc PayloadFunc = FindRowSerializer(StructName);
+    if (PayloadFunc == nullptr) {
+        return TGameStatusResult<TMap<FName, TRowType>>::Failure(FStaticDataBinCodec::MakeError(EStaticDataBinError::SerializerNotFound));
     }
 
     TMap<FName, TRowType> Built;
     Built.Reserve(Table->Rows.Num());
     for (const TPair<FName, TArray<uint8>>& Pair : Table->Rows) {
-        TRowType Row;
-        EStaticDataBinError ErrorCode = EStaticDataBinError::None;
-        if (!DeserializeRowFromPayload(StructName, Pair.Value, &Row, ErrorCode)) {
-            LastError.store(ErrorCode, std::memory_order_relaxed);
-            return TGameResult<TMap<FName, TRowType>, EStaticDataBinError>::Failure(ErrorCode);
+        TRowType Row{};
+        if (!DeserializeRowWithFunc(PayloadFunc, Pair.Value, &Row)) {
+            return TGameStatusResult<TMap<FName, TRowType>>::Failure(FStaticDataBinCodec::MakeError(EStaticDataBinError::RowDeserializeFailed));
         }
         Built.Add(Pair.Key, MoveTemp(Row));
     }
-    LastError.store(EStaticDataBinError::None, std::memory_order_relaxed);
-    return TGameResult<TMap<FName, TRowType>, EStaticDataBinError>::Success(MoveTemp(Built));
+    return TGameStatusResult<TMap<FName, TRowType>>::Success(MoveTemp(Built));
 }

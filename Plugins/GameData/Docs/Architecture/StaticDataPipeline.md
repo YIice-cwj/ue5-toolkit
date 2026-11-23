@@ -87,8 +87,8 @@ flowchart TD
 
 ## 3. 热重载与目录监听机制
 
-1. `FStaticDataHotReloadWatcher` 内部封装了 `GameCore` 的 `FDirectoryChangeWatcher`，监听 `DataTables_Json/` 目录；
+1. `FStaticDataHotReloadWatcher` 内部封装了 `GameDataCore` 的 `FDirectoryChangeWatcher`，监听 `DataTables_Json/` 目录；
 2. 引入 `GWatcherRefCount` 会话引用计数，多 PIE 窗口调试时仅当最后一个窗口退出才释放全局监听器，避免误停；
-3. 当策划修改并重新导出配表后，监听器捕获文件时间戳推进，自动触发 `UStaticDataSubsystem::ReloadAllWorldStaticData()`；
-4. 重载全流程在后台异步完成反序列化与跨表复合缓存预热，预热完毕回主线程原子置换快照，游戏运行时无感热更最新数值。
+3. 当策划修改并重新导出配表后，监听器捕获目录 64-bit FNV-1a 指纹变化（综合文件数、相对路径、字节大小与修改时间戳），自动触发 `UStaticDataSubsystem::ReloadAllWorldStaticData()`；
+4. 重载流程先在主线程将最新 JSON 反序列化至新快照暂存容器（在线快照零触碰），随后在后台线程异步完成跨表复合缓存预热，预热完毕回主线程原子置换快照，游戏运行时无感热更最新数值。
 

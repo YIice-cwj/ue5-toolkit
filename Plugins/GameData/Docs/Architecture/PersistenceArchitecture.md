@@ -73,20 +73,20 @@ sequenceDiagram
 ## 4. 加载与迁移流程
 
 1. 读取 `.sav`；缺失或文件内容截断/损坏时自动尝试 `.sav.tmp` 抢救。
-2. 校验文件类型 tag 与最小长度，失败返回 `false` 并记录 Warning。
-3. 反序列化 `UGameSaveArchive`，遍历已注册段。
+2. 校验文件类型 tag 与最小长度（`>= 64` 字节），失败返回带 `Game::DataErrorCodes::CorruptedSaveFile` 的 `TGameStatusResult::Failure` 并输出告警/错误诊断日志。
+3. 反序列化 `UGameSaveArchive` 并先执行归档版本校验（`1 <= ArchiveVersion <= CurrentArchiveVersion`）与全段只读版本兼容性预检（`ValidateArchiveCompatibility`，要求 `1 <= StoredVersion <= CurrentSegmentVersion`），再遍历已注册段应用。
 4. 对每个段：
    - 落盘版本 == 当前版本：直接 `Load`。
    - 落盘版本 < 当前版本：调用 `Load(Ar, StoredVersion)`，由业务方迁移。
-   - 落盘版本 > 当前版本：视为不兼容，该段加载失败并记录 Warning。
+   - 落盘版本 > 当前版本：在只读预检阶段即整档拒绝，返回 `SegmentVersionMismatch` 失败并记录 Error，业务内存状态零半改写。
    - 档中缺少该段：跳过（新增段向后兼容）。
-5. 全部段成功后返回 `true`；异步路径在后台读盘后回主线程应用。同槽位仅最新异步加载请求可反序列化并应用业务段，过期请求以失败完成事件表示取消，删除槽位同样使在途加载失效。
+5. 全部段成功后返回 `TGameStatusResult<void>::Success()`；异步路径在后台读盘后回主线程应用。同槽位仅最新异步加载请求可反序列化并应用业务段，任何同步/异步保存、同步加载、云端热应用或删除槽位均会使在途旧异步加载代次失效。
 
 ---
 
 ## 5. 槽位安全
 
-- 默认拒绝：空名、长度 > 64、包含 `/`、`\`、`.`。
+- 默认拒绝：空名、长度 > 64、首尾空白、控制字符或包含 `/`、`\`、`.`、`:`、`*`、`?`、`"`、`<`、`>`、`|`。
 - `SetAllowedSlotNames` 可进一步限定可用槽位（例如只允许 `Slot_1` ~ `Slot_3`）。
 - `DeleteSaveSlot` 同时清理残留 `.sav.tmp`，并保留槽位已签发保存代次高水位（`Committed = CurrentIssued`），使后续代次严格递增；写入门禁采用 `>=`（`*Committed >= SaveGeneration`）拦截全部旧写，即使旧写在新写落盘前到达也被绝对安全吸收，彻底根治 ABA 并发穿透；读取失败分支显式重置输出缓冲。
 
@@ -97,8 +97,8 @@ sequenceDiagram
 需要保存非分段结构时：
 
 ```cpp
-SaveSubsystem->SaveObjectToSlot(TEXT("Settings"), MySettingsObject);
-SaveSubsystem->LoadObjectFromSlot(TEXT("Settings"), UMySettings::StaticClass(), LoadedObject);
+(void)SaveSubsystem->SaveObjectToSlot(TEXT("Settings"), MySettingsObject);
+TGameStatusResult<UMySettings*> LoadRes = SaveSubsystem->LoadObjectFromSlot<UMySettings>(TEXT("Settings"));
 ```
 
 ---
@@ -115,8 +115,7 @@ sequenceDiagram
 
     Note over Game,Net: 1. 云端上传流程
     Game->>Cloud: UploadSlotAsync("Slot_1")
-    Cloud->>FileIO: ReadSlotBytes("Slot_1")
-    Cloud->>FileIO: HasValidSaveGameHeader(Bytes)
+    Cloud->>FileIO: ReadSlotBytes("Slot_1") [含头部校验与损坏恢复]
     Cloud->>Net: SendStructRequest(UploadReq, MsgId=201)
     Net-->>Cloud: UploadRsp(bSuccess=true)
     Cloud-->>Game: Callback(Success)
@@ -125,13 +124,13 @@ sequenceDiagram
     Game->>Cloud: DownloadSlotAsync("Slot_1", bAutoApply=true)
     Cloud->>Net: SendStructRequest(DownloadReq, MsgId=203)
     Net-->>Cloud: DownloadRsp(Bytes)
-    Cloud->>FileIO: HasValidSaveGameHeader(Bytes) [拦截损坏包]
-    Cloud->>FileIO: WriteSlotBytes("Slot_1", Bytes) [原子落地]
-    Cloud->>SaveSys: LoadGameFromSlot("Slot_1") [自动热反解到业务段]
+    Cloud->>SaveSys: ValidateDownloadedBytes(HasValidSaveGameHeader + DeserializeAndValidateArchive)
+    Cloud->>FileIO: WriteSlotBytes("Slot_1", Bytes, SaveGen) [原子落地]
+    Cloud->>SaveSys: ApplyArchiveToSegments("Slot_1", Archive) [零二次读盘热应用]
     Cloud-->>Game: Callback(Success)
 ```
 
 - **分层边界**：网络同步由 `GameData` 模块持有，底层 `GameDataCore` 继续保持零网络依赖；
-- **防坏包击穿**：云端返回字节在接触本地文件系统前必须通过 `HasValidSaveGameHeader`，若由于网络截断或服务端损坏直接报错 `EGameCloudSaveResult::CorruptedData`，绝不破坏本地磁盘原有良好存档；
-- **单调代次原子落盘**：下载数据调用 `FSaveGameFileIO::IssueSlotSaveGeneration` 签发最新代次写入，保障并发安全性；
-- **热反解支持**：拉取成功后可选自动调用 `USaveGameSubsystem::LoadGameFromSlot`，无缝将云端数据恢复并热生效至各业务系统内存分段。
+- **防坏包与高版本击穿**：云端返回字节在接触本地文件系统前必须通过 `ValidateDownloadedBytes`（`HasValidSaveGameHeader` + `DeserializeAndValidateArchive`），若由于网络截断、反序列化失败或段版本不兼容直接报错 `CorruptedData` / `VersionMismatch`，绝不破坏本地磁盘原有良好存档；
+- **单调代次原子落盘**：下载数据调用 `FSaveGameFileIO::IssueSlotSaveGeneration` 签发最新代次写入；若写盘期间该槽位被更新或删除，自动跳过热应用并返回 `Cancelled`，杜绝内存与磁盘脑裂；
+- **零二次读盘热应用**：拉取并落盘成功后若开启 `bAutoApplyToSubsystem`，直接调用 `USaveGameSubsystem::ApplyArchiveToSegments` 应用内存中已校验的归档对象。

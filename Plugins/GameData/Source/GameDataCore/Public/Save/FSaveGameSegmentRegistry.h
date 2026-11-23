@@ -1,6 +1,6 @@
 /**
  * @file FSaveGameSegmentRegistry.h
- * @brief 存档分段注册与版本迁移管理（单一职责 · 负责分段读写委托托管与未知段保留）
+ * @brief 存档分段注册与版本迁移管理（单一职责 · 负责分段读写委托托管、版本兼容性校验与未知段保留）
  */
 
 #pragma once
@@ -17,17 +17,18 @@ public:
     FSaveGameSegmentRegistry() = default;
 
     /**
-     * @brief 注册具名存档段契约（包含段名、当前版本及读写委托）
+     * @brief 注册具名存档段契约（包含段名、正整数版本号及读写委托）
      * @param Segment 待注册的存档段契约
+     * @return 注册成功返回 Success，段名/版本/委托非法返回 InvalidSegment 失败
      */
-    void RegisterSegment(const FGameSaveSegment& Segment);
+    [[nodiscard]] TGameStatusResult<void> RegisterSegment(const FGameSaveSegment& Segment);
 
     /**
      * @brief 注销指定名称的存档段
      * @param SegmentName 目标存档段名称
-     * @return 成功注销返回 Success，未找到指定段返回 Failure
+     * @return 成功注销返回 Success，未找到指定段返回 SegmentNotFound 失败
      */
-    TGameStatusResult<void> UnregisterSegment(FName SegmentName);
+    [[nodiscard]] TGameStatusResult<void> UnregisterSegment(FName SegmentName);
 
     /**
      * @brief 检查指定名称的存档段是否已注册
@@ -40,9 +41,16 @@ public:
      * @brief 驱动所有已注册段序列化数据，组装为目标归档对象
      * @param SlotName 存档槽位名称
      * @param OutArchive 输出的归档对象引用
-     * @return 组装成功返回 Success，发生异常返回 Failure
+     * @return 组装成功返回 Success，任一段序列化失败返回 SegmentSaveFailed 失败
      */
-    TGameStatusResult<void> BuildArchive(const FString& SlotName, UGameSaveArchive& OutArchive) const;
+    [[nodiscard]] TGameStatusResult<void> BuildArchive(const FString& SlotName, UGameSaveArchive& OutArchive) const;
+
+    /**
+     * @brief 预检归档中所有已注册段的版本号是否与当前运行库兼容（只读无副作用，供落盘前校验使用）
+     * @param Archive 待校验的归档对象引用
+     * @return 全部已注册段版本均不高于当前代码版本返回 Success，否则返回 SegmentVersionMismatch 失败
+     */
+    [[nodiscard]] TGameStatusResult<void> ValidateArchiveCompatibility(const UGameSaveArchive& Archive) const;
 
     /**
      * @brief 校验版本并向各已注册段反序列化分发归档数据（未知段自动保留）
@@ -50,7 +58,7 @@ public:
      * @param Archive 待读取的归档对象引用
      * @return 全部已注册段反序列化成功返回 Success，版本不兼容或损坏返回 Failure
      */
-    TGameStatusResult<void> ApplyArchive(const FString& SlotName, const UGameSaveArchive& Archive);
+    [[nodiscard]] TGameStatusResult<void> ApplyArchive(const FString& SlotName, const UGameSaveArchive& Archive);
 
     /**
      * @brief 移除并清理指定槽位缓存的未知保留段数据

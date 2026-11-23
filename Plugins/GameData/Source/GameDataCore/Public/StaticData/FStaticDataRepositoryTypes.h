@@ -1,6 +1,6 @@
 /**
  * @file FStaticDataRepositoryTypes.h
- * @brief 静态数据仓库类型契约与错误码定义（单一职责 · 错误码与内容摘要）
+ * @brief 静态数据仓库类型契约与错误码定义（单一职责 · 错误码、表镜像与内容摘要）
  */
 
 #pragma once
@@ -8,7 +8,7 @@
 #include "CoreMinimal.h"
 
 /**
- * @brief 静态数据二进制档错误码（Load/Extract 失败诊断，忽略返回值不构成缺陷）
+ * @brief 静态数据二进制档编解码错误码枚举
  */
 enum class EStaticDataBinError : uint8 {
     /**
@@ -27,7 +27,7 @@ enum class EStaticDataBinError : uint8 {
     MagicMismatch,
 
     /**
-     * @brief 二进制格式版本高于当前运行库所支持的版本
+     * @brief 二进制格式版本不受当前运行库支持
      */
     UnsupportedVersion,
 
@@ -56,7 +56,14 @@ enum class EStaticDataBinError : uint8 {
  * @brief 单表二进制镜像（结构名 + 行键到行负载的映射）
  */
 struct FStaticDataBinaryTable {
+    /**
+     * @brief 行结构体反射名（与 TRowType::StaticStruct()->GetName() 对齐）
+     */
     FString StructName;
+
+    /**
+     * @brief 行主键到单行二进制序列化负载的映射表
+     */
     TMap<FName, TArray<uint8>> Rows;
 };
 
@@ -64,8 +71,18 @@ struct FStaticDataBinaryTable {
  * @brief 静态数据内容摘要（双通道对拍用：表数 / 总行数 / 顺序无关摘要）
  */
 struct FStaticDataContentDigest {
+    /**
+     * @brief 已装载的数据表总数
+     */
     int32 TableCount = 0;
+
+    /**
+     * @brief 已装载的全部数据行总数
+     */
     int32 RowCount = 0;
+
+    /**
+     * @brief 与装载顺序无关的小写十六进制 SHA-1 内容摘要
+     */
     FString Digest;
 };
-

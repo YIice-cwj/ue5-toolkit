@@ -6,10 +6,11 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Subsystems/GameInstanceSubsystem.h"
-#include "Save/GameSaveArchive.h"
-#include "Save/FSaveGameFileIO.h"
+#include "Async/FCancellationTokenSource.h"
+#include "Core/DataErrorCodes.h"
 #include "Save/FSaveGameSegmentRegistry.h"
+#include "Save/GameSaveArchive.h"
+#include "Subsystems/GameInstanceSubsystem.h"
 #include "Types/TGameResult.h"
 
 #include "USaveGameSubsystem.generated.h"
@@ -42,7 +43,18 @@ public:
     USaveGameSubsystem();
 
     /**
-     * @brief 获取当前上下文的存档子系统指针（支持 UWorld, UGameInstance, AActor 等任意上下文）
+     * @brief 子系统初始化生命周期回调：重置异步生命周期取消源
+     * @param Collection 子系统依赖集合
+     */
+    void Initialize(FSubsystemCollectionBase& Collection) override;
+
+    /**
+     * @brief 子系统销毁生命周期回调：取消在途异步任务并清空分段注册表、白名单集合与异步加载代次
+     */
+    void Deinitialize() override;
+
+    /**
+     * @brief 获取当前上下文的存档子系统指针（支持 UWorld、UGameInstance、UGameInstanceSubsystem 与 AActor 等任意上下文）
      * @param WorldContextObject 世界或游戏实例上下文对象
      * @return 存档子系统指针；未就绪时返回 nullptr
      */
@@ -56,24 +68,7 @@ public:
     [[nodiscard]] static USaveGameSubsystem& Get(const UObject* WorldContextObject);
 
     /**
-     * @brief 异步保存完成事件多播广播
-     */
-    UPROPERTY(BlueprintAssignable, Category = "GameData|Save")
-    FOnAsyncSaveComplete OnSaveComplete;
-
-    /**
-     * @brief 异步加载完成事件多播广播
-     */
-    UPROPERTY(BlueprintAssignable, Category = "GameData|Save")
-    FOnAsyncLoadComplete OnLoadComplete;
-
-    /**
-     * @brief 子系统销毁生命周期回调：清空分段注册表、白名单集合与异步加载代次
-     */
-    void Deinitialize() override;
-
-    /**
-     * @brief 设置自定义的分段归档类型（继承自 UGameSaveArchive）
+     * @brief 设置自定义的分段归档类型（继承自 UGameSaveArchive 且不得为抽象类）
      * @param InSaveGameClass 目标归档类
      */
     UFUNCTION(BlueprintCallable, Category = "GameData|Save")
@@ -112,14 +107,14 @@ public:
     /**
      * @brief 同步保存全部已注册段至指定槽位
      * @param SlotName 目标存档槽位名称
-     * @return 成功返回 Success，失败返回 Failure
+     * @return 成功返回 Success，失败返回含 Game::DataErrorCodes 的 Failure
      */
     [[nodiscard]] TGameStatusResult<void> SaveGameToSlot(const FString& SlotName);
 
     /**
      * @brief 异步保存全部已注册段至指定槽位（主线程捕获与序列化，后台仅写文件，完成后回主线程广播）
      * @param SlotName 目标存档槽位名称
-     * @return 成功派发异步任务返回 true，被白名单拦截返回 false
+     * @return 成功派发异步任务返回 true，前置校验或序列化失败返回 false
      */
     UFUNCTION(BlueprintCallable, Category = "GameData|Save")
     bool SaveGameToSlotAsync(const FString& SlotName);
@@ -135,7 +130,7 @@ public:
     /**
      * @brief 同步从指定槽位读取分段归档并逐段应用至已注册段
      * @param SlotName 目标存档槽位名称
-     * @return 成功返回 Success，失败返回 Failure
+     * @return 成功返回 Success，失败返回含 Game::DataErrorCodes 的 Failure
      */
     [[nodiscard]] TGameStatusResult<void> LoadGameFromSlot(const FString& SlotName);
 
@@ -143,11 +138,31 @@ public:
      * @brief 异步从指定槽位读取分段归档（后台读文件，主线程仅应用最新请求）
      * @param SlotName 目标存档槽位名称
      * @return 成功派发异步任务返回 true，被白名单拦截返回 false
-     *
-     * 同槽位重复调用时仅最后派发的请求可应用；过期请求不调用业务 Load，完成事件以 false 表示取消。
      */
     UFUNCTION(BlueprintCallable, Category = "GameData|Save")
     bool LoadGameFromSlotAsync(const FString& SlotName);
+
+    /**
+     * @brief 在内存中反序列化并校验字节流是否匹配当前归档类型、归档版本及全部已注册段版本（零磁盘 I/O 与零业务状态修改）
+     * @param SlotName 目标存档槽位名称（用于诊断日志）
+     * @param Bytes 待校验的完整 USaveGame 字节流
+     * @return 校验通过返回反序列化后的归档对象指针，失败返回含具体 Game::DataErrorCodes 的 Failure
+     */
+    [[nodiscard]] TGameStatusResult<UGameSaveArchive*> DeserializeAndValidateArchive(
+        const FString& SlotName,
+        const TArray<uint8>& Bytes
+    ) const;
+
+    /**
+     * @brief 将已校验通过的内存归档对象逐段应用至已注册段（消除落盘后二次读盘）
+     * @param SlotName 目标存档槽位名称
+     * @param Archive 已通过反序列化与版本校验的归档对象引用
+     * @return 应用成功返回 Success，失败返回含 Game::DataErrorCodes 的 Failure
+     */
+    [[nodiscard]] TGameStatusResult<void> ApplyArchiveToSegments(
+        const FString& SlotName,
+        const UGameSaveArchive& Archive
+    );
 
     /**
      * @brief 将任意 USaveGame 对象同步保存至指定槽位（蓝图专用外观方法）
@@ -162,7 +177,7 @@ public:
      * @brief 将任意 USaveGame 对象同步保存至指定槽位（标准原子落盘）
      * @param SlotName 目标存档槽位名称
      * @param SaveGameObject 待保存的 USaveGame 对象指针
-     * @return 成功返回 Success，失败返回 Failure
+     * @return 成功返回 Success，失败返回含 Game::DataErrorCodes 的 Failure
      */
     [[nodiscard]] TGameStatusResult<void> SaveObjectToSlot(const FString& SlotName, USaveGame* SaveGameObject);
 
@@ -180,29 +195,18 @@ public:
      * @brief 从指定槽位同步加载任意派生自 USaveGame 的对象
      * @param SlotName 目标存档槽位名称
      * @param SaveGameClassToLoad 目标加载的 USaveGame 类别
-     * @return 成功返回加载对象的强类型指针，失败返回含错误原因的 Failure
+     * @return 成功返回加载对象的强类型指针，失败返回含 Game::DataErrorCodes 的 Failure
      */
-    [[nodiscard]] TGameResult<USaveGame*, FGameError> LoadObjectFromSlot(const FString& SlotName, TSubclassOf<USaveGame> SaveGameClassToLoad);
+    [[nodiscard]] TGameStatusResult<USaveGame*> LoadObjectFromSlot(const FString& SlotName, TSubclassOf<USaveGame> SaveGameClassToLoad);
 
     /**
      * @brief 从指定槽位同步加载指定类型的 USaveGame 对象（强类型模板版本）
-     * @tparam TSaveGameClass 目标存档类型
+     * @tparam TSaveGameClass 派生自 USaveGame 的目标存档类型
      * @param SlotName 目标存档槽位名称
-     * @return 成功返回泛型指针，失败返回含错误原因的 Failure
+     * @return 成功返回强类型指针，失败返回含 Game::DataErrorCodes 的 Failure
      */
     template <typename TSaveGameClass>
-    [[nodiscard]] TGameResult<TSaveGameClass*, FGameError> LoadObjectFromSlot(const FString& SlotName) {
-        TGameResult<USaveGame*, FGameError> BaseResult = LoadObjectFromSlot(SlotName, TSaveGameClass::StaticClass());
-        if (BaseResult.IsFailure()) {
-            return TGameResult<TSaveGameClass*, FGameError>::Failure(BaseResult.GetError());
-        }
-        TSaveGameClass* TypedObj = Cast<TSaveGameClass>(BaseResult.GetValue());
-        if (TypedObj == nullptr) {
-            return TGameResult<TSaveGameClass*, FGameError>::Failure(
-                FGameError(FString::Printf(TEXT("加载的存档对象类型不匹配目标类型 %s"), *TSaveGameClass::StaticClass()->GetName())));
-        }
-        return TGameResult<TSaveGameClass*, FGameError>::Success(TypedObj);
-    }
+    [[nodiscard]] TGameStatusResult<TSaveGameClass*> LoadObjectFromSlot(const FString& SlotName);
 
     /**
      * @brief 检查指定槽位的存档文件是否存在
@@ -223,22 +227,23 @@ public:
     /**
      * @brief 彻底删除指定槽位的存档物理文件，并使该槽位在途异步加载失效
      * @param SlotName 目标存档槽位名称
-     * @return 成功删除返回 Success，未找到或删除失败返回 Failure
+     * @return 成功删除返回 Success，未找到或删除失败返回含 Game::DataErrorCodes 的 Failure
      */
     [[nodiscard]] TGameStatusResult<void> DeleteSaveSlot(const FString& SlotName);
 
     /**
      * @brief 注册（或覆盖）具名存档段契约
      * @param Segment 待注册的存档段契约
+     * @return 注册成功返回 Success，参数非法返回 InvalidSegment 失败
      */
-    void RegisterSegment(const FGameSaveSegment& Segment);
+    [[nodiscard]] TGameStatusResult<void> RegisterSegment(const FGameSaveSegment& Segment);
 
     /**
      * @brief 注销指定名称的存档段契约
      * @param SegmentName 目标存档段名称
-     * @return 成功注销返回 Success，未找到返回 Failure
+     * @return 成功注销返回 Success，未找到返回 SegmentNotFound 失败
      */
-    TGameStatusResult<void> UnregisterSegment(FName SegmentName);
+    [[nodiscard]] TGameStatusResult<void> UnregisterSegment(FName SegmentName);
 
     /**
      * @brief 查询指定名称的存档段是否已注册
@@ -247,11 +252,61 @@ public:
      */
     [[nodiscard]] bool HasSegment(FName SegmentName) const;
 
+    /**
+     * @brief 异步保存完成事件多播广播
+     */
+    UPROPERTY(BlueprintAssignable, Category = "GameData|Save")
+    FOnAsyncSaveComplete OnSaveComplete;
+
+    /**
+     * @brief 异步加载完成事件多播广播
+     */
+    UPROPERTY(BlueprintAssignable, Category = "GameData|Save")
+    FOnAsyncLoadComplete OnLoadComplete;
+
 private:
+    /**
+     * @brief 主线程组装全部已注册段并序列化为二进制字节流（同步与异步保存共享）
+     * @param SlotName 目标存档槽位名称
+     * @return 成功返回二进制字节流，失败返回含 Game::DataErrorCodes 的 Failure
+     */
+    [[nodiscard]] TGameStatusResult<TArray<uint8>> BuildAndSerializeArchive(const FString& SlotName) const;
+
+    /**
+     * @brief 主线程结算异步加载结果（校验代次最新性、反序列化并应用内存段、输出日志与广播事件）
+     * @param SlotName 目标存档槽位名称
+     * @param LoadGeneration 发起时签发的异步加载代次
+     * @param ReadResult 后台读取结果
+     */
+    void CompleteAsyncLoad(
+        const FString& SlotName,
+        uint64 LoadGeneration,
+        TGameStatusResult<TArray<uint8>> ReadResult
+    );
+
     UPROPERTY()
     TSubclassOf<UGameSaveArchive> SaveGameClass;
 
     TSet<FString> AllowedSlotNames;
     FSaveGameSegmentRegistry SegmentRegistry;
     TMap<FString, uint64> AsyncLoadGenerations;
+    FCancellationTokenSource LifetimeCancelSource;
 };
+
+template <typename TSaveGameClass>
+TGameStatusResult<TSaveGameClass*> USaveGameSubsystem::LoadObjectFromSlot(const FString& SlotName) {
+    static_assert(TIsDerivedFrom<TSaveGameClass, USaveGame>::Value, "TSaveGameClass must derive from USaveGame");
+    TGameStatusResult<USaveGame*> BaseResult = LoadObjectFromSlot(SlotName, TSaveGameClass::StaticClass());
+    if (BaseResult.IsFailure()) {
+        return TGameStatusResult<TSaveGameClass*>::Failure(BaseResult.ExtractError());
+    }
+    TSaveGameClass* TypedObj = Cast<TSaveGameClass>(BaseResult.GetValue());
+    if (TypedObj == nullptr) {
+        return TGameStatusResult<TSaveGameClass*>::Failure(
+            Game::ModuleId::Data,
+            Game::DataErrorCodes::SaveTypeMismatch,
+            FString::Printf(TEXT("加载的存档对象类型不匹配目标类型 %s"), *TSaveGameClass::StaticClass()->GetName())
+        );
+    }
+    return TGameStatusResult<TSaveGameClass*>::Success(TypedObj);
+}
