@@ -2,14 +2,28 @@
 
 #include "Policy/NetReconnectPolicy.h"
 
+#include <atomic>
+
+#include "HAL/PlatformProcess.h"
+#include "HAL/PlatformTime.h"
+#include "Logging/GameLogCategories.h"
+
 /**
- * @brief 构造指数退避重连策略器
+ * @brief 使用运行期高熵随机种子构造指数退避重连策略器
  * @param InConfig 重连阈值、上限与抖动比例配置
- * @param RandomSeed 确定性随机种子
  */
-FNetReconnectPolicy::FNetReconnectPolicy(const FNetReconnectConfig& InConfig, int32 RandomSeed) noexcept
+FNetReconnectPolicy::FNetReconnectPolicy(const FNetReconnectConfig& InConfig) noexcept
+    : FNetReconnectPolicy(InConfig, GenerateRuntimeEntropySeed()) {
+}
+
+/**
+ * @brief 使用指定确定性种子构造指数退避重连策略器
+ * @param InConfig 重连阈值、上限与抖动比例配置
+ * @param DeterministicSeed 确定性随机种子
+ */
+FNetReconnectPolicy::FNetReconnectPolicy(const FNetReconnectConfig& InConfig, uint64 DeterministicSeed) noexcept
     : Config(InConfig)
-    , RandomStream(static_cast<uint64>(RandomSeed)) {
+    , RandomStream(DeterministicSeed) {
 }
 
 /**
@@ -17,6 +31,16 @@ FNetReconnectPolicy::FNetReconnectPolicy(const FNetReconnectConfig& InConfig, in
  * @param InConfig 新重连策略配置
  */
 void FNetReconnectPolicy::SetConfig(const FNetReconnectConfig& InConfig) noexcept {
+    if (InConfig.bEnableAutoReconnect && !InConfig.IsValid()) {
+        GAME_LOG(
+            Warning,
+            TEXT("[Reconnect] 收到非标准重连配置，运行时将自动钳制安全边界: Base=%.2fs, Max=%.2fs, Retries=%d, Jitter=%.2f"),
+            InConfig.BaseDelaySeconds,
+            InConfig.MaxDelaySeconds,
+            InConfig.MaxRetryAttempts,
+            InConfig.JitterRatio
+        );
+    }
     Config = InConfig;
     Reset();
 }
@@ -81,3 +105,20 @@ void FNetReconnectPolicy::Reset() noexcept {
     bExhausted = false;
 }
 
+/**
+ * @brief 生成结合时钟周期、进程号与单调盐值的运行期随机种子
+ * @return 非确定性 64 位随机种子
+ */
+uint64 FNetReconnectPolicy::GenerateRuntimeEntropySeed() noexcept {
+    static std::atomic<uint64> EntropySalt{0x9E3779B97F4A7C15ULL};
+    const uint64 Salt = EntropySalt.fetch_add(0x9E3779B97F4A7C15ULL, std::memory_order_relaxed);
+    const uint64 Cycles = FPlatformTime::Cycles64();
+    const uint64 Pid = static_cast<uint64>(FPlatformProcess::GetCurrentProcessId());
+    uint64 Mixed = Cycles ^ (Pid << 32) ^ Salt;
+    Mixed ^= (Mixed >> 30);
+    Mixed *= 0xBF58476D1CE4E5B9ULL;
+    Mixed ^= (Mixed >> 27);
+    Mixed *= 0x94D049BB133111EBULL;
+    Mixed ^= (Mixed >> 31);
+    return Mixed != 0ULL ? Mixed : 0x517CC1B727220A95ULL;
+}

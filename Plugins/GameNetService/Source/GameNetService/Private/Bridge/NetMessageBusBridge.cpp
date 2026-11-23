@@ -28,12 +28,7 @@ void FNetMessageBusBridge::Bind(
     BoundMessageBus = &MessageBus;
     OutboundListenerHandle = MessageBus.RegisterListener<FGameNetOutboundMessage>(
         TAG_Game_Net_Outbound,
-        [Callback = MoveTemp(OnOutboundRequested)](
-            [[maybe_unused]] FGameplayTag Channel,
-            const FGameNetOutboundMessage& Message
-        ) {
-            Callback(Message);
-        }
+        MoveTemp(OnOutboundRequested)
     );
 }
 
@@ -46,7 +41,7 @@ void FNetMessageBusBridge::Unbind() {
 }
 
 /**
- * @brief 向 TAG_Game_Net_Inbound 通道广播一条下行到达网络数据包
+ * @brief 向 TAG_Game_Net_Inbound 通道广播一条下行到达网络数据包（无监听者时零分配短路）
  * @param Header 到达报文头
  * @param Payload 到达负载二进制切片
  */
@@ -55,22 +50,16 @@ void FNetMessageBusBridge::BroadcastInboundPacket(
     TConstArrayView<uint8> Payload
 ) const {
     UGameplayMessageSubsystem* MessageBus = BoundMessageBus.Get();
-    if (MessageBus == nullptr) {
+    if (MessageBus == nullptr || !MessageBus->HasListener(TAG_Game_Net_Inbound)) {
         return;
     }
 
-    FGameNetInboundMessage BusEnvelope;
-    BusEnvelope.MessageId = Header.MessageId;
-    BusEnvelope.SequenceId = Header.SequenceId;
-    if (!Payload.IsEmpty()) {
-        BusEnvelope.Payload.SetNumUninitialized(Payload.Num());
-        FMemory::Memcpy(BusEnvelope.Payload.GetData(), Payload.GetData(), Payload.Num());
-    }
-    MessageBus->BroadcastMessage(TAG_Game_Net_Inbound, BusEnvelope);
+    const FGameNetInboundMessage BusEnvelope(Header.MessageId, Header.SequenceId, Payload);
+    (void)MessageBus->BroadcastMessage(TAG_Game_Net_Inbound, BusEnvelope);
 }
 
 /**
- * @brief 向 TAG_Game_Net_StateChanged 通道广播当前网络连接状态迁移通知
+ * @brief 向 TAG_Game_Net_StateChanged 通道广播当前网络连接状态迁移通知（无监听者时零分配短路）
  * @param EffectiveState 当前综合连接状态
  * @param Endpoint 当前关联的目标端点地址
  */
@@ -79,14 +68,14 @@ void FNetMessageBusBridge::BroadcastConnectionState(
     const FString& Endpoint
 ) const {
     UGameplayMessageSubsystem* MessageBus = BoundMessageBus.Get();
-    if (MessageBus == nullptr) {
+    if (MessageBus == nullptr || !MessageBus->HasListener(TAG_Game_Net_StateChanged)) {
         return;
     }
 
-    FGameNetStateMessage StateNotice;
-    StateNotice.bIsConnected = (EffectiveState == ENetConnectionState::Connected);
-    StateNotice.ConnectionState = EffectiveState;
-    StateNotice.Endpoint = Endpoint;
-    MessageBus->BroadcastMessage(TAG_Game_Net_StateChanged, StateNotice);
+    const FGameNetStateMessage StateNotice(
+        EffectiveState == ENetConnectionState::Connected,
+        EffectiveState,
+        Endpoint
+    );
+    (void)MessageBus->BroadcastMessage(TAG_Game_Net_StateChanged, StateNotice);
 }
-

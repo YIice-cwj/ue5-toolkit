@@ -1,6 +1,6 @@
 /**
  * @file NetPendingRequestTrackerTest.cpp
- * @brief 异步请求序列号分配、期望响应匹配、超时扫描与断线统一结算器（FNetPendingRequestTracker）单元测试
+ * @brief 异步请求序列号分配、单请求取消、重入超时扫描与断线统一结算器（FNetPendingRequestTracker）单元测试
  */
 
 #include "CoreMinimal.h"
@@ -17,7 +17,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证非零序列号递增、响应协议校验、超时结算与连接关闭全量失败回退
+ * @brief 验证非零序列号递增、响应协议校验、单请求取消、同序号覆盖结算、回调重入 Reset/FailAll 安全与全量失败回退
  * @param Parameters 自动化测试参数
  * @return 测试是否全部通过
  */
@@ -37,6 +37,8 @@ bool FGameNetPendingRequestTrackerTest::RunTest([[maybe_unused]] const FString& 
     ZeroSeqHeader.MessageId = 2001;
     ZeroSeqHeader.SequenceId = 0;
     TestFalse(TEXT("SequenceId 为 0 的主动推送包不参与请求结算"), Tracker.TryCompleteResponse(ZeroSeqHeader, {}));
+    TestFalse(TEXT("取消不存在的 0 号请求返回 false"), Tracker.CancelRequest(0));
+    TestFalse(TEXT("取消未知序号请求返回 false"), Tracker.CancelRequest(999));
 
     ENetRequestResult Req1Result = ENetRequestResult::SendFailed;
     uint8 Req1Value = 0;
@@ -88,22 +90,72 @@ bool FGameNetPendingRequestTrackerTest::RunTest([[maybe_unused]] const FString& 
     TestEqual(TEXT("跨过 1.0s 后 Req2 触发 TimedOut 自动结算"), Req2Result, ENetRequestResult::TimedOut);
     TestEqual(TEXT("超时清理后挂起请求归零"), Tracker.GetPendingCount(), 0);
 
-    ENetRequestResult Req3Result = ENetRequestResult::Success;
-    const uint32 Seq3 = Tracker.AllocateSequenceId();
+    ENetRequestResult CancelTargetResult = ENetRequestResult::Success;
+    const uint32 CancelSeq = Tracker.AllocateSequenceId();
     Tracker.RegisterPendingRequest(
-        Seq3,
-        0,
+        CancelSeq,
+        2003,
         10.0f,
-        [&Req3Result](ENetRequestResult Result, const FNetPacketHeader&, TConstArrayView<uint8>) {
-            Req3Result = Result;
+        [&CancelTargetResult](ENetRequestResult Result, const FNetPacketHeader&, TConstArrayView<uint8>) {
+            CancelTargetResult = Result;
         }
     );
+    TestTrue(TEXT("主动 CancelRequest 命中挂起请求"), Tracker.CancelRequest(CancelSeq));
+    TestEqual(TEXT("被取消请求回调精确收到 Cancelled"), CancelTargetResult, ENetRequestResult::Cancelled);
+    TestEqual(TEXT("取消后挂起请求归零"), Tracker.GetPendingCount(), 0);
+
+    ENetRequestResult EvictedResult = ENetRequestResult::Success;
+    ENetRequestResult ReplacementResult = ENetRequestResult::SendFailed;
+    const uint32 DupSeq = Tracker.AllocateSequenceId();
+    Tracker.RegisterPendingRequest(
+        DupSeq,
+        2004,
+        10.0f,
+        [&EvictedResult](ENetRequestResult Result, const FNetPacketHeader&, TConstArrayView<uint8>) {
+            EvictedResult = Result;
+        }
+    );
+    Tracker.RegisterPendingRequest(
+        DupSeq,
+        2004,
+        10.0f,
+        [&ReplacementResult](ENetRequestResult Result, const FNetPacketHeader&, TConstArrayView<uint8>) {
+            ReplacementResult = Result;
+        }
+    );
+    TestEqual(TEXT("重复注册同 SequenceId 时旧条目立即收到 Cancelled 防止协程永久挂死"), EvictedResult, ENetRequestResult::Cancelled);
     Tracker.FailAll(ENetRequestResult::ConnectionClosed);
-    TestEqual(TEXT("FailAll 时未完成请求收到 ConnectionClosed 结算保障零悬挂"), Req3Result, ENetRequestResult::ConnectionClosed);
-    TestEqual(TEXT("FailAll 后挂起请求数为 0"), Tracker.GetPendingCount(), 0);
+    TestEqual(TEXT("FailAll 时未完成请求收到 ConnectionClosed 结算"), ReplacementResult, ENetRequestResult::ConnectionClosed);
+
+    int32 ReentrantTimeoutHits = 0;
+    const uint32 ReentrantSeqA = Tracker.AllocateSequenceId();
+    const uint32 ReentrantSeqB = Tracker.AllocateSequenceId();
+    Tracker.RegisterPendingRequest(
+        ReentrantSeqA,
+        0,
+        0.5f,
+        [&Tracker, &ReentrantTimeoutHits](ENetRequestResult Result, const FNetPacketHeader&, TConstArrayView<uint8>) {
+            if (Result == ENetRequestResult::TimedOut) {
+                ++ReentrantTimeoutHits;
+                Tracker.Reset();
+            }
+        }
+    );
+    Tracker.RegisterPendingRequest(
+        ReentrantSeqB,
+        0,
+        0.5f,
+        [&ReentrantTimeoutHits](ENetRequestResult Result, const FNetPacketHeader&, TConstArrayView<uint8>) {
+            if (Result == ENetRequestResult::TimedOut) {
+                ++ReentrantTimeoutHits;
+            }
+        }
+    );
+    Tracker.TickTimeouts(1.0f);
+    TestEqual(TEXT("超时回调内重入 Reset 不破坏局部快照，两条到期请求均安全结算"), ReentrantTimeoutHits, 2);
+    TestEqual(TEXT("重入后挂起请求归零"), Tracker.GetPendingCount(), 0);
 
     return true;
 }
 
 #endif
-

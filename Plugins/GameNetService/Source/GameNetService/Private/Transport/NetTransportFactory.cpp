@@ -16,8 +16,12 @@ TSharedRef<INetTransport> FNetTransportFactory::CreateMockTransport() {
 /**
  * @brief 创建引擎原生 WebSocket (WS / WSS) 二进制抽象传输驱动实例
  * @param MaxPayloadBytes 允许接收的单包最大业务负载字节数
+ * @param CustomSocketFactory 可选自定义底层 IWebSocket 构造工厂
  * @return 面向抽象契约的传输驱动共享引用
  */
-TSharedRef<INetTransport> FNetTransportFactory::CreateWebSocketTransport(uint32 MaxPayloadBytes) {
-    return MakeShared<FWebSocketNetTransport>(MaxPayloadBytes);
+TSharedRef<INetTransport> FNetTransportFactory::CreateWebSocketTransport(
+    uint32 MaxPayloadBytes,
+    FWebSocketFactory CustomSocketFactory
+) {
+    return MakeShared<FWebSocketNetTransport>(MaxPayloadBytes, MoveTemp(CustomSocketFactory));
 }

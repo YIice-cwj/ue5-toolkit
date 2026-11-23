@@ -5,32 +5,32 @@
 ```mermaid
 sequenceDiagram
     autonumber
-    participant WS as IWebSocket 底层线程
+    participant WS as IWebSocket 底层回调线程
     participant Trans as FWebSocketNetTransport + FWebSocketFragmentAssembler
     participant Sub as UGameNetServiceSubsystem::Tick (GameThread)
     participant Track as FNetPendingRequestTracker / FNetMessageDispatcher
     participant Bridge as FNetMessageBusBridge
 
-    WS->>Trans: Enqueue(Generation, Event) [零 UObject 访问]
-    Sub->>Trans: Tick() 校验 Generation 并经 FWebSocketFragmentAssembler + FNetPacketCodec 解帧
-    Sub->>Sub: 更新 FNetHeartbeatKeeper 对端活跃时钟与 RTT
+    WS->>Trans: Enqueue(Generation, Event) 至有界 TLockFreeRingBuffer [零 UObject 访问 + 超长帧拦截]
+    Sub->>Trans: Tick() 校验代际号，单分片走零拷贝直通快路径，多分片经 Assembler + RingBuffer 解帧
+    Sub->>Sub: 更新 FNetHeartbeatKeeper 对端活跃时钟、最新 RTT 与滑动平均 RTT
     Sub->>Track: 先匹配 FNetPendingRequestTracker(SequenceId)，再路由 FNetMessageDispatcher(MessageId)
-    Sub->>Bridge: 广播 TAG_Game_Net_Inbound / TAG_Game_Net_StateChanged
+    Sub->>Bridge: HasListener 门控短路后广播 TAG_Game_Net_Inbound / TAG_Game_Net_StateChanged
 ```
 
 1. **职责边界清晰拆分**：
-   - `FWebSocketFragmentAssembler` 仅负责二进制分片缓冲与最大帧长拦截；
-   - `FWebSocketNetTransport` 仅负责 `IWebSocket` 生命周期、64 位原子 `Generation` 代际防串扰与 `MPSC` 无锁事件搬运；
-   - `FNetTransportFactory` 负责具体传输实例创建，使 `UGameNetServiceSubsystem` 仅面向抽象 `INetTransport` 编程；
-   - `FNetPendingRequestTracker` 与 `FNetMessageDispatcher` 彻底分离“单次异步 RPC 序列追踪”与“常驻 `MessageId` 快照多播”；
-   - `FNetMessageBusBridge` 独立封装 `UGameplayMessageSubsystem` 的监听句柄与消息广播。
-2. **GameThread 唯一消费铁律**：后台 Socket 线程绝不触碰任何 `UObject`、委托或业务容器；全部解帧、反序列化、超时结算与回调触发 100% 运行在主线程。
+   - `FWebSocketFragmentAssembler` 仅负责多段二进制分片零外拷贝拼装（返回只读 `TConstArrayView<uint8>`）、最大帧长拦截与超大帧后的容量收缩；
+   - `FWebSocketNetTransport` 负责 `IWebSocket` 生命周期、主线程 64 位代际号（`ConnectionGeneration`）防串扰、`GameCore::TLockFreeRingBuffer<FInboundSocketEvent, 1024>` 有界无锁事件通道（带满队过载熔断）、IO 线程超长帧零分配前置拦截，以及单分片整包零拷贝直通快路径；
+   - `FNetTransportFactory` 负责具体传输实例创建（支持注入自定义 `FWebSocketFactory` 便于测试与扩展），使 `UGameNetServiceSubsystem` 仅面向抽象 `INetTransport` 编程；
+   - `FNetPendingRequestTracker` 与 `FNetMessageDispatcher` 彻底分离“可取消单次异步 RPC 序列追踪（支持 `FCancellationToken` 与栈内局部快照防重入）”与“常驻 `MessageId` 快照多播”；
+   - `FNetMessageBusBridge` 独立封装 `GameMessage`（`UGameplayMessageSubsystem`）的监听句柄、无监听零分配短路门控与双向消息广播。
+2. **GameThread 唯一消费铁律**：后台 Socket 线程绝不触碰任何 `UObject`、委托或业务容器；全部解帧、反序列化、超时结算与回调触发 100% 运行在主线程。模块日志统一经 `GameLogging` 输出至 `LogGameNetService`（已在远程日志输出设备黑名单中豁免，避免转发死循环）。
 
 ---
 
 ## 2. 全插件统一网络接入方式
 
-- **业务层插件 / 主工程模块**：直接依赖 `GameNetService`，包含 `System/GameNetServiceSubsystem.h`，调用 `SendStruct` / `SendStructRequest` / `RegisterStructHandler` 强类型模板接口；
+- **业务层插件 / 主工程模块**：直接依赖 `GameNetService`，包含 `System/GameNetServiceSubsystem.h`，调用 `SendStruct` / `SendStructRequest` / `RequestStructAsync` / `RegisterStructHandler` 强类型模板接口；
 - **平级通用插件**：无需依赖 `GameNetService` 或 `WebSockets`，仅依赖零物理网络的 `GameNetCore` 并包含 `Message/GameNetworkMessageTypes.h`，即可通过 `TAG_Game_Net_Outbound`、`TAG_Game_Net_Inbound` 与 `TAG_Game_Net_StateChanged` 完成跨插件收发；
 - **基础设施日志联动（远程日志）**：`UGameNetServiceSubsystem` 自动监听 `TAG_Game_Log_Remote`，将 `GameLogging` 输出的 `FGameRemoteLogEntry` 打包为 `NET_MSG_REMOTE_LOG (100)` 外发，实现日志基础设施与网络传输的绝对解耦；
 - **数据层云端同步联动（云存档）**：`GameData` 依赖 `GameNetService`，通过 `SendStructRequest` 调度 `NET_MSG_CLOUD_SAVE_*` (201~206) 系列消息，完成高阶分段存档的云端上传、下载与热恢复。
@@ -50,4 +50,3 @@ sequenceDiagram
 | **`GameLogging`** | ✅ 旁路解耦 | `TAG_Game_Log_Remote` ➔ WebSocket | 远程日志通过消息总线无感广播，NetService 自动代理外发，日志模块自身零网络代码 |
 | **`GameData`** | ✅ 门面集成 | `UGameNetServiceSubsystem` RPC | 云端存档上传/下载属于典型大厅应用层强类型 Request-Response，天然契合 WebSocket |
 | **`GameNetSession`** | ✅ 组合协同 | 局域网 UDP 信标 + OSS 房间 | 会话管理与长连接网关并存，互相独立互补 |
-

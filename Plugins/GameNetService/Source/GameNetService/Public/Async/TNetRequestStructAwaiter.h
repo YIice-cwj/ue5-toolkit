@@ -1,6 +1,6 @@
 /**
  * @file TNetRequestStructAwaiter.h
- * @brief 业务网络 Request-Response 异步结构体请求 C++20 协程挂起器
+ * @brief 业务网络 Request-Response 异步结构体请求 C++20 协程挂起器（头文件完全自包含，零响应深拷贝）
  */
 
 #pragma once
@@ -9,40 +9,28 @@
 #include "Async/TGameCoroTask.h"
 #include "Dispatch/NetDispatchTypes.h"
 #include "Types/TGameResult.h"
-#include "UObject/WeakObjectPtrTemplates.h"
-
-class UGameNetServiceSubsystem;
 
 /**
- * @brief 挂起协程并等待网络响应的泛型 Awaiter（支持生命周期守卫熔断）
+ * @brief 挂起协程并等待网络响应的泛型 Awaiter（支持生命周期守卫熔断与零拷贝结果交付）
  * @tparam TReqStruct 请求反射结构体类型
  * @tparam TRspStruct 响应反射结构体类型
  */
 template <typename TReqStruct, typename TRspStruct>
 class TNetRequestStructAwaiter {
 public:
+    using FResultType = TGameResult<TRspStruct, ENetRequestResult>;
+    using FCompleteCallback = TFunction<void(FResultType)>;
+    using FDispatchFunction = TFunction<void(FCompleteCallback)>;
+
+public:
     /**
      * @brief 构造网络结构体请求等待器
-     * @param InSubsystem 网络服务门面子系统指针
-     * @param InRequestMessageId 请求协议 ID
-     * @param InExpectedResponseMessageId 期望响应协议 ID
-     * @param InPayload 请求结构体载荷
-     * @param InTimeoutSeconds 超时秒数
+     * @param InDispatchFn 协程挂起时触发的请求发起与响应回填闭包
      */
-    TNetRequestStructAwaiter(
-        UGameNetServiceSubsystem* InSubsystem,
-        uint32 InRequestMessageId,
-        uint32 InExpectedResponseMessageId,
-        TReqStruct InPayload,
-        float InTimeoutSeconds
-    )
-        : SubsystemWeak(InSubsystem)
-        , RequestMessageId(InRequestMessageId)
-        , ExpectedResponseMessageId(InExpectedResponseMessageId)
-        , Payload(MoveTemp(InPayload))
-        , TimeoutSeconds(InTimeoutSeconds)
-        , ResultHolder(MakeShared<TGameResult<TRspStruct, ENetRequestResult>, ESPMode::ThreadSafe>(
-            TGameResult<TRspStruct, ENetRequestResult>::Failure(ENetRequestResult::SendFailed)
+    explicit TNetRequestStructAwaiter(FDispatchFunction InDispatchFn)
+        : DispatchFn(MoveTemp(InDispatchFn))
+        , ResultHolder(MakeShared<FResultType, ESPMode::ThreadSafe>(
+            FResultType::Failure(ENetRequestResult::SendFailed)
         )) {
     }
 
@@ -64,21 +52,29 @@ public:
      * @brief 挂起协程并派发异步网络请求
      * @param InGuard 挂起点协程帧安全守卫
      */
-    void SuspendWithGuard(TSharedRef<Game::Coro::FGameCoroSuspensionGuard, ESPMode::ThreadSafe> InGuard);
+    void SuspendWithGuard(TSharedRef<Game::Coro::FGameCoroSuspensionGuard, ESPMode::ThreadSafe> InGuard) {
+        if (!DispatchFn) {
+            InGuard->AbortAndDestroyFrame();
+            return;
+        }
+
+        TSharedRef<FResultType, ESPMode::ThreadSafe> CapturedSlot = ResultHolder;
+        FDispatchFunction LocalDispatch = MoveTemp(DispatchFn);
+        LocalDispatch([InGuard, CapturedSlot](FResultType Result) {
+            *CapturedSlot = MoveTemp(Result);
+            InGuard->ResumeOrAbort();
+        });
+    }
 
     /**
-     * @brief 恢复协程并提取网络请求响应结果
+     * @brief 恢复协程并移动提取网络请求响应结果
      * @return 包含响应结构体或失败状态枚举的 TGameResult
      */
-    [[nodiscard]] TGameResult<TRspStruct, ENetRequestResult> await_resume() {
+    [[nodiscard]] FResultType await_resume() {
         return MoveTemp(*ResultHolder);
     }
 
 private:
-    TWeakObjectPtr<UGameNetServiceSubsystem> SubsystemWeak;
-    uint32 RequestMessageId;
-    uint32 ExpectedResponseMessageId;
-    TReqStruct Payload;
-    float TimeoutSeconds;
-    TSharedRef<TGameResult<TRspStruct, ENetRequestResult>, ESPMode::ThreadSafe> ResultHolder;
+    FDispatchFunction DispatchFn;
+    TSharedRef<FResultType, ESPMode::ThreadSafe> ResultHolder;
 };

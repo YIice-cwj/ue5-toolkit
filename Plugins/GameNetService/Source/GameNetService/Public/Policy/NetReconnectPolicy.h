@@ -1,6 +1,6 @@
 /**
  * @file NetReconnectPolicy.h
- * @brief 带双向随机抖动（Jitter）的指数退避自动重连状态机
+ * @brief 带双向随机抖动（Jitter）与运行期防雪崩熵种子的指数退避自动重连状态机
  */
 
 #pragma once
@@ -19,11 +19,17 @@ public:
 
 public:
     /**
-     * @brief 构造指数退避重连策略器
+     * @brief 使用运行期高熵随机种子构造指数退避重连策略器（生产环境防同步重连雪崩）
      * @param InConfig 重连阈值、上限与抖动比例配置
-     * @param RandomSeed 确定性随机种子（便于自动化测试精确重现抖动序列）
      */
-    explicit FNetReconnectPolicy(const FNetReconnectConfig& InConfig = {}, int32 RandomSeed = 1337) noexcept;
+    explicit FNetReconnectPolicy(const FNetReconnectConfig& InConfig = {}) noexcept;
+
+    /**
+     * @brief 使用指定确定性种子构造指数退避重连策略器（专供自动化测试精确复现抖动序列）
+     * @param InConfig 重连阈值、上限与抖动比例配置
+     * @param DeterministicSeed 确定性随机种子
+     */
+    FNetReconnectPolicy(const FNetReconnectConfig& InConfig, uint64 DeterministicSeed) noexcept;
 
     /**
      * @brief 更新重连配置并重置当前计数状态
@@ -90,6 +96,13 @@ public:
     }
 
 private:
+    /**
+     * @brief 生成结合时钟周期、进程号与单调盐值的运行期随机种子
+     * @return 非确定性 64 位随机种子
+     */
+    [[nodiscard]] static uint64 GenerateRuntimeEntropySeed() noexcept;
+
+private:
     FNetReconnectConfig Config;
     FGameRandomStream RandomStream;
     int32 CurrentAttempt{0};
@@ -97,4 +110,3 @@ private:
     bool bWaitingForRetry{false};
     bool bExhausted{false};
 };
-

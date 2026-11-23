@@ -1,13 +1,16 @@
 /**
  * @file WebSocketNetTransport.h
- * @brief 基于 UE 原生 WebSockets 模块与无锁 MPSC 队列跨线程安全派发的长连接传输驱动
+ * @brief 基于 UE 原生 WebSockets 模块与 GameCore 有界无锁环形队列跨线程派发的长连接传输驱动
  */
 
 #pragma once
 
 #include "CoreMinimal.h"
+
+#include <atomic>
+
 #include "Codec/NetPacketRingBuffer.h"
-#include "Containers/Queue.h"
+#include "Containers/TLockFreeRingBuffer.h"
 #include "Transport/INetTransport.h"
 #include "Transport/WebSocketFragmentAssembler.h"
 #include "Transport/WebSocketTransportTypes.h"
@@ -15,15 +18,19 @@
 class IWebSocket;
 
 /**
- * @brief WebSocket (WS / WSS) 二进制帧长连接传输驱动（后台事件入无锁队列，游戏主线程统一派发）
+ * @brief WebSocket (WS / WSS) 二进制帧长连接传输驱动（有界无锁环形队列跨线程搬运 + 单分片零拷贝直通）
  */
 class GAMENETSERVICE_API FWebSocketNetTransport final : public INetTransport {
+public:
+    static constexpr uint32 INBOUND_EVENT_RING_CAPACITY = 1024;
+
 private:
     enum class EInboundEventKind : uint8 {
         Connected = 0,
         ConnectionError,
         Closed,
-        BinaryFragment
+        BinaryFragment,
+        ProtocolViolation
     };
 
     struct FInboundSocketEvent {
@@ -36,7 +43,28 @@ private:
         TArray<uint8> BinaryData;
     };
 
-    using FThreadSafeEventQueue = TQueue<FInboundSocketEvent, EQueueMode::Mpsc>;
+    struct FInboundEventChannel {
+        TLockFreeRingBuffer<FInboundSocketEvent, INBOUND_EVENT_RING_CAPACITY> Queue;
+        std::atomic<bool> bOverflowed{false};
+
+        /**
+         * @brief 尝试将后台 Socket 事件推入有界无锁环形队列；若队列满则置位溢出熔断标志
+         * @param Event 待入队的后台事件右值
+         */
+        void PushOrMarkOverflow(FInboundSocketEvent&& Event) {
+            if (!Queue.Enqueue(MoveTemp(Event))) {
+                bOverflowed.store(true, std::memory_order_release);
+            }
+        }
+
+        /**
+         * @brief 清空事件队列并复位溢出标志（仅在主线程调用）
+         */
+        void Reset() noexcept {
+            Queue.Clear();
+            bOverflowed.store(false, std::memory_order_release);
+        }
+    };
 
 public:
     /**
@@ -90,7 +118,7 @@ public:
     }
 
     /**
-     * @brief 在游戏主线程消费无锁队列中的后台 Socket 事件并触发上层委托
+     * @brief 在游戏主线程消费有界无锁环形队列中的后台 Socket 事件并触发上层委托
      * @param DeltaTimeSeconds 帧间隔秒数
      */
     void Tick(float DeltaTimeSeconds) override;
@@ -137,7 +165,7 @@ public:
 
 private:
     /**
-     * @brief 挂载底层 IWebSocket 事件回调至无锁跨线程队列（按代际隔离）
+     * @brief 挂载底层 IWebSocket 事件回调至有界无锁跨线程通道（按代际隔离并在 IO 线程前置拦截超大单分片）
      * @param TargetSocket 待绑定的底层 Socket 引用
      * @param BoundGeneration 当前连接会话代际号
      */
@@ -147,24 +175,50 @@ private:
      * @brief 解绑并安全释放当前持有的底层 IWebSocket 实例
      * @param CloseCode 关闭码
      * @param CloseReason 关闭描述
-     * @param bShouldInvokeClose 是否需要向未关闭的底层实例发起 Close 调用
+     * @param bShouldInvokeClose 是否需要向底层实例发起 Close 调用
      */
     void ReleaseSocket(int32 CloseCode, const FString& CloseReason, bool bShouldInvokeClose);
 
     /**
-     * @brief 处理单条后台队列出队的二进制分片并在完整消息收齐后送入环形帧解析器
+     * @brief 在主线程分发单条后台 Socket 事件
+     * @param Event 已通过代际校验的后台事件
+     */
+    void HandleInboundEvent(const FInboundSocketEvent& Event);
+
+    /**
+     * @brief 统一处理连接错误与远端关闭导致的断线清理与状态迁移
+     * @param CloseCode 关闭状态码
+     * @param CloseDetail 关闭原因描述
+     * @param bShouldBroadcastError 是否需要向 OnTransportError 广播异常
+     * @param ErrorMessage 广播错误文案
+     */
+    void HandleSocketDisconnected(
+        int32 CloseCode,
+        const FString& CloseDetail,
+        bool bShouldBroadcastError,
+        const FString& ErrorMessage
+    );
+
+    /**
+     * @brief 处理单条后台队列出队的二进制分片并在完整消息收齐后直通解帧或送入环形缓冲
      * @param FragmentBytes 分片数据
      * @param bIsLastFragment 是否为当前 WebSocket 消息的最后一个分片
      */
     void ProcessBinaryFragment(TConstArrayView<uint8> FragmentBytes, bool bIsLastFragment);
 
     /**
-     * @brief 从环形解析器连续弹出所有完整帧并广播；遇协议违例立即熔断断连
+     * @brief 环形缓冲为空时直接从连续消息视图零拷贝解帧派发，仅在存在半包尾段时压入环形缓冲
+     * @param MessageBytes 已拼装完整的 WebSocket 二进制消息视图
+     */
+    void DispatchDirectOrBuffer(TConstArrayView<uint8> MessageBytes);
+
+    /**
+     * @brief 从环形解析器连续消费所有完整帧并广播；遇协议违例立即熔断断连
      */
     void DrainDecodedFrames();
 
     /**
-     * @brief 因对端发来畸形头或超限包触发协议级熔断保护
+     * @brief 因对端发来畸形头、超限包或事件队列溢出触发协议级熔断保护
      * @param ErrorReason 熔断原因说明
      */
     void TriggerProtocolCircuitBreaker(const FString& ErrorReason);
@@ -177,12 +231,11 @@ private:
 
 private:
     FWebSocketFactory SocketFactory;
-    TSharedRef<FThreadSafeEventQueue, ESPMode::ThreadSafe> SharedEventQueue;
+    TSharedRef<FInboundEventChannel, ESPMode::ThreadSafe> EventChannel;
     TSharedPtr<IWebSocket> ActiveSocket;
     FWebSocketFragmentAssembler FragmentAssembler;
     FNetPacketRingBuffer ReceiveRingBuffer;
     TArray<uint8> OutboundScratchBuffer;
-    TArray<uint8> AssembledMessageScratch;
     FString SubProtocol;
     TMap<FString, FString> UpgradeHeaders;
     uint64 ActiveGeneration{0};
@@ -191,4 +244,3 @@ private:
     FOnNetPacketReceived PacketReceivedEvent;
     FOnNetTransportError TransportErrorEvent;
 };
-

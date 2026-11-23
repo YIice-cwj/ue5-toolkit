@@ -3,7 +3,7 @@
     "Version": 1,
     "VersionName": "1.0.0",
     "FriendlyName": "Game Net Service",
-    "Description": "Persistent GameInstance-scoped service networking: WebSocket (WSS) transport, SPSC GameThread dispatch, exponential-backoff reconnect with jitter, heartbeat keeper, async Request-Response, and GameCore message bus bridge.",
+    "Description": "Persistent GameInstance-scoped service networking: WebSocket (WSS) transport with bounded lock-free ring buffer GameThread dispatch, exponential-backoff reconnect with runtime-entropy jitter, heartbeat keeper with moving-average RTT, cancellable async Request-Response, and GameMessage bus bridge.",
     "Category": "Game",
     "CreatedBy": "Taoist Decree Team",
     "CanContainContent": false,
@@ -34,4 +34,3 @@
         }
     ]
 }
-

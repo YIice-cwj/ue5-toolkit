@@ -4,7 +4,9 @@
 
 #include "Codec/NetPacketCodec.h"
 #include "IWebSocket.h"
+#include "Logging/GameLogCategories.h"
 #include "Modules/ModuleManager.h"
+#include "Types/NetErrorCodes.h"
 #include "WebSocketsModule.h"
 
 namespace {
@@ -29,7 +31,7 @@ TSharedPtr<IWebSocket> CreateEngineWebSocket(
 #endif
 }
 
-}
+}  // namespace
 
 /**
  * @brief 构造 WebSocket 传输驱动
@@ -38,7 +40,7 @@ TSharedPtr<IWebSocket> CreateEngineWebSocket(
  */
 FWebSocketNetTransport::FWebSocketNetTransport(uint32 InMaxPayloadBytes, FWebSocketFactory InCustomFactory)
     : SocketFactory(InCustomFactory ? MoveTemp(InCustomFactory) : FWebSocketFactory(&CreateEngineWebSocket))
-    , SharedEventQueue(MakeShared<FThreadSafeEventQueue, ESPMode::ThreadSafe>())
+    , EventChannel(MakeShared<FInboundEventChannel, ESPMode::ThreadSafe>())
     , FragmentAssembler(InMaxPayloadBytes)
     , ReceiveRingBuffer(FNetPacketRingBuffer::DEFAULT_INITIAL_CAPACITY_BYTES, InMaxPayloadBytes) {
 }
@@ -49,7 +51,7 @@ FWebSocketNetTransport::FWebSocketNetTransport(uint32 InMaxPayloadBytes, FWebSoc
 FWebSocketNetTransport::~FWebSocketNetTransport() {
     ++ActiveGeneration;
     ReleaseSocket(1000, TEXT("TransportDestroyed"), true);
-    SharedEventQueue->Empty();
+    EventChannel->Reset();
 }
 
 /**
@@ -59,33 +61,42 @@ FWebSocketNetTransport::~FWebSocketNetTransport() {
  */
 TGameStatusResult<void> FWebSocketNetTransport::Connect(const FString& Endpoint) {
     if (Endpoint.IsEmpty()) {
+        GAME_LOG(Warning, TEXT("[WebSocket] 拒绝空端点地址的连接请求。"));
         TransportErrorEvent.Broadcast(TEXT("WebSocketNetTransport rejected empty endpoint."));
         return TGameStatusResult<void>::Failure(
-            FGameError::Make(Game::ModuleId::Net, 2001, TEXT("WebSocketNetTransport rejected empty endpoint"))
+            Game::ModuleId::Net,
+            Game::NetErrorCodes::InvalidEndpoint,
+            TEXT("WebSocketNetTransport rejected empty endpoint")
         );
     }
     if (CurrentState == ENetConnectionState::Connected || CurrentState == ENetConnectionState::Connecting) {
         return TGameStatusResult<void>::Failure(
-            FGameError::Make(Game::ModuleId::Net, 2002, TEXT("Connection already established or connecting"))
+            Game::ModuleId::Net,
+            Game::NetErrorCodes::AlreadyConnected,
+            TEXT("Connection already established or connecting")
         );
     }
 
     ++ActiveGeneration;
     FragmentAssembler.Reset();
     ReceiveRingBuffer.Reset();
-    SharedEventQueue->Empty();
+    EventChannel = MakeShared<FInboundEventChannel, ESPMode::ThreadSafe>();
 
     const TSharedPtr<IWebSocket> CreatedSocket = SocketFactory(Endpoint, SubProtocol, UpgradeHeaders);
     if (!CreatedSocket.IsValid()) {
+        GAME_LOG(Warning, TEXT("[WebSocket] 创建底层 IWebSocket 实例失败: %s"), *Endpoint);
         TransportErrorEvent.Broadcast(TEXT("Failed to instantiate underlying IWebSocket instance."));
         return TGameStatusResult<void>::Failure(
-            FGameError::Make(Game::ModuleId::Net, 2001, TEXT("Failed to instantiate underlying IWebSocket instance"))
+            Game::ModuleId::Net,
+            Game::NetErrorCodes::TransportUnavailable,
+            TEXT("Failed to instantiate underlying IWebSocket instance")
         );
     }
 
     ActiveSocket = CreatedSocket;
     BindSocketCallbacks(CreatedSocket.ToSharedRef(), ActiveGeneration);
     TransitionState(ENetConnectionState::Connecting);
+    GAME_LOG(Log, TEXT("[WebSocket] 发起异步握手连接: %s (Gen=%llu)"), *Endpoint, ActiveGeneration);
     CreatedSocket->Connect();
     return TGameStatusResult<void>::Success();
 }
@@ -100,12 +111,13 @@ void FWebSocketNetTransport::Disconnect(int32 ReasonCode, const FString& ReasonD
         return;
     }
 
+    GAME_LOG(Log, TEXT("[WebSocket] 主动断开连接: Code=%d, Reason=%s"), ReasonCode, *ReasonDetail);
     ++ActiveGeneration;
     TransitionState(ENetConnectionState::Closing);
     ReleaseSocket(ReasonCode, ReasonDetail, true);
     FragmentAssembler.Reset();
     ReceiveRingBuffer.Reset();
-    SharedEventQueue->Empty();
+    EventChannel->Reset();
     TransitionState(ENetConnectionState::Disconnected);
 }
 
@@ -118,15 +130,27 @@ void FWebSocketNetTransport::Disconnect(int32 ReasonCode, const FString& ReasonD
 TGameStatusResult<void> FWebSocketNetTransport::Send(const FNetPacketHeader& Header, TConstArrayView<uint8> Payload) {
     if (CurrentState != ENetConnectionState::Connected || !ActiveSocket.IsValid()) {
         return TGameStatusResult<void>::Failure(
-            FGameError::Make(Game::ModuleId::Net, 2002, TEXT("WebSocket is not connected"))
+            Game::ModuleId::Net,
+            Game::NetErrorCodes::NotConnected,
+            TEXT("WebSocket is not connected")
         );
     }
 
     FNetPacketHeader OutboundHeader = Header;
     OutboundHeader.PayloadLength = static_cast<uint32>(Payload.Num());
     if (!FNetPacketCodec::IsValidHeader(OutboundHeader, ReceiveRingBuffer.GetMaxPayloadBytes())) {
+        GAME_LOG_THROTTLE(
+            1.0,
+            Warning,
+            TEXT("[WebSocket] 拦截非法外发报文头: Magic=0x%04X, PayloadLen=%u, Max=%u"),
+            OutboundHeader.Magic,
+            OutboundHeader.PayloadLength,
+            ReceiveRingBuffer.GetMaxPayloadBytes()
+        );
         return TGameStatusResult<void>::Failure(
-            FGameError::Make(Game::ModuleId::Net, 2003, TEXT("Invalid packet header or payload exceeds max allowed limit"))
+            Game::ModuleId::Net,
+            Game::NetErrorCodes::InvalidPacketHeader,
+            TEXT("Invalid packet header or payload exceeds max allowed limit")
         );
     }
 
@@ -136,52 +160,26 @@ TGameStatusResult<void> FWebSocketNetTransport::Send(const FNetPacketHeader& Hea
 }
 
 /**
- * @brief 在游戏主线程消费无锁队列中的后台 Socket 事件并触发上层委托
+ * @brief 在游戏主线程消费有界无锁环形队列中的后台 Socket 事件并触发上层委托
  * @param DeltaTimeSeconds 帧间隔秒数
  */
 void FWebSocketNetTransport::Tick([[maybe_unused]] float DeltaTimeSeconds) {
+    if (EventChannel->bOverflowed.exchange(false, std::memory_order_acq_rel)) {
+        TriggerProtocolCircuitBreaker(TEXT("WebSocket inbound event ring buffer overflowed."));
+        return;
+    }
+
     FInboundSocketEvent Event;
-    while (SharedEventQueue->Dequeue(Event)) {
+    while (EventChannel->Queue.Dequeue(Event)) {
         if (Event.Generation != ActiveGeneration) {
             continue;
         }
-
-        switch (Event.Kind) {
-            case EInboundEventKind::Connected:
-                TransitionState(ENetConnectionState::Connected);
-                break;
-
-            case EInboundEventKind::ConnectionError:
-                ++ActiveGeneration;
-                ReleaseSocket(1006, Event.TextDetail, false);
-                FragmentAssembler.Reset();
-                ReceiveRingBuffer.Reset();
-                TransitionState(ENetConnectionState::Disconnected);
-                TransportErrorEvent.Broadcast(Event.TextDetail);
-                break;
-
-            case EInboundEventKind::Closed:
-                ++ActiveGeneration;
-                ReleaseSocket(Event.StatusCode, Event.TextDetail, false);
-                FragmentAssembler.Reset();
-                ReceiveRingBuffer.Reset();
-                TransitionState(ENetConnectionState::Disconnected);
-                if (!Event.bWasClean) {
-                    TransportErrorEvent.Broadcast(
-                        FString::Printf(TEXT("WebSocket closed uncleanly (code=%d): %s"), Event.StatusCode, *Event.TextDetail)
-                    );
-                }
-                break;
-
-            case EInboundEventKind::BinaryFragment:
-                ProcessBinaryFragment(Event.BinaryData, Event.bIsLastFragment);
-                break;
-        }
+        HandleInboundEvent(Event);
     }
 }
 
 /**
- * @brief 挂载底层 IWebSocket 事件回调至无锁跨线程队列（按代际隔离）
+ * @brief 挂载底层 IWebSocket 事件回调至有界无锁跨线程通道（按代际隔离并在 IO 线程前置拦截超大单分片）
  * @param TargetSocket 待绑定的底层 Socket 引用
  * @param BoundGeneration 当前连接会话代际号
  */
@@ -189,44 +187,56 @@ void FWebSocketNetTransport::BindSocketCallbacks(
     const TSharedRef<IWebSocket>& TargetSocket,
     uint64 BoundGeneration
 ) {
-    const TSharedRef<FThreadSafeEventQueue, ESPMode::ThreadSafe> QueueRef = SharedEventQueue;
+    const TSharedRef<FInboundEventChannel, ESPMode::ThreadSafe> ChannelRef = EventChannel;
+    const uint64 MaxFrameBytesLimit = static_cast<uint64>(FragmentAssembler.GetMaxFrameBytes());
 
-    TargetSocket->OnConnected().AddLambda([QueueRef, BoundGeneration]() {
+    TargetSocket->OnConnected().AddLambda([ChannelRef, BoundGeneration]() {
         FInboundSocketEvent Event;
         Event.Generation = BoundGeneration;
         Event.Kind = EInboundEventKind::Connected;
-        QueueRef->Enqueue(MoveTemp(Event));
+        ChannelRef->PushOrMarkOverflow(MoveTemp(Event));
     });
 
-    TargetSocket->OnConnectionError().AddLambda([QueueRef, BoundGeneration](const FString& ErrorText) {
+    TargetSocket->OnConnectionError().AddLambda([ChannelRef, BoundGeneration](const FString& ErrorText) {
         FInboundSocketEvent Event;
         Event.Generation = BoundGeneration;
         Event.Kind = EInboundEventKind::ConnectionError;
         Event.TextDetail = ErrorText;
-        QueueRef->Enqueue(MoveTemp(Event));
+        ChannelRef->PushOrMarkOverflow(MoveTemp(Event));
     });
 
-    TargetSocket->OnClosed().AddLambda([QueueRef, BoundGeneration](int32 StatusCode, const FString& Reason, bool bWasClean) {
+    TargetSocket->OnClosed().AddLambda([ChannelRef, BoundGeneration](int32 StatusCode, const FString& Reason, bool bWasClean) {
         FInboundSocketEvent Event;
         Event.Generation = BoundGeneration;
         Event.Kind = EInboundEventKind::Closed;
         Event.StatusCode = StatusCode;
         Event.TextDetail = Reason;
         Event.bWasClean = bWasClean;
-        QueueRef->Enqueue(MoveTemp(Event));
+        ChannelRef->PushOrMarkOverflow(MoveTemp(Event));
     });
 
     TargetSocket->OnBinaryMessage().AddLambda(
-        [QueueRef, BoundGeneration](const void* Data, SIZE_T Size, bool bIsLastFragment) {
+        [ChannelRef, BoundGeneration, MaxFrameBytesLimit](const void* Data, SIZE_T Size, bool bIsLastFragment) {
             FInboundSocketEvent Event;
             Event.Generation = BoundGeneration;
+            if (static_cast<uint64>(Size) > MaxFrameBytesLimit) {
+                Event.Kind = EInboundEventKind::ProtocolViolation;
+                Event.TextDetail = FString::Printf(
+                    TEXT("WebSocket binary fragment size (%llu) exceeded max frame limit (%llu)."),
+                    static_cast<uint64>(Size),
+                    MaxFrameBytesLimit
+                );
+                ChannelRef->PushOrMarkOverflow(MoveTemp(Event));
+                return;
+            }
+
             Event.Kind = EInboundEventKind::BinaryFragment;
             Event.bIsLastFragment = bIsLastFragment;
             if (Data != nullptr && Size > 0) {
                 Event.BinaryData.SetNumUninitialized(static_cast<int32>(Size));
                 FMemory::Memcpy(Event.BinaryData.GetData(), Data, Size);
             }
-            QueueRef->Enqueue(MoveTemp(Event));
+            ChannelRef->PushOrMarkOverflow(MoveTemp(Event));
         }
     );
 }
@@ -235,7 +245,7 @@ void FWebSocketNetTransport::BindSocketCallbacks(
  * @brief 解绑并安全释放当前持有的底层 IWebSocket 实例
  * @param CloseCode 关闭码
  * @param CloseReason 关闭描述
- * @param bShouldInvokeClose 是否需要向未关闭的底层实例发起 Close 调用
+ * @param bShouldInvokeClose 是否需要向底层实例发起 Close 调用
  */
 void FWebSocketNetTransport::ReleaseSocket(int32 CloseCode, const FString& CloseReason, bool bShouldInvokeClose) {
     if (!ActiveSocket.IsValid()) {
@@ -253,63 +263,182 @@ void FWebSocketNetTransport::ReleaseSocket(int32 CloseCode, const FString& Close
     DyingSocket->OnRawMessage().Clear();
     DyingSocket->OnMessageSent().Clear();
 
-    if (bShouldInvokeClose && DyingSocket->IsConnected()) {
+    if (bShouldInvokeClose) {
         DyingSocket->Close(CloseCode, CloseReason);
     }
 }
 
 /**
- * @brief 处理单条后台队列出队的二进制分片并在完整消息收齐后送入环形帧解析器
+ * @brief 在主线程分发单条后台 Socket 事件
+ * @param Event 已通过代际校验的后台事件
+ */
+void FWebSocketNetTransport::HandleInboundEvent(const FInboundSocketEvent& Event) {
+    switch (Event.Kind) {
+        case EInboundEventKind::Connected:
+            GAME_LOG(Log, TEXT("[WebSocket] 握手建立成功 (Gen=%llu)。"), ActiveGeneration);
+            TransitionState(ENetConnectionState::Connected);
+            break;
+
+        case EInboundEventKind::ConnectionError:
+            HandleSocketDisconnected(1006, Event.TextDetail, true, Event.TextDetail);
+            break;
+
+        case EInboundEventKind::Closed: {
+            const FString ErrorMsg = Event.bWasClean
+                ? FString()
+                : FString::Printf(TEXT("WebSocket closed uncleanly (code=%d): %s"), Event.StatusCode, *Event.TextDetail);
+            HandleSocketDisconnected(Event.StatusCode, Event.TextDetail, !Event.bWasClean, ErrorMsg);
+            break;
+        }
+
+        case EInboundEventKind::BinaryFragment:
+            ProcessBinaryFragment(Event.BinaryData, Event.bIsLastFragment);
+            break;
+
+        case EInboundEventKind::ProtocolViolation:
+            TriggerProtocolCircuitBreaker(Event.TextDetail);
+            break;
+    }
+}
+
+/**
+ * @brief 统一处理连接错误与远端关闭导致的断线清理与状态迁移
+ * @param CloseCode 关闭状态码
+ * @param CloseDetail 关闭原因描述
+ * @param bShouldBroadcastError 是否需要向 OnTransportError 广播异常
+ * @param ErrorMessage 广播错误文案
+ */
+void FWebSocketNetTransport::HandleSocketDisconnected(
+    int32 CloseCode,
+    const FString& CloseDetail,
+    bool bShouldBroadcastError,
+    const FString& ErrorMessage
+) {
+    if (bShouldBroadcastError) {
+        GAME_LOG(Warning, TEXT("[WebSocket] 连接异常断开: Code=%d, Detail=%s"), CloseCode, *ErrorMessage);
+    } else {
+        GAME_LOG(Log, TEXT("[WebSocket] 连接正常关闭: Code=%d, Detail=%s"), CloseCode, *CloseDetail);
+    }
+
+    ++ActiveGeneration;
+    ReleaseSocket(CloseCode, CloseDetail, false);
+    FragmentAssembler.Reset();
+    ReceiveRingBuffer.Reset();
+    TransitionState(ENetConnectionState::Disconnected);
+    if (bShouldBroadcastError) {
+        TransportErrorEvent.Broadcast(ErrorMessage);
+    }
+}
+
+/**
+ * @brief 处理单条后台队列出队的二进制分片并在完整消息收齐后直通解帧或送入环形缓冲
  * @param FragmentBytes 分片数据
  * @param bIsLastFragment 是否为当前 WebSocket 消息的最后一个分片
  */
 void FWebSocketNetTransport::ProcessBinaryFragment(TConstArrayView<uint8> FragmentBytes, bool bIsLastFragment) {
+    TConstArrayView<uint8> AssembledView;
     const EWebSocketFragmentStatus Status =
-        FragmentAssembler.AppendFragment(FragmentBytes, bIsLastFragment, AssembledMessageScratch);
+        FragmentAssembler.AppendFragment(FragmentBytes, bIsLastFragment, AssembledView);
     if (Status == EWebSocketFragmentStatus::FrameExceedsLimit) {
         TriggerProtocolCircuitBreaker(TEXT("WebSocket binary fragment exceeded maximum allowed frame size."));
         return;
     }
-    if (Status == EWebSocketFragmentStatus::MessageReady) {
-        ReceiveRingBuffer.Append(AssembledMessageScratch);
-        DrainDecodedFrames();
+    if (Status != EWebSocketFragmentStatus::MessageReady || AssembledView.IsEmpty()) {
+        return;
+    }
+
+    if (ReceiveRingBuffer.GetReadableBytes() == 0) {
+        DispatchDirectOrBuffer(AssembledView);
+        return;
+    }
+
+    if (!ReceiveRingBuffer.Append(AssembledView)) {
+        TriggerProtocolCircuitBreaker(TEXT("Receive ring buffer exceeded maximum safe capacity."));
+        return;
+    }
+    DrainDecodedFrames();
+}
+
+/**
+ * @brief 环形缓冲为空时直接从连续消息视图零拷贝解帧派发，仅在存在半包尾段时压入环形缓冲
+ * @param MessageBytes 已拼装完整的 WebSocket 二进制消息视图
+ */
+void FWebSocketNetTransport::DispatchDirectOrBuffer(TConstArrayView<uint8> MessageBytes) {
+    const uint64 DispatchGeneration = ActiveGeneration;
+    const uint32 MaxPayloadBytes = ReceiveRingBuffer.GetMaxPayloadBytes();
+    int32 Offset = 0;
+    const int32 TotalBytes = MessageBytes.Num();
+
+    while (CurrentState == ENetConnectionState::Connected && ActiveGeneration == DispatchGeneration && Offset < TotalBytes) {
+        const TConstArrayView<uint8> Remaining(MessageBytes.GetData() + Offset, TotalBytes - Offset);
+        FNetPacketHeader Header;
+        if (!FNetPacketCodec::TryDecodeHeader(Remaining, Header)) {
+            if (!ReceiveRingBuffer.Append(Remaining)) {
+                TriggerProtocolCircuitBreaker(TEXT("Receive ring buffer exceeded maximum safe capacity."));
+            }
+            return;
+        }
+
+        const ENetFrameParseStatus HeaderStatus = FNetPacketCodec::ValidateHeader(Header, MaxPayloadBytes);
+        if (HeaderStatus != ENetFrameParseStatus::CompleteFrame) {
+            TriggerProtocolCircuitBreaker(
+                FString::Printf(TEXT("Malformed wire frame rejected (status=%d)."), static_cast<int32>(HeaderStatus))
+            );
+            return;
+        }
+
+        const int64 FrameTotalBytes =
+            static_cast<int64>(FNetPacketHeader::WIRE_HEADER_BYTES) + static_cast<int64>(Header.PayloadLength);
+        if (static_cast<int64>(Remaining.Num()) < FrameTotalBytes) {
+            if (!ReceiveRingBuffer.Append(Remaining)) {
+                TriggerProtocolCircuitBreaker(TEXT("Receive ring buffer exceeded maximum safe capacity."));
+            }
+            return;
+        }
+
+        const TConstArrayView<uint8> PayloadView(
+            Remaining.GetData() + FNetPacketHeader::WIRE_HEADER_BYTES,
+            static_cast<int32>(Header.PayloadLength)
+        );
+        Offset += static_cast<int32>(FrameTotalBytes);
+        PacketReceivedEvent.Broadcast(Header, PayloadView);
     }
 }
 
 /**
- * @brief 从环形解析器连续弹出所有完整帧并广播；遇协议违例立即熔断断连
+ * @brief 从环形解析器连续消费所有完整帧并广播；遇协议违例立即熔断断连
  */
 void FWebSocketNetTransport::DrainDecodedFrames() {
-    while (CurrentState == ENetConnectionState::Connected) {
-        FNetPacketHeader DecodedHeader;
-        const ENetFrameParseStatus Status = ReceiveRingBuffer.PeekNextFrame(DecodedHeader);
-        if (Status == ENetFrameParseStatus::NeedMoreData) {
-            return;
-        }
-        if (Status != ENetFrameParseStatus::CompleteFrame) {
-            TriggerProtocolCircuitBreaker(
-                FString::Printf(TEXT("Malformed wire frame rejected (status=%d)."), static_cast<int32>(Status))
-            );
-            return;
-        }
-        ReceiveRingBuffer.TryConsumePacket(
+    const uint64 DrainGeneration = ActiveGeneration;
+    while (CurrentState == ENetConnectionState::Connected && ActiveGeneration == DrainGeneration) {
+        const ENetFrameParseStatus Status = ReceiveRingBuffer.TryConsumePacket(
             [this](const FNetPacketHeader& Header, TConstArrayView<uint8> Payload) {
                 PacketReceivedEvent.Broadcast(Header, Payload);
             }
         );
+        if (Status == ENetFrameParseStatus::CompleteFrame) {
+            continue;
+        }
+        if (Status != ENetFrameParseStatus::NeedMoreData) {
+            TriggerProtocolCircuitBreaker(
+                FString::Printf(TEXT("Malformed wire frame rejected (status=%d)."), static_cast<int32>(Status))
+            );
+        }
+        return;
     }
 }
 
 /**
- * @brief 因对端发来畸形头或超限包触发协议级熔断保护
+ * @brief 因对端发来畸形头、超限包或事件队列溢出触发协议级熔断保护
  * @param ErrorReason 熔断原因说明
  */
 void FWebSocketNetTransport::TriggerProtocolCircuitBreaker(const FString& ErrorReason) {
+    GAME_LOG(Warning, TEXT("[WebSocket] 触发协议级熔断保护并关闭连接: %s"), *ErrorReason);
     ++ActiveGeneration;
     ReleaseSocket(1002, ErrorReason, true);
     FragmentAssembler.Reset();
     ReceiveRingBuffer.Reset();
-    SharedEventQueue->Empty();
+    EventChannel->Reset();
     TransitionState(ENetConnectionState::Disconnected);
     TransportErrorEvent.Broadcast(ErrorReason);
 }
@@ -325,4 +454,3 @@ void FWebSocketNetTransport::TransitionState(ENetConnectionState NewState) {
     CurrentState = NewState;
     StateChangedEvent.Broadcast(CurrentState);
 }
-

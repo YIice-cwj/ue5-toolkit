@@ -1,19 +1,21 @@
 /**
  * @file NetHeartbeatKeeper.h
- * @brief 长连接周期心跳保活、RTT 往返时延测算与静默超时侦测器
+ * @brief 长连接周期心跳保活、单次与滑动平均 RTT 测算及静默超时侦测器
  */
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "Policy/NetPolicyTypes.h"
+#include "Profiling/FMovingAverageSampler.h"
 
 /**
- * @brief 长连接心跳保活与对端失步超时侦测器
+ * @brief 长连接心跳保活与对端失步超时侦测器（内置 GameCore FMovingAverageSampler 平滑 RTT）
  */
 class GAMENETSERVICE_API FNetHeartbeatKeeper final {
 public:
     static constexpr float MIN_INTERVAL_SECONDS = 0.1f;
+    static constexpr int32 RTT_AVERAGE_WINDOW_SIZE = 8;
 
 public:
     /**
@@ -37,7 +39,7 @@ public:
     }
 
     /**
-     * @brief 重置所有计时器与挂起的 Ping 采样记录
+     * @brief 重置所有计时器、挂起的 Ping 采样记录与滑动平均窗口
      */
     void Reset() noexcept;
 
@@ -56,7 +58,7 @@ public:
     void RecordPingSent(uint32 SequenceId, double SentTimestampSeconds) noexcept;
 
     /**
-     * @brief 通知收到任意下行报文以刷新对端存活计时；若命中挂起 Pong（严格匹配序号或缺省序号 0）则更新最新 RTT
+     * @brief 通知收到任意下行报文以刷新对端存活计时；若命中挂起 Pong（严格匹配序号或缺省序号 0）则更新最新与平滑 RTT
      * @param MessageId 收到的下行报文协议 ID
      * @param SequenceId 收到的下行报文序列号
      * @param ReceivedTimestampSeconds 收到时刻秒数
@@ -72,6 +74,14 @@ public:
     }
 
     /**
+     * @brief 查询滑动窗口平滑后的平均往返延迟毫秒数（基于 GameCore FMovingAverageSampler）
+     * @return 平滑平均 RTT（毫秒），尚未完成采样时为 0
+     */
+    [[nodiscard]] float GetAverageRttMilliseconds() const noexcept {
+        return static_cast<float>(RttSampler.GetAverage());
+    }
+
+    /**
      * @brief 查询距离最近一次收到对端任意数据的静默秒数
      * @return 静默持续秒数
      */
@@ -81,6 +91,7 @@ public:
 
 private:
     FNetHeartbeatConfig Config;
+    FMovingAverageSampler<RTT_AVERAGE_WINDOW_SIZE> RttSampler;
     float SecondsSinceLastPing{0.0f};
     float SecondsSinceLastInbound{0.0f};
     uint32 PendingPingSequenceId{0};
@@ -88,4 +99,3 @@ private:
     bool bHasPendingPing{false};
     float LastRttMilliseconds{0.0f};
 };
-

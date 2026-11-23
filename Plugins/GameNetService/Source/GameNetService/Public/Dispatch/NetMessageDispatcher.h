@@ -1,13 +1,12 @@
 /**
  * @file NetMessageDispatcher.h
- * @brief 按业务协议 ID 多播订阅、注销与快照迭代安全派发路由器
+ * @brief 按业务协议 ID 多播订阅、注销与零分配快照迭代安全派发路由器
  */
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "Dispatch/NetDispatchTypes.h"
-#include "Types/TGameResult.h"
 
 /**
  * @brief 常驻网络协议多播监听器注册表与快照安全路由器
@@ -34,17 +33,17 @@ public:
      * @brief 注销指定协议 ID 与句柄 ID 对应的处理器
      * @param MessageId 协议 ID
      * @param HandlerId 注册时返回的句柄 ID
-     * @return 成功注销返回 Success，未找到对应处理器返回 Failure(2005)
+     * @return 成功找到并移除返回 true，未找到返回 false
      */
-    TGameStatusResult<void> UnregisterHandler(uint32 MessageId, int64 HandlerId);
+    bool UnregisterHandler(uint32 MessageId, int64 HandlerId);
 
     /**
-     * @brief 按快照隔离方式向指定协议 ID 的所有已注册监听器多播派发数据包
+     * @brief 按快照隔离方式向指定协议 ID 的所有已注册监听器多播派发数据包（零错误对象堆分配）
      * @param Header 报文头
      * @param Payload 负载二进制切片
-     * @return 至少命中一个处理器返回 Success，无监听器返回 Failure(2006)
+     * @return 实际被调用的常驻处理器数量（无监听器返回 0）
      */
-    TGameStatusResult<void> DispatchPacket(const FNetPacketHeader& Header, TConstArrayView<uint8> Payload);
+    int32 DispatchPacket(const FNetPacketHeader& Header, TConstArrayView<uint8> Payload);
 
     /**
      * @brief 清空所有已注册的常驻协议监听器
@@ -62,4 +61,3 @@ private:
     int64 NextHandlerId{0};
     TMap<uint32, TArray<FHandlerSlot>> MessageHandlers;
 };
-

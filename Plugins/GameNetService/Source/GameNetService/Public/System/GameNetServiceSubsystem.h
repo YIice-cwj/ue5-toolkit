@@ -6,6 +6,8 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Async/FCancellationToken.h"
+#include "Async/TNetRequestStructAwaiter.h"
 #include "Bridge/NetMessageBusBridge.h"
 #include "Containers/Ticker.h"
 #include "Dispatch/NetDispatchTypes.h"
@@ -13,11 +15,10 @@
 #include "Dispatch/NetPendingRequestTracker.h"
 #include "Policy/NetHeartbeatKeeper.h"
 #include "Policy/NetReconnectPolicy.h"
-#include "Types/TGameResult.h"
 #include "Serializer/INetSerializer.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "Transport/INetTransport.h"
-#include "Async/TNetRequestStructAwaiter.h"
+#include "Types/TGameResult.h"
 
 #include "GameNetServiceSubsystem.generated.h"
 
@@ -28,11 +29,66 @@ UCLASS()
 class GAMENETSERVICE_API UGameNetServiceSubsystem : public UGameInstanceSubsystem {
     GENERATED_BODY()
 
+private:
+    struct FScopedSendBuffer final {
+        /**
+         * @brief 优先租用成员复用缓冲；发生重入发送时自动回退栈局部缓冲确保零数据覆写
+         * @param InOwner 所属子系统实例引用
+         */
+        explicit FScopedSendBuffer(UGameNetServiceSubsystem& InOwner) noexcept
+            : Owner(InOwner)
+            , bUsingSharedScratch(!InOwner.bSendScratchInUse) {
+            if (bUsingSharedScratch) {
+                Owner.bSendScratchInUse = true;
+            }
+        }
+
+        /**
+         * @brief 析构时归还成员复用缓冲占用标记
+         */
+        ~FScopedSendBuffer() noexcept {
+            if (bUsingSharedScratch) {
+                Owner.bSendScratchInUse = false;
+            }
+        }
+
+        FScopedSendBuffer(const FScopedSendBuffer&) = delete;
+        FScopedSendBuffer& operator=(const FScopedSendBuffer&) = delete;
+
+        /**
+         * @brief 获取当前安全可写的目标字节数组引用
+         * @return 目标字节数组引用
+         */
+        [[nodiscard]] TArray<uint8>& GetBuffer() noexcept {
+            return bUsingSharedScratch ? Owner.SendScratchBuffer : ReentrantFallbackBuffer;
+        }
+
+    private:
+        UGameNetServiceSubsystem& Owner;
+        TArray<uint8> ReentrantFallbackBuffer;
+        bool bUsingSharedScratch{false};
+    };
+
 public:
     UGameNetServiceSubsystem() = default;
 
     /**
-     * @brief 子系统初始化：默认装配单机内存回环驱动与 JSON 序列化器，并挂载消息总线桥接器
+     * @brief 安全获取业务网络门面子系统指针（支持 UWorld、UGameInstance、UGameInstanceSubsystem 与场景对象）
+     * @param WorldContextObject 世界或子系统上下文对象
+     * @return 子系统实例指针，未就绪时返回 nullptr
+     */
+    UFUNCTION(BlueprintPure, Category = "GameNet|Service", meta = (WorldContext = "WorldContextObject"))
+    static UGameNetServiceSubsystem* GetPtr(const UObject* WorldContextObject);
+
+    /**
+     * @brief 获取业务网络门面子系统引用（断言有效）
+     * @param WorldContextObject 世界或子系统上下文对象
+     * @return 子系统引用
+     */
+    [[nodiscard]] static UGameNetServiceSubsystem& Get(const UObject* WorldContextObject);
+
+    /**
+     * @brief 子系统初始化：默认装配单机内存回环驱动与 JSON 序列化器，并挂载消息总线桥接器与远程日志监听
      * @param Collection 子系统依赖集合
      */
     void Initialize(FSubsystemCollectionBase& Collection) override;
@@ -71,11 +127,17 @@ public:
     }
 
     /**
-     * @brief 配置指数退避自动重连策略
+     * @brief 使用运行期高熵随机种子配置指数退避自动重连策略（生产环境防同步重连雪崩）
      * @param InConfig 重连策略配置参数
-     * @param RandomSeed 随机抖动种子
      */
-    void SetReconnectConfig(const FNetReconnectConfig& InConfig, int32 RandomSeed = 1337);
+    void SetReconnectConfig(const FNetReconnectConfig& InConfig);
+
+    /**
+     * @brief 使用指定确定性随机种子配置指数退避自动重连策略（专供自动化测试精确复现）
+     * @param InConfig 重连策略配置参数
+     * @param DeterministicSeed 确定性随机种子
+     */
+    void SetReconnectConfig(const FNetReconnectConfig& InConfig, uint64 DeterministicSeed);
 
     /**
      * @brief 配置周期心跳保活与对端失步超时阈值
@@ -84,7 +146,7 @@ public:
     void SetHeartbeatConfig(const FNetHeartbeatConfig& InConfig);
 
     /**
-     * @brief 发起向目标服务端（或单机回环虚拟地址）的连接
+     * @brief 发起向目标服务端（或单机回环虚拟地址）的连接（已连接或连接中时安全拒绝且不破坏现有会话状态）
      * @param Endpoint 目标连接地址
      * @return 成功触发连接流程返回 true
      */
@@ -123,6 +185,15 @@ public:
     }
 
     /**
+     * @brief 查询滑动窗口平滑后的平均往返延迟毫秒数
+     * @return 平滑平均往返延迟（毫秒）
+     */
+    UFUNCTION(BlueprintPure, Category = "GameNet|Service")
+    float GetAverageRttMilliseconds() const noexcept {
+        return HeartbeatKeeper.GetAverageRttMilliseconds();
+    }
+
+    /**
      * @brief 查询当前正在进行的自动重连累计尝试次数
      * @return 重连尝试序号
      */
@@ -132,30 +203,53 @@ public:
     }
 
     /**
+     * @brief 开启或关闭对总线远程日志（TAG_Game_Log_Remote）的自动网络转送
+     * @param bEnabled 是否开启转送
+     */
+    UFUNCTION(BlueprintCallable, Category = "GameNet|Service")
+    void SetRemoteLogForwardingEnabled(bool bEnabled);
+
+    /**
+     * @brief 查询当前是否开启了对总线远程日志的自动网络转送
+     * @return 开启返回 true
+     */
+    UFUNCTION(BlueprintPure, Category = "GameNet|Service")
+    bool IsRemoteLogForwardingEnabled() const noexcept;
+
+    /**
      * @brief 发送原始二进制负载数据包
      * @param MessageId 业务协议 ID
      * @param Payload 负载二进制切片
      * @param SequenceId 序列号（默认 0）
-     * @return 写入发送通道成功返回 Success，未连接或驱动失败返回 Failure
+     * @return 写入发送通道成功返回 Success，未连接或驱动失败返回带 Game::ModuleId::Net 的 Failure
      */
     TGameStatusResult<void> SendRaw(uint32 MessageId, TConstArrayView<uint8> Payload, uint32 SequenceId = 0);
 
     /**
-     * @brief 发送带超时与序列号自动关联的异步原始 Request-Response 请求
+     * @brief 发送带超时、序列号自动关联与可选协同取消令牌的异步原始 Request-Response 请求
      * @param RequestMessageId 请求协议 ID
      * @param ExpectedResponseMessageId 期望匹配的响应协议 ID（传 0 仅按序列号匹配）
      * @param Payload 请求负载切片
      * @param TimeoutSeconds 超时秒数
-     * @param Callback 请求完成、断线或超时回调
-     * @return 分配的非零请求 SequenceId；发送失败时立即回调 SendFailed 并返回 Failure
+     * @param Callback 请求完成、取消、断线或超时回调
+     * @param CancellationToken 可选协同取消令牌（触发取消时自动移除挂起项并回调 Cancelled）
+     * @return 分配的非零请求 SequenceId；发送失败或已取消时立即回调对应状态并返回 Failure
      */
     TGameStatusResult<uint32> SendRawRequest(
         uint32 RequestMessageId,
         uint32 ExpectedResponseMessageId,
         TConstArrayView<uint8> Payload,
         float TimeoutSeconds,
-        FNetPendingResponseHandler Callback
+        FNetPendingResponseHandler Callback,
+        FCancellationToken CancellationToken = FCancellationToken::None()
     );
+
+    /**
+     * @brief 主动取消指定序列号的在途异步请求并立即触发 Cancelled 回调
+     * @param SequenceId 请求序列号
+     * @return 成功命中并取消返回 true
+     */
+    bool CancelPendingRequest(uint32 SequenceId);
 
     /**
      * @brief 注册指定协议 ID 的原始二进制下行消息处理器
@@ -169,9 +263,9 @@ public:
      * @brief 注销指定协议 ID 的消息处理器
      * @param MessageId 协议 ID
      * @param HandlerId 注册时返回的句柄 ID
-     * @return 成功移除返回 Success，失败返回 Failure
+     * @return 成功找到并移除返回 true，未找到返回 false
      */
-    TGameStatusResult<void> UnregisterHandler(uint32 MessageId, int64 HandlerId);
+    bool UnregisterHandler(uint32 MessageId, int64 HandlerId);
 
     /**
      * @brief 驱动网络队列派发、请求超时扫描、心跳探针与退避重连状态机
@@ -180,11 +274,11 @@ public:
     void Tick(float DeltaTimeSeconds);
 
     /**
-     * @brief 泛型便捷发送：使用当前活跃序列化器将强类型 USTRUCT 编码后发送
+     * @brief 泛型便捷发送：使用当前活跃序列化器将强类型 USTRUCT 编码后发送（重入安全）
      * @tparam TStruct 反射结构体类型
      * @param MessageId 业务协议 ID
      * @param StructPayload 结构体实例
-     * @return 序列化且发送成功返回 Success，失败返回 Failure
+     * @return 序列化且发送成功返回 Success，失败返回对应 Failure
      */
     template <typename TStruct>
     TGameStatusResult<void> SendStruct(uint32 MessageId, const TStruct& StructPayload);
@@ -203,14 +297,15 @@ public:
     );
 
     /**
-     * @brief 泛型便捷异步 RPC：自动编码请求结构体并在收到响应时自动反解响应结构体
+     * @brief 泛型便捷异步 RPC：自动编码请求结构体并在收到响应时自动反解响应结构体（重入安全，支持协同取消）
      * @tparam TReqStruct 请求反射结构体类型
      * @tparam TRspStruct 响应反射结构体类型
      * @param RequestMessageId 请求协议 ID
      * @param ExpectedResponseMessageId 期望响应协议 ID
      * @param RequestPayload 请求结构体实例
      * @param TimeoutSeconds 超时秒数上限
-     * @param Callback 结果回调（Success 时保证指针非空，失败/超时时指针为空）
+     * @param Callback 结果回调（Success 时保证指针非空，失败/超时/取消时指针为空）
+     * @param CancellationToken 可选协同取消令牌
      * @return 成功返回分配的 SequenceId，失败返回 Failure
      */
     template <typename TReqStruct, typename TRspStruct>
@@ -219,17 +314,19 @@ public:
         uint32 ExpectedResponseMessageId,
         const TReqStruct& RequestPayload,
         float TimeoutSeconds,
-        TFunction<void(ENetRequestResult, const TRspStruct*)> Callback
+        TFunction<void(ENetRequestResult, const TRspStruct*)> Callback,
+        FCancellationToken CancellationToken = FCancellationToken::None()
     );
 
     /**
-     * @brief 泛型便捷异步 RPC（C++20 协程门面，支持直接 co_await 与生命周期守卫熔断）
+     * @brief 泛型便捷异步 RPC（C++20 协程门面，零拷贝移动交付响应结构体，支持生命周期守卫与协同取消）
      * @tparam TReqStruct 请求反射结构体类型
      * @tparam TRspStruct 响应反射结构体类型
      * @param RequestMessageId 请求协议 ID
      * @param ExpectedResponseMessageId 期望响应协议 ID
      * @param RequestPayload 请求结构体实例
      * @param TimeoutSeconds 超时秒数上限
+     * @param CancellationToken 可选协同取消令牌
      * @return 协程挂起器，恢复后交付包含响应结构体或网络错误枚举的 TGameResult
      */
     template <typename TReqStruct, typename TRspStruct>
@@ -237,39 +334,16 @@ public:
         uint32 RequestMessageId,
         uint32 ExpectedResponseMessageId,
         const TReqStruct& RequestPayload,
-        float TimeoutSeconds = 5.0f
+        float TimeoutSeconds = 5.0f,
+        FCancellationToken CancellationToken = FCancellationToken::None()
     );
 
-public:
-    /**
-     * @brief 安全获取业务网络门面子系统指针（可空）
-     * @param WorldContextObject 世界上下文对象
-     * @return 子系统实例指针，未就绪时返回 nullptr
-     */
-    [[nodiscard]] static UGameNetServiceSubsystem* GetPtr(const UObject* WorldContextObject);
-
-    /**
-     * @brief 获取业务网络门面子系统引用（断言有效）
-     * @param WorldContextObject 世界上下文对象
-     * @return 子系统引用
-     */
-    [[nodiscard]] static UGameNetServiceSubsystem& Get(const UObject* WorldContextObject);
-
-    /**
-     * @brief 开启或关闭对总线远程日志（TAG_Game_Log_Remote）的自动网络转送
-     * @param bEnabled 是否开启转送
-     */
-    UFUNCTION(BlueprintCallable, Category = "GameNet|Service")
-    void SetRemoteLogForwardingEnabled(bool bEnabled);
-
-    /**
-     * @brief 查询当前是否开启了对总线远程日志的自动网络转送
-     * @return 开启返回 true
-     */
-    UFUNCTION(BlueprintPure, Category = "GameNet|Service")
-    bool IsRemoteLogForwardingEnabled() const noexcept;
-
 private:
+    /**
+     * @brief 绑定消息总线桥接器与远程日志监听回调
+     */
+    void BindMessageBusListeners();
+
     /**
      * @brief CoreTicker 帧回调桥接入口
      * @param DeltaTimeSeconds 帧间隔秒数
@@ -278,7 +352,19 @@ private:
     bool HandleCoreTicker(float DeltaTimeSeconds);
 
     /**
-     * @brief 绑定当前活跃传输驱动的状态与收包委托
+     * @brief 驱动已连接状态下的周期心跳保活与静默超时判定
+     * @param DeltaTimeSeconds 帧间隔秒数
+     */
+    void TickHeartbeat(float DeltaTimeSeconds);
+
+    /**
+     * @brief 驱动断线后的指数退避重连倒计时与重试发起
+     * @param DeltaTimeSeconds 帧间隔秒数
+     */
+    void TickReconnect(float DeltaTimeSeconds);
+
+    /**
+     * @brief 绑定当前活跃传输驱动的状态、收包与错误委托
      */
     void BindActiveTransportEvents();
 
@@ -301,6 +387,12 @@ private:
     void HandleTransportPacketReceived(const FNetPacketHeader& Header, TConstArrayView<uint8> Payload);
 
     /**
+     * @brief 接收并记录底层传输驱动上报的通道错误原因
+     * @param ErrorDetail 底层错误详情
+     */
+    void HandleTransportError(const FString& ErrorDetail);
+
+    /**
      * @brief 在意外断线后尝试开启下一轮指数退避重连周期
      */
     void TryEnterReconnectCycle();
@@ -317,26 +409,34 @@ private:
     FString TargetEndpoint;
     double MonotonicClockSeconds{0.0};
     TArray<uint8> SendScratchBuffer;
+    bool bSendScratchInUse{false};
     bool bManualDisconnect{true};
     bool bInReconnectCycle{false};
     bool bRemoteLogForwardingEnabled{true};
     FDelegateHandle TransportStateHandle;
     FDelegateHandle TransportPacketHandle;
+    FDelegateHandle TransportErrorHandle;
     FTSTicker::FDelegateHandle CoreTickerHandle;
 };
 
 template <typename TStruct>
 TGameStatusResult<void> UGameNetServiceSubsystem::SendStruct(uint32 MessageId, const TStruct& StructPayload) {
     if (!ActiveSerializer.IsValid()) {
-        return TGameStatusResult<void>::Failure(Game::NetErrorCodes::InvalidSerializer, TEXT("Serializer is invalid"));
+        return TGameStatusResult<void>::Failure(
+            Game::ModuleId::Net,
+            Game::NetErrorCodes::InvalidSerializer,
+            TEXT("Serializer is invalid")
+        );
     }
 
-    const TGameStatusResult<void> EncodeStatus = ActiveSerializer->SerializeStructTo(StructPayload, SendScratchBuffer);
+    FScopedSendBuffer BufferGuard(*this);
+    TArray<uint8>& PayloadBuffer = BufferGuard.GetBuffer();
+    const TGameStatusResult<void> EncodeStatus = ActiveSerializer->SerializeStructTo(StructPayload, PayloadBuffer);
     if (EncodeStatus.IsFailure()) {
-        return TGameStatusResult<void>::Failure(EncodeStatus.GetError().ErrorCode, EncodeStatus.GetError().Message);
+        return TGameStatusResult<void>::Failure(EncodeStatus.GetError());
     }
 
-    return SendRaw(MessageId, SendScratchBuffer, 0);
+    return SendRaw(MessageId, PayloadBuffer, 0);
 }
 
 template <typename TStruct>
@@ -371,27 +471,46 @@ TGameStatusResult<uint32> UGameNetServiceSubsystem::SendStructRequest(
     uint32 ExpectedResponseMessageId,
     const TReqStruct& RequestPayload,
     float TimeoutSeconds,
-    TFunction<void(ENetRequestResult, const TRspStruct*)> Callback
+    TFunction<void(ENetRequestResult, const TRspStruct*)> Callback,
+    FCancellationToken CancellationToken
 ) {
     if (!Callback) {
-        return TGameStatusResult<uint32>::Failure(Game::CommonErrorCodes::InvalidParameter, TEXT("Invalid callback"));
+        return TGameStatusResult<uint32>::Failure(
+            Game::ModuleId::Net,
+            Game::CommonErrorCodes::InvalidParameter,
+            TEXT("Invalid callback")
+        );
+    }
+    if (CancellationToken.IsCancellationRequested()) {
+        Callback(ENetRequestResult::Cancelled, nullptr);
+        return TGameStatusResult<uint32>::Failure(
+            Game::ModuleId::Net,
+            Game::NetErrorCodes::RequestCancelled,
+            TEXT("Request cancelled before dispatch")
+        );
     }
     if (!ActiveSerializer.IsValid()) {
         Callback(ENetRequestResult::SendFailed, nullptr);
-        return TGameStatusResult<uint32>::Failure(Game::NetErrorCodes::InvalidSerializer, TEXT("Serializer is invalid"));
+        return TGameStatusResult<uint32>::Failure(
+            Game::ModuleId::Net,
+            Game::NetErrorCodes::InvalidSerializer,
+            TEXT("Serializer is invalid")
+        );
     }
 
-    const TGameStatusResult<void> EncodeStatus = ActiveSerializer->SerializeStructTo(RequestPayload, SendScratchBuffer);
+    FScopedSendBuffer BufferGuard(*this);
+    TArray<uint8>& PayloadBuffer = BufferGuard.GetBuffer();
+    const TGameStatusResult<void> EncodeStatus = ActiveSerializer->SerializeStructTo(RequestPayload, PayloadBuffer);
     if (EncodeStatus.IsFailure()) {
         Callback(ENetRequestResult::SendFailed, nullptr);
-        return TGameStatusResult<uint32>::Failure(EncodeStatus.GetError().ErrorCode, EncodeStatus.GetError().Message);
+        return TGameStatusResult<uint32>::Failure(EncodeStatus.GetError());
     }
 
     TWeakObjectPtr<UGameNetServiceSubsystem> WeakThis(this);
     return SendRawRequest(
         RequestMessageId,
         ExpectedResponseMessageId,
-        SendScratchBuffer,
+        PayloadBuffer,
         TimeoutSeconds,
         [WeakThis, Callback = MoveTemp(Callback)](
             ENetRequestResult Result,
@@ -414,42 +533,9 @@ TGameStatusResult<uint32> UGameNetServiceSubsystem::SendStructRequest(
                 return;
             }
             Callback(ENetRequestResult::Success, &DecodedRsp);
-        }
+        },
+        MoveTemp(CancellationToken)
     );
-}
-
-template <typename TReqStruct, typename TRspStruct>
-void TNetRequestStructAwaiter<TReqStruct, TRspStruct>::SuspendWithGuard(
-    TSharedRef<Game::Coro::FGameCoroSuspensionGuard, ESPMode::ThreadSafe> InGuard
-) {
-    UGameNetServiceSubsystem* Subsystem = SubsystemWeak.Get();
-    if (Subsystem == nullptr) {
-        InGuard->AbortAndDestroyFrame();
-        return;
-    }
-
-    TSharedRef<TGameResult<TRspStruct, ENetRequestResult>, ESPMode::ThreadSafe> CapturedSlot = ResultHolder;
-    const TSharedRef<bool, ESPMode::ThreadSafe> bCallbackInvoked = MakeShared<bool, ESPMode::ThreadSafe>(false);
-    const TGameStatusResult<uint32> SendResult = Subsystem->SendStructRequest<TReqStruct, TRspStruct>(
-        RequestMessageId,
-        ExpectedResponseMessageId,
-        Payload,
-        TimeoutSeconds,
-        [InGuard, CapturedSlot, bCallbackInvoked](ENetRequestResult ReqResult, const TRspStruct* RspPtr) {
-            *bCallbackInvoked = true;
-            if (ReqResult == ENetRequestResult::Success && RspPtr != nullptr) {
-                *CapturedSlot = TGameResult<TRspStruct, ENetRequestResult>::Success(*RspPtr);
-            } else {
-                *CapturedSlot = TGameResult<TRspStruct, ENetRequestResult>::Failure(ReqResult);
-            }
-            InGuard->ResumeOrAbort();
-        }
-    );
-
-    if (SendResult.IsFailure() && !*bCallbackInvoked) {
-        *CapturedSlot = TGameResult<TRspStruct, ENetRequestResult>::Failure(ENetRequestResult::SendFailed);
-        InGuard->ResumeOrAbort();
-    }
 }
 
 template <typename TReqStruct, typename TRspStruct>
@@ -457,14 +543,66 @@ TNetRequestStructAwaiter<TReqStruct, TRspStruct> UGameNetServiceSubsystem::Reque
     uint32 RequestMessageId,
     uint32 ExpectedResponseMessageId,
     const TReqStruct& RequestPayload,
-    float TimeoutSeconds
+    float TimeoutSeconds,
+    FCancellationToken CancellationToken
 ) {
-    return TNetRequestStructAwaiter<TReqStruct, TRspStruct>(
-        this,
-        RequestMessageId,
-        ExpectedResponseMessageId,
-        RequestPayload,
-        TimeoutSeconds
+    using FAwaiter = TNetRequestStructAwaiter<TReqStruct, TRspStruct>;
+    using FResultType = typename FAwaiter::FResultType;
+
+    TWeakObjectPtr<UGameNetServiceSubsystem> WeakThis(this);
+    return FAwaiter(
+        [WeakThis, RequestMessageId, ExpectedResponseMessageId, Payload = RequestPayload, TimeoutSeconds, Token = MoveTemp(CancellationToken)](
+            typename FAwaiter::FCompleteCallback OnCompleted
+        ) mutable {
+            UGameNetServiceSubsystem* Self = WeakThis.Get();
+            if (Self == nullptr) {
+                OnCompleted(FResultType::Failure(ENetRequestResult::ConnectionClosed));
+                return;
+            }
+            if (Token.IsCancellationRequested()) {
+                OnCompleted(FResultType::Failure(ENetRequestResult::Cancelled));
+                return;
+            }
+            if (!Self->ActiveSerializer.IsValid()) {
+                OnCompleted(FResultType::Failure(ENetRequestResult::SendFailed));
+                return;
+            }
+
+            FScopedSendBuffer BufferGuard(*Self);
+            TArray<uint8>& EncodedBytes = BufferGuard.GetBuffer();
+            if (Self->ActiveSerializer->SerializeStructTo(Payload, EncodedBytes).IsFailure()) {
+                OnCompleted(FResultType::Failure(ENetRequestResult::SendFailed));
+                return;
+            }
+
+            (void)Self->SendRawRequest(
+                RequestMessageId,
+                ExpectedResponseMessageId,
+                EncodedBytes,
+                TimeoutSeconds,
+                [WeakThis, Complete = MoveTemp(OnCompleted)](
+                    ENetRequestResult ReqResult,
+                    const FNetPacketHeader&,
+                    TConstArrayView<uint8> RspBytes
+                ) {
+                    if (ReqResult != ENetRequestResult::Success) {
+                        Complete(FResultType::Failure(ReqResult));
+                        return;
+                    }
+                    const UGameNetServiceSubsystem* LiveSelf = WeakThis.Get();
+                    if (LiveSelf == nullptr || !LiveSelf->ActiveSerializer.IsValid()) {
+                        Complete(FResultType::Failure(ENetRequestResult::ConnectionClosed));
+                        return;
+                    }
+                    TRspStruct DecodedRsp;
+                    if (LiveSelf->ActiveSerializer->DeserializeStructTo(RspBytes, DecodedRsp).IsFailure()) {
+                        Complete(FResultType::Failure(ENetRequestResult::DeserializeFailed));
+                        return;
+                    }
+                    Complete(FResultType::Success(MoveTemp(DecodedRsp)));
+                },
+                MoveTemp(Token)
+            );
+        }
     );
 }
-

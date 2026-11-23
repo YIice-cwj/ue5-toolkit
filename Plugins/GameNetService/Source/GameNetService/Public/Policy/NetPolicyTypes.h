@@ -6,6 +6,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Message/GameNetworkMessageTypes.h"
 
 /**
  * @brief 心跳保活器单帧轮询决策动作枚举
@@ -27,7 +28,11 @@ struct GAMENETSERVICE_API FNetReconnectConfig {
      * @return 基础等待秒数大于零、上限大于等于下限、重试上限非负且抖动比例在 [0, 1] 范围内返回 true
      */
     [[nodiscard]] bool IsValid() const noexcept {
-        return BaseDelaySeconds > 0.0f && MaxDelaySeconds >= BaseDelaySeconds && MaxRetryAttempts >= 0 && JitterRatio >= 0.0f && JitterRatio <= 1.0f;
+        return BaseDelaySeconds > 0.0f
+            && MaxDelaySeconds >= BaseDelaySeconds
+            && MaxRetryAttempts >= 0
+            && JitterRatio >= 0.0f
+            && JitterRatio <= 1.0f;
     }
 
     bool bEnableAutoReconnect{true};
@@ -54,7 +59,6 @@ struct GAMENETSERVICE_API FNetHeartbeatConfig {
     bool bEnabled{true};
     float IntervalSeconds{15.0f};
     float TimeoutSeconds{45.0f};
-    uint32 PingMessageId{1};
-    uint32 PongMessageId{2};
+    uint32 PingMessageId{NET_MSG_HEARTBEAT_PING};
+    uint32 PongMessageId{NET_MSG_HEARTBEAT_PONG};
 };
-

@@ -26,36 +26,38 @@ int64 FNetMessageDispatcher::RegisterHandler(uint32 MessageId, FNetRawMessageHan
  * @brief 注销指定协议 ID 与句柄 ID 对应的处理器
  * @param MessageId 协议 ID
  * @param HandlerId 注册时返回的句柄 ID
- * @return 成功注销返回 Success，未找到对应处理器返回 Failure(2005)
+ * @return 成功找到并移除返回 true，未找到返回 false
  */
-TGameStatusResult<void> FNetMessageDispatcher::UnregisterHandler(uint32 MessageId, int64 HandlerId) {
+bool FNetMessageDispatcher::UnregisterHandler(uint32 MessageId, int64 HandlerId) {
     TArray<FHandlerSlot>* Slots = MessageHandlers.Find(MessageId);
     if (Slots == nullptr) {
-        return TGameStatusResult<void>::Failure(Game::NetErrorCodes::HandlerNotFound, TEXT("Handler not found for message"));
+        return false;
     }
 
-    const int32 RemovedCount = Slots->RemoveAll([HandlerId](const FHandlerSlot& Candidate) {
+    const int32 FoundIndex = Slots->IndexOfByPredicate([HandlerId](const FHandlerSlot& Candidate) {
         return Candidate.HandlerId == HandlerId;
     });
+    if (FoundIndex == INDEX_NONE) {
+        return false;
+    }
+
+    Slots->RemoveAt(FoundIndex, EAllowShrinking::No);
     if (Slots->IsEmpty()) {
         MessageHandlers.Remove(MessageId);
     }
-    if (RemovedCount == 0) {
-        return TGameStatusResult<void>::Failure(Game::NetErrorCodes::HandlerNotFound, TEXT("Handler not found for message"));
-    }
-    return TGameStatusResult<void>::Success();
+    return true;
 }
 
 /**
- * @brief 按快照隔离方式向指定协议 ID 的所有已注册监听器多播派发数据包
+ * @brief 按快照隔离方式向指定协议 ID 的所有已注册监听器多播派发数据包（零错误对象堆分配）
  * @param Header 报文头
  * @param Payload 负载二进制切片
- * @return 至少命中一个处理器返回 Success，无监听器返回 Failure(2006)
+ * @return 实际被调用的常驻处理器数量（无监听器返回 0）
  */
-TGameStatusResult<void> FNetMessageDispatcher::DispatchPacket(const FNetPacketHeader& Header, TConstArrayView<uint8> Payload) {
+int32 FNetMessageDispatcher::DispatchPacket(const FNetPacketHeader& Header, TConstArrayView<uint8> Payload) {
     const TArray<FHandlerSlot>* Slots = MessageHandlers.Find(Header.MessageId);
     if (Slots == nullptr || Slots->IsEmpty()) {
-        return TGameStatusResult<void>::Failure(Game::NetErrorCodes::NoHandlersRegistered, TEXT("No handlers registered for message id"));
+        return 0;
     }
 
     TArray<FHandlerSlot, TInlineAllocator<4>> Snapshot;
@@ -63,7 +65,7 @@ TGameStatusResult<void> FNetMessageDispatcher::DispatchPacket(const FNetPacketHe
     for (const FHandlerSlot& Slot : Snapshot) {
         Slot.Callback(Header, Payload);
     }
-    return TGameStatusResult<void>::Success();
+    return Snapshot.Num();
 }
 
 /**
@@ -82,4 +84,3 @@ int32 FNetMessageDispatcher::GetHandlerCount(uint32 MessageId) const noexcept {
     const TArray<FHandlerSlot>* Slots = MessageHandlers.Find(MessageId);
     return Slots != nullptr ? Slots->Num() : 0;
 }
-

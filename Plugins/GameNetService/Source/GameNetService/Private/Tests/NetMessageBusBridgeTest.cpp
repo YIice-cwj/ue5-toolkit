@@ -1,6 +1,6 @@
 /**
  * @file NetMessageBusBridgeTest.cpp
- * @brief 网络事件总线桥接器（FNetMessageBusBridge）外发请求订阅、下行广播、状态迁移广播与解绑单元测试
+ * @brief 网络事件总线桥接器（FNetMessageBusBridge）外发请求订阅、无监听短路、下行与状态迁移广播单元测试
  */
 
 #include "CoreMinimal.h"
@@ -20,7 +20,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证桥接器绑定前静默安全、绑定后双向转发以及解绑后零残留监听
+ * @brief 验证桥接器绑定前安全、无监听零分配短路、绑定后双向转发以及解绑后零残留监听
  * @param Parameters 自动化测试参数
  * @return 测试是否全部通过
  */
@@ -47,17 +47,22 @@ bool FGameNetMessageBusBridgeTest::RunTest([[maybe_unused]] const FString& Param
     });
     TestTrue(TEXT("有效回调成功绑定消息总线"), Bridge.IsBound());
 
+    TestFalse(TEXT("未注册下行监听器时 HasListener 返回 false"), MessageBus.HasListener(TAG_Game_Net_Inbound));
+    const uint8 InPayload[] = {0xAA, 0xBB};
+    Bridge.BroadcastInboundPacket(SampleHeader, InPayload);
+    Bridge.BroadcastConnectionState(ENetConnectionState::Connecting, TEXT("mock://no_listener"));
+
     TArray<FGameNetInboundMessage> CapturedInbounds;
     TArray<FGameNetStateMessage> CapturedStates;
     FGameplayMessageListenerHandle InboundHandle = MessageBus.RegisterListener<FGameNetInboundMessage>(
         TAG_Game_Net_Inbound,
-        [&CapturedInbounds](FGameplayTag, const FGameNetInboundMessage& Msg) {
+        [&CapturedInbounds](const FGameNetInboundMessage& Msg) {
             CapturedInbounds.Add(Msg);
         }
     );
     FGameplayMessageListenerHandle StateHandle = MessageBus.RegisterListener<FGameNetStateMessage>(
         TAG_Game_Net_StateChanged,
-        [&CapturedStates](FGameplayTag, const FGameNetStateMessage& Msg) {
+        [&CapturedStates](const FGameNetStateMessage& Msg) {
             CapturedStates.Add(Msg);
         }
     );
@@ -66,11 +71,10 @@ bool FGameNetMessageBusBridgeTest::RunTest([[maybe_unused]] const FString& Param
     OutMsg.MessageId = 3100;
     OutMsg.SequenceId = 7;
     OutMsg.Payload = {10, 20};
-    MessageBus.BroadcastMessage(TAG_Game_Net_Outbound, OutMsg);
+    (void)MessageBus.BroadcastMessage(TAG_Game_Net_Outbound, OutMsg);
     TestEqual(TEXT("桥接器捕获 TAG_Game_Net_Outbound 请求"), CapturedOutbounds.Num(), 1);
     TestEqual(TEXT("捕获协议 ID 一致"), CapturedOutbounds[0].MessageId, 3100u);
 
-    const uint8 InPayload[] = {0xAA, 0xBB};
     Bridge.BroadcastInboundPacket(SampleHeader, InPayload);
     TestEqual(TEXT("TAG_Game_Net_Inbound 收到广播"), CapturedInbounds.Num(), 1);
     TestEqual(TEXT("下行广播序列号一致"), CapturedInbounds[0].SequenceId, 12u);
@@ -83,7 +87,7 @@ bool FGameNetMessageBusBridgeTest::RunTest([[maybe_unused]] const FString& Param
 
     Bridge.Unbind();
     TestFalse(TEXT("Unbind 后解绑标志更新"), Bridge.IsBound());
-    MessageBus.BroadcastMessage(TAG_Game_Net_Outbound, OutMsg);
+    (void)MessageBus.BroadcastMessage(TAG_Game_Net_Outbound, OutMsg);
     TestEqual(TEXT("解绑后不再触发旧回调"), CapturedOutbounds.Num(), 1);
 
     InboundHandle.Unregister();
@@ -93,4 +97,3 @@ bool FGameNetMessageBusBridgeTest::RunTest([[maybe_unused]] const FString& Param
 }
 
 #endif
-

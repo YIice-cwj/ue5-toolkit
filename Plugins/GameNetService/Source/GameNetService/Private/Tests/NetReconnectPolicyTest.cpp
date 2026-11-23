@@ -1,6 +1,6 @@
 /**
  * @file NetReconnectPolicyTest.cpp
- * @brief 指数退避带双向抖动自动重连策略（FNetReconnectPolicy）深度单元测试
+ * @brief 指数退避带双向抖动与防雪崩运行期熵种子的自动重连策略（FNetReconnectPolicy）深度单元测试
  */
 
 #include "CoreMinimal.h"
@@ -17,11 +17,37 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证指数倍增上限钳制、随机抖动包络区间、倒计时推进与最大次数耗尽熔断
+ * @brief 验证配置合法性、指数倍增上限钳制、运行期高熵种子防雪崩、抖动区间、倒计时推进与耗尽熔断
  * @param Parameters 自动化测试参数
  * @return 测试是否全部通过
  */
 bool FGameNetReconnectPolicyTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    FNetReconnectConfig DefaultCfg;
+    TestTrue(TEXT("默认重连配置合法"), DefaultCfg.IsValid());
+
+    FNetReconnectConfig InvalidCfg = DefaultCfg;
+    InvalidCfg.JitterRatio = 1.5f;
+    TestFalse(TEXT("JitterRatio > 1.0 时 IsValid 为 false"), InvalidCfg.IsValid());
+
+    FNetReconnectConfig EntropyCfg;
+    EntropyCfg.bEnableAutoReconnect = true;
+    EntropyCfg.BaseDelaySeconds = 2.0f;
+    EntropyCfg.MaxDelaySeconds = 20.0f;
+    EntropyCfg.MaxRetryAttempts = 5;
+    EntropyCfg.JitterRatio = 0.5f;
+    FNetReconnectPolicy EntropyPolicyA(EntropyCfg);
+    FNetReconnectPolicy EntropyPolicyB(EntropyCfg);
+    bool bFoundDifference = false;
+    for (int32 SampleIdx = 0; SampleIdx < 5; ++SampleIdx) {
+        const TOptional<float> ValA = EntropyPolicyA.ScheduleNextAttempt();
+        const TOptional<float> ValB = EntropyPolicyB.ScheduleNextAttempt();
+        if (ValA.IsSet() && ValB.IsSet() && !FMath::IsNearlyEqual(*ValA, *ValB, 1e-4f)) {
+            bFoundDifference = true;
+            break;
+        }
+    }
+    TestTrue(TEXT("默认构造的两个策略实例使用不同运行期熵种子产生差异化防雪崩退避序列"), bFoundDifference);
+
     FNetReconnectConfig ZeroJitterCfg;
     ZeroJitterCfg.bEnableAutoReconnect = true;
     ZeroJitterCfg.BaseDelaySeconds = 1.0f;
@@ -29,7 +55,7 @@ bool FGameNetReconnectPolicyTest::RunTest([[maybe_unused]] const FString& Parame
     ZeroJitterCfg.MaxRetryAttempts = 4;
     ZeroJitterCfg.JitterRatio = 0.0f;
 
-    FNetReconnectPolicy Policy(ZeroJitterCfg, 42);
+    FNetReconnectPolicy Policy(ZeroJitterCfg, 42ULL);
     TestEqual(TEXT("初始尝试次数为 0"), Policy.GetCurrentAttempt(), 0);
     TestFalse(TEXT("初始未处于等待状态"), Policy.IsWaitingForRetry());
     TestFalse(TEXT("初始未耗尽重试配额"), Policy.IsExhausted());
@@ -63,7 +89,7 @@ bool FGameNetReconnectPolicyTest::RunTest([[maybe_unused]] const FString& Parame
 
     FNetReconnectConfig JitterCfg = ZeroJitterCfg;
     JitterCfg.MaxDelaySeconds = 20.0f;
-    JitterCfg.MaxRetryAttempts = 10;
+    JitterCfg.MaxRetryAttempts = 30;
     JitterCfg.JitterRatio = 0.25f;
     Policy.SetConfig(JitterCfg);
     TestTrue(TEXT("SetConfig 同步生效"), FMath::IsNearlyEqual(Policy.GetConfig().JitterRatio, 0.25f));
@@ -73,6 +99,14 @@ bool FGameNetReconnectPolicyTest::RunTest([[maybe_unused]] const FString& Parame
         TEXT("25% 抖动下首次 1.0s 退避严格落在 [0.75s, 1.25s] 区间内"),
         JitterSample.IsSet() && *JitterSample >= 0.75f && *JitterSample <= 1.25f
     );
+
+    for (int32 Attempt = 2; Attempt <= 25; ++Attempt) {
+        const TOptional<float> HighAttemptDelay = Policy.ScheduleNextAttempt();
+        TestTrue(
+            TEXT("大重试次数受 MAX_BACKOFF_EXPONENT 与 MaxDelaySeconds 安全钳制不溢出"),
+            HighAttemptDelay.IsSet() && *HighAttemptDelay >= FNetReconnectPolicy::MIN_DELAY_FLOOR_SECONDS && *HighAttemptDelay <= 20.0f
+        );
+    }
 
     FNetReconnectConfig DisabledCfg = ZeroJitterCfg;
     DisabledCfg.bEnableAutoReconnect = false;
@@ -84,4 +118,3 @@ bool FGameNetReconnectPolicyTest::RunTest([[maybe_unused]] const FString& Parame
 }
 
 #endif
-

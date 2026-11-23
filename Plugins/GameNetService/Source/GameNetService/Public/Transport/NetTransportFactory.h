@@ -8,6 +8,7 @@
 #include "CoreMinimal.h"
 #include "Packet/NetPacketTypes.h"
 #include "Transport/INetTransport.h"
+#include "Transport/WebSocketTransportTypes.h"
 
 /**
  * @brief 提供单机内存回环与 WebSocket 长连接抽象传输驱动的标准实例化工厂
@@ -26,9 +27,11 @@ public:
     /**
      * @brief 创建引擎原生 WebSocket (WS / WSS) 二进制抽象传输驱动实例
      * @param MaxPayloadBytes 允许接收的单包最大业务负载字节数
+     * @param CustomSocketFactory 可选自定义底层 IWebSocket 构造工厂（缺省使用引擎原生 FWebSocketsModule）
      * @return 面向抽象契约的传输驱动共享引用
      */
     [[nodiscard]] static TSharedRef<INetTransport> CreateWebSocketTransport(
-        uint32 MaxPayloadBytes = FNetPacketHeader::DEFAULT_MAX_PAYLOAD_BYTES
+        uint32 MaxPayloadBytes = FNetPacketHeader::DEFAULT_MAX_PAYLOAD_BYTES,
+        FWebSocketFactory CustomSocketFactory = nullptr
     );
 };

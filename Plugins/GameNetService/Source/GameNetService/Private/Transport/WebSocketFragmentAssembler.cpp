@@ -13,18 +13,22 @@ FWebSocketFragmentAssembler::FWebSocketFragmentAssembler(uint32 InMaxPayloadByte
 }
 
 /**
- * @brief 追加一帧 WebSocket 二进制分片并在末分片到达时就地写入外部复用数组（零额外堆分配）
+ * @brief 追加一帧 WebSocket 二进制分片并在末分片到达时输出只读视图
  * @param FragmentBytes 当前到达的分片字节切片
  * @param bIsLastFragment 是否为当前 WebSocket 消息的最后一个分片
- * @param OutMessage 接收完整拼装消息的外部复用数组
+ * @param OutMessageView 接收完整消息的只读字节视图
  * @return 分片拼装状态枚举
  */
 EWebSocketFragmentStatus FWebSocketFragmentAssembler::AppendFragment(
     TConstArrayView<uint8> FragmentBytes,
     bool bIsLastFragment,
-    TArray<uint8>& OutMessage
+    TConstArrayView<uint8>& OutMessageView
 ) {
-    OutMessage.Reset();
+    OutMessageView = {};
+    if (bHasCompletedMessage) {
+        ShrinkOrResetBuffer();
+        bHasCompletedMessage = false;
+    }
 
     const int64 ProjectedBytes = static_cast<int64>(FragmentBuffer.Num()) + static_cast<int64>(FragmentBytes.Num());
     if (ProjectedBytes > MaxFrameBytes) {
@@ -33,10 +37,7 @@ EWebSocketFragmentStatus FWebSocketFragmentAssembler::AppendFragment(
     }
 
     if (FragmentBuffer.IsEmpty() && bIsLastFragment) {
-        if (!FragmentBytes.IsEmpty()) {
-            OutMessage.SetNumUninitialized(FragmentBytes.Num());
-            FMemory::Memcpy(OutMessage.GetData(), FragmentBytes.GetData(), FragmentBytes.Num());
-        }
+        OutMessageView = FragmentBytes;
         return EWebSocketFragmentStatus::MessageReady;
     }
 
@@ -50,16 +51,26 @@ EWebSocketFragmentStatus FWebSocketFragmentAssembler::AppendFragment(
         return EWebSocketFragmentStatus::Incomplete;
     }
 
-    OutMessage.SetNumUninitialized(FragmentBuffer.Num());
-    FMemory::Memcpy(OutMessage.GetData(), FragmentBuffer.GetData(), FragmentBuffer.Num());
-    FragmentBuffer.Reset();
+    bHasCompletedMessage = true;
+    OutMessageView = FragmentBuffer;
     return EWebSocketFragmentStatus::MessageReady;
 }
 
 /**
- * @brief 清空所有未收齐的半消息分片缓存
+ * @brief 清空所有未收齐的半消息分片缓存，必要时回收过大的堆内存
  */
 void FWebSocketFragmentAssembler::Reset() noexcept {
-    FragmentBuffer.Reset();
+    ShrinkOrResetBuffer();
+    bHasCompletedMessage = false;
 }
 
+/**
+ * @brief 清理内部累积缓存，超出回收阈值时释放堆内存
+ */
+void FWebSocketFragmentAssembler::ShrinkOrResetBuffer() noexcept {
+    if (FragmentBuffer.GetAllocatedSize() > BUFFER_SHRINK_THRESHOLD_BYTES) {
+        FragmentBuffer.Empty();
+    } else {
+        FragmentBuffer.Reset();
+    }
+}
