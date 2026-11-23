@@ -8,6 +8,7 @@
 
 /**
  * @brief 统一注册
+ * @param InGameInstance 当前 GameInstance（本类未使用，保持统一签名）
  */
 void FGameGameRegistration::RegisterAll([[maybe_unused]] UGameInstance* InGameInstance) {
     static const FName Domains[] = {
@@ -21,6 +22,7 @@ void FGameGameRegistration::RegisterAll([[maybe_unused]] UGameInstance* InGameIn
 
 /**
  * @brief 统一注销（配置无生命周期，空实现保持统一入口对称）
+ * @param InGameInstance 当前 GameInstance（本类未使用，保持统一签名）
  */
 void FGameGameRegistration::UnregisterAll([[maybe_unused]] UGameInstance* InGameInstance) {
 }

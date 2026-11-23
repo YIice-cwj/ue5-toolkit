@@ -4,10 +4,13 @@
  */
 #include "Generated/Data/StaticData/UStaticDataSubsystem.h"
 
+#include "Async/FGameThreadTaskRunner.h"
+#include "Config/GameCompileSwitches.h"
+#include "Containers/Ticker.h"
+#include "Core/DataErrorCodes.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
-#include "Containers/Ticker.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformMisc.h"
 #include "HAL/PlatformTime.h"
@@ -15,12 +18,9 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
-#include "Async/FGameThreadTaskRunner.h"
-
-#include "Config/GameCompileSwitches.h"
 #include "StaticData/FStaticDataRepository.h"
+#include "Types/TCancelableScopeGuard.h"
 #include "Logging/GameLogCategories.h"
-
 #include "Generated/Data/StaticData/StaticDataSerialization.h"
 
 #include "Generated/Data/StaticData/Item/ItemStaticDataInterface.h"
@@ -39,8 +39,6 @@ FString GetStaticDataBinPath() {
 /**
  * @brief 解析冷启动装载通道的强制开关（命令行 -GameStaticDataChannel=json 强制 JSON 通道）
  * @return 是否优先走 .bin 通道（未指定开关即默认优先）
- *
- * 实现思路：供 Cold-Start 基准与 CI 双通道对拍逐个通道取证使用，常规发布不指定该开关
  */
 bool ResolvePreferBinChannel() {
     FString ChannelName;
@@ -52,64 +50,59 @@ bool ResolvePreferBinChannel() {
 
 /**
  * @brief 自 JSON 通道整体装载各域暂存数据（开发期热更与 .bin 回落通道）
- * @param OutItemData 等各域暂存容器（逐域装载，任一失败即整体判失败）
- * @return 全部域装载成功返回 true
+ * @param OutItemData Item 域暂存容器
+ * @param OutShopData Shop 域暂存容器
+ * @return 全部域装载成功返回 Success，否则返回首个失败结果
  */
-bool LoadStagingFromJson(FItemStaticData& OutItemData, FShopStaticData& OutShopData) {
+TGameStatusResult<void> LoadStagingFromJson(FItemStaticData& OutItemData, FShopStaticData& OutShopData) {
     const double LoadStartSeconds = FPlatformTime::Seconds();
-    bool bAllLoaded = true;
-    bAllLoaded &= OutItemData.LoadAllFromJson();
-    bAllLoaded &= OutShopData.LoadAllFromJson();
-
-    if (!bAllLoaded) {
-        return false;
+    if (const TGameStatusResult<void> Res_Item = OutItemData.LoadAllFromJson(); Res_Item.IsFailure()) {
+        return Res_Item;
     }
+    if (const TGameStatusResult<void> Res_Shop = OutShopData.LoadAllFromJson(); Res_Shop.IsFailure()) {
+        return Res_Shop;
+    }
+
     GAME_LOG(Log, TEXT("【静态数据子系统】本批次数据来源：JSON 通道。"));
     GAME_LOG(Log, TEXT("【静态数据装载耗时】JSON 通道反序列化 %.3f ms。"), (FPlatformTime::Seconds() - LoadStartSeconds) * 1000.0);
-    return true;
+    return TGameStatusResult<void>::Success();
 }
 
 /**
- * @brief 尝试自 .bin 通道整体装载各域暂存数据（任一步失败即整体判失败，交由调用方回落 JSON）
+ * @brief 尝试自 .bin 通道整体装载各域暂存数据（任一步失败即返回精确错误，交由调用方回落 JSON）
  * @param InBinPath .bin 文件路径
- * @param OutItemData 等各域暂存容器（失败时不保证内容有效，调用方随后以 JSON 覆盖重载）
- * @return 全部表提取成功返回 true
- *
- * 实现思路：新建仓库并登记生成式读写器 → 装载 .bin（magic/版本/CRC 任一不符即整体拒绝）→
- * 逐域按表提取；失败分支输出错误码供回落诊断
+ * @param OutItemData Item 域暂存容器
+ * @param OutShopData Shop 域暂存容器
+ * @return 全部表提取成功返回 Success，否则返回失败结果
  */
-bool TryLoadStagingFromBin(const FString& InBinPath, FItemStaticData& OutItemData, FShopStaticData& OutShopData) {
+TGameStatusResult<void> TryLoadStagingFromBin(const FString& InBinPath, FItemStaticData& OutItemData, FShopStaticData& OutShopData) {
     const double LoadStartSeconds = FPlatformTime::Seconds();
     FStaticDataRepository Repository;
     RegisterGameStaticDataRowSerializers(Repository);
 
-    const auto ImportResult = Repository.ImportFromFile(InBinPath);
+    const TGameStatusResult<int32> ImportResult = Repository.ImportFromFile(InBinPath);
     if (ImportResult.IsFailure()) {
-        GAME_LOG(Warning, TEXT("【静态数据子系统】.bin 通道装载失败（错误码 %d），已回落 JSON 通道。"), static_cast<int32>(Repository.GetLastError()));
-        return false;
+        GAME_LOG(Warning, TEXT("【静态数据子系统】.bin 通道装载失败（错误码 %d: %s），已回落 JSON 通道。"), ImportResult.GetError().ErrorCode, *ImportResult.GetError().Message);
+        return TGameStatusResult<void>::Failure(ImportResult.GetError());
     }
 
-    bool bAllExtracted = true;
-    bAllExtracted &= OutItemData.LoadAllFromRepository(Repository);
-    bAllExtracted &= OutShopData.LoadAllFromRepository(Repository);
-
-    if (!bAllExtracted) {
-        GAME_LOG(Warning, TEXT("【静态数据子系统】.bin 通道表提取失败（错误码 %d），已回落 JSON 通道。"), static_cast<int32>(Repository.GetLastError()));
-        return false;
+    if (const TGameStatusResult<void> ExtractRes_Item = OutItemData.LoadAllFromRepository(Repository); ExtractRes_Item.IsFailure()) {
+        GAME_LOG(Warning, TEXT("【静态数据子系统】.bin 通道表提取失败（错误码 %d: %s），已回落 JSON 通道。"), ExtractRes_Item.GetError().ErrorCode, *ExtractRes_Item.GetError().Message);
+        return ExtractRes_Item;
+    }
+    if (const TGameStatusResult<void> ExtractRes_Shop = OutShopData.LoadAllFromRepository(Repository); ExtractRes_Shop.IsFailure()) {
+        GAME_LOG(Warning, TEXT("【静态数据子系统】.bin 通道表提取失败（错误码 %d: %s），已回落 JSON 通道。"), ExtractRes_Shop.GetError().ErrorCode, *ExtractRes_Shop.GetError().Message);
+        return ExtractRes_Shop;
     }
 
     GAME_LOG(Log, TEXT("【静态数据子系统】本批次数据来源：.bin 通道（%s）。"), *InBinPath);
     GAME_LOG(Log, TEXT("【静态数据装载耗时】.bin 通道反序列化 %.3f ms。"), (FPlatformTime::Seconds() - LoadStartSeconds) * 1000.0);
-    return true;
+    return TGameStatusResult<void>::Success();
 }
 
 /**
  * @brief 打包产物启动自检（CI 冷启动双通道对拍用）
  * @param Subsystem 已完成冷启动装载的静态数据子系统
- *
- * 实现思路：仅当命令行携带 -GameStaticDataVerify 时输出内容摘要，
- * 并把装载结果写入存档目录下的 StaticDataVerify.txt 后延迟一帧请求退出；
- * 报告文件是 Shipping 裁剪日志、且 macOS 忽略退出码时的唯一可靠取证通道
  */
 void VerifyOnLaunchIfRequested(const UStaticDataSubsystem& Subsystem) {
     if (!FParse::Param(FCommandLine::Get(), TEXT("GameStaticDataVerify"))) {
@@ -135,13 +128,22 @@ void VerifyOnLaunchIfRequested(const UStaticDataSubsystem& Subsystem) {
  * Public 成员函数实现（按头文件声明顺序 1:1 对齐）
  * ------------------------------------------------------------------------- */
 
+/**
+ * @brief 子系统初始化生命周期回调：执行冷启动同步加载及可选启动自检
+ * @param Collection 子系统依赖集合
+ */
 void UStaticDataSubsystem::Initialize(FSubsystemCollectionBase& Collection) {
     Super::Initialize(Collection);
-    LoadAllStaticData(false);
+    LifetimeCancelSource = FCancellationTokenSource();
+    (void)LoadAllStaticData(false);
     VerifyOnLaunchIfRequested(*this);
 }
 
+/**
+ * @brief 子系统反初始化生命周期回调：取消在途异步预热并释放重载门闩
+ */
 void UStaticDataSubsystem::Deinitialize() {
+    LifetimeCancelSource.Cancel();
     SnapshotStore.EndReload();
     Super::Deinitialize();
 }
@@ -199,8 +201,8 @@ FValueObserver<uint32>& UStaticDataSubsystem::GetDataVersionObserver() {
  * @brief 汇总当前在线快照的数据内容摘要（Cold-Start 基准与双通道数据对拍用）
  * @return 表数、行数与顺序无关摘要；尚未完成首次加载返回零值结构
  *
- * 实现思路：取在线快照四域数据经「登记读写器 + 仓库」重建类型擦除镜像，
- * 再由仓库按结构名/行键排序计算摘要——与装载通道无关，仅反映数据内容
+ * 实现思路：取在线快照各域数据经「登记读写器 + 仓库」重建类型擦除镜像，
+ * 再由仓库按结构名/行键排序计算摘要——与装载通道无关，仅反映数据内容。
  */
 FStaticDataContentDigest UStaticDataSubsystem::BuildLoadedContentDigest() const {
     const TSharedPtr<const FStaticDataSnapshot> Snapshot = GetSnapshot();
@@ -211,11 +213,12 @@ FStaticDataContentDigest UStaticDataSubsystem::BuildLoadedContentDigest() const 
     FStaticDataRepository Repository;
     RegisterGameStaticDataRowSerializers(Repository);
 
-    bool bAllAdded = true;
-    bAllAdded &= Snapshot->ItemData.AddAllToRepository(Repository);
-    bAllAdded &= Snapshot->ShopData.AddAllToRepository(Repository);
-    if (!bAllAdded) {
-        GAME_LOG(Warning, TEXT("【静态数据校验】内容摘要构建失败：仓库写入失败（错误码 %d）。"), static_cast<int32>(Repository.GetLastError()));
+    if (const TGameStatusResult<void> AddRes_Item = Snapshot->ItemData.AddAllToRepository(Repository); AddRes_Item.IsFailure()) {
+        GAME_LOG(Warning, TEXT("【静态数据校验】内容摘要构建失败：仓库写入失败（错误码 %d: %s）。"), AddRes_Item.GetError().ErrorCode, *AddRes_Item.GetError().Message);
+        return FStaticDataContentDigest();
+    }
+    if (const TGameStatusResult<void> AddRes_Shop = Snapshot->ShopData.AddAllToRepository(Repository); AddRes_Shop.IsFailure()) {
+        GAME_LOG(Warning, TEXT("【静态数据校验】内容摘要构建失败：仓库写入失败（错误码 %d: %s）。"), AddRes_Shop.GetError().ErrorCode, *AddRes_Shop.GetError().Message);
         return FStaticDataContentDigest();
     }
 
@@ -227,11 +230,11 @@ FStaticDataContentDigest UStaticDataSubsystem::BuildLoadedContentDigest() const 
  * ------------------------------------------------------------------------- */
 
 /**
- * @brief 静态工具方法：通过任意上下文对象获取当前静态数据子系统
+ * @brief 静态工具方法：安全获取当前静态数据子系统指针
  * @param InWorldContextObject 世界上下文对象
  * @return 静态数据子系统指针，不存在返回 nullptr
  */
-UStaticDataSubsystem* UStaticDataSubsystem::Get(const UObject* InWorldContextObject) {
+UStaticDataSubsystem* UStaticDataSubsystem::GetPtr(const UObject* InWorldContextObject) {
     if (InWorldContextObject == nullptr) {
         return nullptr;
     }
@@ -240,20 +243,33 @@ UStaticDataSubsystem* UStaticDataSubsystem::Get(const UObject* InWorldContextObj
         return AsGameInstance->GetSubsystem<UStaticDataSubsystem>();
     }
 
+    if (const UGameInstanceSubsystem* AsSubsystem = Cast<UGameInstanceSubsystem>(InWorldContextObject)) {
+        const UGameInstance* OwningInstance = AsSubsystem->GetGameInstance();
+        return OwningInstance ? OwningInstance->GetSubsystem<UStaticDataSubsystem>() : nullptr;
+    }
+
     const UWorld* World = GEngine ? GEngine->GetWorldFromContextObject(InWorldContextObject, EGetWorldErrorMode::ReturnNull) : nullptr;
     if (World == nullptr) {
         return nullptr;
     }
 
-    UGameInstance* GameInstance = World->GetGameInstance();
+    const UGameInstance* GameInstance = World->GetGameInstance();
     return GameInstance ? GameInstance->GetSubsystem<UStaticDataSubsystem>() : nullptr;
 }
 
 /**
+ * @brief 静态工具方法：获取当前静态数据子系统强引用
+ * @param InWorldContextObject 世界上下文对象
+ * @return 静态数据子系统引用
+ */
+UStaticDataSubsystem& UStaticDataSubsystem::Get(const UObject* InWorldContextObject) {
+    UStaticDataSubsystem* Subsystem = GetPtr(InWorldContextObject);
+    checkf(Subsystem != nullptr, TEXT("UStaticDataSubsystem::Get: 无法从给定上下文获取静态数据子系统实例。"));
+    return *Subsystem;
+}
+
+/**
  * @brief 静态工具方法：向全部在线世界上下文派发静态数据重载
- *
- * 实现思路：磁盘热更监听与控制台命令共用入口；每个 GameInstance 各持一份静态数据，
- * 按引擎世界上下文集合遍历派发，保证所有世界同批换新（版本号各自自增）
  */
 void UStaticDataSubsystem::ReloadAllWorldStaticData() {
     if (GEngine == nullptr) {
@@ -266,53 +282,55 @@ void UStaticDataSubsystem::ReloadAllWorldStaticData() {
             continue;
         }
         if (UStaticDataSubsystem* Subsystem = GameInstance->GetSubsystem<UStaticDataSubsystem>()) {
-            Subsystem->ReloadAllStaticData();
+            (void)Subsystem->ReloadAllStaticData();
         }
     }
 }
 
 /**
  * @brief 将 DataTables_Json 全量导出为运行期 .bin（Cook 前置；控制台命令 Game.ExportStaticDataBin 调用）
- * @return 导出成功返回 true（失败原因见日志与仓库错误码）
- *
- * 实现思路：编译期 constexpr 开关分支（非编辑器构建编译期剔除并返回 false）；
- * 逐域从 JSON 装载本地容器（与运行期同源）→ 登记生成式读写器 → 逐域写入仓库 →
- * 建目录后整体导出至内容目录下的 .bin（运行期冷启动优先读取该文件）
+ * @return 成功返回 Success，失败返回含 Game::DataErrorCodes 的 Failure
  */
-bool UStaticDataSubsystem::ExportStaticDataBin() {
+TGameStatusResult<void> UStaticDataSubsystem::ExportStaticDataBin() {
     if constexpr (!Game::Config::bIsEditor) {
-        return false;
+        return TGameStatusResult<void>::Failure(
+            Game::ModuleId::Data,
+            Game::DataErrorCodes::ExportDisabledInNonEditor,
+            TEXT("静态数据 .bin 导出仅在编辑器构建中可用")
+        );
     }
 
     FItemStaticData ExportItemData;
     FShopStaticData ExportShopData;
 
-    if (!LoadStagingFromJson(ExportItemData, ExportShopData)) {
-        GAME_LOG(Error, TEXT("【静态数据二进制导出】失败：JSON 通道装载失败。"));
-        return false;
+    const TGameStatusResult<void> JsonLoadResult = LoadStagingFromJson(ExportItemData, ExportShopData);
+    if (JsonLoadResult.IsFailure()) {
+        GAME_LOG(Error, TEXT("【静态数据二进制导出】失败：JSON 通道装载失败（错误码 %d: %s）。"), JsonLoadResult.GetError().ErrorCode, *JsonLoadResult.GetError().Message);
+        return JsonLoadResult;
     }
 
     FStaticDataRepository Repository;
     RegisterGameStaticDataRowSerializers(Repository);
 
-    bool bAllAdded = true;
-    bAllAdded &= ExportItemData.AddAllToRepository(Repository);
-    bAllAdded &= ExportShopData.AddAllToRepository(Repository);
-    if (!bAllAdded) {
-        GAME_LOG(Error, TEXT("【静态数据二进制导出】失败：仓库写入失败（错误码 %d）。"), static_cast<int32>(Repository.GetLastError()));
-        return false;
+    if (const TGameStatusResult<void> AddRes_Item = ExportItemData.AddAllToRepository(Repository); AddRes_Item.IsFailure()) {
+        GAME_LOG(Error, TEXT("【静态数据二进制导出】失败：仓库写入失败（错误码 %d: %s）。"), AddRes_Item.GetError().ErrorCode, *AddRes_Item.GetError().Message);
+        return AddRes_Item;
+    }
+    if (const TGameStatusResult<void> AddRes_Shop = ExportShopData.AddAllToRepository(Repository); AddRes_Shop.IsFailure()) {
+        GAME_LOG(Error, TEXT("【静态数据二进制导出】失败：仓库写入失败（错误码 %d: %s）。"), AddRes_Shop.GetError().ErrorCode, *AddRes_Shop.GetError().Message);
+        return AddRes_Shop;
     }
 
     const FString BinPath = GetStaticDataBinPath();
     IFileManager::Get().MakeDirectory(*FPaths::GetPath(BinPath), true);
-    const auto ExportResult = Repository.ExportToFile(BinPath);
+    const TGameStatusResult<void> ExportResult = Repository.ExportToFile(BinPath);
     if (ExportResult.IsFailure()) {
-        GAME_LOG(Error, TEXT("【静态数据二进制导出】失败：写盘失败（错误码 %d）: %s"), static_cast<int32>(Repository.GetLastError()), *BinPath);
-        return false;
+        GAME_LOG(Error, TEXT("【静态数据二进制导出】失败：写盘失败（错误码 %d: %s）: %s"), ExportResult.GetError().ErrorCode, *ExportResult.GetError().Message, *BinPath);
+        return ExportResult;
     }
 
     GAME_LOG(Log, TEXT("【静态数据二进制导出】成功：已导出 %d 张表至 %s。"), Repository.TableCount(), *BinPath);
-    return true;
+    return TGameStatusResult<void>::Success();
 }
 
 /* -------------------------------------------------------------------------
@@ -323,7 +341,7 @@ bool UStaticDataSubsystem::ExportStaticDataBin() {
  * @brief 启动一次数据提交流程（支持同步冷启动与异步热更）
  * @param bPreferBin 是否优先走 .bin 通道
  * @param bAsync 是否异步执行（冷启动为 false 消除竞态；热更恒为 true）
- * @return 成功返回 Success，失败返回 Failure
+ * @return 成功返回 Success，失败返回含 Game::DataErrorCodes 的 Failure
  */
 TGameStatusResult<void> UStaticDataSubsystem::BeginReloadFlow(bool bPreferBin, bool bAsync) {
     const TGameStatusResult<void> GateResult = SnapshotStore.TryBeginReload();
@@ -332,52 +350,71 @@ TGameStatusResult<void> UStaticDataSubsystem::BeginReloadFlow(bool bPreferBin, b
         return GateResult;
     }
 
+    TSharedRef<FStaticDataSnapshotStore::FReloadLatchTicket, ESPMode::ThreadSafe> ReloadTicket = SnapshotStore.MakeReloadLatchTicket();
+    auto ReloadGuard = MakeCancelableScopeGuard([ReloadTicket]() {
+        ReloadTicket->Release();
+    });
+
     const uint32 NextVersion = SnapshotStore.GetVersion() + 1;
     const FString BinPath = GetStaticDataBinPath();
-    TWeakObjectPtr<UStaticDataSubsystem> WeakThis(this);
-
     TSharedPtr<FStaticDataSnapshot> NewSnapshot = MakeShared<FStaticDataSnapshot>();
     NewSnapshot->DataVersion = NextVersion;
-    bool bStagingLoaded = bPreferBin && TryLoadStagingFromBin(BinPath, NewSnapshot->ItemData, NewSnapshot->ShopData);
+
+    bool bStagingLoaded = bPreferBin && TryLoadStagingFromBin(BinPath, NewSnapshot->ItemData, NewSnapshot->ShopData).IsSuccess();
     if (!bStagingLoaded) {
-        bStagingLoaded = LoadStagingFromJson(NewSnapshot->ItemData, NewSnapshot->ShopData);
-    }
-    if (!bStagingLoaded) {
-        GAME_LOG(Warning, TEXT("【静态数据子系统】静态数据加载失败，在线数据保持原状。"));
-        SnapshotStore.EndReload();
-        return TGameStatusResult<void>::Failure(7003, TEXT("从 .bin 与 JSON 加载静态数据暂存均失败"));
+        const TGameStatusResult<void> JsonResult = LoadStagingFromJson(NewSnapshot->ItemData, NewSnapshot->ShopData);
+        if (JsonResult.IsFailure()) {
+            GAME_LOG(Warning, TEXT("【静态数据子系统】静态数据加载失败（错误码 %d: %s），在线数据保持原状。"), JsonResult.GetError().ErrorCode, *JsonResult.GetError().Message);
+            return TGameStatusResult<void>::Failure(
+                Game::ModuleId::Data,
+                Game::DataErrorCodes::StagingLoadFailed,
+                JsonResult.GetError().Message
+            );
+        }
     }
 
     if (!bAsync) {
         FItemStaticDataInterface::WarmUpCompositeCache(NewSnapshot->Cache, NewSnapshot->ItemData);
         FShopStaticDataInterface::WarmUpCompositeCache(NewSnapshot->Cache, NewSnapshot->ShopData);
-        CommitSnapshot(NewSnapshot);
+        ReloadGuard.Dismiss();
+        CommitSnapshot(MoveTemp(NewSnapshot));
+        ReloadTicket->Release();
         return TGameStatusResult<void>::Success();
     }
 
-    FGameThreadTaskRunner::Run(WeakThis, [WeakThis, NewSnapshot]() {
+    TWeakObjectPtr<UStaticDataSubsystem> WeakThis(this);
+    const FCancellationToken LifetimeToken = LifetimeCancelSource.GetToken();
+    ReloadGuard.Dismiss();
+    FGameThreadTaskRunner::Run(WeakThis, LifetimeToken, [WeakThis, NewSnapshot, LifetimeToken, ReloadTicket]() {
+        if (LifetimeToken.IsCancellationRequested()) {
+            ReloadTicket->Release();
+            return;
+        }
         FItemStaticDataInterface::WarmUpCompositeCache(NewSnapshot->Cache, NewSnapshot->ItemData);
         FShopStaticDataInterface::WarmUpCompositeCache(NewSnapshot->Cache, NewSnapshot->ShopData);
 
-        FGameThreadTaskRunner::RunOnGameThread(WeakThis, [WeakThis, NewSnapshot]() {
-            if (WeakThis.IsValid()) {
-                WeakThis->CommitSnapshot(NewSnapshot);
+        FGameThreadTaskRunner::RunOnGameThread(WeakThis, [WeakThis, NewSnapshot, LifetimeToken, ReloadTicket]() {
+            if (LifetimeToken.IsCancellationRequested()) {
+                ReloadTicket->Release();
+                return;
             }
+            WeakThis->CommitSnapshot(NewSnapshot);
+            ReloadTicket->Release();
         });
     });
     return TGameStatusResult<void>::Success();
 }
 
 /**
- * @brief 原子提交新快照（发布 + 广播 + 释放门闩，零主线程深拷贝）
+ * @brief 原子提交新快照（发布 + 释放门闩 + 广播，零主线程深拷贝）
  * @param InNextSnapshot 已完成预热的新快照（调用链保证非空）
  */
 void UStaticDataSubsystem::CommitSnapshot(TSharedPtr<const FStaticDataSnapshot> InNextSnapshot) {
     const uint32 NewVersion = InNextSnapshot->DataVersion;
     bIsAllDataLoaded = true;
     SnapshotStore.Publish(MoveTemp(InNextSnapshot));
+    SnapshotStore.EndReload();
     GAME_LOG(Log, TEXT("【静态数据子系统】静态数据提交成功，当前数据版本号: %u。"), NewVersion);
     DataVersionObserver.Set(NewVersion);
     OnStaticDataReloaded.Broadcast(this, NewVersion);
-    SnapshotStore.EndReload();
 }

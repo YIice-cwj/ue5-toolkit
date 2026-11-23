@@ -21,12 +21,7 @@ class GAMEDATASAMPLES_API UGamePlayerDataRegistry : public UObject {
 
 public:
     /**
-     * @brief 玩家档案变更原生多播委托
-     */
-    FOnPlayerProfileChanged OnProfileChanged;
-
-    /**
-     * @brief 构造函数：把档案初始化为默认值
+     * @brief 构造函数：使用默认档案值初始化，避免在 CDO 构造期触发日志与动态广播
      */
     UGamePlayerDataRegistry();
 
@@ -35,20 +30,25 @@ public:
      * @return 当前档案引用
      */
     UFUNCTION(BlueprintPure, Category = "GameData|Player")
-    const FPlayerProfileData& GetProfile() const { return CurrentProfile; }
+    [[nodiscard]] const FPlayerProfileData& GetProfile() const;
 
     /**
-     * @brief 整体覆盖玩家档案并广播 OnProfileChanged
-     * @param InProfile 新档案
+     * @brief 更新当前玩家档案并广播变更事件
+     * @param InProfile 新的玩家档案数据
      */
     UFUNCTION(BlueprintCallable, Category = "GameData|Player")
     void SetProfile(const FPlayerProfileData& InProfile);
 
     /**
-     * @brief 重置为默认档案（等价 SetProfile(FPlayerProfileData())，同时广播 OnProfileChanged）
+     * @brief 重置玩家档案为默认初始值并广播变更事件
      */
     UFUNCTION(BlueprintCallable, Category = "GameData|Player")
     void ResetToDefault();
+
+    /**
+     * @brief 玩家档案变更原生多播委托
+     */
+    FOnPlayerProfileChanged OnProfileChanged;
 
 private:
     UPROPERTY()

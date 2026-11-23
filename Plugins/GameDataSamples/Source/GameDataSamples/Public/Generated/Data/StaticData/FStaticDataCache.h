@@ -6,11 +6,11 @@
 
 #include "CoreMinimal.h"
 
-#include "Generated/Data/StaticData/StaticDataTypes.h"
 #include "Cache/FVersionedCache.h"
+#include "Generated/Data/StaticData/StaticDataTypes.h"
 
 /**
- * @brief 各域聚合缓存容器（挂接于 UStaticDataSubsystem，随其生命周期）
+ * @brief 各域聚合缓存容器（挂接于 FStaticDataSnapshot，随不可变快照生命周期）
  */
 class GAMEDATASAMPLES_API FStaticDataCache {
 public:
@@ -20,11 +20,6 @@ public:
     FStaticDataCache& operator=(const FStaticDataCache&) = delete;
     FStaticDataCache(FStaticDataCache&&) = delete;
     FStaticDataCache& operator=(FStaticDataCache&&) = delete;
-
-    /**
-     * @brief 清空全部域缓存（热更提交后调用，旧指针契约失效）
-     */
-    void Reset();
 
     /**
      * @brief 获取 Item 域聚合缓存
@@ -39,7 +34,12 @@ public:
     [[nodiscard]] FVersionedCache<FShopCompositeData>& ShopComposites() const;
 
 private:
-    /** 各域逻辑只读缓存（mutable：const 快照上允许查找与缓存内部惰性填充） */
+    /**
+     * @brief Item 域逻辑只读聚合缓存（mutable：const 快照上允许查找与惰性填充）
+     */
     mutable FVersionedCache<FItemCompositeData> ItemCompositesCache{FName(TEXT("Item"))};
+    /**
+     * @brief Shop 域逻辑只读聚合缓存（mutable：const 快照上允许查找与惰性填充）
+     */
     mutable FVersionedCache<FShopCompositeData> ShopCompositesCache{FName(TEXT("Shop"))};
 };

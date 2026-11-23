@@ -1,6 +1,6 @@
 /**
  * @file ItemCompositeData.h
- * @brief 复合数据容器
+ * @brief Item 单体聚合数据容器
  */
 #pragma once
 
@@ -17,7 +17,9 @@ struct GAMEDATASAMPLES_API FItemCompositeData {
     GENERATED_BODY()
 
 public:
-    /** Item数据行 */
+    /**
+     * @brief Item数据行
+     */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item|Composite", meta = (DisplayName = "Item数据行"))
     FItemRow Item;
 

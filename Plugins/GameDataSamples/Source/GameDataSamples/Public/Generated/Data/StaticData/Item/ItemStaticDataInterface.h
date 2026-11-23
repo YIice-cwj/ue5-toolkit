@@ -30,7 +30,7 @@ public:
     static TSharedPtr<const FItemCompositeData> FindCompositeData(const TSharedPtr<const FStaticDataSnapshot>& InSnapshot, const FName& InKey);
 
     /**
-     * @brief 预热聚合缓存（加载/热更提交后调用，按主表全量键预热）
+     * @brief 预热聚合缓存（加载/热更提交前调用，按主表全量键预热）
      * @param InCache 聚合缓存
      * @param InData 域静态数据容器
      */

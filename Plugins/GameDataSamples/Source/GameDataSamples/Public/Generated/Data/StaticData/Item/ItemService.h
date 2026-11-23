@@ -16,8 +16,4 @@
 class GAMEDATASAMPLES_API FItemService {
 public:
     FItemService() = delete;
-
-    /**
-     * @brief 业务计算扩展点（纯函数，便于单测）
-     */
 };

@@ -1,6 +1,6 @@
 /**
  * @file FStaticDataSnapshotStoreTest.cpp
- * @brief 静态数据快照 RCU 存储模块内自动化测试（并发发布 / 重载门闩），Shipping 构建自动剔除
+ * @brief 静态数据快照 RCU 存储（FStaticDataSnapshotStore 别名）自动化测试（并发发布 / 重载门闩）
  */
 
 #include "Generated/Data/StaticData/FStaticDataSnapshotStore.h"
@@ -9,9 +9,9 @@
 
 #include "Async/Async.h"
 #include "Async/ParallelFor.h"
-#include "Misc/AutomationTest.h"
-
+#include "Core/DataErrorCodes.h"
 #include "Generated/Data/StaticData/FStaticDataSnapshot.h"
+#include "Misc/AutomationTest.h"
 
 #include <atomic>
 
@@ -44,17 +44,16 @@ uint32 ReadProbeVersion(const TSharedPtr<const FStaticDataSnapshot>& Snapshot) {
 
 }  // namespace
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSnapshotStoreConcurrentPublishTest, "Game.Data.Snapshot.ConcurrentPublish",
-    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FSnapshotStoreConcurrentPublishTest,
+    "Game.Data.Snapshot.ConcurrentPublish",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
 
 /**
  * @brief 并发发布：1 写线程反复 Publish 与 16 读线程反复 Acquire 对撞
  * @param Parameters 自动化框架参数（未使用）
  * @return 断言全部通过返回 true
- *
- * 实现思路：预置 64 个版本各异的探针快照，读者至少各跑 6250 轮、写线程未收工时继续加压（合计超十万次）；
- * 断言全程零崩溃、单读者版本单调不减、每次读到的快照版本自洽、旧持有者不被后续发布污染、
- * 发布返回后立刻取快照必命中新一代
  */
 bool FSnapshotStoreConcurrentPublishTest::RunTest([[maybe_unused]] const FString& Parameters) {
     FStaticDataSnapshotStore Store;
@@ -120,23 +119,32 @@ bool FSnapshotStoreConcurrentPublishTest::RunTest([[maybe_unused]] const FString
     return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSnapshotStoreReloadLatchTest, "Game.Data.Snapshot.ReloadLatch",
-    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FSnapshotStoreReloadLatchTest,
+    "Game.Data.Snapshot.ReloadLatch",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
 
 /**
- * @brief 重载门闩：同一时刻仅允许一个写者进入提交流程
+ * @brief 重载门闩：同一时刻仅允许一个写者进入提交流程，重入返回标准 ReloadInProgress 错误码
  * @param Parameters 自动化框架参数（未使用）
  * @return 断言全部通过返回 true
- *
- * 实现思路：抢占成功 → 二次抢占必失败 → 释放后恢复可抢占，断言门闩互斥与释放语义
  */
 bool FSnapshotStoreReloadLatchTest::RunTest([[maybe_unused]] const FString& Parameters) {
     FStaticDataSnapshotStore Store;
 
+    TestFalse(TEXT("初始门闩空闲"), Store.IsReloadInProgress());
     TestTrue(TEXT("首次抢占重载门闩成功"), Store.TryBeginReload().IsSuccess());
-    TestTrue(TEXT("重载进行中二次抢占必失败"), Store.TryBeginReload().IsFailure());
+    TestTrue(TEXT("抢占后状态为重载进行中"), Store.IsReloadInProgress());
+
+    const TGameStatusResult<void> ReentrantRes = Store.TryBeginReload();
+    if (TestTrue(TEXT("重载进行中二次抢占必失败"), ReentrantRes.IsFailure())) {
+        TestEqual(TEXT("重入失败模块为 Data"), ReentrantRes.GetError().ModuleId, Game::ModuleId::Data);
+        TestEqual(TEXT("重入失败错误码为 ReloadInProgress"), ReentrantRes.GetError().ErrorCode, Game::DataErrorCodes::ReloadInProgress);
+    }
 
     Store.EndReload();
+    TestFalse(TEXT("释放后状态恢复空闲"), Store.IsReloadInProgress());
     TestTrue(TEXT("释放门闩后可再次抢占"), Store.TryBeginReload().IsSuccess());
     TestTrue(TEXT("再次抢占后二次抢占仍失败"), Store.TryBeginReload().IsFailure());
     Store.EndReload();

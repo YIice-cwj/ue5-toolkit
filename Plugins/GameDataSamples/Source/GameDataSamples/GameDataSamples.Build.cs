@@ -15,16 +15,12 @@ public class GameDataSamples : ModuleRules {
             "Json",
             "JsonUtilities",
             "GameplayTags",
+            "GameCore",
             "GameLogging",
             "GameDataCore",
         });
 
-        PrivateDependencyModuleNames.AddRange(new string[] {
-            "GameCore",
-        });
-
         PublicIncludePaths.AddRange(new string[] {
-            ModuleDirectory,
             Path.Combine(ModuleDirectory, "Public"),
         });
     }

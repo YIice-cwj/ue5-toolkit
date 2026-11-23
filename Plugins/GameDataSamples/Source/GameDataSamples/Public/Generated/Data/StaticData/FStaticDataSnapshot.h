@@ -14,22 +14,30 @@
  */
 class GAMEDATASAMPLES_API FStaticDataSnapshot {
 public:
-    /** 数据版本号（与快照同代绑定，自 1 起递增） */
-    uint32 DataVersion = 0;
-
-    /** 各域复合聚合缓存（行 join 后的强类型视图） */
-    FStaticDataCache Cache;
-
-    /** Item 域行表 */
-    FItemStaticData ItemData;
-
-    /** Shop 域行表 */
-    FShopStaticData ShopData;
-
     FStaticDataSnapshot() = default;
     ~FStaticDataSnapshot() = default;
     FStaticDataSnapshot(const FStaticDataSnapshot&) = delete;
     FStaticDataSnapshot& operator=(const FStaticDataSnapshot&) = delete;
     FStaticDataSnapshot(FStaticDataSnapshot&&) = delete;
     FStaticDataSnapshot& operator=(FStaticDataSnapshot&&) = delete;
+
+    /**
+     * @brief 数据版本号（与快照同代绑定，自 1 起递增）
+     */
+    uint32 DataVersion = 0;
+
+    /**
+     * @brief 各域复合聚合缓存（行 join 后的强类型视图）
+     */
+    FStaticDataCache Cache;
+
+    /**
+     * @brief Item 域行表
+     */
+    FItemStaticData ItemData;
+
+    /**
+     * @brief Shop 域行表
+     */
+    FShopStaticData ShopData;
 };

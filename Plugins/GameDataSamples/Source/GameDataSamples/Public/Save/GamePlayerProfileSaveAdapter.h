@@ -25,9 +25,9 @@ class GAMEDATASAMPLES_API UGamePlayerProfileSaveAdapter : public UObject {
 
 public:
     /**
-     * @brief 玩家档案存档段固定标识名称
+     * @brief 玩家档案存档段固定标识名称（惰性解析，规避静态初始化顺序风险）
      */
-    static const FName SegmentName;
+    static const FLazyName SegmentName;
 
     /**
      * @brief 对象销毁生命周期回调：注销档案存档段并释放子系统与注册表引用
@@ -50,14 +50,12 @@ public:
 
 private:
     /**
-     * @brief 绑定的通用存档子系统指针（Setup 成功后有效）
+     * @brief 绑定的通用存档子系统弱引用（避免跨对象 GC 强引用与 BeginDestroy 顺序风险）
      */
-    UPROPERTY()
-    TObjectPtr<USaveGameSubsystem> SaveSubsystem;
+    TWeakObjectPtr<USaveGameSubsystem> SaveSubsystem;
 
     /**
-     * @brief 关联的玩家数据注册表中枢指针
+     * @brief 关联的玩家数据注册表中枢弱引用
      */
-    UPROPERTY()
-    TObjectPtr<UGamePlayerDataRegistry> DataRegistry;
+    TWeakObjectPtr<UGamePlayerDataRegistry> DataRegistry;
 };

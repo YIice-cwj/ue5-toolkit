@@ -1,4 +1,7 @@
-// Automatically generated static data export commandlet. Do not edit manually.
+/**
+ * @file UGameStaticDataExportCommandlet.h
+ * @brief 静态数据 .bin 导出命令行工具声明（由 Tools/Excel 管线自动生成）
+ */
 #pragma once
 
 #include "CoreMinimal.h"
@@ -11,7 +14,7 @@
  *
  * 设计思路：以 -run= 无头执行，把 JSON 全量导出为运行期 .bin 后按结果返回退出码
  * （0 成功 / 1 失败），命令名 GameStaticDataExport；
- * 全程不依赖世界与会话，供打包流水线在 Cook 前确定性调用
+ * 全程不依赖世界与会话，供打包流水线在 Cook 前确定性调用。
  */
 UCLASS()
 class GAMEDATASAMPLES_API UGameStaticDataExportCommandlet : public UCommandlet {
