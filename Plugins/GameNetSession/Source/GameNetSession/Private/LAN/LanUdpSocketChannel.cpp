@@ -3,45 +3,50 @@
 #include "LAN/LanUdpSocketChannel.h"
 
 #include "IPAddress.h"
+#include "Logging/GameLogCategories.h"
 #include "SocketSubsystem.h"
 #include "Sockets.h"
 
 namespace {
 
 /**
- * @brief 将 IP 字符串与端口号解析构造为 IPv4 FInternetAddr
- * @param SocketSub 平台 Socket 子系统引用
- * @param IpString 目标 IP（支持 0.0.0.0 与 255.255.255.255）
+ * @brief 将 IPv4 地址与端口写入目标 FInternetAddr 实例
+ * @param OutAddr 目标地址引用
+ * @param IpString 目标 IPv4 字符串
  * @param Port 目标端口号（0 ~ 65535）
- * @return 合法时返回地址智能指针，非法时返回 nullptr
+ * @param bAllowAnyAddress 是否允许空串与 0.0.0.0（仅 Bind 场景允许，SendTo 严禁）
+ * @return 解析合法返回 true
  */
-TSharedPtr<FInternetAddr> BuildIpv4InternetAddr(
-    ISocketSubsystem& SocketSub,
+bool ConfigureIpv4InternetAddr(
+    FInternetAddr& OutAddr,
     const FString& IpString,
-    int32 Port
+    int32 Port,
+    bool bAllowAnyAddress
 ) {
     if (Port < 0 || Port > 65535) {
-        return nullptr;
+        return false;
     }
 
-    const TSharedRef<FInternetAddr> Addr = SocketSub.CreateInternetAddr(FNetworkProtocolTypes::IPv4);
     if (IpString.IsEmpty() || IpString == TEXT("0.0.0.0")) {
-        Addr->SetAnyAddress();
+        if (!bAllowAnyAddress) {
+            return false;
+        }
+        OutAddr.SetAnyAddress();
     } else if (IpString == TEXT("255.255.255.255")) {
-        Addr->SetBroadcastAddress();
+        OutAddr.SetBroadcastAddress();
     } else {
         bool bIsValidIp = false;
-        Addr->SetIp(*IpString, bIsValidIp);
+        OutAddr.SetIp(*IpString, bIsValidIp);
         if (!bIsValidIp) {
-            return nullptr;
+            return false;
         }
     }
 
-    Addr->SetPort(Port);
-    return Addr;
+    OutAddr.SetPort(Port);
+    return true;
 }
 
-}
+}  // namespace
 
 /**
  * @brief 析构时自动关闭并销毁底层 UDP Socket
@@ -61,11 +66,13 @@ bool FLanUdpSocketChannel::Open(const FString& BindIp, int32 BindPort) {
 
     ISocketSubsystem* SocketSub = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
     if (SocketSub == nullptr) {
+        GAME_LOG(Warning, TEXT("[LAN/UDP] 平台 SocketSubsystem 不可用，无法打开 UDP 通道。"));
         return false;
     }
 
-    const TSharedPtr<FInternetAddr> BindAddr = BuildIpv4InternetAddr(*SocketSub, BindIp, BindPort);
-    if (!BindAddr.IsValid()) {
+    const TSharedRef<FInternetAddr> BindAddr = SocketSub->CreateInternetAddr(FNetworkProtocolTypes::IPv4);
+    if (!ConfigureIpv4InternetAddr(*BindAddr, BindIp, BindPort, true)) {
+        GAME_LOG(Warning, TEXT("[LAN/UDP] 非法绑定地址或端口: Ip=%s, Port=%d"), *BindIp, BindPort);
         return false;
     }
 
@@ -75,6 +82,7 @@ bool FLanUdpSocketChannel::Open(const FString& BindIp, int32 BindPort) {
         FNetworkProtocolTypes::IPv4
     );
     if (CreatedSocket == nullptr) {
+        GAME_LOG(Warning, TEXT("[LAN/UDP] 创建底层 IPv4 UDP Socket 失败。"));
         return false;
     }
 
@@ -85,6 +93,7 @@ bool FLanUdpSocketChannel::Open(const FString& BindIp, int32 BindPort) {
     }
 
     if (!CreatedSocket->Bind(*BindAddr)) {
+        GAME_LOG(Warning, TEXT("[LAN/UDP] 绑定 UDP 端口失败: Ip=%s, Port=%d"), *BindIp, BindPort);
         CreatedSocket->Close();
         SocketSub->DestroySocket(CreatedSocket);
         return false;
@@ -93,6 +102,7 @@ bool FLanUdpSocketChannel::Open(const FString& BindIp, int32 BindPort) {
     RawSocket = CreatedSocket;
     BoundPort = RawSocket->GetPortNo();
     CachedSenderAddr = SocketSub->CreateInternetAddr(FNetworkProtocolTypes::IPv4);
+    CachedTargetAddr = SocketSub->CreateInternetAddr(FNetworkProtocolTypes::IPv4);
     return true;
 }
 
@@ -109,6 +119,7 @@ void FLanUdpSocketChannel::Close() {
     }
     BoundPort = 0;
     CachedSenderAddr.Reset();
+    CachedTargetAddr.Reset();
 }
 
 /**
@@ -123,44 +134,31 @@ bool FLanUdpSocketChannel::SendTo(
     const FString& TargetIp,
     int32 TargetPort
 ) {
-    if (RawSocket == nullptr || PayloadBytes.IsEmpty() || TargetPort <= 0 || TargetPort > 65535) {
+    if (RawSocket == nullptr || !CachedTargetAddr.IsValid() || PayloadBytes.IsEmpty() || TargetPort <= 0 || TargetPort > 65535) {
         return false;
     }
 
-    ISocketSubsystem* SocketSub = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
-    if (SocketSub == nullptr) {
-        return false;
-    }
-
-    const TSharedPtr<FInternetAddr> DestAddr = BuildIpv4InternetAddr(*SocketSub, TargetIp, TargetPort);
-    if (!DestAddr.IsValid()) {
+    if (!ConfigureIpv4InternetAddr(*CachedTargetAddr, TargetIp, TargetPort, false)) {
         return false;
     }
 
     int32 BytesSent = 0;
-    const bool bSentOk = RawSocket->SendTo(PayloadBytes.GetData(), PayloadBytes.Num(), BytesSent, *DestAddr);
+    const bool bSentOk = RawSocket->SendTo(PayloadBytes.GetData(), PayloadBytes.Num(), BytesSent, *CachedTargetAddr);
     return bSentOk && BytesSent == PayloadBytes.Num();
 }
 
 /**
- * @brief 非阻塞尝试从接收缓冲队列读取一帧到达的 UDP 数据报
- * @return 有可读数据报时返回包含字节流与来源 IP/端口的值对象，无数据时返回空值
- */
-TOptional<FLanReceivedDatagram> FLanUdpSocketChannel::TryReceiveDatagram() {
-    FLanReceivedDatagram Datagram;
-    if (TryReceiveDatagramTo(Datagram)) {
-        return Datagram;
-    }
-    return NullOpt;
-}
-
-/**
- * @brief 非阻塞尝试从接收缓冲队列读取一帧到达的 UDP 数据报并写入外部复用对象（零额外堆分配）
+ * @brief 非阻塞尝试从接收缓冲队列读取一帧到达的 UDP 数据报并写入外部复用对象
  * @param OutDatagram 接收数据报的外部复用对象
  * @return 成功读到数据报返回 true，无数据或读取失败返回 false
  */
-bool FLanUdpSocketChannel::TryReceiveDatagramTo(FLanReceivedDatagram& OutDatagram) {
+bool FLanUdpSocketChannel::TryReceiveDatagram(FLanReceivedDatagram& OutDatagram) {
     if (RawSocket == nullptr || !CachedSenderAddr.IsValid()) {
+        return false;
+    }
+
+    uint32 PendingBytes = 0;
+    if (!RawSocket->HasPendingData(PendingBytes) || PendingBytes == 0) {
         return false;
     }
 
@@ -190,4 +188,3 @@ bool FLanUdpSocketChannel::WaitReadable(double MaxWaitSeconds) const {
     const double ClampedSeconds = FMath::Max(0.0, MaxWaitSeconds);
     return RawSocket->Wait(ESocketWaitConditions::WaitForRead, FTimespan::FromSeconds(ClampedSeconds));
 }
-

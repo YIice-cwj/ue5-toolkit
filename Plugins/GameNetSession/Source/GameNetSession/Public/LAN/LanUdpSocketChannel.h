@@ -12,7 +12,7 @@ class FInternetAddr;
 class FSocket;
 
 /**
- * @brief 封装 IPv4 非阻塞广播 UDP Socket 打开、关闭、收发与内核可读等待的底层通道
+ * @brief 封装 IPv4 非阻塞广播 UDP Socket 打开、关闭、复用缓冲零分配收发与内核可读等待的底层通道
  */
 class GAMENETSESSION_API FLanUdpSocketChannel final {
 public:
@@ -45,7 +45,7 @@ public:
     void Close();
 
     /**
-     * @brief 向指定目标 IP 与端口发送一帧完整 UDP 数据报
+     * @brief 向指定目标 IP 与端口发送一帧完整 UDP 数据报（拒绝空 IP 与 0.0.0.0，复用目标地址缓存）
      * @param PayloadBytes 待发送字节切片
      * @param TargetIp 目标 IPv4 地址（支持 "255.255.255.255" 广播与单播地址）
      * @param TargetPort 目标 UDP 端口（1 ~ 65535）
@@ -54,17 +54,11 @@ public:
     bool SendTo(TConstArrayView<uint8> PayloadBytes, const FString& TargetIp, int32 TargetPort);
 
     /**
-     * @brief 非阻塞尝试从接收缓冲队列读取一帧到达的 UDP 数据报
-     * @return 有可读数据报时返回包含字节流与来源 IP/端口的值对象，无数据时返回空值
-     */
-    [[nodiscard]] TOptional<FLanReceivedDatagram> TryReceiveDatagram();
-
-    /**
-     * @brief 非阻塞尝试从接收缓冲队列读取一帧到达的 UDP 数据报并写入外部复用对象（零额外堆分配）
+     * @brief 非阻塞尝试从接收缓冲队列读取一帧到达的 UDP 数据报并写入外部复用对象（前置 HasPendingData 零分配早退）
      * @param OutDatagram 接收数据报的外部复用对象（就地重用 Bytes 与 SenderIp 容量）
      * @return 成功读到数据报返回 true，无数据或读取失败返回 false
      */
-    bool TryReceiveDatagramTo(FLanReceivedDatagram& OutDatagram);
+    bool TryReceiveDatagram(FLanReceivedDatagram& OutDatagram);
 
     /**
      * @brief 基于内核 select/poll 事件驱动等待底层 Socket 可读就绪
@@ -93,5 +87,5 @@ private:
     FSocket* RawSocket{nullptr};
     int32 BoundPort{0};
     TSharedPtr<FInternetAddr> CachedSenderAddr;
+    TSharedPtr<FInternetAddr> CachedTargetAddr;
 };
-

@@ -14,7 +14,7 @@
 #include "Types/GameNetSessionTypes.h"
 
 /**
- * @brief 局域网房间信标协议协调器（组合底层 UDP 通道、帧编解码器与发现缓存表）
+ * @brief 局域网房间信标协议协调器（预缓存房主 JSON 负载、零重复反射与重入安全过期通知）
  */
 class GAMENETSESSION_API FLanBeaconBroadcaster final {
 public:
@@ -45,11 +45,11 @@ public:
     FLanBeaconBroadcaster& operator=(FLanBeaconBroadcaster&&) = delete;
 
     /**
-     * @brief 以房主身份启动 UDP 监听信标，自动应答局域网探测请求
+     * @brief 以房主身份启动 UDP 监听信标，自动预编码房间负载并应答局域网探测请求
      * @param InHostedRoom 房间描述元数据（RoomId 为空时自动生成唯一 GUID）
      * @param BindPort 绑定的本地 UDP 端口（传 0 由操作系统分配空闲端口）
      * @param BindIp 绑定的本地网卡地址（默认 0.0.0.0）
-     * @return 通道打开成功返回 true
+     * @return 通道打开且房间负载编码合法返回 true
      */
     bool StartHosting(
         const FGameNetRoomDescriptor& InHostedRoom,
@@ -58,10 +58,11 @@ public:
     );
 
     /**
-     * @brief 动态刷新房主广播的房间人数或地图等描述信息
+     * @brief 原子校验并动态刷新房主广播的房间元数据及预编码缓存（校验失败或超限时保留原有效状态）
      * @param UpdatedRoom 最新房间描述信息
+     * @return 校验且编码合规并提交成功返回 true，否则保持原房间状态不变并返回 false
      */
-    void UpdateHostedRoom(const FGameNetRoomDescriptor& UpdatedRoom);
+    bool UpdateHostedRoom(const FGameNetRoomDescriptor& UpdatedRoom);
 
     /**
      * @brief 以客户端搜索者身份启动非阻塞 UDP 发现端口
@@ -72,7 +73,7 @@ public:
     bool StartDiscovery(int32 BindPort = 0, const FString& BindIp = TEXT("0.0.0.0"));
 
     /**
-     * @brief 关闭 UDP 通道并重置发现表与工作角色
+     * @brief 关闭 UDP 通道并重置发现表、房主缓存与工作角色
      */
     void Stop();
 
@@ -84,7 +85,7 @@ public:
     bool SendDiscoveryProbe(const FGameNetLanEndpoint& TargetEndpoint = FGameNetLanEndpoint{});
 
     /**
-     * @brief 房主主动向目标地址推送一次房间宣告数据报
+     * @brief 房主主动向目标地址推送一次房间宣告数据报（直接复用预编码 JSON 负载）
      * @param TargetEndpoint 目标 UDP 地址与端口
      * @return 数据报发送成功返回 true
      */
@@ -98,7 +99,7 @@ public:
     bool WaitForIncomingData(double MaxWaitSeconds) const;
 
     /**
-     * @brief 非阻塞轮询接收缓冲队列、应答探测请求并清理过期房间
+     * @brief 非阻塞轮询接收缓冲队列、应答探测请求并清理过期房间（重入安全）
      * @param DeltaTimeSeconds 距离上一帧的秒数增量
      */
     void Tick(float DeltaTimeSeconds);
@@ -136,17 +137,11 @@ public:
     }
 
     /**
-     * @brief 获取当前所有未过期的已发现局域网房间快照列表
-     * @return 房间描述符数组
-     */
-    [[nodiscard]] TArray<FGameNetRoomDescriptor> GetDiscoveredRooms() const;
-
-    /**
-     * @brief 获取当前所有未过期的已发现局域网房间快照并写入外部复用数组
+     * @brief 获取当前所有未过期的已发现局域网房间快照并就地写入外部复用数组
      * @param OutRooms 目标接收数组
      */
-    void GetDiscoveredRoomsTo(TArray<FGameNetRoomDescriptor>& OutRooms) const {
-        DiscoveryTable.GetRoomsSnapshotTo(OutRooms);
+    void GetDiscoveredRooms(TArray<FGameNetRoomDescriptor>& OutRooms) const {
+        DiscoveryTable.GetRoomsSnapshot(OutRooms);
     }
 
     /**
@@ -167,17 +162,39 @@ public:
 
 private:
     /**
-     * @brief 非阻塞排空当前 UDP 通道中的所有到达数据报并按协议派发
+     * @brief 校验房主广播房间描述符的核心业务字段合法性
+     * @param Room 待校验的房间描述符
+     * @return 合法返回 true
+     */
+    [[nodiscard]] static bool ValidateHostedRoom(const FGameNetRoomDescriptor& Room) noexcept;
+
+    /**
+     * @brief 将指定房间描述符编码为紧凑 UTF-8 JSON 并校验不超过 MAX_BEACON_PAYLOAD_BYTES（不破坏现有成员缓存）
+     * @param Room 待编码的房间描述符
+     * @param OutPayload 编码成功时写入的目标字节数组（失败时保持清空）
+     * @return 编码成功且长度合规返回 true
+     */
+    bool EncodeHostedRoomPayload(const FGameNetRoomDescriptor& Room, TArray<uint8>& OutPayload) const;
+
+    /**
+     * @brief 使用缓存的房主 JSON 负载组装宣告帧并发送至目标端点
+     * @param SequenceId 报文头序列号（主动广播为 0，应答探测为回显序号）
+     * @param TargetIp 目标 IPv4 字符串
+     * @param TargetPort 目标 UDP 端口
+     * @return 发送成功返回 true
+     */
+    bool SendAnnouncementFrame(uint32 SequenceId, const FString& TargetIp, int32 TargetPort);
+
+    /**
+     * @brief 非阻塞排空当前 UDP 通道中的所有到达数据报并逐帧派发
      */
     void PumpIncomingDatagrams();
 
     /**
-     * @brief 房主处理客户端探测请求并原路单播回传房间宣告帧
-     * @param ProbeHeader 客户端探测报文头
-     * @param SenderIp 客户端来源 IP
-     * @param SenderPort 客户端来源端口
+     * @brief 校验并按当前角色派发单帧已接收的 UDP 数据报
+     * @param Datagram 接收到的原始数据报与发送方地址
      */
-    void ReplyToProbe(const FNetPacketHeader& ProbeHeader, const FString& SenderIp, int32 SenderPort);
+    void ProcessReceivedDatagram(const FLanReceivedDatagram& Datagram);
 
     /**
      * @brief 客户端处理房主宣告负载并同步更新发现缓存表与事件委托
@@ -199,11 +216,9 @@ private:
     FGameNetRoomDescriptor HostedRoom;
     double MonotonicClockSeconds{0.0};
     TArray<uint8> SendScratchBuffer;
-    TArray<uint8> EncodedRoomPayloadBuffer;
+    TArray<uint8> CachedHostedRoomPayload;
     FLanReceivedDatagram ReceivedDatagramScratch;
-    TArray<FString> ExpiredRoomIdsScratch;
     FGameNetRoomDescriptor DecodedRoomScratch;
     FOnLanRoomDiscovered RoomDiscoveredDelegate;
     FOnLanRoomExpired RoomExpiredDelegate;
 };
-

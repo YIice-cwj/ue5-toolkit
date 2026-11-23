@@ -3,6 +3,7 @@
 #include "LAN/LanBeaconBroadcaster.h"
 
 #include "Codec/NetPacketCodec.h"
+#include "Logging/GameLogCategories.h"
 #include "Misc/Guid.h"
 
 /**
@@ -21,11 +22,11 @@ FLanBeaconBroadcaster::~FLanBeaconBroadcaster() {
 }
 
 /**
- * @brief 以房主身份启动 UDP 监听信标，自动应答局域网探测请求
+ * @brief 以房主身份启动 UDP 监听信标，自动预编码房间负载并应答局域网探测请求
  * @param InHostedRoom 房间描述元数据
  * @param BindPort 绑定的本地 UDP 端口
  * @param BindIp 绑定的本地网卡地址
- * @return 通道打开成功返回 true
+ * @return 通道打开且房间负载编码合法返回 true
  */
 bool FLanBeaconBroadcaster::StartHosting(
     const FGameNetRoomDescriptor& InHostedRoom,
@@ -34,36 +35,66 @@ bool FLanBeaconBroadcaster::StartHosting(
 ) {
     Stop();
 
-    if (InHostedRoom.RoomName.IsEmpty() || InHostedRoom.MaxPlayers <= 0 || InHostedRoom.HostGamePort <= 0) {
+    if (!ValidateHostedRoom(InHostedRoom)) {
+        GAME_LOG(Warning, TEXT("[LAN/Beacon] 房主启动参数非法，拒绝开启广播信标。"));
         return false;
     }
+
+    FGameNetRoomDescriptor CandidateRoom = InHostedRoom;
+    CandidateRoom.bIsLanRoom = true;
+    if (CandidateRoom.RoomId.IsEmpty()) {
+        CandidateRoom.RoomId = FGuid::NewGuid().ToString(EGuidFormats::Digits);
+    }
+
+    TArray<uint8> CandidatePayload;
+    if (!EncodeHostedRoomPayload(CandidateRoom, CandidatePayload)) {
+        return false;
+    }
+
     if (!SocketChannel.Open(BindIp, BindPort)) {
         return false;
     }
 
-    HostedRoom = InHostedRoom;
-    HostedRoom.bIsLanRoom = true;
-    if (HostedRoom.RoomId.IsEmpty()) {
-        HostedRoom.RoomId = FGuid::NewGuid().ToString(EGuidFormats::Digits);
-    }
-
+    HostedRoom = MoveTemp(CandidateRoom);
+    CachedHostedRoomPayload = MoveTemp(CandidatePayload);
     Role = EGameNetLanRole::Hosting;
+    GAME_LOG(
+        Log,
+        TEXT("[LAN/Beacon] 已开启局域网房主信标: Room=%s (%s), BeaconPort=%d"),
+        *HostedRoom.RoomName,
+        *HostedRoom.RoomId,
+        SocketChannel.GetBoundPort()
+    );
     return true;
 }
 
 /**
- * @brief 动态刷新房主广播的房间人数或地图等描述信息
+ * @brief 原子校验并动态刷新房主广播的房间元数据及预编码缓存（校验失败或超限时保留原有效状态）
  * @param UpdatedRoom 最新房间描述信息
+ * @return 校验且编码合规并提交成功返回 true，否则保持原房间状态不变并返回 false
  */
-void FLanBeaconBroadcaster::UpdateHostedRoom(const FGameNetRoomDescriptor& UpdatedRoom) {
-    const FString PreviousRoomId = HostedRoom.RoomId;
-    HostedRoom = UpdatedRoom;
-    HostedRoom.bIsLanRoom = true;
-    if (HostedRoom.RoomId.IsEmpty()) {
-        HostedRoom.RoomId = PreviousRoomId.IsEmpty()
-            ? FGuid::NewGuid().ToString(EGuidFormats::Digits)
-            : PreviousRoomId;
+bool FLanBeaconBroadcaster::UpdateHostedRoom(const FGameNetRoomDescriptor& UpdatedRoom) {
+    if (!ValidateHostedRoom(UpdatedRoom)) {
+        GAME_LOG(Warning, TEXT("[LAN/Beacon] 房主房间更新参数非法，已保留原有有效广播缓存。"));
+        return false;
     }
+
+    FGameNetRoomDescriptor CandidateRoom = UpdatedRoom;
+    CandidateRoom.bIsLanRoom = true;
+    if (CandidateRoom.RoomId.IsEmpty()) {
+        CandidateRoom.RoomId = HostedRoom.RoomId.IsEmpty()
+            ? FGuid::NewGuid().ToString(EGuidFormats::Digits)
+            : HostedRoom.RoomId;
+    }
+
+    TArray<uint8> CandidatePayload;
+    if (!EncodeHostedRoomPayload(CandidateRoom, CandidatePayload)) {
+        return false;
+    }
+
+    HostedRoom = MoveTemp(CandidateRoom);
+    CachedHostedRoomPayload = MoveTemp(CandidatePayload);
+    return true;
 }
 
 /**
@@ -79,15 +110,18 @@ bool FLanBeaconBroadcaster::StartDiscovery(int32 BindPort, const FString& BindIp
     }
 
     Role = EGameNetLanRole::Discovering;
+    GAME_LOG(Log, TEXT("[LAN/Beacon] 已开启局域网客户端发现端口: LocalPort=%d"), SocketChannel.GetBoundPort());
     return true;
 }
 
 /**
- * @brief 关闭 UDP 通道并重置发现表与工作角色
+ * @brief 关闭 UDP 通道并重置发现表、房主缓存与工作角色
  */
 void FLanBeaconBroadcaster::Stop() {
     SocketChannel.Close();
     DiscoveryTable.Reset();
+    HostedRoom.Reset();
+    CachedHostedRoomPayload.Reset();
     Role = EGameNetLanRole::Inactive;
 }
 
@@ -111,7 +145,7 @@ bool FLanBeaconBroadcaster::SendDiscoveryProbe(const FGameNetLanEndpoint& Target
 }
 
 /**
- * @brief 房主主动向目标地址推送一次房间宣告数据报
+ * @brief 房主主动向目标地址推送一次房间宣告数据报（直接复用预编码 JSON 负载）
  * @param TargetEndpoint 目标 UDP 地址与端口
  * @return 数据报发送成功返回 true
  */
@@ -119,19 +153,7 @@ bool FLanBeaconBroadcaster::BroadcastAnnouncement(const FGameNetLanEndpoint& Tar
     if (Role != EGameNetLanRole::Hosting || !SocketChannel.IsOpen()) {
         return false;
     }
-
-    const TGameStatusResult<void> SerializeResult =
-        JsonSerializer.SerializeStructTo(HostedRoom, EncodedRoomPayloadBuffer);
-    if (SerializeResult.IsFailure() || static_cast<uint32>(EncodedRoomPayloadBuffer.Num()) > MAX_BEACON_PAYLOAD_BYTES) {
-        return false;
-    }
-
-    FNetPacketHeader Header;
-    Header.MessageId = LAN_ROOM_ANNOUNCE_MSG_ID;
-    Header.SequenceId = 0;
-
-    FNetPacketCodec::EncodeFrameTo(Header, EncodedRoomPayloadBuffer, SendScratchBuffer);
-    return SocketChannel.SendTo(SendScratchBuffer, TargetEndpoint.IpAddress, TargetEndpoint.Port);
+    return SendAnnouncementFrame(0, TargetEndpoint.IpAddress, TargetEndpoint.Port);
 }
 
 /**
@@ -147,7 +169,7 @@ bool FLanBeaconBroadcaster::WaitForIncomingData(double MaxWaitSeconds) const {
 }
 
 /**
- * @brief 非阻塞轮询接收缓冲队列、应答探测请求并清理过期房间
+ * @brief 非阻塞轮询接收缓冲队列、应答探测请求并清理过期房间（重入安全）
  * @param DeltaTimeSeconds 距离上一帧的秒数增量
  */
 void FLanBeaconBroadcaster::Tick(float DeltaTimeSeconds) {
@@ -159,81 +181,129 @@ void FLanBeaconBroadcaster::Tick(float DeltaTimeSeconds) {
     PumpIncomingDatagrams();
 
     if (Role == EGameNetLanRole::Discovering) {
-        DiscoveryTable.PruneExpiredRoomsTo(MonotonicClockSeconds, ExpiredRoomIdsScratch);
-        for (const FString& ExpiredId : ExpiredRoomIdsScratch) {
+        TArray<FString> ExpiredRoomIds;
+        DiscoveryTable.PruneExpiredRooms(MonotonicClockSeconds, ExpiredRoomIds);
+        for (const FString& ExpiredId : ExpiredRoomIds) {
             RoomExpiredDelegate.Broadcast(ExpiredId);
+            if (!IsActive()) {
+                break;
+            }
         }
     }
 }
 
 /**
- * @brief 获取当前所有未过期的已发现局域网房间快照列表
- * @return 房间描述符数组
+ * @brief 校验房主广播房间描述符的核心业务字段合法性
+ * @param Room 待校验的房间描述符
+ * @return 合法返回 true
  */
-TArray<FGameNetRoomDescriptor> FLanBeaconBroadcaster::GetDiscoveredRooms() const {
-    TArray<FGameNetRoomDescriptor> Result;
-    DiscoveryTable.GetRoomsSnapshotTo(Result);
-    return Result;
+bool FLanBeaconBroadcaster::ValidateHostedRoom(const FGameNetRoomDescriptor& Room) noexcept {
+    return !Room.RoomName.IsEmpty()
+        && Room.MaxPlayers > 0
+        && Room.CurrentPlayers >= 0
+        && Room.CurrentPlayers <= Room.MaxPlayers
+        && Room.HostGamePort > 0
+        && Room.HostGamePort <= 65535;
 }
 
 /**
- * @brief 非阻塞排空当前 UDP 通道中的所有到达数据报并按协议派发
+ * @brief 将指定房间描述符编码为紧凑 UTF-8 JSON 并校验不超过 MAX_BEACON_PAYLOAD_BYTES
+ * @param Room 待编码的房间描述符
+ * @param OutPayload 编码成功时写入的目标字节数组
+ * @return 编码成功且长度合规返回 true
+ */
+bool FLanBeaconBroadcaster::EncodeHostedRoomPayload(
+    const FGameNetRoomDescriptor& Room,
+    TArray<uint8>& OutPayload
+) const {
+    const TGameStatusResult<void> SerializeResult = JsonSerializer.SerializeStructTo(Room, OutPayload);
+    if (SerializeResult.IsFailure()) {
+        OutPayload.Reset();
+        GAME_LOG(Warning, TEXT("[LAN/Beacon] 房主房间元数据 JSON 编码失败: %s"), *SerializeResult.GetError().ToString());
+        return false;
+    }
+    if (static_cast<uint32>(OutPayload.Num()) > MAX_BEACON_PAYLOAD_BYTES) {
+        GAME_LOG(
+            Warning,
+            TEXT("[LAN/Beacon] 房主房间元数据超过单包上限: Bytes=%d, Max=%u"),
+            OutPayload.Num(),
+            MAX_BEACON_PAYLOAD_BYTES
+        );
+        OutPayload.Reset();
+        return false;
+    }
+    return true;
+}
+
+/**
+ * @brief 使用缓存的房主 JSON 负载组装宣告帧并发送至目标端点
+ * @param SequenceId 报文头序列号
+ * @param TargetIp 目标 IPv4 字符串
+ * @param TargetPort 目标 UDP 端口
+ * @return 发送成功返回 true
+ */
+bool FLanBeaconBroadcaster::SendAnnouncementFrame(uint32 SequenceId, const FString& TargetIp, int32 TargetPort) {
+    if (CachedHostedRoomPayload.IsEmpty()) {
+        return false;
+    }
+
+    FNetPacketHeader AnnounceHeader;
+    AnnounceHeader.MessageId = LAN_ROOM_ANNOUNCE_MSG_ID;
+    AnnounceHeader.SequenceId = SequenceId;
+
+    FNetPacketCodec::EncodeFrameTo(AnnounceHeader, CachedHostedRoomPayload, SendScratchBuffer);
+    return SocketChannel.SendTo(SendScratchBuffer, TargetIp, TargetPort);
+}
+
+/**
+ * @brief 非阻塞排空当前 UDP 通道中的所有到达数据报并逐帧派发
  */
 void FLanBeaconBroadcaster::PumpIncomingDatagrams() {
-    for (int32 ProcessedCount = 0; ProcessedCount < MAX_PUMP_DATAGRAMS_PER_TICK; ++ProcessedCount) {
-        if (!SocketChannel.TryReceiveDatagramTo(ReceivedDatagramScratch)) {
+    for (int32 ProcessedCount = 0; ProcessedCount < MAX_PUMP_DATAGRAMS_PER_TICK && IsActive(); ++ProcessedCount) {
+        if (!SocketChannel.TryReceiveDatagram(ReceivedDatagramScratch)) {
             break;
         }
-
-        FNetPacketHeader DecodedHeader;
-        if (!FNetPacketCodec::TryDecodeHeaderFast(ReceivedDatagramScratch.Bytes, DecodedHeader)) {
-            continue;
-        }
-        if (!FNetPacketCodec::IsValidHeader(DecodedHeader, MAX_BEACON_PAYLOAD_BYTES)) {
-            continue;
-        }
-
-        const uint32 ExpectedWireBytes =
-            static_cast<uint32>(FNetPacketHeader::WIRE_HEADER_BYTES) + DecodedHeader.PayloadLength;
-        if (static_cast<uint32>(ReceivedDatagramScratch.Bytes.Num()) != ExpectedWireBytes) {
-            continue;
-        }
-
-        if (Role == EGameNetLanRole::Hosting && DecodedHeader.MessageId == LAN_DISCOVERY_PROBE_MSG_ID) {
-            ReplyToProbe(DecodedHeader, ReceivedDatagramScratch.SenderIp, ReceivedDatagramScratch.SenderPort);
-        } else if (Role == EGameNetLanRole::Discovering && DecodedHeader.MessageId == LAN_ROOM_ANNOUNCE_MSG_ID) {
-            const TConstArrayView<uint8> PayloadView(
-                ReceivedDatagramScratch.Bytes.GetData() + FNetPacketHeader::WIRE_HEADER_BYTES,
-                static_cast<int32>(DecodedHeader.PayloadLength)
-            );
-            HandleAnnouncementPayload(DecodedHeader, PayloadView, ReceivedDatagramScratch.SenderIp);
-        }
+        ProcessReceivedDatagram(ReceivedDatagramScratch);
     }
 }
 
 /**
- * @brief 房主处理客户端探测请求并原路单播回传房间宣告帧
- * @param ProbeHeader 客户端探测报文头
- * @param SenderIp 客户端来源 IP
- * @param SenderPort 客户端来源端口
+ * @brief 校验并按当前角色派发单帧已接收的 UDP 数据报
+ * @param Datagram 接收到的原始数据报与发送方地址
  */
-void FLanBeaconBroadcaster::ReplyToProbe(
-    const FNetPacketHeader& ProbeHeader,
-    const FString& SenderIp,
-    int32 SenderPort
-) {
-    const TGameStatusResult<void> SerializeResult =
-        JsonSerializer.SerializeStructTo(HostedRoom, EncodedRoomPayloadBuffer);
-    if (SerializeResult.IsFailure() || static_cast<uint32>(EncodedRoomPayloadBuffer.Num()) > MAX_BEACON_PAYLOAD_BYTES) {
+void FLanBeaconBroadcaster::ProcessReceivedDatagram(const FLanReceivedDatagram& Datagram) {
+    FNetPacketHeader DecodedHeader;
+    if (!FNetPacketCodec::TryDecodeHeader(Datagram.Bytes, DecodedHeader)
+        || !FNetPacketCodec::IsValidHeader(DecodedHeader, MAX_BEACON_PAYLOAD_BYTES)) {
+        GAME_LOG_THROTTLE(1.0, Verbose, TEXT("[LAN/Beacon] 丢弃畸形 UDP 头部: Bytes=%d"), Datagram.Bytes.Num());
         return;
     }
 
-    FNetPacketHeader ReplyHeader;
-    ReplyHeader.MessageId = LAN_ROOM_ANNOUNCE_MSG_ID;
-    ReplyHeader.SequenceId = ProbeHeader.SequenceId;
+    const uint32 ExpectedWireBytes =
+        static_cast<uint32>(FNetPacketHeader::WIRE_HEADER_BYTES) + DecodedHeader.PayloadLength;
+    if (static_cast<uint32>(Datagram.Bytes.Num()) != ExpectedWireBytes) {
+        GAME_LOG_THROTTLE(
+            1.0,
+            Verbose,
+            TEXT("[LAN/Beacon] 丢弃长度失配的 UDP 数据报: Actual=%d, Expected=%u"),
+            Datagram.Bytes.Num(),
+            ExpectedWireBytes
+        );
+        return;
+    }
 
-    FNetPacketCodec::EncodeFrameTo(ReplyHeader, EncodedRoomPayloadBuffer, SendScratchBuffer);
-    SocketChannel.SendTo(SendScratchBuffer, SenderIp, SenderPort);
+    if (Role == EGameNetLanRole::Hosting && DecodedHeader.MessageId == LAN_DISCOVERY_PROBE_MSG_ID) {
+        (void)SendAnnouncementFrame(DecodedHeader.SequenceId, Datagram.SenderIp, Datagram.SenderPort);
+        return;
+    }
+
+    if (Role == EGameNetLanRole::Discovering && DecodedHeader.MessageId == LAN_ROOM_ANNOUNCE_MSG_ID) {
+        const TConstArrayView<uint8> PayloadView(
+            Datagram.Bytes.GetData() + FNetPacketHeader::WIRE_HEADER_BYTES,
+            static_cast<int32>(DecodedHeader.PayloadLength)
+        );
+        HandleAnnouncementPayload(DecodedHeader, PayloadView, Datagram.SenderIp);
+    }
 }
 
 /**
@@ -248,9 +318,7 @@ void FLanBeaconBroadcaster::HandleAnnouncementPayload(
     const FString& SenderIp
 ) {
     DecodedRoomScratch.Reset();
-    const TGameStatusResult<void> DecodeResult =
-        JsonSerializer.DeserializeStructTo(Payload, DecodedRoomScratch);
-    if (DecodeResult.IsFailure()) {
+    if (JsonSerializer.DeserializeStructTo(Payload, DecodedRoomScratch).IsFailure()) {
         return;
     }
 
@@ -264,4 +332,3 @@ void FLanBeaconBroadcaster::HandleAnnouncementPayload(
         RoomDiscoveredDelegate.Broadcast(*UpsertedRoom);
     }
 }
-

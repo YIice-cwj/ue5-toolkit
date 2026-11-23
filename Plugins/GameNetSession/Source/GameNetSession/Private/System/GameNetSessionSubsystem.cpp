@@ -2,9 +2,54 @@
 
 #include "System/GameNetSessionSubsystem.h"
 
+#include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
+#include "Logging/GameLogCategories.h"
 #include "Travel/NetTravelLibrary.h"
+
+/**
+ * @brief 安全获取房间会话子系统指针（支持 UWorld、UGameInstance、UGameInstanceSubsystem 与场景对象）
+ * @param WorldContextObject 世界或子系统上下文对象
+ * @return 子系统实例指针，未就绪时返回 nullptr
+ */
+UGameNetSessionSubsystem* UGameNetSessionSubsystem::GetPtr(const UObject* WorldContextObject) {
+    if (WorldContextObject == nullptr) {
+        return nullptr;
+    }
+    if (const UGameInstance* DirectInstance = Cast<UGameInstance>(WorldContextObject)) {
+        return DirectInstance->GetSubsystem<UGameNetSessionSubsystem>();
+    }
+    if (const UGameInstanceSubsystem* SiblingSubsystem = Cast<UGameInstanceSubsystem>(WorldContextObject)) {
+        if (const UGameInstance* OwningInstance = SiblingSubsystem->GetGameInstance()) {
+            return OwningInstance->GetSubsystem<UGameNetSessionSubsystem>();
+        }
+        return nullptr;
+    }
+    if (GEngine != nullptr) {
+        if (const UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::ReturnNull)) {
+            if (const UGameInstance* GI = World->GetGameInstance()) {
+                return GI->GetSubsystem<UGameNetSessionSubsystem>();
+            }
+        }
+    }
+    const UWorld* FallbackWorld = WorldContextObject->GetWorld();
+    if (FallbackWorld == nullptr || FallbackWorld->GetGameInstance() == nullptr) {
+        return nullptr;
+    }
+    return FallbackWorld->GetGameInstance()->GetSubsystem<UGameNetSessionSubsystem>();
+}
+
+/**
+ * @brief 获取房间会话子系统引用（断言上下文有效）
+ * @param WorldContextObject 世界或子系统上下文对象
+ * @return 子系统引用
+ */
+UGameNetSessionSubsystem& UGameNetSessionSubsystem::Get(const UObject* WorldContextObject) {
+    UGameNetSessionSubsystem* Subsystem = GetPtr(WorldContextObject);
+    check(Subsystem != nullptr);
+    return *Subsystem;
+}
 
 /**
  * @brief 子系统初始化：挂载 CoreTicker 帧轮询并绑定局域网信标与平台适配器回调
@@ -88,6 +133,28 @@ bool UGameNetSessionSubsystem::HostLanRoom(
 }
 
 /**
+ * @brief 原子校验并动态刷新当前局域网房主正在广播的房间元数据
+ * @param UpdatedRoom 最新房间描述信息
+ * @return 更新成功返回 true，非法或超限时保持原状态并返回 false
+ */
+bool UGameNetSessionSubsystem::UpdateLanHostedRoom(const FGameNetRoomDescriptor& UpdatedRoom) {
+    return LanBeacon.UpdateHostedRoom(UpdatedRoom);
+}
+
+/**
+ * @brief 由房主主动向目标局域网端点推送一次房间宣告数据报
+ * @param TargetIp 目标广播或单播 IP
+ * @param TargetPort 目标端口
+ * @return 宣告成功发出返回 true
+ */
+bool UGameNetSessionSubsystem::BroadcastLanAnnouncement(const FString& TargetIp, int32 TargetPort) {
+    FGameNetLanEndpoint Endpoint;
+    Endpoint.IpAddress = TargetIp;
+    Endpoint.Port = TargetPort;
+    return LanBeacon.BroadcastAnnouncement(Endpoint);
+}
+
+/**
  * @brief 启动局域网客户端房间搜索监听端口
  * @param ClientBindPort 本地 UDP 端口
  * @param BindIp 本地监听网卡 IP
@@ -131,23 +198,20 @@ void UGameNetSessionSubsystem::StopLanSession() {
  */
 TArray<FGameNetRoomDescriptor> UGameNetSessionSubsystem::GetDiscoveredLanRooms() const {
     TArray<FGameNetRoomDescriptor> Rooms;
-    LanBeacon.GetDiscoveredRoomsTo(Rooms);
+    LanBeacon.GetDiscoveredRooms(Rooms);
     return Rooms;
 }
 
 /**
- * @brief 委托平台会话适配器创建在线房间（未挂载 OSS 时安全返回 false）
+ * @brief 委托平台会话适配器创建在线房间
  * @param Request 房间创建描述参数
  * @param LocalUserNum 本地玩家控制器索引
  * @return 异步创建流程成功发起返回 true
  */
 bool UGameNetSessionSubsystem::CreateOnlineRoom(const FGameNetCreateRoomRequest& Request, int32 LocalUserNum) {
-    if (!OnlineAdapter.CreateRoom(GetWorld(), Request, LocalUserNum)) {
-        return false;
-    }
-
-    SetSessionState(EGameNetSessionState::Creating);
-    return true;
+    return ExecuteOnlineTransition(EGameNetSessionState::Creating, [this, &Request, LocalUserNum]() {
+        return OnlineAdapter.CreateRoom(GetWorld(), Request, LocalUserNum);
+    });
 }
 
 /**
@@ -158,12 +222,9 @@ bool UGameNetSessionSubsystem::CreateOnlineRoom(const FGameNetCreateRoomRequest&
  * @return 异步搜索流程成功发起返回 true
  */
 bool UGameNetSessionSubsystem::FindOnlineRooms(bool bLanQuery, int32 MaxResults, int32 LocalUserNum) {
-    if (!OnlineAdapter.FindRooms(GetWorld(), bLanQuery, MaxResults, LocalUserNum)) {
-        return false;
-    }
-
-    SetSessionState(EGameNetSessionState::Searching);
-    return true;
+    return ExecuteOnlineTransition(EGameNetSessionState::Searching, [this, bLanQuery, MaxResults, LocalUserNum]() {
+        return OnlineAdapter.FindRooms(GetWorld(), bLanQuery, MaxResults, LocalUserNum);
+    });
 }
 
 /**
@@ -173,12 +234,9 @@ bool UGameNetSessionSubsystem::FindOnlineRooms(bool bLanQuery, int32 MaxResults,
  * @return 异步加入流程成功发起返回 true
  */
 bool UGameNetSessionSubsystem::JoinOnlineRoomByIndex(int32 SearchResultIndex, int32 LocalUserNum) {
-    if (!OnlineAdapter.JoinRoomByIndex(GetWorld(), SearchResultIndex, LocalUserNum)) {
-        return false;
-    }
-
-    SetSessionState(EGameNetSessionState::Joining);
-    return true;
+    return ExecuteOnlineTransition(EGameNetSessionState::Joining, [this, SearchResultIndex, LocalUserNum]() {
+        return OnlineAdapter.JoinRoomByIndex(GetWorld(), SearchResultIndex, LocalUserNum);
+    });
 }
 
 /**
@@ -186,12 +244,9 @@ bool UGameNetSessionSubsystem::JoinOnlineRoomByIndex(int32 SearchResultIndex, in
  * @return 异步销毁流程成功发起返回 true
  */
 bool UGameNetSessionSubsystem::DestroyOnlineRoom() {
-    if (!OnlineAdapter.DestroyRoom(GetWorld())) {
-        return false;
-    }
-
-    SetSessionState(EGameNetSessionState::Destroying);
-    return true;
+    return ExecuteOnlineTransition(EGameNetSessionState::Destroying, [this]() {
+        return OnlineAdapter.DestroyRoom(GetWorld());
+    });
 }
 
 /**
@@ -241,36 +296,6 @@ void UGameNetSessionSubsystem::Tick(float DeltaTimeSeconds) {
 }
 
 /**
- * @brief 安全获取房间会话子系统指针（可空）
- * @param WorldContextObject 世界上下文对象
- * @return 子系统实例指针，未就绪时返回 nullptr
- */
-UGameNetSessionSubsystem* UGameNetSessionSubsystem::GetPtr(const UObject* WorldContextObject) {
-    if (WorldContextObject == nullptr) {
-        return nullptr;
-    }
-    if (const UGameInstance* DirectGI = Cast<UGameInstance>(WorldContextObject)) {
-        return DirectGI->GetSubsystem<UGameNetSessionSubsystem>();
-    }
-    const UWorld* World = WorldContextObject->GetWorld();
-    if (World == nullptr || World->GetGameInstance() == nullptr) {
-        return nullptr;
-    }
-    return World->GetGameInstance()->GetSubsystem<UGameNetSessionSubsystem>();
-}
-
-/**
- * @brief 获取房间会话子系统引用（断言上下文有效）
- * @param WorldContextObject 世界上下文对象
- * @return 子系统引用
- */
-UGameNetSessionSubsystem& UGameNetSessionSubsystem::Get(const UObject* WorldContextObject) {
-    UGameNetSessionSubsystem* Subsystem = GetPtr(WorldContextObject);
-    check(Subsystem != nullptr);
-    return *Subsystem;
-}
-
-/**
  * @brief CoreTicker 周期帧回调桥接入口
  * @param DeltaTimeSeconds 帧间隔秒数
  * @return 始终返回 true 以保持常驻调度
@@ -290,6 +315,30 @@ void UGameNetSessionSubsystem::SetSessionState(EGameNetSessionState NewState) {
     }
     SessionState = NewState;
     OnSessionStateChanged.Broadcast(SessionState);
+}
+
+/**
+ * @brief 以零虚假广播方式执行平台在线异步过渡（同步拒绝静默回滚、异步成功单次广播、兼容同步回调终态推进）
+ * @param PendingState 过渡态枚举
+ * @param Action 底层适配器调用闭包
+ * @return 操作发起成功返回 true
+ */
+bool UGameNetSessionSubsystem::ExecuteOnlineTransition(
+    EGameNetSessionState PendingState,
+    TFunctionRef<bool()> Action
+) {
+    const EGameNetSessionState PreviousState = SessionState;
+    SessionState = PendingState;
+    if (!Action()) {
+        if (SessionState == PendingState) {
+            SessionState = PreviousState;
+        }
+        return false;
+    }
+    if (SessionState == PendingState && PreviousState != PendingState) {
+        OnSessionStateChanged.Broadcast(SessionState);
+    }
+    return true;
 }
 
 /**
@@ -319,16 +368,29 @@ void UGameNetSessionSubsystem::HandleOnlineAdapterOperationCompleted(
     bool bSucceeded,
     const FString& ResolvedConnectString
 ) {
+    bool bEffectiveSuccess = bSucceeded;
+
     if (OperationName == FOnlineSessionRoomAdapter::OP_CREATE_ROOM) {
         SetSessionState(bSucceeded ? EGameNetSessionState::Hosting : EGameNetSessionState::Idle);
     } else if (OperationName == FOnlineSessionRoomAdapter::OP_JOIN_ROOM) {
-        if (!bSucceeded || !UNetTravelLibrary::ExecuteConnectStringTravel(GetWorld(), ResolvedConnectString)) {
+        if (!bSucceeded) {
             SetSessionState(EGameNetSessionState::Idle);
+        } else {
+            const TGameStatusResult<void> TravelResult =
+                UNetTravelLibrary::ExecuteConnectStringTravel(GetWorld(), ResolvedConnectString);
+            if (TravelResult.IsFailure()) {
+                GAME_LOG(
+                    Warning,
+                    TEXT("[Session] 加入在线房间成功但客户端跳转失败: %s"),
+                    *TravelResult.GetError().ToString()
+                );
+                bEffectiveSuccess = false;
+                SetSessionState(EGameNetSessionState::Idle);
+            }
         }
     } else {
         SetSessionState(EGameNetSessionState::Idle);
     }
 
-    OnOnlineOperationCompleted.Broadcast(OperationName, bSucceeded);
+    OnOnlineOperationCompleted.Broadcast(OperationName, bEffectiveSuccess);
 }
-

@@ -30,6 +30,21 @@ public:
     UGameNetSessionSubsystem() = default;
 
     /**
+     * @brief 安全获取房间会话子系统指针（支持 UWorld、UGameInstance、UGameInstanceSubsystem 与场景对象）
+     * @param WorldContextObject 世界或子系统上下文对象
+     * @return 子系统实例指针，未就绪时返回 nullptr
+     */
+    UFUNCTION(BlueprintPure, Category = "GameNet|Session", meta = (WorldContext = "WorldContextObject"))
+    static UGameNetSessionSubsystem* GetPtr(const UObject* WorldContextObject);
+
+    /**
+     * @brief 获取房间会话子系统引用（断言上下文有效）
+     * @param WorldContextObject 世界或子系统上下文对象
+     * @return 子系统引用
+     */
+    [[nodiscard]] static UGameNetSessionSubsystem& Get(const UObject* WorldContextObject);
+
+    /**
      * @brief 子系统初始化：挂载 CoreTicker 帧轮询并绑定局域网信标与平台适配器回调
      * @param Collection 子系统依赖集合
      */
@@ -53,6 +68,23 @@ public:
         int32 BeaconBindPort = 15777,
         const FString& BindIp = TEXT("0.0.0.0")
     );
+
+    /**
+     * @brief 原子校验并动态刷新当前局域网房主正在广播的房间元数据（失败时保留原状态）
+     * @param UpdatedRoom 最新房间描述信息
+     * @return 更新并编码合规返回 true，否则返回 false
+     */
+    UFUNCTION(BlueprintCallable, Category = "GameNet|Session")
+    bool UpdateLanHostedRoom(const FGameNetRoomDescriptor& UpdatedRoom);
+
+    /**
+     * @brief 由房主主动向目标局域网端点推送一次房间宣告数据报
+     * @param TargetIp 目标广播或单播 IP（默认 255.255.255.255）
+     * @param TargetPort 目标端口（默认 15777）
+     * @return 宣告成功发出返回 true
+     */
+    UFUNCTION(BlueprintCallable, Category = "GameNet|Session")
+    bool BroadcastLanAnnouncement(const FString& TargetIp = TEXT("255.255.255.255"), int32 TargetPort = 15777);
 
     /**
      * @brief 启动局域网客户端房间搜索监听端口
@@ -79,18 +111,18 @@ public:
     void StopLanSession();
 
     /**
-     * @brief 获取当前局域网发现缓存中的活跃房间列表
+     * @brief 获取当前局域网发现缓存中的活跃房间列表（蓝图按值返回版本）
      * @return 房间描述符数组
      */
     UFUNCTION(BlueprintPure, Category = "GameNet|Session")
     TArray<FGameNetRoomDescriptor> GetDiscoveredLanRooms() const;
 
     /**
-     * @brief 获取当前局域网发现缓存中的活跃房间列表并就地写入外部复用数组（零额外堆分配）
+     * @brief 获取当前局域网发现缓存中的活跃房间列表并就地写入外部复用数组（C++ 零额外堆分配）
      * @param OutRooms 接收结果的房间描述符数组
      */
     void GetDiscoveredLanRoomsTo(TArray<FGameNetRoomDescriptor>& OutRooms) const {
-        LanBeacon.GetDiscoveredRoomsTo(OutRooms);
+        LanBeacon.GetDiscoveredRooms(OutRooms);
     }
 
     /**
@@ -103,15 +135,16 @@ public:
     }
 
     /**
-     * @brief 获取底层局域网信标广播器引用（供高级控制与确定性测试使用）
-     * @return 信标广播器引用
+     * @brief 事件驱动等待底层局域网 UDP 信标通道可读就绪（供确定性测试或同步探测工具使用）
+     * @param MaxWaitSeconds 最大等待秒数上限
+     * @return 超时前检测到可读数据报到达返回 true
      */
-    [[nodiscard]] FLanBeaconBroadcaster& GetLanBeacon() noexcept {
-        return LanBeacon;
+    [[nodiscard]] bool WaitForLanBeaconData(double MaxWaitSeconds) const {
+        return LanBeacon.WaitForIncomingData(MaxWaitSeconds);
     }
 
     /**
-     * @brief 委托平台会话适配器创建在线房间（未挂载 OSS 时安全返回 false）
+     * @brief 委托平台会话适配器创建在线房间（未挂载 OSS 时安全返回 false，兼容同步回调状态机推进）
      * @param Request 房间创建描述参数
      * @param LocalUserNum 本地玩家控制器索引
      * @return 异步创建流程成功发起返回 true
@@ -146,19 +179,11 @@ public:
     bool DestroyOnlineRoom();
 
     /**
-     * @brief 获取最近一次平台会话搜索转换后的标准化房间描述符列表
+     * @brief 获取最近一次平台会话搜索转换后的标准化房间描述符列表（蓝图按值返回版本）
      * @return 房间描述符数组
      */
     UFUNCTION(BlueprintPure, Category = "GameNet|Session")
     TArray<FGameNetRoomDescriptor> GetOnlineSearchResults() const;
-
-    /**
-     * @brief 获取最近一次平台会话搜索转换后的标准化房间描述符列表并就地写入外部复用数组（零额外堆分配）
-     * @param OutRooms 接收结果的房间描述符数组
-     */
-    void GetOnlineSearchResultsTo(TArray<FGameNetRoomDescriptor>& OutRooms) const {
-        OutRooms = OnlineAdapter.GetCachedRooms();
-    }
 
     /**
      * @brief 获取最近一次平台会话搜索转换后的标准化房间描述符快照常引用（C++ 零拷贝）
@@ -207,20 +232,17 @@ public:
     void Tick(float DeltaTimeSeconds);
 
 public:
-    /**
-     * @brief 安全获取房间会话子系统指针（可空）
-     * @param WorldContextObject 世界上下文对象
-     * @return 子系统实例指针，未就绪时返回 nullptr
-     */
-    UFUNCTION(BlueprintPure, Category = "GameNet|Session", meta = (WorldContext = "WorldContextObject"))
-    static UGameNetSessionSubsystem* GetPtr(const UObject* WorldContextObject);
+    UPROPERTY(BlueprintAssignable, Category = "GameNet|Session")
+    FOnGameNetSessionStateChanged OnSessionStateChanged;
 
-    /**
-     * @brief 获取房间会话子系统引用（断言上下文有效）
-     * @param WorldContextObject 世界上下文对象
-     * @return 子系统引用
-     */
-    [[nodiscard]] static UGameNetSessionSubsystem& Get(const UObject* WorldContextObject);
+    UPROPERTY(BlueprintAssignable, Category = "GameNet|Session")
+    FOnGameNetLanRoomDiscovered OnLanRoomDiscovered;
+
+    UPROPERTY(BlueprintAssignable, Category = "GameNet|Session")
+    FOnGameNetLanRoomExpired OnLanRoomExpired;
+
+    UPROPERTY(BlueprintAssignable, Category = "GameNet|Session")
+    FOnGameNetOnlineOpCompleted OnOnlineOperationCompleted;
 
 private:
     /**
@@ -235,6 +257,14 @@ private:
      * @param NewState 目标状态
      */
     void SetSessionState(EGameNetSessionState NewState);
+
+    /**
+     * @brief 以零虚假广播方式执行平台在线异步过渡（同步拒绝静默回滚、异步成功单次广播、兼容同步回调终态推进）
+     * @param PendingState 过渡态枚举
+     * @param Action 底层适配器调用闭包
+     * @return 操作发起成功返回 true
+     */
+    bool ExecuteOnlineTransition(EGameNetSessionState PendingState, TFunctionRef<bool()> Action);
 
     /**
      * @brief 转发局域网信标发现房间事件至蓝图多播委托
@@ -268,18 +298,4 @@ private:
     FDelegateHandle LanExpiredHandle;
     FDelegateHandle OnlineOpCompletedHandle;
     FTSTicker::FDelegateHandle CoreTickerHandle;
-
-public:
-    UPROPERTY(BlueprintAssignable, Category = "GameNet|Session")
-    FOnGameNetSessionStateChanged OnSessionStateChanged;
-
-    UPROPERTY(BlueprintAssignable, Category = "GameNet|Session")
-    FOnGameNetLanRoomDiscovered OnLanRoomDiscovered;
-
-    UPROPERTY(BlueprintAssignable, Category = "GameNet|Session")
-    FOnGameNetLanRoomExpired OnLanRoomExpired;
-
-    UPROPERTY(BlueprintAssignable, Category = "GameNet|Session")
-    FOnGameNetOnlineOpCompleted OnOnlineOperationCompleted;
 };
-

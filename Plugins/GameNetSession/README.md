@@ -11,18 +11,18 @@
 | 模块 / 机制 | 关键技术亮点 | 核心文件 / 接口 |
 | :--- | :--- | :--- |
 | **会话领域值类型定义** | 统一房间描述符 `FGameNetRoomDescriptor`、创建请求 `FGameNetCreateRoomRequest` 与端点值对象 `FGameNetLanEndpoint` | `Types/GameNetSessionTypes.h` |
-| **非阻塞 UDP 套接字通道** | RAII 封装 IPv4 广播与端口复用 `FSocket` 生命周期及收发切片，头文件仅前向声明 `FSocket` | `LAN/LanBeaconTypes.h`<br>`LAN/LanUdpSocketChannel.h` |
-| **局域网房间去重与 RTT 表** | 独立维护探测 `SequenceId` 发送时间戳、单调时钟 RTT 测算、同 `RoomId` 刷新与静默过期淘汰 | `LAN/LanRoomDiscoveryTable.h` |
-| **局域网信标协议协调器** | 组合 `FLanUdpSocketChannel`、`FLanRoomDiscoveryTable` 与 `FJsonNetSerializer`，完成广播公告与探测单播应答 | `LAN/LanBeaconBroadcaster.h` |
-| **在线会话房间适配器** | 独立封装 `IOnlineSession` 异步创建/搜索/加入/销毁与委托句柄清理，未配置 OSS 时安全降级返回 `false` | `Online/OnlineSessionRoomAdapter.h` |
-| **安全 Travel URL 工具库** | 独立 `UBlueprintFunctionLibrary`，严格拦截空白与控制字符参数注入，执行 `ServerTravel` 与 `ClientTravel` | `Travel/NetTravelLibrary.h` |
-| **薄门面房间会话子系统** | `UGameInstanceSubsystem` 统一对外门面，纯委托编排 LAN、Online 与 Travel 三大职责组件 | `System/GameNetSessionSubsystem.h` |
+| **非阻塞 UDP 套接字通道** | RAII 封装 IPv4 广播与端口复用 `FSocket`；`HasPendingData` 零分配空闲早退、缓存目标地址复用、拒绝空/`0.0.0.0` 目标地址与零分配 `TryReceiveDatagram(Out)` | `LAN/LanBeaconTypes.h`<br>`LAN/LanUdpSocketChannel.h` |
+| **局域网房间去重与多房主 RTT 表** | 支持多房主共享同一广播探测序号精准测算各自 RTT、全字段与主机名 URL 注入校验、`MAX_DISCOVERED_ROOMS (256)` 防洪泛上限及零分配 `PruneExpiredRooms` / `GetRoomsSnapshot` | `LAN/LanRoomDiscoveryTable.h` |
+| **局域网信标协议协调器** | 组合 `FLanUdpSocketChannel`、`FLanRoomDiscoveryTable` 与 `FJsonNetSerializer`；预缓存房主紧凑 JSON 负载免去重复反射序列化，且过期通知严格重入安全 | `LAN/LanBeaconBroadcaster.h` |
+| **在线会话房间适配器** | 独立封装 `IOnlineSession` 异步创建/搜索/加入/销毁；内置线程安全 `AliveToken` 存活守卫与原接口 `BoundSessionInterface` 精确解绑（PIE 多实例零泄漏），未配置 OSS 时安全降级返回 `false` | `Online/OnlineSessionRoomAdapter.h` |
+| **安全 Travel URL 工具库** | 独立 `UBlueprintFunctionLibrary`，按词法域分治拦截空白、控制符以及 `?` / `#` / `/` / `\` 选项注入，统一返回 `Game::NetErrorCodes` 执行 `ServerTravel` 与 `ClientTravel` | `Travel/NetTravelLibrary.h` |
+| **薄门面房间会话子系统** | `UGameInstanceSubsystem` 统一对外门面（提供 `UpdateLanHostedRoom` / `BroadcastLanAnnouncement` / `WaitForLanBeaconData` 完整能力，不泄漏内部成员对象），兼容同步 OSS 回调状态机推进与多上下文 `GetPtr` | `System/GameNetSessionSubsystem.h` |
 
 ---
 
 ## 插件依赖
 
-- **引擎模块**：`Core`, `CoreUObject`, `Engine`, `GameplayTags`（公开依赖）；`Sockets`, `Networking`, `OnlineSubsystem`, `OnlineSubsystemUtils`（私有封装依赖，不泄漏至调用方）
+- **引擎模块**：`Core`, `CoreUObject`, `Engine`（公开依赖）；`Sockets`, `Networking`, `OnlineSubsystem`, `OnlineSubsystemUtils`（私有封装依赖，不泄漏至调用方）
 - **内部插件**：`GameCore`, `GameLogging`, `GameNetCore`
 
 ---
@@ -69,7 +69,7 @@ Plugins/GameNetSession/
 │       │   ├── Online/
 │       │   ├── System/
 │       │   ├── Travel/
-│       │   └── Tests/         # 1:1 自动化单元测试
+│       │   └── Tests/         # 单元测试与多轮统计性能基准（GameNetSessionPerformanceTest）
 │       └── GameNetSession.Build.cs
 ├── Docs/
 │   └── Architecture/

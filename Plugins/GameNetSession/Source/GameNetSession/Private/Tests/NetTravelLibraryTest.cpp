@@ -1,6 +1,6 @@
 /**
  * @file NetTravelLibraryTest.cpp
- * @brief 联机地图跳转 URL 防注入组装与执行工具库（UNetTravelLibrary）单元测试
+ * @brief 联机地图跳转 URL 防选项注入组装与执行工具库（UNetTravelLibrary）单元测试
  */
 
 #include "CoreMinimal.h"
@@ -9,6 +9,7 @@
 #if WITH_AUTOMATION_TESTS
 
 #include "Travel/NetTravelLibrary.h"
+#include "Types/NetErrorCodes.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameNetTravelLibraryTest,
@@ -17,7 +18,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证 ListenServer 与 Client Travel URL 组装、空白/控制字符防注入拦截及空世界安全保护
+ * @brief 验证 ListenServer 与 Client Travel URL 组装、?/#///\\ 选项注入防御及统一 NetErrorCodes 错误返回
  * @param Parameters 自动化测试参数
  * @return 测试是否全部通过
  */
@@ -34,6 +35,14 @@ bool FGameNetTravelLibraryTest::RunTest([[maybe_unused]] const FString& Paramete
     TestTrue(
         TEXT("含空白注入字符的地图路径被安全拦截"),
         UNetTravelLibrary::BuildListenServerTravelUrl(TEXT("/Game/Maps/Lobby ?hack=1"), 7777).IsEmpty()
+    );
+    TestTrue(
+        TEXT("含 '?' 选项注入字符的地图路径被安全拦截"),
+        UNetTravelLibrary::BuildListenServerTravelUrl(TEXT("/Game/Maps/Lobby?game=Evil"), 7777).IsEmpty()
+    );
+    TestTrue(
+        TEXT("含 '#' 片段注入字符的地图路径被安全拦截"),
+        UNetTravelLibrary::BuildListenServerTravelUrl(TEXT("/Game/Maps/Lobby#anchor"), 7777).IsEmpty()
     );
     TestTrue(
         TEXT("含空白字符的附加选项被安全拦截"),
@@ -55,26 +64,49 @@ bool FGameNetTravelLibraryTest::RunTest([[maybe_unused]] const FString& Paramete
 
     FGameNetRoomDescriptor BadTravelRoom = TravelRoom;
     BadTravelRoom.HostAddress = TEXT("192.168.1.25\nmalicious");
-    TestTrue(
-        TEXT("含控制字符的主机地址被拒绝"),
-        UNetTravelLibrary::BuildClientTravelUrl(BadTravelRoom).IsEmpty()
+    TestTrue(TEXT("含控制字符的主机地址被拒绝"), UNetTravelLibrary::BuildClientTravelUrl(BadTravelRoom).IsEmpty());
+
+    BadTravelRoom.HostAddress = TEXT("192.168.1.25?game=Evil");
+    TestTrue(TEXT("含 '?' 注入字符的主机地址被拒绝"), UNetTravelLibrary::BuildClientTravelUrl(BadTravelRoom).IsEmpty());
+
+    BadTravelRoom.HostAddress = TEXT("192.168.1.25#frag");
+    TestTrue(TEXT("含 '#' 注入字符的主机地址被拒绝"), UNetTravelLibrary::BuildClientTravelUrl(BadTravelRoom).IsEmpty());
+
+    BadTravelRoom.HostAddress = TEXT("192.168.1.25/EvilMap");
+    TestTrue(TEXT("含 '/' 路径注入字符的主机地址被拒绝"), UNetTravelLibrary::BuildClientTravelUrl(BadTravelRoom).IsEmpty());
+
+    BadTravelRoom.HostAddress = TEXT("192.168.1.25\\EvilMap");
+    TestTrue(TEXT("含 '\\\\' 路径注入字符的主机地址被拒绝"), UNetTravelLibrary::BuildClientTravelUrl(BadTravelRoom).IsEmpty());
+
+    const TGameStatusResult<void> MissingWorldRes =
+        UNetTravelLibrary::ExecuteListenServerTravel(nullptr, TEXT("/Game/Maps/Lobby"), 7777);
+    TestTrue(TEXT("空世界指针调用 ExecuteListenServerTravel 安全返回失败态"), MissingWorldRes.IsFailure());
+    TestEqual(TEXT("错误归属 Game::ModuleId::Net"), MissingWorldRes.GetError().ModuleId, Game::ModuleId::Net);
+    TestEqual(
+        TEXT("空世界错误码为 TravelInvalidArgument"),
+        MissingWorldRes.GetError().ErrorCode,
+        Game::NetErrorCodes::TravelInvalidArgument
     );
 
-    TestTrue(
-        TEXT("空世界指针调用 ExecuteListenServerTravel 安全返回失败态"),
-        UNetTravelLibrary::ExecuteListenServerTravel(nullptr, TEXT("/Game/Maps/Lobby"), 7777).IsFailure()
+    const TGameStatusResult<void> MissingClientWorldRes =
+        UNetTravelLibrary::ExecuteClientRoomTravel(nullptr, TravelRoom);
+    TestTrue(TEXT("空世界指针调用 ExecuteClientRoomTravel 安全返回失败态"), MissingClientWorldRes.IsFailure());
+    TestEqual(
+        TEXT("客户端空世界错误码为 TravelInvalidArgument"),
+        MissingClientWorldRes.GetError().ErrorCode,
+        Game::NetErrorCodes::TravelInvalidArgument
     );
-    TestTrue(
-        TEXT("空世界指针调用 ExecuteClientRoomTravel 安全返回失败态"),
-        UNetTravelLibrary::ExecuteClientRoomTravel(nullptr, TravelRoom).IsFailure()
-    );
-    TestTrue(
-        TEXT("空连接串调用 ExecuteConnectStringTravel 安全返回失败态"),
-        UNetTravelLibrary::ExecuteConnectStringTravel(nullptr, TEXT("")).IsFailure()
+
+    const TGameStatusResult<void> EmptyConnectRes =
+        UNetTravelLibrary::ExecuteConnectStringTravel(nullptr, TEXT(""));
+    TestTrue(TEXT("空连接串调用 ExecuteConnectStringTravel 安全返回失败态"), EmptyConnectRes.IsFailure());
+    TestEqual(
+        TEXT("错误归属 Game::ModuleId::Net"),
+        EmptyConnectRes.GetError().ModuleId,
+        Game::ModuleId::Net
     );
 
     return true;
 }
 
 #endif
-

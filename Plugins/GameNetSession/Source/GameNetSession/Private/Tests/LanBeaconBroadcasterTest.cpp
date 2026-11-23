@@ -1,6 +1,6 @@
 /**
  * @file LanBeaconBroadcasterTest.cpp
- * @brief 局域网房间信标协调器（FLanBeaconBroadcaster）探测应答闭环、畸形包防御与过期事件广播单元测试
+ * @brief 局域网房间信标协调器（FLanBeaconBroadcaster）探测应答闭环、预缓存刷新、畸形包防御与重入安全过期通知单元测试
  */
 
 #include "CoreMinimal.h"
@@ -19,7 +19,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证局域网信标广播与发现端到端闭环、房间动态刷新、外部畸形数据报过滤及超时剔除通知
+ * @brief 验证局域网信标广播与发现闭环、预编码缓存动态刷新、外部畸形数据报过滤及过期回调重入 Stop() 安全性
  * @param Parameters 自动化测试参数
  * @return 测试是否全部通过
  */
@@ -62,8 +62,9 @@ bool FGameNetLanBeaconBroadcasterTest::RunTest([[maybe_unused]] const FString& P
     ClientBeacon.OnRoomDiscovered().AddLambda([&DiscoveredEvents](const FGameNetRoomDescriptor& Room) {
         DiscoveredEvents.Add(Room);
     });
-    ClientBeacon.OnRoomExpired().AddLambda([&ExpiredEvents](const FString& RoomId) {
+    ClientBeacon.OnRoomExpired().AddLambda([&ExpiredEvents, &ClientBeacon](const FString& RoomId) {
         ExpiredEvents.Add(RoomId);
+        ClientBeacon.Stop();
     });
 
     FGameNetLanEndpoint HostEndpoint;
@@ -77,35 +78,46 @@ bool FGameNetLanBeaconBroadcasterTest::RunTest([[maybe_unused]] const FString& P
     TestTrue(TEXT("客户端内核事件驱动感知宣告回包到达"), ClientBeacon.WaitForIncomingData(1.0));
     ClientBeacon.Tick(0.035f);
 
-    const TArray<FGameNetRoomDescriptor> FirstSnapshot = ClientBeacon.GetDiscoveredRooms();
-    TestEqual(TEXT("客户端成功发现 1 个局域网房间"), FirstSnapshot.Num(), 1);
+    TArray<FGameNetRoomDescriptor> Snapshot;
+    ClientBeacon.GetDiscoveredRooms(Snapshot);
+    TestEqual(TEXT("客户端成功发现 1 个局域网房间"), Snapshot.Num(), 1);
     TestEqual(TEXT("房间发现委托触发 1 次"), DiscoveredEvents.Num(), 1);
 
-    TArray<FGameNetRoomDescriptor> ReusableSnapshot;
-    ClientBeacon.GetDiscoveredRoomsTo(ReusableSnapshot);
-    TestEqual(TEXT("通过就地接口获取的已发现房间数量与快照一致"), ReusableSnapshot.Num(), 1);
-    if (FirstSnapshot.Num() == 1) {
-        TestEqual(TEXT("发现房间 ID 与房主一致"), FirstSnapshot[0].RoomId, HostBeacon.GetHostedRoom().RoomId);
-        TestEqual(TEXT("发现房间名称还原无损"), FirstSnapshot[0].RoomName, TEXT("TaoistArena_01"));
-        TestEqual(TEXT("未显式指定 HostAddress 时自动回填发送方 IP"), FirstSnapshot[0].HostAddress, TEXT("127.0.0.1"));
-        TestEqual(TEXT("根据回显 SequenceId 精确算出虚拟时钟 35ms Ping"), FirstSnapshot[0].PingMilliseconds, 35);
+    if (Snapshot.Num() == 1) {
+        TestEqual(TEXT("发现房间 ID 与房主一致"), Snapshot[0].RoomId, HostBeacon.GetHostedRoom().RoomId);
+        TestEqual(TEXT("发现房间名称还原无损"), Snapshot[0].RoomName, TEXT("TaoistArena_01"));
+        TestEqual(TEXT("未显式指定 HostAddress 时自动回填发送方 IP"), Snapshot[0].HostAddress, TEXT("127.0.0.1"));
+        TestEqual(TEXT("根据回显 SequenceId 精确算出虚拟时钟 35ms Ping"), Snapshot[0].PingMilliseconds, 35);
     }
 
     FGameNetRoomDescriptor UpdatedDesc = HostBeacon.GetHostedRoom();
     UpdatedDesc.RoomId.Empty();
     UpdatedDesc.CurrentPlayers = 3;
-    HostBeacon.UpdateHostedRoom(UpdatedDesc);
-    TestEqual(TEXT("UpdateHostedRoom 保留原有 RoomId"), HostBeacon.GetHostedRoom().RoomId, FirstSnapshot[0].RoomId);
+    TestTrue(TEXT("合法 UpdateHostedRoom 提交成功"), HostBeacon.UpdateHostedRoom(UpdatedDesc));
+    TestEqual(TEXT("UpdateHostedRoom 保留原有 RoomId"), HostBeacon.GetHostedRoom().RoomId, Snapshot[0].RoomId);
+
+    FGameNetRoomDescriptor InvalidUpdateDesc = HostBeacon.GetHostedRoom();
+    InvalidUpdateDesc.RoomName.Empty();
+    TestFalse(TEXT("空房间名 UpdateHostedRoom 被拒绝"), HostBeacon.UpdateHostedRoom(InvalidUpdateDesc));
+    TestEqual(TEXT("非法更新失败后保留原有房间名"), HostBeacon.GetHostedRoom().RoomName, FString(TEXT("TaoistArena_01")));
+
+    FGameNetRoomDescriptor OversizedUpdateDesc = HostBeacon.GetHostedRoom();
+    OversizedUpdateDesc.MapPath = FString::ChrN(5000, TEXT('A'));
+    TestFalse(TEXT("超 4096B 上限的 UpdateHostedRoom 被拒绝"), HostBeacon.UpdateHostedRoom(OversizedUpdateDesc));
+    TestEqual(TEXT("超限更新失败后保留原有合法人数与缓存"), HostBeacon.GetHostedRoom().CurrentPlayers, 3);
 
     FGameNetLanEndpoint ClientEndpoint;
     ClientEndpoint.IpAddress = TEXT("127.0.0.1");
     ClientEndpoint.Port = ClientBeacon.GetBoundPort();
-    TestTrue(TEXT("房主主动单播推送更新宣告成功"), HostBeacon.BroadcastAnnouncement(ClientEndpoint));
+    TestTrue(TEXT("房主复用预编码缓存主动推送更新宣告成功"), HostBeacon.BroadcastAnnouncement(ClientEndpoint));
 
     TestTrue(TEXT("客户端感知主动宣告到达"), ClientBeacon.WaitForIncomingData(1.0));
     ClientBeacon.Tick(0.01f);
-    TestEqual(TEXT("相同 RoomId 原地更新去重不产生重复条目"), ClientBeacon.GetDiscoveredRooms().Num(), 1);
-    TestEqual(TEXT("房间当前人数已刷新为 3"), ClientBeacon.GetDiscoveredRooms()[0].CurrentPlayers, 3);
+    ClientBeacon.GetDiscoveredRooms(Snapshot);
+    TestEqual(TEXT("相同 RoomId 原地更新去重不产生重复条目"), Snapshot.Num(), 1);
+    if (Snapshot.Num() == 1) {
+        TestEqual(TEXT("房间当前人数已刷新为 3"), Snapshot[0].CurrentPlayers, 3);
+    }
 
     FLanUdpSocketChannel MaliciousInjector;
     TestTrue(TEXT("打开畸形包注入通道"), MaliciousInjector.Open(TEXT("127.0.0.1"), 0));
@@ -115,7 +127,8 @@ bool FGameNetLanBeaconBroadcasterTest::RunTest([[maybe_unused]] const FString& P
     FNetPacketHeader BadJsonHeader;
     BadJsonHeader.MessageId = FLanBeaconBroadcaster::LAN_ROOM_ANNOUNCE_MSG_ID;
     const uint8 CorruptJsonBytes[] = {'{', 'b', 'a', 'd'};
-    const TArray<uint8> BadJsonFrame = FNetPacketCodec::EncodeFrame(BadJsonHeader, CorruptJsonBytes);
+    TArray<uint8> BadJsonFrame;
+    FNetPacketCodec::EncodeFrameTo(BadJsonHeader, CorruptJsonBytes, BadJsonFrame);
     MaliciousInjector.SendTo(BadJsonFrame, TEXT("127.0.0.1"), ClientBeacon.GetBoundPort());
 
     TArray<uint8> TruncatedFrame = BadJsonFrame;
@@ -124,18 +137,19 @@ bool FGameNetLanBeaconBroadcasterTest::RunTest([[maybe_unused]] const FString& P
 
     ClientBeacon.WaitForIncomingData(0.2);
     ClientBeacon.Tick(0.01f);
-    TestEqual(TEXT("所有畸形 UDP 数据报均被安全丢弃且不影响现有房间缓存"), ClientBeacon.GetDiscoveredRooms().Num(), 1);
+    ClientBeacon.GetDiscoveredRooms(Snapshot);
+    TestEqual(TEXT("所有畸形 UDP 数据报均被安全丢弃且不影响现有房间缓存"), Snapshot.Num(), 1);
 
     ClientBeacon.Tick(2.5f);
-    TestEqual(TEXT("超过静默过期阈值后房间自动淘汰"), ClientBeacon.GetDiscoveredRooms().Num(), 0);
+    ClientBeacon.GetDiscoveredRooms(Snapshot);
+    TestEqual(TEXT("超过静默过期阈值后房间自动淘汰"), Snapshot.Num(), 0);
     TestEqual(TEXT("触发 1 次房间过期通知"), ExpiredEvents.Num(), 1);
+    TestFalse(TEXT("过期回调内重入调用 Stop 后信标安全停用"), ClientBeacon.IsActive());
 
     HostBeacon.Stop();
-    ClientBeacon.Stop();
     TestEqual(TEXT("Stop 后端口归零"), HostBeacon.GetBoundPort(), 0);
-    TestFalse(TEXT("Stop 后状态变为非活跃"), ClientBeacon.IsActive());
+    TestFalse(TEXT("Stop 后状态变为非活跃"), HostBeacon.IsActive());
     return true;
 }
 
 #endif
-

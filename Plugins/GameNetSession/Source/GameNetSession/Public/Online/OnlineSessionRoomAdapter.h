@@ -9,6 +9,7 @@
 #include "Types/GameNetSessionTypes.h"
 
 class FOnlineSessionSearch;
+class IOnlineSession;
 class UWorld;
 
 DECLARE_MULTICAST_DELEGATE_ThreeParams(
@@ -19,7 +20,7 @@ DECLARE_MULTICAST_DELEGATE_ThreeParams(
 );
 
 /**
- * @brief OnlineSubsystem 房间会话异步生命周期与结果标准化适配器（无 OSS 环境下安全静默降级）
+ * @brief OnlineSubsystem 房间会话异步生命周期与结果标准化适配器（无 OSS 安全降级、PIE 精确解绑与生命周期存活守卫）
  */
 class GAMENETSESSION_API FOnlineSessionRoomAdapter final {
 public:
@@ -33,10 +34,10 @@ public:
     static const FName OP_DESTROY_ROOM;
 
 public:
-    FOnlineSessionRoomAdapter() = default;
+    FOnlineSessionRoomAdapter();
 
     /**
-     * @brief 析构时自动解绑全部 OnlineSession 异步回调句柄并清空搜索缓存
+     * @brief 析构时置位存活守卫为失效并精确解绑原 IOnlineSession 全部异步回调句柄
      */
     ~FOnlineSessionRoomAdapter();
 
@@ -50,7 +51,7 @@ public:
      * @param WorldContext 当前世界上下文指针（用于编辑器多实例隔离解析 OSS）
      * @param Request 房间创建描述参数
      * @param LocalUserNum 本地玩家控制器索引
-     * @return 异步流程成功发起返回 true，参数非法或未启用 OSS 返回 false
+     * @return 异步流程成功发起返回 true，参数非法、会话已存在或未启用 OSS 返回 false
      */
     bool CreateRoom(const UWorld* WorldContext, const FGameNetCreateRoomRequest& Request, int32 LocalUserNum = 0);
 
@@ -86,14 +87,14 @@ public:
     bool DestroyRoom(const UWorld* WorldContext);
 
     /**
-     * @brief 解绑所有未决平台会话回调句柄并重置搜索结果缓存
-     * @param WorldContext 当前世界上下文指针
+     * @brief 从精确记录的 IOnlineSession 与目标世界解绑所有未决平台会话回调句柄并重置搜索缓存
+     * @param WorldContext 当前世界上下文指针（可为 nullptr，优先从历史绑定接口解绑）
      */
     void Shutdown(const UWorld* WorldContext);
 
     /**
      * @brief 获取最近一次搜索完成并标准化转换后的房间描述符快照
-     * @return 房间描述符数组
+     * @return 房间描述符数组常引用
      */
     [[nodiscard]] const TArray<FGameNetRoomDescriptor>& GetCachedRooms() const noexcept {
         return CachedRooms;
@@ -108,6 +109,27 @@ public:
     }
 
 private:
+    /**
+     * @brief 准备并绑定目标在线会话接口；若发生跨 PIE 实例切换则先从旧接口清理全部残留句柄
+     * @param SessionInt 目标 IOnlineSession 智能指针
+     */
+    void PrepareSessionInterface(const TSharedPtr<IOnlineSession, ESPMode::ThreadSafe>& SessionInt);
+
+    /**
+     * @brief 优先解引历史精确绑定的 IOnlineSession，失效时回退按世界上下文解析
+     * @param WorldContext 世界上下文弱指针
+     * @return 解析出的在线会话接口智能指针
+     */
+    [[nodiscard]] TSharedPtr<IOnlineSession, ESPMode::ThreadSafe> ResolveBoundOrFallbackSession(
+        TWeakObjectPtr<const UWorld> WorldContext
+    ) const;
+
+    /**
+     * @brief 从指定在线会话接口清理当前持有的全部有效委托句柄
+     * @param SessionInt 目标 IOnlineSession 智能指针
+     */
+    void ClearAllHandlesFrom(const TSharedPtr<IOnlineSession, ESPMode::ThreadSafe>& SessionInt);
+
     /**
      * @brief 处理平台创建房间异步完成回调
      * @param WorldContext 世界上下文弱指针
@@ -140,6 +162,8 @@ private:
     void HandleDestroyComplete(TWeakObjectPtr<const UWorld> WorldContext, FName SessionName, bool bWasSuccessful);
 
 private:
+    TSharedRef<bool, ESPMode::ThreadSafe> AliveToken;
+    TWeakPtr<IOnlineSession, ESPMode::ThreadSafe> BoundSessionInterface;
     TSharedPtr<FOnlineSessionSearch> ActiveSessionSearch;
     TArray<FGameNetRoomDescriptor> CachedRooms;
     FDelegateHandle CreateDelegateHandle;
@@ -148,4 +172,3 @@ private:
     FDelegateHandle DestroyDelegateHandle;
     FOnOnlineRoomAdapterOpCompleted OperationCompletedDelegate;
 };
-

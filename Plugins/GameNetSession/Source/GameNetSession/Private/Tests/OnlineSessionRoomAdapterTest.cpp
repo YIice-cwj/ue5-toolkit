@@ -1,6 +1,6 @@
 /**
  * @file OnlineSessionRoomAdapterTest.cpp
- * @brief OnlineSubsystem 平台房间会话适配器（FOnlineSessionRoomAdapter）参数校验与无 OSS 降级安全单元测试
+ * @brief OnlineSubsystem 平台房间会话适配器（FOnlineSessionRoomAdapter）参数校验、存活守卫与无 OSS 降级安全单元测试
  */
 
 #include "CoreMinimal.h"
@@ -17,12 +17,17 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证平台会话适配器在非法入参与无平台 OSS 环境下的零崩溃安全降级行为
+ * @brief 验证平台会话适配器在非法入参、无平台 OSS 及多次 Shutdown/析构场景下的零崩溃安全降级行为
  * @param Parameters 自动化测试参数
  * @return 测试是否全部通过
  */
 bool FGameNetOnlineSessionRoomAdapterTest::RunTest([[maybe_unused]] const FString& Parameters) {
     FOnlineSessionRoomAdapter Adapter;
+
+    int32 UnexpectedOpBroadcastCount = 0;
+    Adapter.OnOperationCompleted().AddLambda([&UnexpectedOpBroadcastCount](FName, bool, const FString&) {
+        ++UnexpectedOpBroadcastCount;
+    });
 
     FGameNetCreateRoomRequest EmptyNameReq;
     EmptyNameReq.RoomName.Empty();
@@ -34,6 +39,7 @@ bool FGameNetOnlineSessionRoomAdapterTest::RunTest([[maybe_unused]] const FStrin
 
     FGameNetCreateRoomRequest ValidReq;
     TestFalse(TEXT("负玩家下标 CreateRoom 安全拒绝"), Adapter.CreateRoom(nullptr, ValidReq, -1));
+    TestEqual(TEXT("同步返回 false 时不产生重复或不一致的异步失败广播"), UnexpectedOpBroadcastCount, 0);
 
     TestFalse(TEXT("零最大结果数 FindRooms 安全拒绝"), Adapter.FindRooms(nullptr, true, 0, 0));
     TestFalse(TEXT("负玩家下标 FindRooms 安全拒绝"), Adapter.FindRooms(nullptr, true, 10, -1));
@@ -42,10 +48,10 @@ bool FGameNetOnlineSessionRoomAdapterTest::RunTest([[maybe_unused]] const FStrin
     TestEqual(TEXT("初始缓存房间列表为空"), Adapter.GetCachedRooms().Num(), 0);
 
     Adapter.Shutdown(nullptr);
-    TestEqual(TEXT("Shutdown 后缓存房间列表保持为空"), Adapter.GetCachedRooms().Num(), 0);
+    Adapter.Shutdown(nullptr);
+    TestEqual(TEXT("重复 Shutdown 幂等且缓存房间列表保持为空"), Adapter.GetCachedRooms().Num(), 0);
 
     return true;
 }
 
 #endif
-

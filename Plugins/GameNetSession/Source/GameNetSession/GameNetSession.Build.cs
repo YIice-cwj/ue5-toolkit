@@ -12,7 +12,6 @@ public class GameNetSession : ModuleRules {
             "Core",
             "CoreUObject",
             "Engine",
-            "GameplayTags",
             "GameCore",
             "GameNetCore",
         });
