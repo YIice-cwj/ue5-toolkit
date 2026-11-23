@@ -4,10 +4,9 @@
 汇总头文件生成器 (aggregator_generator.py)
 
 生成三类汇总头文件（每次覆盖）：
-1. 分类汇总:   DataTables/{cat}/{cat}DataTableRowTypes.h
-2. 全表主汇总: DataTables/DataTableRowTypes.h
+1. 分类汇总:       DataTables/{cat}/{cat}DataTableRowTypes.h
+2. 全表主汇总:     DataTables/DataTableRowTypes.h
 3. 静态数据主汇总: Data/StaticData/StaticDataTypes.h
-（分类汇总与主汇总在配置开关层面合并为单个 "aggregators" 产物）
 """
 
 import os
@@ -43,11 +42,12 @@ def generate(ctx: GeneratorContext) -> list:
     """
     files = []
 
-    for cat_folder, headers in ctx.category_headers.items():
+    for cat_folder in sorted(ctx.category_headers.keys()):
+        headers = ctx.category_headers[cat_folder]
         content = write_agg_header(
             f"""/**
  * @file {cat_folder}DataTableRowTypes.h
- * @brief 物品/商店等分类数据表行聚合头文件
+ * @brief {cat_folder} 分类数据表行聚合头文件
  */""",
             headers,
         )

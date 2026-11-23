@@ -8,7 +8,6 @@
 """
 
 import os
-
 from typing import Any, Optional
 
 from generators import GeneratedFile, GeneratorContext, scaffold_banner
@@ -16,16 +15,21 @@ from naming_utils import to_field_name
 
 
 def select_primary_table(cat_folder: str, tables: list) -> Optional[dict]:
-    """推导当前模块主表：优先 definition，再含核心特征词的表 (progression/info/base/config/main/param)，再按模块名，最后回退首表"""
+    """
+    推导当前模块主表：优先 definition（大小写无关），再含核心特征词的表，再按模块名，最后回退首表
+    @param cat_folder 分类目录名
+    @param tables 表元信息列表
+    @return 主表元信息字典，列表为空返回 None
+    """
     if not tables:
         return None
     for item in tables:
-        f_name = to_field_name(item["stem"], cat_folder)
-        if f_name == "definition":
+        f_name_lower = to_field_name(item["stem"], cat_folder).lower()
+        if f_name_lower == "definition":
             return item
     for item in tables:
-        f_name = to_field_name(item["stem"], cat_folder)
-        if "definition" in f_name:
+        f_name_lower = to_field_name(item["stem"], cat_folder).lower()
+        if "definition" in f_name_lower:
             return item
     for item in tables:
         s_lower = item["stem"].lower()
@@ -38,7 +42,13 @@ def select_primary_table(cat_folder: str, tables: list) -> Optional[dict]:
 
 
 def generate_interface_scaffold_header(cfg: Any, cat_folder: str, tables: list) -> str:
-    """生成初始接口类头文件脚手架（门面：FindCompositeData + WarmUpCompositeCache）"""
+    """
+    生成初始接口类头文件脚手架（门面：FindCompositeData + WarmUpCompositeCache）
+    @param cfg 运行配置
+    @param cat_folder 分类目录名
+    @param tables 表元信息列表
+    @return 头文件代码文本
+    """
     primary = select_primary_table(cat_folder, tables)
     lines = [
         *scaffold_banner("interface scaffold", cat_folder),
@@ -73,19 +83,25 @@ def generate_interface_scaffold_header(cfg: Any, cat_folder: str, tables: list) 
         f"    static TSharedPtr<const F{cat_folder}CompositeData> FindCompositeData(const TSharedPtr<const FStaticDataSnapshot>& InSnapshot, const FName& InKey);",
         "",
         "    /**",
-        "     * @brief 预热聚合缓存（加载/热更提交后调用，按主表全量键预热）",
+        "     * @brief 预热聚合缓存（加载/热更提交前调用，按主表全量键预热）",
         "     * @param InCache 聚合缓存",
         "     * @param InData 域静态数据容器",
         "     */",
         f"    static void WarmUpCompositeCache(FStaticDataCache& InCache, const F{cat_folder}StaticData& InData);",
         "};",
-        ""
+        "",
     ])
     return "\n".join(lines)
 
 
 def generate_interface_scaffold_cpp(cfg: Any, cat_folder: str, tables: list) -> str:
-    """生成初始接口类实现文件脚手架（门面：FindCompositeData + WarmUpCompositeCache）"""
+    """
+    生成初始接口类实现文件脚手架（门面：FindCompositeData + WarmUpCompositeCache）
+    @param cfg 运行配置
+    @param cat_folder 分类目录名
+    @param tables 表元信息列表
+    @return 实现文件代码文本
+    """
     primary = select_primary_table(cat_folder, tables)
     primary_field = to_field_name(primary["stem"], cat_folder) if primary else ""
     primary_map = f"{primary_field}Map" if primary else ""
@@ -119,6 +135,7 @@ def generate_interface_scaffold_cpp(cfg: Any, cat_folder: str, tables: list) -> 
         " * @param InData 域静态数据容器",
         " *",
         " * 实现思路：收集主表全部键并逐键构建聚合数据；跨表引用完整性由数据校验管线负责，",
+        " * 策略判定收敛在缓存内部。",
         " */",
         f"void F{cat_folder}StaticDataInterface::WarmUpCompositeCache(FStaticDataCache& InCache, const F{cat_folder}StaticData& InData) {{",
     ]
@@ -148,7 +165,8 @@ def generate(ctx: GeneratorContext) -> list:
     @return 每分类 2 个产物：头文件与实现文件（均 repair，携带当前有效 map 名集合）
     """
     files = []
-    for cat_folder, tables in ctx.category_tables.items():
+    for cat_folder in sorted(ctx.category_tables.keys()):
+        tables = ctx.category_tables[cat_folder]
         valid_map_names = {f"{to_field_name(t['stem'], cat_folder)}Map" for t in tables}
         header_path = os.path.join(ctx.cfg.static_data_public_dir, cat_folder, f"{cat_folder}StaticDataInterface.h")
         cpp_path = os.path.join(ctx.cfg.static_data_private_dir, cat_folder, f"{cat_folder}StaticDataInterface.cpp")

@@ -8,7 +8,6 @@
 """
 
 import os
-
 from typing import Any
 
 from generators import GeneratedFile, GeneratorContext, scaffold_banner
@@ -16,7 +15,13 @@ from naming_utils import to_field_name
 
 
 def generate_query_scaffold_header(cfg: Any, cat_folder: str, item: dict) -> str:
-    """生成单张表的查询骨架头文件（F{stem}Query，首次生成不覆盖）"""
+    """
+    生成单张表的查询骨架头文件（F{stem}Query，首次生成不覆盖）
+    @param cfg 运行配置
+    @param cat_folder 分类目录名
+    @param item 表元信息字典
+    @return 头文件代码文本
+    """
     stem = item["stem"]
     struct_name = item["struct_name"]
     lines = [
@@ -26,7 +31,7 @@ def generate_query_scaffold_header(cfg: Any, cat_folder: str, item: dict) -> str
         '#include "CoreMinimal.h"',
         "",
         f'#include "{cfg.row_types_include_prefix}/{cat_folder}/{item["header_name"]}"',
-        '#include "Generated/Data/StaticData/FStaticDataSnapshot.h"',
+        f'#include "{cfg.static_data_include_prefix}/FStaticDataSnapshot.h"',
         "",
         "/**",
         f" * @brief {item['desc']} 表级查询（纯静态方法，取数专用）",
@@ -45,13 +50,19 @@ def generate_query_scaffold_header(cfg: Any, cat_folder: str, item: dict) -> str
         "     */",
         f"    static TSharedPtr<const {struct_name}> FindByKey(const TSharedPtr<const FStaticDataSnapshot>& InSnapshot, const FName& InKey);",
         "};",
-        ""
+        "",
     ]
     return "\n".join(lines)
 
 
 def generate_query_scaffold_cpp(cfg: Any, cat_folder: str, item: dict) -> str:
-    """生成单张表的查询骨架实现文件（F{stem}Query）"""
+    """
+    生成单张表的查询骨架实现文件（F{stem}Query）
+    @param cfg 运行配置
+    @param cat_folder 分类目录名
+    @param item 表元信息字典
+    @return 实现文件代码文本
+    """
     stem = item["stem"]
     struct_name = item["struct_name"]
     map_name = f"{to_field_name(stem, cat_folder)}Map"
@@ -72,9 +83,9 @@ def generate_query_scaffold_cpp(cfg: Any, cat_folder: str, item: dict) -> str:
         "        return nullptr;",
         "    }",
         f"    const {struct_name}* Row = InSnapshot->{cat_folder}Data.{map_name}.Find(InKey);",
-        "    return Row != nullptr ? TSharedPtr<const " + struct_name + ">(InSnapshot, Row) : nullptr;",
+        f"    return Row != nullptr ? TSharedPtr<const {struct_name}>(InSnapshot, Row) : nullptr;",
         "}",
-        ""
+        "",
     ]
     return "\n".join(lines)
 
@@ -86,8 +97,8 @@ def generate(ctx: GeneratorContext) -> list:
     @return 每张表的 Query.h（Public）与 Query.cpp（Private），均 preserve
     """
     files = []
-    for cat_folder, tables in ctx.category_tables.items():
-        for item in tables:
+    for cat_folder in sorted(ctx.category_tables.keys()):
+        for item in ctx.category_tables[cat_folder]:
             files.append(GeneratedFile(
                 path=os.path.join(ctx.cfg.static_data_public_dir, cat_folder, f"{item['stem']}Query.h"),
                 content=generate_query_scaffold_header(ctx.cfg, cat_folder, item),

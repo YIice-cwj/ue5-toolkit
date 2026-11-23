@@ -3,30 +3,21 @@
 """
 静态数据快照/缓存层生成器 (static_data_snapshot_generator.py)
 
-- FStaticDataSnapshot.h：数据版本号 + 各域复合缓存 + 各域行表
-- FStaticDataCache.h/.cpp：各域 FVersionedCache 持有者 + 各域访问器 + Reset
-- FStaticDataSnapshotStore.h/.cpp：域无关 RCU 存储（Acquire/GetVersion/Publish/TryBeginReload/EndReload）
-
-接口导出宏取 cfg.api_macro（随配置变化）；域集合取自 category_tables 的键（排序）。
+- FStaticDataSnapshot.h：数据版本号 + 各域复合缓存 + 各域行表（符合 15 层接口优先布局）
+- FStaticDataCache.h/.cpp：各域 FVersionedCache 持有者 + 各域访问器（随快照生命周期只读，无冗余 Reset）
+- FStaticDataSnapshotStore.h：薄类型别名，直接复用 GameDataCore::TStaticDataSnapshotStore<FStaticDataSnapshot>
 """
 
 import os
-
 from typing import Any
 
-from generators import GeneratedFile, GeneratorContext
+from generators import GeneratedFile, GeneratorContext, doxygen_brief
 from generators.game_registration_generator import domains_of
 
 SNAPSHOT_HEADER = "FStaticDataSnapshot.h"
 CACHE_HEADER = "FStaticDataCache.h"
 CACHE_SOURCE = "FStaticDataCache.cpp"
 STORE_HEADER = "FStaticDataSnapshotStore.h"
-STORE_SOURCE = "FStaticDataSnapshotStore.cpp"
-
-CACHE_HEADER_INCLUDE = "Generated/Data/StaticData/FStaticDataCache.h"
-SNAPSHOT_HEADER_INCLUDE = "Generated/Data/StaticData/FStaticDataSnapshot.h"
-STORE_HEADER_INCLUDE = "Generated/Data/StaticData/FStaticDataSnapshotStore.h"
-TYPES_INCLUDE = "Generated/Data/StaticData/StaticDataTypes.h"
 
 
 def build_snapshot_header(cfg: Any, domain_list: list) -> str:
@@ -36,43 +27,43 @@ def build_snapshot_header(cfg: Any, domain_list: list) -> str:
     @param domain_list 域目录名列表（已排序）
     @return 头文件内容
     """
+    cache_include = f"{cfg.static_data_include_prefix}/{CACHE_HEADER}"
+    types_include = f"{cfg.static_data_include_prefix}/StaticDataTypes.h"
     lines = [
         "/**",
-        " * @file FStaticDataSnapshot.h",
+        f" * @file {SNAPSHOT_HEADER}",
         " * @brief 静态数据快照聚合载体",
         " */",
         "#pragma once",
         "",
         '#include "CoreMinimal.h"',
         "",
-        f'#include "{CACHE_HEADER_INCLUDE}"',
-        f'#include "{TYPES_INCLUDE}"',
+        f'#include "{cache_include}"',
+        f'#include "{types_include}"',
         "",
         "/**",
         " * @brief 静态数据快照（发布后只读；禁止拷贝与移动）",
         " */",
         f"class {cfg.api_macro} FStaticDataSnapshot {{",
         "public:",
-        "    /** 数据版本号（与快照同代绑定，自 1 起递增） */",
-        "    uint32 DataVersion = 0;",
-        "",
-        "    /** 各域复合聚合缓存（行 join 后的强类型视图） */",
-        "    FStaticDataCache Cache;",
-    ]
-    for domain in domain_list:
-        lines.extend([
-            "",
-            f"    /** {domain} 域行表 */",
-            f"    F{domain}StaticData {domain}Data;",
-        ])
-    lines.extend([
-        "",
         "    FStaticDataSnapshot() = default;",
         "    ~FStaticDataSnapshot() = default;",
         "    FStaticDataSnapshot(const FStaticDataSnapshot&) = delete;",
         "    FStaticDataSnapshot& operator=(const FStaticDataSnapshot&) = delete;",
         "    FStaticDataSnapshot(FStaticDataSnapshot&&) = delete;",
         "    FStaticDataSnapshot& operator=(FStaticDataSnapshot&&) = delete;",
+        "",
+        *doxygen_brief("数据版本号（与快照同代绑定，自 1 起递增）"),
+        "    uint32 DataVersion = 0;",
+        "",
+        *doxygen_brief("各域复合聚合缓存（行 join 后的强类型视图）"),
+        "    FStaticDataCache Cache;",
+    ]
+    for domain in domain_list:
+        lines.append("")
+        lines.extend(doxygen_brief(f"{domain} 域行表"))
+        lines.append(f"    F{domain}StaticData {domain}Data;")
+    lines.extend([
         "};",
         "",
     ])
@@ -86,20 +77,21 @@ def build_cache_header(cfg: Any, domain_list: list) -> str:
     @param domain_list 域目录名列表（已排序）
     @return 头文件内容
     """
+    types_include = f"{cfg.static_data_include_prefix}/StaticDataTypes.h"
     lines = [
         "/**",
-        " * @file FStaticDataCache.h",
+        f" * @file {CACHE_HEADER}",
         " * @brief 静态数据快照缓存容器类",
         " */",
         "#pragma once",
         "",
         '#include "CoreMinimal.h"',
         "",
-        f'#include "{TYPES_INCLUDE}"',
         '#include "Cache/FVersionedCache.h"',
+        f'#include "{types_include}"',
         "",
         "/**",
-        " * @brief 各域聚合缓存容器（挂接于 UStaticDataSubsystem，随其生命周期）",
+        " * @brief 各域聚合缓存容器（挂接于 FStaticDataSnapshot，随不可变快照生命周期）",
         " */",
         f"class {cfg.api_macro} FStaticDataCache {{",
         "public:",
@@ -109,11 +101,6 @@ def build_cache_header(cfg: Any, domain_list: list) -> str:
         "    FStaticDataCache& operator=(const FStaticDataCache&) = delete;",
         "    FStaticDataCache(FStaticDataCache&&) = delete;",
         "    FStaticDataCache& operator=(FStaticDataCache&&) = delete;",
-        "",
-        "    /**",
-        "     * @brief 清空全部域缓存（热更提交后调用，旧指针契约失效）",
-        "     */",
-        "    void Reset();",
     ]
     for domain in domain_list:
         lines.extend([
@@ -127,9 +114,9 @@ def build_cache_header(cfg: Any, domain_list: list) -> str:
     lines.extend([
         "",
         "private:",
-        "    /** 各域逻辑只读缓存（mutable：const 快照上允许查找与缓存内部惰性填充） */",
     ])
     for domain in domain_list:
+        lines.extend(doxygen_brief(f"{domain} 域逻辑只读聚合缓存（mutable：const 快照上允许查找与惰性填充）"))
         lines.append(f'    mutable FVersionedCache<F{domain}CompositeData> {domain}CompositesCache{{FName(TEXT("{domain}"))}};')
     lines.extend([
         "};",
@@ -140,26 +127,26 @@ def build_cache_header(cfg: Any, domain_list: list) -> str:
 
 def build_cache_source(cfg: Any, domain_list: list) -> str:
     """
-    生成 FStaticDataCache.cpp（Reset 与各域访问器实现）
+    生成 FStaticDataCache.cpp（各域访问器实现）
     @param cfg 运行配置
     @param domain_list 域目录名列表（已排序）
     @return 实现文件内容
     """
+    cache_include = f"{cfg.static_data_include_prefix}/{CACHE_HEADER}"
     lines = [
         "/**",
-        " * @file FStaticDataCache.cpp",
+        f" * @file {CACHE_SOURCE}",
         " * @brief 静态数据快照缓存容器类实现",
         " */",
-        f'#include "{CACHE_HEADER_INCLUDE}"',
-        "",
-        "void FStaticDataCache::Reset() {",
+        f'#include "{cache_include}"',
     ]
-    for domain in domain_list:
-        lines.append(f"    {domain}CompositesCache.Reset();")
-    lines.append("}")
     for domain in domain_list:
         lines.extend([
             "",
+            "/**",
+            f" * @brief 获取 {domain} 域聚合缓存",
+            " * @return 缓存引用",
+            " */",
             f"FVersionedCache<F{domain}CompositeData>& FStaticDataCache::{domain}Composites() const {{",
             f"    return {domain}CompositesCache;",
             "}",
@@ -170,148 +157,32 @@ def build_cache_source(cfg: Any, domain_list: list) -> str:
 
 def build_store_header(cfg: Any) -> str:
     """
-    生成 FStaticDataSnapshotStore.h（域无关 RCU 存储声明）
+    生成 FStaticDataSnapshotStore.h（薄类型别名，复用 GameDataCore::TStaticDataSnapshotStore）
     @param cfg 运行配置
     @return 头文件内容
     """
+    snapshot_include = f"{cfg.static_data_include_prefix}/{SNAPSHOT_HEADER}"
     return "\n".join([
         "/**",
-        " * @file FStaticDataSnapshotStore.h",
-        " * @brief 静态数据快照 RCU 存储器",
+        f" * @file {STORE_HEADER}",
+        " * @brief 静态数据快照 RCU 存储类型别名（复用 GameDataCore::TStaticDataSnapshotStore）",
         " */",
         "#pragma once",
         "",
-        '#include "CoreMinimal.h"',
-        '#include "Misc/ScopeRWLock.h"',
-        '#include "Types/TGameResult.h"',
-        "",
-        "#include <atomic>",
-        "",
-        f'#include "{SNAPSHOT_HEADER_INCLUDE}"',
+        '#include "StaticData/TStaticDataSnapshotStore.h"',
+        f'#include "{snapshot_include}"',
         "",
         "/**",
-        " * @brief 静态数据快照 RCU 存储（禁止拷贝与移动）",
+        " * @brief 静态数据快照 RCU 存储器（复用 GameDataCore 泛型模板 TStaticDataSnapshotStore）",
         " */",
-        f"class {cfg.api_macro} FStaticDataSnapshotStore {{",
-        "public:",
-        "    FStaticDataSnapshotStore() = default;",
-        "    ~FStaticDataSnapshotStore() = default;",
-        "    FStaticDataSnapshotStore(const FStaticDataSnapshotStore&) = delete;",
-        "    FStaticDataSnapshotStore& operator=(const FStaticDataSnapshotStore&) = delete;",
-        "    FStaticDataSnapshotStore(FStaticDataSnapshotStore&&) = delete;",
-        "    FStaticDataSnapshotStore& operator=(FStaticDataSnapshotStore&&) = delete;",
-        "",
-        "    /**",
-        "     * @brief 瞬态读锁拷贝在线快照指针后出锁",
-        "     * @return 当前在线快照共享指针，尚未发布过返回空",
-        "     */",
-        "    [[nodiscard]] TSharedPtr<const FStaticDataSnapshot> Acquire() const;",
-        "",
-        "    /**",
-        "     * @brief 取当前数据版本号（经 Acquire 读快照内字段）",
-        "     * @return 版本号，尚未发布过返回 0",
-        "     */",
-        "    [[nodiscard]] uint32 GetVersion() const;",
-        "",
-        "    /**",
-        "     * @brief 原子发布新快照",
-        "     * @param NextSnapshot 新快照共享指针（所有权转移给存储）",
-        "     */",
-        "    void Publish(TSharedPtr<const FStaticDataSnapshot> NextSnapshot);",
-        "",
-        "    /**",
-        "     * @brief CAS 抢占重载门闩",
-        "     * @return 抢占成功返回 Success，已有重载进行中返回 Failure(7001)",
-        "     */",
-        "    [[nodiscard]] TGameStatusResult<void> TryBeginReload();",
-        "",
-        "    /**",
-        "     * @brief 释放重载门闩",
-        "     */",
-        "    void EndReload();",
-        "",
-        "private:",
-        "    mutable FRWLock SnapshotLock;",
-        "    TSharedPtr<const FStaticDataSnapshot> OnlineSnapshot;",
-        "    std::atomic<bool> bReloadInProgress{false};",
-        "};",
-        "",
-    ])
-
-
-def build_store_source(cfg: Any) -> str:
-    """
-    生成 FStaticDataSnapshotStore.cpp（RCU 存储实现）
-    @param cfg 运行配置
-    @return 实现文件内容
-    """
-    return "\n".join([
-        "/**",
-        " * @file FStaticDataSnapshotStore.cpp",
-        " * @brief 静态数据快照 RCU 存储器实现",
-        " */",
-        f'#include "{STORE_HEADER_INCLUDE}"',
-        "",
-        f'#include "{SNAPSHOT_HEADER_INCLUDE}"',
-        "",
-        "/**",
-        " * @brief 瞬态读锁拷贝在线快照指针后出锁",
-        " * @return 当前在线快照共享指针，尚未发布过返回空",
-        " */",
-        "TSharedPtr<const FStaticDataSnapshot> FStaticDataSnapshotStore::Acquire() const {",
-        "    FReadScopeLock ReadLock(SnapshotLock);",
-        "    return OnlineSnapshot;",
-        "}",
-        "",
-        "/**",
-        " * @brief 取当前数据版本号（经 Acquire 读快照内字段）",
-        " * @return 版本号，尚未发布过返回 0",
-        " */",
-        "uint32 FStaticDataSnapshotStore::GetVersion() const {",
-        "    const TSharedPtr<const FStaticDataSnapshot> Snapshot = Acquire();",
-        "    return Snapshot.IsValid() ? Snapshot->DataVersion : 0;",
-        "}",
-        "",
-        "/**",
-        " * @brief 原子发布新快照",
-        " * @param NextSnapshot 新快照共享指针（所有权转移给存储）",
-        " *",
-        " * 实现思路：写锁内仅两次指针搬移，旧快照先腾挪到局部变量，出锁后随局部变量自然析构",
-        " */",
-        "void FStaticDataSnapshotStore::Publish(TSharedPtr<const FStaticDataSnapshot> NextSnapshot) {",
-        "    TSharedPtr<const FStaticDataSnapshot> RetiredSnapshot;",
-        "    {",
-        "        FWriteScopeLock WriteLock(SnapshotLock);",
-        "        RetiredSnapshot = MoveTemp(OnlineSnapshot);",
-        "        OnlineSnapshot = MoveTemp(NextSnapshot);",
-        "    }",
-        "}",
-        "",
-        "/**",
-        " * @brief CAS 抢占重载门闩",
-        " * @return 抢占成功返回 Success，已有重载进行中返回 Failure(7001)",
-        " */",
-        "TGameStatusResult<void> FStaticDataSnapshotStore::TryBeginReload() {",
-        "    bool bExpected = false;",
-        "    if (!bReloadInProgress.compare_exchange_strong(bExpected, true)) {",
-        '        return TGameStatusResult<void>::Failure(7001, TEXT("已有重载进行中"));',
-        "    }",
-        "    return TGameStatusResult<void>::Success();",
-        "}",
-        "",
-        "/**",
-        " * @brief 释放重载门闩",
-        " */",
-        "void FStaticDataSnapshotStore::EndReload() {",
-        "    bReloadInProgress.store(false);",
-        "}",
+        "using FStaticDataSnapshotStore = TStaticDataSnapshotStore<FStaticDataSnapshot>;",
         "",
     ])
 
 
 def generate(ctx: GeneratorContext) -> list:
     """
-    生成快照/缓存层全部 5 个产物（随域集合自动展开；overwrite 全量重写）
+    生成快照/缓存层全部 4 个产物（随域集合自动展开；overwrite 全量重写）
     @param ctx 生成器运行上下文
     @return GeneratedFile 列表
     """
@@ -326,6 +197,4 @@ def generate(ctx: GeneratorContext) -> list:
                       content=build_cache_source(cfg, domain_list), policy="overwrite"),
         GeneratedFile(path=os.path.join(cfg.static_data_public_dir, STORE_HEADER),
                       content=build_store_header(cfg), policy="overwrite"),
-        GeneratedFile(path=os.path.join(cfg.static_data_private_dir, STORE_SOURCE),
-                      content=build_store_source(cfg), policy="overwrite"),
     ]

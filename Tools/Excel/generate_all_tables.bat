@@ -6,7 +6,7 @@ REM 本批处理为薄封装：统一调度逻辑收敛在 Script/run_pipeline.p
 REM 与 generate_all_tables.sh 保持一致；不内置任何工程路径与默认配置。
 REM
 REM 使用方法:
-REM   generate_all_tables.bat [--config <path>] [--all | --validate | --struct | --json | --tags | --bin] [生成器额外参数...]
+REM   generate_all_tables.bat [--config <path>] [--all | --validate | --struct | --json | --tags | --bin | --reverse | --rollback | --roundtrip] [选项...]
 REM   （--bin 为运行期 .bin 导出，需编辑器已编译；由 run_pipeline.py 统一调度）
 REM =============================================================================
 setlocal

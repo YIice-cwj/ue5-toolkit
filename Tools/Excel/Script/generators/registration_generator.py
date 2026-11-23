@@ -4,73 +4,89 @@
 统一注册入口生成器 (registration_generator.py)
 
 依据 generator_config.json 的 "registration" 段（source_roots + output_header），
-自动扫描各源码根下符合约定的注册类头文件，生成统一注册头文件：
+自动扫描各源码根（以及可选暂存目录）下符合约定的注册类头文件，生成统一注册头文件：
 
 - 约定：文件名 F*Registration.h，类名 F{模块}Registration，
         含 static void RegisterAll(UGameInstance*) / UnregisterAll(UGameInstance*)
 - 排序：按类名正序生成 RegisterAll，反序生成 UnregisterAll
 - 输出：overwrite（全自动生成，请勿手动编辑）
-
-无需逐条登记注册项：新增模块只需放置注册类文件，重跑生成器即自动并入。
 """
 
 import os
 import re
-
-from typing import Optional
+from typing import List, Optional, Sequence
 
 from generators import GeneratedFile
 
 SECTION_KEY = "registration"
-HEADER_RE = re.compile(r"class\s+\w+_API\s+(F\w+Registration)\b")
+HEADER_RE = re.compile(r"class\s+(?:\w+_API\s+)?(F\w+Registration)\b")
 SKIP_DIRS = {"Intermediate", "Binaries", "DerivedDataCache", "Saved"}
 PUBLIC_MARKER = "/Public/"
 
 
-def generate(config_raw: dict) -> list:
+def generate(config_raw: dict, extra_roots: Optional[Sequence[str]] = None) -> list:
     """
     生成统一注册入口头文件
     @param config_raw 完整配置字典（须含 "registration" 段）
+    @param extra_roots 额外扫描根目录（如事务暂存目录，保证首次洁净生成即并入本轮产物）
     @return 生成产物列表（配置缺失或未发现注册类时返回空列表）
     """
     section = config_raw.get(SECTION_KEY)
     if not section:
         return []
     output_header = section.get("output_header")
-    source_roots = section.get("source_roots", [])
+    source_roots: List[str] = list(section.get("source_roots", []))
+    excluded_dirs: List[str] = []
+    if extra_roots:
+        output_mod = config_raw.get("output_module_dir")
+        if output_mod:
+            excluded_dirs.append(os.path.normpath(os.path.abspath(os.path.join(output_mod, "Public", "Generated"))))
+        source_roots.extend(extra_roots)
     if not output_header or not source_roots:
         return []
-    registrars = _discover(source_roots)
+    registrars = _discover(source_roots, output_header=output_header, excluded_dirs=excluded_dirs)
     if not registrars:
         return []
     return [GeneratedFile(path=output_header, content=_build_content(config_raw, registrars, output_header), policy="overwrite")]
 
 
-def _discover(source_roots: list) -> list:
+def _discover(
+    source_roots: Sequence[str],
+    output_header: Optional[str] = None,
+    excluded_dirs: Optional[Sequence[str]] = None,
+) -> list:
     """
     扫描源码根，发现符合约定的注册类
     @param source_roots 扫描根路径列表
+    @param output_header 待生成的统一注册头路径（扫描时跳过自身）
+    @param excluded_dirs 跳过扫描的目录列表（如即将被暂存树替换的旧 Public/Generated）
     @return [(类名, include 相对路径), ...] 按类名排序
     """
     found = {}
+    out_abs = os.path.normpath(os.path.abspath(output_header)) if output_header else ""
+    excl_abs = [os.path.normpath(os.path.abspath(d)) for d in (excluded_dirs or ())]
     for root in source_roots:
         if not os.path.isdir(root):
             continue
         for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
-            for filename in filenames:
+            dir_abs = os.path.normpath(os.path.abspath(dirpath))
+            if any(dir_abs == ex or dir_abs.startswith(ex + os.sep) for ex in excl_abs):
+                dirnames[:] = []
+                continue
+            dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
+            for filename in sorted(filenames):
                 if not (filename.startswith("F") and filename.endswith("Registration.h")):
                     continue
                 full_path = os.path.join(dirpath, filename)
+                if out_abs and os.path.normpath(os.path.abspath(full_path)) == out_abs:
+                    continue
                 try:
                     with open(full_path, "r", encoding="utf-8") as f:
                         content = f.read()
                 except OSError:
                     continue
                 match = HEADER_RE.search(content)
-                if not match:
-                    continue
-                if not _has_uniform_signature(content):
+                if not match or not _has_uniform_signature(content):
                     continue
                 include_path = _include_path(full_path)
                 if include_path:
@@ -91,19 +107,25 @@ def _has_uniform_signature(content: str) -> bool:
 
 def _include_path(full_path: str) -> Optional[str]:
     """
-    由绝对路径推导模块内 include 相对路径（取 Public/ 之后）
+    由绝对路径推导模块内 include 相对路径（跨平台统一正斜杠后取最内层 Public/ 之后）
     @param full_path 头文件绝对路径
     @return 相对 include 路径；不含 Public/ 标记时返回 None
     """
-    idx = full_path.find(PUBLIC_MARKER)
+    normalized = full_path.replace("\\", "/")
+    idx = normalized.rfind(PUBLIC_MARKER)
     if idx == -1:
         return None
-    rel = full_path[idx + len(PUBLIC_MARKER):]
-    return rel
+    return normalized[idx + len(PUBLIC_MARKER):]
 
 
 def _build_content(config_raw: dict, registrars: list, output_header: str) -> str:
-    """按注册类清单拼装统一注册头文件内容"""
+    """
+    按注册类清单拼装统一注册头文件内容
+    @param config_raw 完整配置字典
+    @param registrars 排序后的 (类名, include 路径) 列表
+    @param output_header 输出头文件路径
+    @return 头文件代码文本
+    """
     header_filename = os.path.basename(output_header)
     prefix = config_raw.get("project_prefix", "Game")
     class_name = config_raw.get("registration_class_name") or f"F{prefix}Registration"

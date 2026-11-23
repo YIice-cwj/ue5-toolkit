@@ -16,24 +16,28 @@ CYAN='\033[0;36m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-# 配置发现的环境变量（按优先级；与 Tools/Excel/Script/tool_config.py 的 CONFIG_ENV_KEYS 保持一致）
-CONFIG_ENV_KEYS="UE_TOOL_CONFIG UE_STATIC_DATA_CONFIG"
+# 配置发现的环境变量（按优先级；与 Tools/Script/tool_config.py 的 CONFIG_ENV_KEYS 保持一致）
+CONFIG_ENV_KEYS="UE_TOOL_CONFIG"
 
 # 按优先级解析工具配置文件路径：$1 显式参数 > 环境变量 > 当前目录 > $2 兜底目录；全部未命中输出空串
 resolve_config_path() {
-    if [ -n "$1" ]; then
-        echo "$1"
+    if [ -n "${1:-}" ]; then
+        if [ -f "$1" ]; then
+            echo "$1"
+            return 0
+        fi
+        echo ""
         return 0
     fi
     for key in $CONFIG_ENV_KEYS; do
         value="$(printenv "$key" 2>/dev/null || true)"
-        if [ -n "$value" ]; then
+        if [ -n "$value" ] && [ -f "$value" ]; then
             echo "$value"
             return 0
         fi
     done
-    for dir in "." "$2"; do
-        if [ -f "${dir}/generator_config.json" ]; then
+    for dir in "." "${2:-}"; do
+        if [ -n "$dir" ] && [ -f "${dir}/generator_config.json" ]; then
             echo "${dir}/generator_config.json"
             return 0
         fi

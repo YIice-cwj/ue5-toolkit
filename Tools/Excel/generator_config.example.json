@@ -9,6 +9,20 @@
     "_optional_output_module_dir": "Plugins/GameData/Source/GameData (若存在则自动绑定为该插件，否则回落主工程)",
     "_optional_api_macro": "GAMEDATA_API (自动根据输出模块推导)",
     "_optional_project_prefix": "Game (自动推导前缀，用于生成类名与命令名)",
-    "_optional_backup_dir": "DataTables_Backup (反向同步备份目录，缺省自动置于工程根下)",
+    "_optional_row_key_mode": "fname (默认 fname 无行数限制；小表可选 enum 生成 E{Stem}Key : uint8)",
+    "_optional_nested_struct_types": {
+        "FCustomReward": "Custom/CustomRewardTypes.h"
+    },
+    "_optional_foreign_keys_file": "Tools/Excel/foreign_keys.json",
+    "_optional_log_config": {
+        "header": "Logging/GameLogCategories.h",
+        "macro": "GAME_LOG",
+        "category_name": "LogGame"
+    },
+    "_optional_back_write": {
+        "backup_dir": "DataTables_Backup",
+        "max_backups": 10,
+        "protect_formulas": true
+    },
     "_optional_engine_source_dir": "/path/to/Engine/Source (自动根据 .uproject 中的 EngineAssociation 推导，支持环境变量 UE_ENGINE_DIR 覆盖)"
 }

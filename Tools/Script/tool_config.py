@@ -3,32 +3,30 @@
 """
 统一工具配置加载器 (tool_config.py)
 
-- 全部工具脚本（validate_tables / generate_cpp_structs / excel_to_json）
-  只从配置文件读取路径与参数，脚本内不内置任何默认路径与工程假设。
-- 配置来源：--config <JSON 文件>（强制）；命令行参数仅作为对配置字段的覆盖。
+- 全部工具脚本（validate_tables / main / excel_to_json / gameplay_tags_to_ini / json_to_excel）
+  只从配置文件读取路径与参数，脚本内不内置任何硬编码工程路径。
+- 配置来源：--config <JSON 文件> > 环境变量 UE_TOOL_CONFIG > 当前目录 > Tools/Excel 目录。
 - 必需键缺失时打印缺失清单并以非零退出码终止。
-- 相对路径展开：所有路径类配置值相对配置文件所在目录展开为绝对路径，
-  工程可整目录搬迁而无需改配置（去个人绝对路径）。
+- 相对路径展开：以 `.` 开头的相对路径相对配置文件所在目录展开，
+  其余相对路径在自动发现工程根（*.uproject）时相对工程根展开，否则相对配置文件所在目录展开。
 """
 
 import glob
 import json
 import os
+import shutil
 import subprocess
 import sys
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 DEFAULT_CONFIG_FILENAME = "generator_config.json"
 
-# 本模块自身目录与 Tools/Excel 目录（配置发现的常规落点，全工具唯一来源）
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 TOOLS_DIR = os.path.dirname(SCRIPT_DIR)
 TOOLS_EXCEL_DIR = os.path.join(TOOLS_DIR, "Excel")
 
-# 配置发现的环境变量（按优先级；不含任何工程专有名）
-CONFIG_ENV_KEYS = ("UE_TOOL_CONFIG", "UE_STATIC_DATA_CONFIG")
+CONFIG_ENV_KEYS = ("UE_TOOL_CONFIG",)
 
-# 常规配置文件位置（各工具脚本 import 本常量复用，不再各自拼路径）
 CONVENTIONAL_CONFIG_PATH = os.path.normpath(os.path.join(TOOLS_EXCEL_DIR, DEFAULT_CONFIG_FILENAME))
 
 KEY_DATA_TABLES_SOURCE_DIR = "data_tables_source_dir"
@@ -62,6 +60,9 @@ PATH_KEYS = (
     "foreign_keys_file",
     "project_file",
     KEY_ENGINE_SOURCE_DIR,
+    "backup_dir",
+    "unreal_editor_cmd",
+    "clang_compiler",
 )
 
 SECTION_PATH_SPECS = (
@@ -72,11 +73,18 @@ SECTION_PATH_SPECS = (
 
 
 def _find_project_root_and_file(start_dir: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-    """递归向上查找 *.uproject 并解析主模块名"""
+    """
+    递归向上查找 *.uproject 并解析主模块名
+    @param start_dir 起始查找目录
+    @return (project_root, uproject_path, primary_module)
+    """
     curr = os.path.abspath(start_dir)
     while True:
         try:
-            candidates = [f for f in os.listdir(curr) if f.endswith(".uproject") and os.path.isfile(os.path.join(curr, f))]
+            candidates = sorted(
+                f for f in os.listdir(curr)
+                if f.endswith(".uproject") and os.path.isfile(os.path.join(curr, f))
+            )
         except OSError:
             candidates = []
         if candidates:
@@ -89,7 +97,7 @@ def _find_project_root_and_file(start_dir: str) -> Tuple[Optional[str], Optional
                 modules = uproject_data.get("Modules", [])
                 if modules and isinstance(modules, list) and isinstance(modules[0], dict):
                     primary_module = modules[0].get("Name")
-            except Exception:
+            except (OSError, json.JSONDecodeError, TypeError, ValueError):
                 pass
             if not primary_module:
                 primary_module = os.path.splitext(candidates[0])[0]
@@ -102,117 +110,183 @@ def _find_project_root_and_file(start_dir: str) -> Tuple[Optional[str], Optional
 
 
 def _resolve_path(config_dir: str, project_root: Optional[str], value: Any) -> Any:
-    """相对路径展开为绝对路径"""
+    """
+    相对路径展开为绝对路径
+    @param config_dir 配置文件所在目录
+    @param project_root 工程根目录（可选）
+    @param value 待展开的路径配置值
+    @return 归一化绝对路径
+    """
     if not value:
         return value
-    expanded = os.path.expandvars(str(value))
+    expanded = os.path.expanduser(os.path.expandvars(str(value)))
     if os.path.isabs(expanded):
-        return expanded
-    if project_root:
-        if expanded.startswith("."):
-            return os.path.normpath(os.path.join(config_dir, expanded))
+        return os.path.normpath(expanded)
+    if project_root and not expanded.startswith("."):
         return os.path.normpath(os.path.join(project_root, expanded))
     return os.path.normpath(os.path.join(config_dir, expanded))
 
 
 def _expand_relative_paths(raw: Dict[str, Any], config_dir: str, project_root: Optional[str]) -> Dict[str, Any]:
-    """递归展开配置中的相对路径"""
+    """
+    展开配置中的顶层及分段相对路径
+    @param raw 原始配置字典（原地更新）
+    @param config_dir 配置文件目录
+    @param project_root 工程根目录
+    @return 更新后的配置字典
+    """
     for key in PATH_KEYS:
         if raw.get(key):
             raw[key] = _resolve_path(config_dir, project_root, raw[key])
     for section, key, kind in SECTION_PATH_SPECS:
-        if not isinstance(raw.get(section), dict):
+        section_obj = raw.get(section)
+        if not isinstance(section_obj, dict):
             continue
-        value = raw[section].get(key)
+        value = section_obj.get(key)
         if not value:
             continue
-        if kind == "list":
-            raw[section][key] = [_resolve_path(config_dir, project_root, item) for item in value]
-        else:
-            raw[section][key] = _resolve_path(config_dir, project_root, value)
+        if kind == "list" and isinstance(value, list):
+            section_obj[key] = [_resolve_path(config_dir, project_root, item) for item in value]
+        elif kind != "list":
+            section_obj[key] = _resolve_path(config_dir, project_root, value)
     return raw
 
 
 def _infer_project_prefix(raw: Dict[str, Any]) -> str:
-    """推导项目前缀：显式 project_prefix 优先，缺省默认 Game"""
+    """
+    推导项目前缀：显式 project_prefix 优先，缺省默认 Game
+    @param raw 配置字典
+    @return 项目前缀字符串
+    """
     explicit = raw.get("project_prefix")
     if explicit:
         return str(explicit).strip()
     return "Game"
 
 
-def _detect_unreal_editor_cmd(uproject_path: Optional[str]) -> str:
-    """根据 UE_ENGINE_DIR、当前工程 .uproject 中的 EngineAssociation 或已安装 UE 5.8~5.1 智能探测虚幻编辑器"""
-    is_mac = sys.platform == "darwin"
-    is_win = sys.platform == "win32"
+def _read_uproject_engine_association(uproject_path: Optional[str]) -> Optional[str]:
+    """
+    从 .uproject 读取 EngineAssociation 字段
+    @param uproject_path .uproject 文件路径
+    @return 引擎版本标签（未找到或解析失败返回 None）
+    """
+    if not uproject_path or not os.path.isfile(uproject_path):
+        return None
+    try:
+        with open(uproject_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        raw_assoc = data.get("EngineAssociation")
+        return str(raw_assoc).strip() if raw_assoc else None
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
 
+
+def _query_windows_engine_root(engine_assoc: Optional[str]) -> Optional[str]:
+    """
+    在 Windows 注册表中查询源码版 UE 引擎根目录
+    @param engine_assoc .uproject 的 EngineAssociation 值
+    @return 引擎根目录路径，未命中返回 None
+    """
+    if sys.platform != "win32" or not engine_assoc:
+        return None
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"SOFTWARE\Epic Games\Unreal Engine\Builds") as key:
+            val, _ = winreg.QueryValueEx(key, engine_assoc)
+            return str(val) if val else None
+    except (ImportError, OSError):
+        return None
+
+
+def _platform_engine_roots(version_tags: Sequence[str]) -> List[str]:
+    """
+    按当前操作系统列出标准安装的 UE 引擎根目录候选列表
+    @param version_tags 版本标签序列（如 ["5.8", "5.7", ...]）
+    @return 候选引擎根目录列表
+    """
+    roots: List[str] = []
+    for tag in version_tags:
+        if not tag:
+            continue
+        if sys.platform == "darwin":
+            roots.append(f"/Users/Shared/Epic Games/UE_{tag}")
+            roots.append(f"/Applications/Epic Games/UE_{tag}")
+        elif sys.platform == "win32":
+            roots.append(f"C:/Program Files/Epic Games/UE_{tag}")
+            roots.append(f"D:/Program Files/Epic Games/UE_{tag}")
+            roots.append(f"E:/Program Files/Epic Games/UE_{tag}")
+        else:
+            roots.append(f"/opt/UnrealEngine/UE_{tag}")
+            roots.append(os.path.expanduser(f"~/UnrealEngine/UE_{tag}"))
+    return roots
+
+
+def _editor_binary_candidates(engine_root: str) -> List[str]:
+    """
+    由引擎根目录（或 Engine 子目录）展开平台对应的编辑器可执行文件候选路径
+    @param engine_root 引擎根目录
+    @return 可执行文件候选路径列表
+    """
+    norm_root = os.path.normpath(engine_root)
+    roots = [norm_root]
+    if os.path.basename(norm_root) == "Engine":
+        roots.insert(0, os.path.dirname(norm_root))
+    candidates: List[str] = []
+    for root in roots:
+        if sys.platform == "darwin":
+            candidates.extend([
+                os.path.join(root, "Engine", "Binaries", "Mac", "UnrealEditor.app", "Contents", "MacOS", "UnrealEditor"),
+                os.path.join(root, "Engine", "Binaries", "Mac", "UnrealEditor-Cmd"),
+            ])
+        elif sys.platform == "win32":
+            candidates.append(os.path.join(root, "Engine", "Binaries", "Win64", "UnrealEditor-Cmd.exe"))
+        else:
+            candidates.append(os.path.join(root, "Engine", "Binaries", "Linux", "UnrealEditor"))
+    return candidates
+
+
+def _detect_unreal_editor_cmd(uproject_path: Optional[str]) -> str:
+    """
+    根据 UE_ENGINE_DIR、当前工程 .uproject 中的 EngineAssociation 或已安装 UE 5.8~5.1 探测虚幻编辑器
+    @param uproject_path 工程 .uproject 路径
+    @return 编辑器可执行文件绝对路径，未找到返回空串
+    """
     env_dir = os.environ.get("UE_ENGINE_DIR")
     if env_dir:
-        expanded = os.path.expandvars(env_dir)
-        env_candidates = (
-            [
-                os.path.join(expanded, "Engine", "Binaries", "Mac", "UnrealEditor.app", "Contents", "MacOS", "UnrealEditor"),
-                os.path.join(expanded, "Engine", "Binaries", "Mac", "UnrealEditor-Cmd"),
-            ]
-            if is_mac
-            else (
-                [os.path.join(expanded, "Engine", "Binaries", "Win64", "UnrealEditor-Cmd.exe")]
-                if is_win
-                else [os.path.join(expanded, "Engine", "Binaries", "Linux", "UnrealEditor")]
-            )
-        )
-        for path in env_candidates:
+        for path in _editor_binary_candidates(os.path.expanduser(os.path.expandvars(env_dir))):
             if os.path.isfile(path):
                 return os.path.normpath(path)
 
-    engine_assoc = None
-    if uproject_path and os.path.isfile(uproject_path):
-        try:
-            with open(uproject_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                raw_assoc = data.get("EngineAssociation")
-                if raw_assoc:
-                    engine_assoc = str(raw_assoc).strip()
-        except Exception:
-            pass
+    engine_assoc = _read_uproject_engine_association(uproject_path)
+    if engine_assoc:
+        for root in _platform_engine_roots([engine_assoc]):
+            for path in _editor_binary_candidates(root):
+                if os.path.isfile(path):
+                    return os.path.normpath(path)
+        win_root = _query_windows_engine_root(engine_assoc)
+        if win_root:
+            for path in _editor_binary_candidates(win_root):
+                if os.path.isfile(path):
+                    return os.path.normpath(path)
 
-    version_tags = ([engine_assoc] if engine_assoc else []) + [f"5.{m}" for m in range(8, 0, -1)]
-    candidates = []
-    for tag in version_tags:
-        if is_mac:
-            candidates.append(f"/Users/Shared/Epic Games/UE_{tag}/Engine/Binaries/Mac/UnrealEditor.app/Contents/MacOS/UnrealEditor")
-            candidates.append(f"/Applications/Epic Games/UE_{tag}/Engine/Binaries/Mac/UnrealEditor.app/Contents/MacOS/UnrealEditor")
-        elif is_win:
-            candidates.append(f"C:/Program Files/Epic Games/UE_{tag}/Engine/Binaries/Win64/UnrealEditor-Cmd.exe")
-            candidates.append(f"D:/Program Files/Epic Games/UE_{tag}/Engine/Binaries/Win64/UnrealEditor-Cmd.exe")
-        else:
-            candidates.append(f"/opt/UnrealEngine/UE_{tag}/Engine/Binaries/Linux/UnrealEditor")
-            candidates.append(os.path.expanduser(f"~/UnrealEngine/UE_{tag}/Engine/Binaries/Linux/UnrealEditor"))
-
-    for path in candidates:
-        if os.path.isfile(path):
-            return os.path.normpath(path)
-
-    if is_win and engine_assoc:
-        try:
-            import winreg
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"SOFTWARE\Epic Games\Unreal Engine\Builds") as key:
-                val, _ = winreg.QueryValueEx(key, engine_assoc)
-                if val:
-                    candidate = os.path.join(val, "Engine", "Binaries", "Win64", "UnrealEditor-Cmd.exe")
-                    if os.path.isfile(candidate):
-                        return os.path.normpath(candidate)
-        except Exception:
-            pass
+    for root in _platform_engine_roots([f"5.{m}" for m in range(8, 0, -1)]):
+        for path in _editor_binary_candidates(root):
+            if os.path.isfile(path):
+                return os.path.normpath(path)
 
     return ""
 
 
 def _detect_engine_source_dir(uproject_path: Optional[str], unreal_editor_cmd: Optional[str] = None) -> str:
-    """智能推导虚幻引擎源码目录 (<Engine>/Source)"""
+    """
+    智能推导虚幻引擎源码目录 (<Engine>/Source)
+    @param uproject_path 工程 .uproject 路径
+    @param unreal_editor_cmd 已探测的编辑器可执行路径（可选）
+    @return Engine/Source 绝对路径，未找到返回空串
+    """
     env_dir = os.environ.get("UE_ENGINE_DIR")
     if env_dir:
-        expanded = os.path.expandvars(env_dir)
+        expanded = os.path.expanduser(os.path.expandvars(env_dir))
         for sub in ("Source", os.path.join("Engine", "Source")):
             target = os.path.join(expanded, sub)
             if os.path.isdir(target):
@@ -220,49 +294,19 @@ def _detect_engine_source_dir(uproject_path: Optional[str], unreal_editor_cmd: O
         if os.path.isdir(expanded):
             return os.path.normpath(expanded)
 
-    engine_assoc = None
-    if uproject_path and os.path.isfile(uproject_path):
-        try:
-            with open(uproject_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                raw_assoc = data.get("EngineAssociation")
-                if raw_assoc:
-                    engine_assoc = str(raw_assoc).strip()
-        except Exception:
-            pass
-
-    is_mac = sys.platform == "darwin"
-    is_win = sys.platform == "win32"
-
-    candidates: List[str] = []
+    engine_assoc = _read_uproject_engine_association(uproject_path)
     if engine_assoc:
-        if is_mac:
-            candidates.append(f"/Users/Shared/Epic Games/UE_{engine_assoc}/Engine/Source")
-            candidates.append(f"/Applications/Epic Games/UE_{engine_assoc}/Engine/Source")
-        elif is_win:
-            candidates.append(f"C:/Program Files/Epic Games/UE_{engine_assoc}/Engine/Source")
-            candidates.append(f"D:/Program Files/Epic Games/UE_{engine_assoc}/Engine/Source")
-            candidates.append(f"E:/Program Files/Epic Games/UE_{engine_assoc}/Engine/Source")
-        else:
-            candidates.append(f"/opt/UnrealEngine/UE_{engine_assoc}/Engine/Source")
-            candidates.append(os.path.expanduser(f"~/UnrealEngine/UE_{engine_assoc}/Engine/Source"))
+        for root in _platform_engine_roots([engine_assoc]):
+            candidate = os.path.join(root, "Engine", "Source")
+            if os.path.isdir(candidate):
+                return os.path.normpath(candidate)
 
-    for path in candidates:
-        if os.path.isdir(path):
-            return os.path.normpath(path)
-
-    if is_win and engine_assoc:
-        try:
-            import winreg
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"SOFTWARE\Epic Games\Unreal Engine\Builds") as key:
-                val, _ = winreg.QueryValueEx(key, engine_assoc)
-                if val:
-                    for sub in (os.path.join("Engine", "Source"), "Source"):
-                        cand = os.path.join(val, sub)
-                        if os.path.isdir(cand):
-                            return os.path.normpath(cand)
-        except Exception:
-            pass
+        win_root = _query_windows_engine_root(engine_assoc)
+        if win_root:
+            for sub in (os.path.join("Engine", "Source"), "Source"):
+                cand = os.path.join(win_root, sub)
+                if os.path.isdir(cand):
+                    return os.path.normpath(cand)
 
     if unreal_editor_cmd and os.path.isfile(unreal_editor_cmd):
         norm_cmd = os.path.normpath(unreal_editor_cmd)
@@ -272,11 +316,11 @@ def _detect_engine_source_dir(uproject_path: Optional[str], unreal_editor_cmd: O
             if os.path.isdir(candidate):
                 return os.path.normpath(candidate)
 
-    if is_mac:
+    if sys.platform == "darwin":
         fallback_dirs = sorted(glob.glob("/Users/Shared/Epic Games/UE_*/Engine/Source"), reverse=True)
         if fallback_dirs:
             return os.path.normpath(fallback_dirs[0])
-    elif is_win:
+    elif sys.platform == "win32":
         for drive in ("C", "D", "E"):
             fallback_dirs = sorted(glob.glob(f"{drive}:/Program Files/Epic Games/UE_*/Engine/Source"), reverse=True)
             if fallback_dirs:
@@ -286,10 +330,15 @@ def _detect_engine_source_dir(uproject_path: Optional[str], unreal_editor_cmd: O
 
 
 def _detect_clang_compiler() -> str:
-    """智能探测 clang++ 编译器路径"""
+    """
+    智能探测 clang++ 编译器路径
+    @return clang++ 绝对路径，未找到返回空串
+    """
     env_path = os.environ.get("UE_CLANG_COMPILER")
-    if env_path and os.path.isfile(env_path):
-        return os.path.normpath(os.path.abspath(env_path))
+    if env_path:
+        expanded_env = os.path.expanduser(os.path.expandvars(env_path))
+        if os.path.isfile(expanded_env):
+            return os.path.normpath(os.path.abspath(expanded_env))
 
     if sys.platform == "darwin":
         try:
@@ -299,7 +348,6 @@ def _detect_clang_compiler() -> str:
         except (OSError, subprocess.SubprocessError):
             pass
 
-    import shutil
     detected = shutil.which("clang++")
     if detected:
         return os.path.normpath(detected)
@@ -316,7 +364,8 @@ def _detect_clang_compiler() -> str:
 
 
 def derive_console_names(prefix: str) -> Dict[str, str]:
-    """按项目前缀推导控制台命令 / 命令行开关的约定名（生成器与 Cook 工具共用同一真源）
+    """
+    按项目前缀推导控制台命令 / 命令行开关的约定名（生成器与 Cook 工具共用同一真源）
     @param prefix 项目前缀（如 Game）
     @return 字典：export_bin / report_integrity / channel_cmd_arg / verify_switch / export_commandlet
     """
@@ -329,6 +378,22 @@ def derive_console_names(prefix: str) -> Dict[str, str]:
     }
 
 
+def _derive_api_macro(output_module_dir: str, primary_module: Optional[str]) -> str:
+    """
+    根据输出模块目录末级目录名推导 UE 模块导出宏（如 .../Source/GameDataSamples -> GAMEDATASAMPLES_API）
+    @param output_module_dir 输出模块目录
+    @param primary_module 工程主模块名（回退用）
+    @return UE 模块导出宏名
+    """
+    if output_module_dir:
+        module_name = os.path.basename(os.path.normpath(output_module_dir))
+        if module_name:
+            return f"{module_name.upper()}_API"
+    if primary_module:
+        return f"{primary_module.upper()}_API"
+    return "GAME_API"
+
+
 def _normalize_and_derive_config(
     raw: Dict[str, Any],
     config_dir: str,
@@ -336,7 +401,15 @@ def _normalize_and_derive_config(
     uproject_path: Optional[str],
     primary_module: Optional[str],
 ) -> Dict[str, Any]:
-    """统一推导并扁平化派生配置键"""
+    """
+    统一推导并扁平化派生配置键
+    @param raw 已展开路径的原始配置字典
+    @param config_dir 配置文件所在目录
+    @param project_root 工程根目录
+    @param uproject_path .uproject 文件路径
+    @param primary_module 工程主模块名
+    @return 补全派生键后的配置字典
+    """
     raw["project_root"] = project_root
     if not raw.get("project_name"):
         raw["project_name"] = os.path.splitext(os.path.basename(uproject_path))[0] if uproject_path else (primary_module or "Game")
@@ -344,7 +417,11 @@ def _normalize_and_derive_config(
         raw["project_file"] = uproject_path
 
     if not raw.get("unreal_editor_cmd"):
-        raw["unreal_editor_cmd"] = os.environ.get("UE_EDITOR_CMD") or _detect_unreal_editor_cmd(uproject_path)
+        env_editor = os.environ.get("UE_EDITOR_CMD")
+        raw["unreal_editor_cmd"] = (
+            os.path.normpath(os.path.expanduser(os.path.expandvars(env_editor)))
+            if env_editor else _detect_unreal_editor_cmd(uproject_path)
+        )
 
     if not raw.get("engine_source_dir"):
         raw["engine_source_dir"] = _detect_engine_source_dir(uproject_path, raw.get("unreal_editor_cmd"))
@@ -365,21 +442,12 @@ def _normalize_and_derive_config(
         game_data_plugin_dir = os.path.join(project_root, "Plugins", "GameData", "Source", "GameData")
         if os.path.isdir(game_data_plugin_dir):
             raw["output_module_dir"] = game_data_plugin_dir
-            if not raw.get("api_macro"):
-                raw["api_macro"] = "GAMEDATA_API"
         else:
             mod_name = primary_module or "Game"
             raw["output_module_dir"] = os.path.join(project_root, "Source", mod_name)
-            if not raw.get("api_macro"):
-                raw["api_macro"] = f"{mod_name.upper()}_API"
-    elif not raw.get("api_macro"):
-        out_dir = str(raw.get("output_module_dir") or "")
-        if "GameData" in out_dir:
-            raw["api_macro"] = "GAMEDATA_API"
-        elif primary_module:
-            raw["api_macro"] = f"{primary_module.upper()}_API"
-        else:
-            raw["api_macro"] = "GAME_API"
+
+    if not raw.get("api_macro"):
+        raw["api_macro"] = _derive_api_macro(str(raw.get("output_module_dir") or ""), primary_module)
 
     if not raw.get("subsystem_header_include"):
         raw["subsystem_header_include"] = "Generated/Data/StaticData/UStaticDataSubsystem.h"
@@ -398,17 +466,17 @@ def _normalize_and_derive_config(
         raw["blueprint_category"] = f"{prefix}|StaticData"
 
     log_cfg = raw.get("log_config", {}) if isinstance(raw.get("log_config"), dict) else {}
-    raw["log_header"] = log_cfg.get("header") or f"Logging/{prefix}LogCategories.h"
-    raw["log_macro"] = log_cfg.get("macro") or f"{prefix.upper()}_LOG"
-    raw["log_category_name"] = log_cfg.get("category_name") or f"Log{prefix}"
+    raw["log_header"] = log_cfg.get("header") or raw.get("log_header") or "Logging/GameLogCategories.h"
+    raw["log_macro"] = log_cfg.get("macro") or raw.get("log_macro") or "GAME_LOG"
+    raw["log_category_name"] = log_cfg.get("category_name") or raw.get("log_category_name") or "LogGame"
 
     cmd_cfg = raw.get("console_commands", {}) if isinstance(raw.get("console_commands"), dict) else {}
     console_names = derive_console_names(prefix)
-    raw["export_bin_command"] = cmd_cfg.get("export_bin") or console_names["export_bin"]
-    raw["report_integrity_command"] = cmd_cfg.get("report_integrity") or console_names["report_integrity"]
-    raw["static_data_channel_cmd_arg"] = cmd_cfg.get("channel_cmd_arg") or console_names["channel_cmd_arg"]
-    raw["verify_launch_switch"] = cmd_cfg.get("verify_switch") or console_names["verify_switch"]
-    raw["export_commandlet"] = cmd_cfg.get("export_commandlet") or console_names["export_commandlet"]
+    raw["export_bin_command"] = cmd_cfg.get("export_bin") or raw.get("export_bin_command") or console_names["export_bin"]
+    raw["report_integrity_command"] = cmd_cfg.get("report_integrity") or raw.get("report_integrity_command") or console_names["report_integrity"]
+    raw["static_data_channel_cmd_arg"] = cmd_cfg.get("channel_cmd_arg") or raw.get("static_data_channel_cmd_arg") or console_names["channel_cmd_arg"]
+    raw["verify_launch_switch"] = cmd_cfg.get("verify_switch") or raw.get("verify_launch_switch") or console_names["verify_switch"]
+    raw["export_commandlet"] = cmd_cfg.get("export_commandlet") or raw.get("export_commandlet") or console_names["export_commandlet"]
 
     row_key_mode = str(raw.get("row_key_mode") or "fname").strip().lower()
     if row_key_mode not in ("fname", "enum"):
@@ -419,8 +487,8 @@ def _normalize_and_derive_config(
         raw["nested_struct_types"] = {}
 
     reg_cfg = raw.get("registration", {}) if isinstance(raw.get("registration"), dict) else {}
-    raw["registration_class_name"] = reg_cfg.get("class_name") or f"F{prefix}Registration"
-    raw["game_instance_class_name"] = reg_cfg.get("game_instance_class") or f"U{prefix}GameInstance"
+    raw["registration_class_name"] = reg_cfg.get("class_name") or raw.get("registration_class_name") or f"F{prefix}Registration"
+    raw["game_instance_class_name"] = reg_cfg.get("game_instance_class") or raw.get("game_instance_class_name") or f"U{prefix}GameInstance"
 
     default_reg_header = None
     default_source_roots = None
@@ -447,31 +515,40 @@ def _normalize_and_derive_config(
         raw["registration"]["game_instance_class"] = raw["game_instance_class_name"]
 
     game_reg_cfg = raw.get("game_registration", {}) if isinstance(raw.get("game_registration"), dict) else {}
-    raw["game_config_defaults"] = game_reg_cfg.get("config_defaults") or {}
+    raw["game_config_defaults"] = game_reg_cfg.get("config_defaults") or raw.get("game_config_defaults") or {}
 
     if not raw.get("row_serializer_register_func"):
         raw["row_serializer_register_func"] = f"Register{prefix}StaticDataRowSerializers"
 
     bw_cfg = raw.get("back_write", {}) if isinstance(raw.get("back_write"), dict) else {}
-    raw["backup_dir"] = bw_cfg.get("backup_dir") or (
+    raw["backup_dir"] = bw_cfg.get("backup_dir") or raw.get("backup_dir") or (
         os.path.normpath(os.path.join(project_root, "DataTables_Backup"))
         if project_root else os.path.normpath(os.path.join(config_dir, "../../DataTables_Backup"))
     )
-    raw["max_backups"] = bw_cfg.get("max_backups", 10)
-    raw["protect_formulas"] = bw_cfg.get("protect_formulas", True)
+    raw["max_backups"] = bw_cfg.get("max_backups", raw.get("max_backups", 10))
+    raw["protect_formulas"] = bw_cfg.get("protect_formulas", raw.get("protect_formulas", True))
 
     return raw
 
 
 def config_candidates(extra_dirs: Sequence[str] = ()) -> List[str]:
-    """按优先级列出候选配置文件路径（环境变量 > extra_dirs > 当前目录 > Tools/Excel 目录）"""
+    """
+    按优先级列出候选配置文件路径（环境变量 > extra_dirs > 当前目录 > Tools/Excel 目录）
+    @param extra_dirs 额外搜索目录序列
+    @return 候选路径列表
+    """
     candidates: List[str] = [os.environ[key] for key in CONFIG_ENV_KEYS if os.environ.get(key)]
     candidates.extend(os.path.join(d, DEFAULT_CONFIG_FILENAME) for d in (*extra_dirs, os.getcwd(), TOOLS_EXCEL_DIR))
     return candidates
 
 
 def resolve_config_path(explicit: Optional[str] = None, extra_dirs: Sequence[str] = ()) -> Optional[str]:
-    """解析工具配置文件路径：显式参数优先（须存在），否则按 config_candidates 顺序取首个存在者；全部未命中返回 None"""
+    """
+    解析工具配置文件路径：显式参数优先（须存在），否则按 config_candidates 顺序取首个存在者
+    @param explicit 显式指定的配置文件路径
+    @param extra_dirs 额外搜索目录序列
+    @return 命中的配置文件路径，全部未命中返回 None
+    """
     if explicit:
         return explicit if os.path.isfile(explicit) else None
     for candidate in config_candidates(extra_dirs):
@@ -481,7 +558,12 @@ def resolve_config_path(explicit: Optional[str] = None, extra_dirs: Sequence[str
 
 
 def load_config(config_path: Optional[str], required_keys: Sequence[str]) -> Dict[str, Any]:
-    """加载并校验工具配置"""
+    """
+    加载并校验工具配置
+    @param config_path 显式配置文件路径（可为 None，自动按优先级发现）
+    @param required_keys 必需存在的配置键序列
+    @return 补全派生键并校验通过的配置字典
+    """
     resolved_path = resolve_config_path(config_path)
     if resolved_path is None:
         if config_path:
@@ -492,15 +574,19 @@ def load_config(config_path: Optional[str], required_keys: Sequence[str]) -> Dic
                   f"请使用 --config <path> 或环境变量 {CONFIG_ENV_KEYS[0]} 指定配置文件。", file=sys.stderr)
         sys.exit(1)
 
-    with open(resolved_path, "r", encoding="utf-8") as f:
-        raw = json.load(f)
+    try:
+        with open(resolved_path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
+        print(f"[配置错误] 读取或解析配置文件失败 {resolved_path}: {e}", file=sys.stderr)
+        sys.exit(1)
     if not isinstance(raw, dict):
         print("[配置错误] 配置文件必须为 JSON 对象。", file=sys.stderr)
         sys.exit(1)
 
     config_dir = os.path.dirname(os.path.abspath(resolved_path))
     project_root, uproject_path, primary_module = _find_project_root_and_file(config_dir)
-    if not project_root:
+    if not project_root and config_path is None:
         project_root, uproject_path, primary_module = _find_project_root_and_file(os.getcwd())
 
     _expand_relative_paths(raw, config_dir, project_root)

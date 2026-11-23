@@ -8,75 +8,92 @@
 2. 跨工具统一的工作表定位策略（Sheet Resolution），彻底消除 sheet1.xml vs wb.active 选表漂移；
 3. 强类型系统与双向编解码唯一实现：
    - 数组/集合类型严格优先于标量判定；
-   - 健壮解析：支持标准 JSON 数组、未加引号中括号 [a, b]、元组 (a, b) 与分隔符切分，消灭脏 token；
-   - 输出统一规范：反向写出标准 JSON 数组语法；
-   - 语义对拍：浮点容差参数化、整型取整、布尔归一、数组元素序列等价；
+   - 精确标量集合匹配（不误伤 FIntPoint / FIntVector 等结构体）；
+   - 统一布尔解析真源（convert_scalar_value / scalar_values_equal / table_rules 共用）；
+   - 健壮解析标准 JSON 数组、未加引号中括号 [a, b]、元组 (a, b) 与分隔符切分；
 4. 空值语义保护：区分“有意留空”与“类型零值”，防止覆写破坏 Excel 留空单元格；
 5. 内存前置数据校验：在落盘前完成结构与类型合规性自检。
 """
 
 import dataclasses
+import decimal
 import json
+import math
+import posixpath
 import re
+import xml.etree.ElementTree as ET
 from typing import Any, List, Optional, Sequence, Tuple
 
-from cpp_type_utils import clean_cpp_type as clean_cpp_type_name
+from cpp_type_utils import (
+    BOOL_SCALAR_TYPES,
+    FLOATING_SCALAR_TYPES,
+    INT_SCALAR_TYPES,
+    INT_TYPE_BOUNDS,
+    clean_cpp_type as clean_cpp_type_name,
+)
+from naming_utils import strip_dt_prefix
 
-# 数组 / 集合类型关键词
 ARRAY_KEYWORDS = ("tarray", "tset")
-
-# 数组常用分隔符正则（中英文逗号、分号、管道符、换行）
 ARRAY_SPLIT_REGEX = re.compile(r"[,;|，；\n]+")
-
-# 默认浮点比较容差
 DEFAULT_FLOAT_EPSILON = 1e-6
 
-# UE 侧文本字面量前缀（DataTable 导出物形态：FText 列可能是 NSLOCTEXT/LOCTEXT 调用而非显示文本）
 TEXT_LITERAL_PREFIXES = ("NSLOCTEXT(", "LOCTEXT(")
-
-# 文本类 C++ 类型关键字（反向形态归一只作用于文本列）
 TEXT_TYPE_KEYWORDS = ("ftext", "fstring")
 
-# UE 侧标签字面量前缀（FGameplayTag 列在导出物中形如 (TagName="A.B")）
 TAG_LITERAL_PREFIX = "(TagName="
-
-# 标签列 / 软对象列类型关键字
 TAG_TYPE_KEYWORDS = ("gameplaytag",)
 SOFT_OBJECT_TYPE_KEYWORDS = ("softobjectptr", "softclassptr")
-
-# UE 侧软对象“空引用”字面量（导出物中以字符串 None 表示未设置资产）
 SOFT_OBJECT_NONE_LITERAL = "None"
 
-# 禁用字段名（硬校验：与 UE/DataTable 约定冲突，禁止作为表头字段名出现；精确匹配，不含大写 Name 键别名）
 RESERVED_FIELD_NAMES = ("name",)
+
+BOOL_TRUE_VALUES = frozenset({"true", "1", "yes", "y"})
+BOOL_FALSE_VALUES = frozenset({"false", "0", "no", "n"})
+BOOL_ALL_LITERALS = BOOL_TRUE_VALUES | BOOL_FALSE_VALUES
+
+_NS_MAIN = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+_NS_REL = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+_NS_DOC_REL = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 
 
 class SchemaValidationError(ValueError):
-    """数据格式或类型校验失败异常"""
+    """
+    数据格式或类型校验失败异常
+    """
 
 
 @dataclasses.dataclass
 class ColumnInfo:
-    """列结构元数据"""
-    col_idx: int                 # 0-indexed 列下标
-    field_name: str              # Row 2 字段名 (如 RowName, Health)
-    cpp_type: str                # Row 3 C++ 类型声明 (如 int32, TArray<FString>)
-    display_name: str = ""       # Row 1 中文说明
-    is_array: bool = False       # 是否为数组/集合
-    inner_type: str = "FString"  # 数组元素类型或标量类型
-    is_key: bool = False         # 是否为主键 (RowName / Name)
+    """
+    数据表列结构元数据
+    """
+    col_idx: int
+    field_name: str
+    cpp_type: str
+    display_name: str = ""
+    is_array: bool = False
+    inner_type: str = "FString"
+    is_key: bool = False
 
 
 def is_array_type(cpp_type: Optional[str]) -> bool:
-    """判定是否为数组或集合类型（必须先于标量类型判定调用）"""
+    """
+    判定是否为数组或集合类型（必须先于标量类型判定调用）
+    @param cpp_type C++ 类型声明
+    @return 属于 TArray / TSet 返回 True
+    """
     if not cpp_type:
         return False
-    t_lower = cpp_type.lower()
-    return any(keyword in t_lower for keyword in ARRAY_KEYWORDS)
+    t_lower = cpp_type.strip().lower()
+    return any(t_lower.startswith(f"{keyword}<") for keyword in ARRAY_KEYWORDS)
 
 
 def extract_inner_type(cpp_type: Optional[str]) -> str:
-    """提取泛型容器内部元素类型（如 TArray<int32> -> int32，TSet<FName> -> FName）"""
+    """
+    提取泛型容器内部元素类型（如 TArray<int32> -> int32，TSet<FName> -> FName）
+    @param cpp_type 容器 C++ 类型声明
+    @return 清洗后的元素类型名
+    """
     if not cpp_type:
         return "FString"
     matched = re.search(r"<\s*(.+?)\s*>", cpp_type)
@@ -86,26 +103,57 @@ def extract_inner_type(cpp_type: Optional[str]) -> str:
 
 
 def get_scalar_zero_value(cpp_type: Optional[str]) -> Any:
-    """获取标量类型的默认零值"""
-    t_lower = (cpp_type or "").lower()
-    if "bool" in t_lower:
+    """
+    获取精确标量类型的默认零值（结构体类型返回空串）
+    @param cpp_type C++ 类型声明
+    @return 零值（False / 0.0 / 0 / ""）
+    """
+    t_lower = clean_cpp_type_name(cpp_type).lower()
+    if t_lower in BOOL_SCALAR_TYPES:
         return False
-    if "float" in t_lower or "double" in t_lower:
+    if t_lower in FLOATING_SCALAR_TYPES:
         return 0.0
-    if "int" in t_lower or "uint" in t_lower or "byte" in t_lower:
+    if t_lower in INT_SCALAR_TYPES:
         return 0
     return ""
+
+
+def parse_bool_value(raw_val: Any, strict: bool = False) -> bool:
+    """
+    统一布尔值解析真源（大小写无关，支持 bool / 0-1 数值 / true-false-yes-no-y-n 字面量）
+    @param raw_val 原始值
+    @param strict 严格模式（遇到非法字面量时抛出 SchemaValidationError）
+    @return 解析后的布尔值
+    """
+    if isinstance(raw_val, bool):
+        return raw_val
+    if raw_val is None or raw_val == "":
+        return False
+    if isinstance(raw_val, (int, float)):
+        if raw_val == 1:
+            return True
+        if raw_val == 0:
+            return False
+        if strict:
+            raise SchemaValidationError(f"无法将数值 {raw_val!r} 转为布尔值")
+        return bool(raw_val)
+
+    norm = str(raw_val).strip().lower()
+    if norm in BOOL_TRUE_VALUES:
+        return True
+    if norm in BOOL_FALSE_VALUES:
+        return False
+    if strict:
+        raise SchemaValidationError(f"无法将 {raw_val!r} 转为布尔值")
+    return False
 
 
 def parse_raw_array_items(raw_val: Any) -> List[Any]:
     """
     健壮解析任意书写形态的数组单元格/字段值
-    支持：
-    1. Python list / 原生容器
-    2. 标准 JSON 数组：["a", "b"]、[1, 2]
-    3. 未加引号的中括号数组：[a, b]（彻底修复切出 '[a' 和 'b]' 的脏 token 问题）
-    4. 虚幻元组语法：("a", "b")
-    5. 策划常用分隔符：a, b, c / a；b；c
+    支持 Python list、标准 JSON 数组、未加引号中括号数组 [a, b]、虚幻元组 (a, b) 与常用分隔符
+    @param raw_val 原始单元格或 JSON 字段值
+    @return 切分后的元素列表
     """
     if raw_val is None:
         return []
@@ -138,10 +186,55 @@ def parse_raw_array_items(raw_val: Any) -> List[Any]:
     return tokens
 
 
+def _base_type_lower(cpp_type: Optional[str]) -> str:
+    """
+    提取用于类型分类判定的基础类型小写名（若为容器则提取内部元素类型）
+    @param cpp_type C++ 类型声明
+    @return 清洗后的基础类型小写字符串
+    """
+    clean = clean_cpp_type_name(cpp_type) if cpp_type else ""
+    if is_array_type(clean):
+        clean = extract_inner_type(clean)
+    return clean.strip().lower()
+
+
+def _parse_exact_int(raw_val: Any) -> int:
+    """
+    精确解析整数值（优先直接 int 解析以保持 64 位大整数完整精度，仅接受小数部分为 0 的浮点或十进制文本）
+    @param raw_val 原始单元格或 JSON 值
+    @return 解析后的 Python int
+    @raises ValueError 无法解析为精确有限整数时抛出
+    """
+    if isinstance(raw_val, (bool, list, dict)):
+        raise ValueError("布尔值、容器或对象不可作为整数解析")
+    if isinstance(raw_val, int):
+        return raw_val
+    if isinstance(raw_val, float):
+        if not math.isfinite(raw_val) or not raw_val.is_integer():
+            raise ValueError(f"非精确整数浮点值不可转为整数: {raw_val!r}")
+        return int(raw_val)
+    text = str(raw_val).strip()
+    if not text:
+        raise ValueError("空字符串不可转为整数")
+    try:
+        return int(text)
+    except ValueError:
+        try:
+            dec = decimal.Decimal(text)
+        except decimal.InvalidOperation as err:
+            raise ValueError(f"非法数值文本: {raw_val!r}") from err
+        if not dec.is_finite() or dec != int(dec):
+            raise ValueError(f"非精确整数数值: {raw_val!r}")
+        return int(dec)
+
+
 def is_text_type(cpp_type: Optional[str]) -> bool:
-    """判定是否为文本类列（FText / FString），反向形态归一只作用于文本列"""
-    t_lower = (cpp_type or "").lower()
-    return any(keyword in t_lower for keyword in TEXT_TYPE_KEYWORDS)
+    """
+    判定是否为文本类列（FText / FString），反向形态归一只作用于文本列
+    @param cpp_type C++ 类型声明
+    @return 属于文本列返回 True
+    """
+    return _base_type_lower(cpp_type) in TEXT_TYPE_KEYWORDS
 
 
 def _split_literal_args(inner: str) -> List[str]:
@@ -216,9 +309,6 @@ def unwrap_text_literal(raw_val: Any) -> Any:
     把 UE 文本字面量还原为显示文本（仅处理完整的 NSLOCTEXT/LOCTEXT 调用，其余原样返回）
     @param raw_val 原始值（通常是 JSON 侧 FText 字段值）
     @return 显示文本；非字面量形态或解析失败时原样返回
-
-    实现思路：仅当整串构成完整调用（以 NSLOCTEXT(/LOCTEXT( 开头、以 ) 结尾）才归一；
-    NSLOCTEXT 取第 3 个参数、LOCTEXT 取第 2 个参数作为显示文本，避免误伤文本中恰好含该字样的普通字符串
     """
     if raw_val is None or isinstance(raw_val, (list, dict)):
         return raw_val
@@ -238,15 +328,22 @@ def unwrap_text_literal(raw_val: Any) -> Any:
 
 
 def is_tag_type(cpp_type: Optional[str]) -> bool:
-    """判定是否为 FGameplayTag 列"""
-    t_lower = (cpp_type or "").lower()
-    return any(keyword in t_lower for keyword in TAG_TYPE_KEYWORDS)
+    """
+    判定是否为 FGameplayTag 列
+    @param cpp_type C++ 类型声明
+    @return 属于 FGameplayTag 列返回 True
+    """
+    return _base_type_lower(cpp_type) in ("fgameplaytag", "fgameplaytagcontainer")
 
 
 def is_soft_object_type(cpp_type: Optional[str]) -> bool:
-    """判定是否为软对象引用列（TSoftObjectPtr / TSoftClassPtr）"""
-    t_lower = (cpp_type or "").lower()
-    return any(keyword in t_lower for keyword in SOFT_OBJECT_TYPE_KEYWORDS)
+    """
+    判定是否为软对象引用列（TSoftObjectPtr / TSoftClassPtr）
+    @param cpp_type C++ 类型声明
+    @return 属于软引用列返回 True
+    """
+    base = _base_type_lower(cpp_type)
+    return base.startswith(("tsoftobjectptr<", "tsoftclassptr<"))
 
 
 def unwrap_tag_literal(raw_val: Any) -> Any:
@@ -288,9 +385,6 @@ def unwrap_soft_object_value(raw_val: Any) -> Any:
 def normalize_value_form(raw_val: Any, cpp_type: Optional[str]) -> Any:
     """
     反向入参形态归一（仅针对 UE 侧导出形态，不改变 Excel 侧可读值语义）
-    - FText / FString 列：NSLOCTEXT / LOCTEXT 字面量 → 显示文本
-    - FGameplayTag 列：(TagName="X") 字面量 → 标签名 X
-    - 软对象列：字符串 None → 空值
     @param raw_val 原始值
     @param cpp_type C++ 类型声明
     @return 归一后的值
@@ -310,47 +404,70 @@ def normalize_value_form(raw_val: Any, cpp_type: Optional[str]) -> Any:
 
 def convert_scalar_value(raw_val: Any, cpp_type: Optional[str], strict: bool = False) -> Any:
     """
-    标量值类型强转
+    精确标量值类型强转（FIntPoint / FIntVector 等结构体保持字符串原样）
     @param raw_val 原始值
     @param cpp_type C++ 类型声明
     @param strict 严格模式（失败抛 SchemaValidationError，非严格回落默认值）
+    @return 强转后的标量值
     """
-    t_lower = (cpp_type or "").lower()
+    t_lower = clean_cpp_type_name(cpp_type).lower()
 
-    if "float" in t_lower or "double" in t_lower:
+    if isinstance(raw_val, (list, dict)):
+        if strict:
+            raise SchemaValidationError(f"标量字段 ({cpp_type}) 不接受容器或对象值: {raw_val!r}")
+        return get_scalar_zero_value(cpp_type)
+
+    if t_lower in FLOATING_SCALAR_TYPES:
         if raw_val is None or raw_val == "":
             return 0.0
-        try:
-            return float(raw_val)
-        except (ValueError, TypeError) as e:
-            if strict:
-                raise SchemaValidationError(f"无法将 {raw_val!r} 转为浮点数: {e}")
-            return 0.0
-
-    if "int" in t_lower or "uint" in t_lower or "byte" in t_lower:
-        if raw_val is None or raw_val == "":
-            return 0
-        try:
-            return int(round(float(raw_val)))
-        except (ValueError, TypeError) as e:
-            if strict:
-                raise SchemaValidationError(f"无法将 {raw_val!r} 转为整型: {e}")
-            return 0
-
-    if "bool" in t_lower:
         if isinstance(raw_val, bool):
-            return raw_val
+            if strict:
+                raise SchemaValidationError(f"无法将布尔值 {raw_val!r} 转为浮点数")
+            return 0.0
+        try:
+            parsed_float = float(raw_val)
+        except (ValueError, TypeError, OverflowError) as e:
+            if strict:
+                raise SchemaValidationError(f"无法将 {raw_val!r} 转为浮点数: {e}") from e
+            return 0.0
+        if not math.isfinite(parsed_float):
+            if strict:
+                raise SchemaValidationError(f"浮点数不允许为 NaN 或 Inf: {raw_val!r}")
+            return 0.0
+        return parsed_float
+
+    if t_lower in INT_SCALAR_TYPES:
         if raw_val is None or raw_val == "":
-            return False
-        return str(raw_val).strip().upper() in ("TRUE", "1", "YES", "Y")
+            return 0
+        try:
+            parsed_int = _parse_exact_int(raw_val)
+        except (ValueError, TypeError, OverflowError) as e:
+            if strict:
+                raise SchemaValidationError(f"无法将 {raw_val!r} 转为整型: {e}") from e
+            return 0
+        bounds = INT_TYPE_BOUNDS.get(t_lower)
+        if bounds is not None and not (bounds[0] <= parsed_int <= bounds[1]):
+            if strict:
+                raise SchemaValidationError(
+                    f"整型值 {parsed_int} 超出 {cpp_type} 范围 [{bounds[0]}, {bounds[1]}]"
+                )
+            return max(bounds[0], min(bounds[1], parsed_int))
+        return parsed_int
+
+    if t_lower in BOOL_SCALAR_TYPES:
+        return parse_bool_value(raw_val, strict=strict)
 
     if raw_val is None:
         return ""
     return str(raw_val).strip()
 
 
-def convert_for_json(raw_val: Any, cpp_type: Optional[str], strict: bool = False,
-                     nested_struct_types: Optional[dict] = None) -> Any:
+def convert_for_json(
+    raw_val: Any,
+    cpp_type: Optional[str],
+    strict: bool = False,
+    nested_struct_types: Optional[dict] = None,
+) -> Any:
     """
     转换 Excel 单元格原始值为标准的 JSON 对象属性值（正向导出使用）
     @param raw_val 原始值
@@ -361,17 +478,28 @@ def convert_for_json(raw_val: Any, cpp_type: Optional[str], strict: bool = False
     """
     clean_type = clean_cpp_type_name(cpp_type)
     if nested_struct_types and clean_type in nested_struct_types:
+        if raw_val is None or raw_val == "":
+            return {}
         if isinstance(raw_val, dict):
             return raw_val
         if isinstance(raw_val, str):
             text = raw_val.strip()
-            if text.startswith("{") or text.startswith("["):
+            if not text:
+                return {}
+            if text.startswith("{"):
                 try:
-                    return json.loads(text)
+                    parsed = json.loads(text)
+                    if isinstance(parsed, dict):
+                        return parsed
                 except json.JSONDecodeError as e:
                     if strict:
-                        raise SchemaValidationError(f"嵌套结构 {clean_type} 的 JSON 文本非法: {e}")
+                        raise SchemaValidationError(f"嵌套结构 {clean_type} 的 JSON 文本非法: {e}") from e
                     return raw_val
+            if strict:
+                raise SchemaValidationError(f"嵌套结构 {clean_type} 必须为 JSON 对象: {raw_val!r}")
+            return raw_val
+        if strict:
+            raise SchemaValidationError(f"嵌套结构 {clean_type} 必须为 JSON 对象: {raw_val!r}")
         return raw_val
 
     if is_array_type(clean_type):
@@ -384,16 +512,21 @@ def convert_for_json(raw_val: Any, cpp_type: Optional[str], strict: bool = False
     return convert_scalar_value(raw_val, clean_type, strict=strict)
 
 
-def convert_for_excel(raw_val: Any, cpp_type: Optional[str], fill_defaults: bool = False, strict: bool = False) -> Any:
+def convert_for_excel(
+    raw_val: Any,
+    cpp_type: Optional[str],
+    fill_defaults: bool = False,
+    strict: bool = False,
+) -> Any:
     """
     转换 JSON 字段值为适合写入 Excel 单元格的原生值（反向回写使用）
-    @param fill_defaults 为 True 时空值回填 0/False/""；为 False 时空值保持 None/""（保护 Excel 留空）
-
-    实现思路：先归一 UE 导出形态（NSLOCTEXT / (TagName="X") / 软对象 None）为 Excel 可读值，
-    空值按 fill_defaults 决定回填零值或保持留空，数组类型输出标准 JSON 数组文本。
+    @param raw_val JSON 字段原始值
+    @param cpp_type C++ 类型声明
+    @param fill_defaults 为 True 时空值回填 0/False/""；为 False 时空值保持 None/""
+    @param strict 严格模式（非法标量抛 SchemaValidationError）
+    @return 适合写入 Excel 的单元格值
     """
     clean_type = clean_cpp_type_name(cpp_type)
-
     raw_val = normalize_value_form(raw_val, clean_type)
 
     if raw_val is None or raw_val == "":
@@ -404,16 +537,33 @@ def convert_for_excel(raw_val: Any, cpp_type: Optional[str], fill_defaults: bool
     if is_array_type(clean_type):
         inner_type = extract_inner_type(clean_type)
         items = parse_raw_array_items(raw_val)
-        converted_items = [convert_scalar_value(item, inner_type, strict=strict) for item in items]
+        converted_items = [convert_scalar_value(normalize_value_form(item, inner_type), inner_type, strict=strict) for item in items]
         return json.dumps(converted_items, ensure_ascii=False)
+
+    if isinstance(raw_val, dict):
+        t_lower = clean_type.lower()
+        if (
+            t_lower in FLOATING_SCALAR_TYPES
+            or t_lower in INT_SCALAR_TYPES
+            or t_lower in BOOL_SCALAR_TYPES
+            or t_lower in ("fstring", "fname", "ftext")
+        ):
+            if strict:
+                raise SchemaValidationError(f"标量字段 ({clean_type}) 不接受 JSON 对象: {raw_val!r}")
+            return get_scalar_zero_value(clean_type) if fill_defaults else None
+        return json.dumps(raw_val, ensure_ascii=False)
 
     return convert_scalar_value(raw_val, clean_type, strict=strict)
 
 
 def scalar_values_equal(v1: Any, v2: Any, cpp_type: Optional[str], epsilon: float = DEFAULT_FLOAT_EPSILON) -> bool:
-    """标量值语义等价判定（支持浮点容差、整型四舍五入、布尔归一、字符串去空白）
-
-    实现思路：先做形态归一（UE 导出形态与 Excel 可读形态视为等价，避免无意义重写），再按类型比较。
+    """
+    标量值语义等价判定（支持浮点容差、整型精确比较、统一布尔归一、嵌套对象比较、字符串去空白）
+    @param v1 值 1
+    @param v2 值 2
+    @param cpp_type C++ 类型声明
+    @param epsilon 浮点比较容差
+    @return 语义等价返回 True
     """
     v1 = normalize_value_form(v1, cpp_type)
     v2 = normalize_value_form(v2, cpp_type)
@@ -423,33 +573,47 @@ def scalar_values_equal(v1: Any, v2: Any, cpp_type: Optional[str], epsilon: floa
     if v2 is None and (v1 == "" or v1 is None):
         return True
 
-    t_lower = (cpp_type or "").lower()
+    t_lower = clean_cpp_type_name(cpp_type).lower()
 
-    if "float" in t_lower or "double" in t_lower:
+    if t_lower in FLOATING_SCALAR_TYPES:
         try:
-            return abs(float(v1) - float(v2)) < epsilon
-        except (ValueError, TypeError):
+            f1 = float(v1)
+            f2 = float(v2)
+            if math.isfinite(f1) and math.isfinite(f2):
+                return abs(f1 - f2) < epsilon
+            return False
+        except (ValueError, TypeError, OverflowError):
             return str(v1).strip() == str(v2).strip()
 
-    if "int" in t_lower or "uint" in t_lower or "byte" in t_lower:
+    if t_lower in INT_SCALAR_TYPES:
         try:
-            return int(round(float(v1))) == int(round(float(v2)))
-        except (ValueError, TypeError):
+            return _parse_exact_int(v1) == _parse_exact_int(v2)
+        except (ValueError, TypeError, OverflowError):
             return str(v1).strip() == str(v2).strip()
 
-    if "bool" in t_lower:
-        b1 = v1 in (True, 1, "1", "TRUE", "True", "yes", "YES")
-        b2 = v2 in (True, 1, "1", "TRUE", "True", "yes", "YES")
-        return b1 == b2
+    if t_lower in BOOL_SCALAR_TYPES:
+        return parse_bool_value(v1) == parse_bool_value(v2)
+
+    if isinstance(v1, dict) or isinstance(v2, dict):
+        try:
+            d1 = v1 if isinstance(v1, dict) else json.loads(str(v1))
+            d2 = v2 if isinstance(v2, dict) else json.loads(str(v2))
+            if isinstance(d1, dict) and isinstance(d2, dict):
+                return d1 == d2
+        except (ValueError, TypeError, json.JSONDecodeError):
+            pass
 
     return str(v1).strip() == str(v2).strip()
 
 
 def values_are_equal(v1: Any, v2: Any, cpp_type: Optional[str], epsilon: float = DEFAULT_FLOAT_EPSILON) -> bool:
     """
-    语义对拍函数（单一真源）：
-    - 数组：元素序列等价互认（'a, b' 与 '["a", "b"]' 视为相等，消除样式漂移与无意义 diff）
-    - 标量：调用 scalar_values_equal
+    语义对拍函数（单一真源）：数组按元素序列等价互认，标量委托 scalar_values_equal
+    @param v1 值 1
+    @param v2 值 2
+    @param cpp_type C++ 类型声明
+    @param epsilon 浮点比较容差
+    @return 语义等价返回 True
     """
     if v1 is None and (v2 == "" or v2 is None):
         return True
@@ -471,17 +635,14 @@ def values_are_equal(v1: Any, v2: Any, cpp_type: Optional[str], epsilon: float =
 
 def find_reserved_field_names(header_fields: Optional[Sequence[Any]]) -> List[Tuple[int, str]]:
     """
-    检出表头字段行中使用的禁用字段名（硬校验，命中即应阻断）
+    检出表头字段行中使用的禁用字段名（硬校验，放行标准主键 Name/RowName，其余大小写变体如 name/NAME 均命中阻断）
     @param header_fields 表头第 2 行字段名序列
     @return [(1-based 列号, 字段名)]；无命中返回空列表
-
-    实现思路：按**精确匹配**判定，避免误伤项目既有的 `Name`（RowName 列的键别名约定）；
-    `name` 与 UE/DataTable 约定冲突，禁止作为字段名出现
     """
     hits: List[Tuple[int, str]] = []
     for idx, field in enumerate(header_fields or [], start=1):
         name = str(field or "").strip()
-        if name in RESERVED_FIELD_NAMES:
+        if name.lower() in RESERVED_FIELD_NAMES and name != "Name":
             hits.append((idx, name))
     return hits
 
@@ -489,6 +650,10 @@ def find_reserved_field_names(header_fields: Optional[Sequence[Any]]) -> List[Tu
 def parse_header_columns(row_display: List[Any], row_fields: List[Any], row_types: List[Any]) -> List[ColumnInfo]:
     """
     解析表头前三行契约，产出列定义清单
+    @param row_display 第 1 行中文说明
+    @param row_fields 第 2 行字段名
+    @param row_types 第 3 行 C++ 类型
+    @return ColumnInfo 列表
     """
     max_len = max(len(row_display), len(row_fields), len(row_types))
     columns: List[ColumnInfo] = []
@@ -504,7 +669,7 @@ def parse_header_columns(row_display: List[Any], row_fields: List[Any], row_type
         clean_type = clean_cpp_type_name(raw_type)
         arr = is_array_type(clean_type)
         inner = extract_inner_type(clean_type) if arr else clean_type
-        is_key = (field_name == "RowName" or field_name == "Name")
+        is_key = field_name in ("RowName", "Name")
 
         columns.append(ColumnInfo(
             col_idx=idx,
@@ -521,17 +686,18 @@ def parse_header_columns(row_display: List[Any], row_fields: List[Any], row_type
 
 def resolve_openpyxl_sheet(wb: Any, table_name: str) -> Tuple[Any, str]:
     """
-    统一解析 openpyxl 工作簿中的目标数据工作表（彻底消除 wb.active 盲猜）
-    规则：
-    1. 寻找与 table_name（剥离 DT_ 前缀后）匹配的 Sheet；
-    2. 若未匹配，寻找包含有效 RowName/Name 契约的第一张工作表；
-    3. 若仍无，回落 wb.active 并返回
+    统一解析 openpyxl 工作簿中的目标数据工作表（与 zipfile 选表规则完全对称）
+    1. 与 table_name（或其剥离 DT_ 前缀后名称）精确匹配；
+    2. 含有效 RowName / Name 第 2 行契约的首张工作表；
+    3. 回落 wb.active。
+    @param wb openpyxl Workbook 对象
+    @param table_name 目标表名或文件名词干
+    @return (worksheet, sheet_name)
     """
-    target_clean = table_name.replace("DT_", "").strip()
+    target_clean = strip_dt_prefix(table_name)
 
     for name in wb.sheetnames:
-        clean_sname = name.replace("DT_", "").strip()
-        if clean_sname == target_clean or name == table_name:
+        if name == table_name or strip_dt_prefix(name) == target_clean:
             return wb[name], name
 
     for name in wb.sheetnames:
@@ -544,46 +710,161 @@ def resolve_openpyxl_sheet(wb: Any, table_name: str) -> Tuple[Any, str]:
     return wb.active, wb.active.title
 
 
-def resolve_zip_worksheet_path(z: Any, table_name: str) -> str:
+def read_zip_shared_strings(z: Any, strict_xml: bool = False) -> List[str]:
     """
-    在 zipfile 中定位目标表格对应的 worksheets/sheetX.xml 路径（与 openpyxl 选表规则完全对称）
+    读取 xlsx 压缩包中的共享字符串池（table_schema 与 excel_parser 共用单一真源）
+    @param z zipfile.ZipFile 对象
+    @param strict_xml 为 True 时遇到损坏 XML 直接抛出 ET.ParseError
+    @return 字符串列表
     """
-    import xml.etree.ElementTree as ET
+    if "xl/sharedStrings.xml" not in z.namelist():
+        return []
+    try:
+        tree = ET.fromstring(z.read("xl/sharedStrings.xml"))
+    except ET.ParseError:
+        if strict_xml:
+            raise
+        return []
+    strings: List[str] = []
+    for si in tree.findall(f"{_NS_MAIN}si"):
+        strings.append("".join(t.text for t in si.iter(f"{_NS_MAIN}t") if t.text))
+    return strings
 
-    fallback = "xl/worksheets/sheet1.xml"
-    if "xl/workbook.xml" not in z.namelist() or "xl/_rels/workbook.xml.rels" not in z.namelist():
+
+_read_zip_shared_strings = read_zip_shared_strings
+
+
+def _zip_sheet_has_key_header(z: Any, xml_path: str, shared_strings: Sequence[str]) -> bool:
+    """
+    检测 zipfile 内指定工作表第 2 行是否包含 RowName / Name 主键契约
+    @param z zipfile.ZipFile 对象
+    @param xml_path 工作表 XML 路径
+    @param shared_strings 共享字符串池
+    @return 含主键契约返回 True
+    """
+    try:
+        sheet_tree = ET.fromstring(z.read(xml_path))
+    except (KeyError, ET.ParseError):
+        return False
+
+    rows = sheet_tree.findall(f".//{_NS_MAIN}row")
+    if len(rows) < 2:
+        return False
+
+    has_r_attr = any(r.get("r", "").isdigit() for r in rows)
+    if has_r_attr:
+        row2 = next((r for r in rows if r.get("r") == "2"), None)
+        has_row3 = any(r.get("r") == "3" for r in rows)
+        if row2 is None or not has_row3:
+            return False
+    else:
+        if len(rows) < 3:
+            return False
+        row2 = rows[1]
+
+    for seq_idx, cell in enumerate(row2.findall(f"{_NS_MAIN}c")):
+        ref = cell.get("r", "")
+        col_idx = seq_idx
+        if ref:
+            m = re.match(r"([A-Za-z]+)\d+", ref)
+            if m:
+                col_idx = 0
+                for ch in m.group(1):
+                    col_idx = col_idx * 26 + (ord(ch.upper()) - ord("A") + 1)
+                col_idx -= 1
+        if col_idx >= 9:
+            continue
+        cell_type = cell.get("t")
+        value = ""
+        if cell_type == "inlineStr":
+            is_el = cell.find(f"{_NS_MAIN}is")
+            if is_el is not None:
+                value = "".join(x.text or "" for x in is_el.iter(f"{_NS_MAIN}t"))
+        else:
+            v_el = cell.find(f"{_NS_MAIN}v")
+            raw = v_el.text if v_el is not None and v_el.text is not None else ""
+            if cell_type == "s" and raw.isdigit():
+                idx = int(raw)
+                value = shared_strings[idx] if 0 <= idx < len(shared_strings) else ""
+            else:
+                value = raw
+        if value.strip() in ("RowName", "Name"):
+            return True
+    return False
+
+
+def resolve_zip_worksheet(
+    z: Any,
+    table_name: str,
+    shared_strings: Optional[Sequence[str]] = None,
+) -> Tuple[str, str]:
+    """
+    在 zipfile 中定位目标工作表的 (sheet_name, xml_path)（与 resolve_openpyxl_sheet 三级策略完全对称）
+    @param z zipfile.ZipFile 对象
+    @param table_name 目标表名或文件名词干
+    @param shared_strings 可选已解析的共享字符串池（避免重复解析）
+    @return (选中的工作表名, 工作表 XML 路径)
+    """
+    fallback = ("", "xl/worksheets/sheet1.xml")
+    names = set(z.namelist())
+    if "xl/workbook.xml" not in names or "xl/_rels/workbook.xml.rels" not in names:
         return fallback
 
-    rid_to_target = {}
+    rid_to_target: dict[str, str] = {}
     try:
         rels_tree = ET.fromstring(z.read("xl/_rels/workbook.xml.rels"))
-        for rel in rels_tree.findall(".//{http://schemas.openxmlformats.org/package/2006/relationships}Relationship"):
+        for rel in rels_tree.findall(f".//{_NS_REL}Relationship"):
             r_id = rel.attrib.get("Id")
-            target = rel.attrib.get("Target", "")
+            target = rel.attrib.get("Target", "").lstrip("/")
             if r_id and target:
-                target_path = target if target.startswith("xl/") else f"xl/{target}"
-                rid_to_target[r_id] = target_path
+                raw_target = target if target.startswith("xl/") else f"xl/{target}"
+                rid_to_target[r_id] = posixpath.normpath(raw_target)
     except ET.ParseError:
         return fallback
 
     try:
         wb_tree = ET.fromstring(z.read("xl/workbook.xml"))
-        target_clean = table_name.replace("DT_", "").strip()
-
-        first_target = None
-        for sheet in wb_tree.findall(".//{http://schemas.openxmlformats.org/spreadsheetml/2006/main}sheet"):
-            sname = sheet.attrib.get("name", "")
-            rid = sheet.attrib.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id")
-            target_path = rid_to_target.get(rid)
-            if not target_path or target_path not in z.namelist():
-                continue
-
-            if first_target is None:
-                first_target = target_path
-
-            if sname == table_name or sname.replace("DT_", "").strip() == target_clean:
-                return target_path
-
-        return first_target or fallback
     except ET.ParseError:
         return fallback
+
+    candidates: List[Tuple[str, str]] = []
+    for sheet in wb_tree.findall(f".//{_NS_MAIN}sheet"):
+        sname = sheet.attrib.get("name", "")
+        rid = sheet.attrib.get(f"{_NS_DOC_REL}id")
+        target_path = rid_to_target.get(rid or "")
+        if target_path and target_path in names:
+            candidates.append((sname, target_path))
+
+    if not candidates:
+        return fallback
+
+    target_clean = strip_dt_prefix(table_name)
+    for sname, target_path in candidates:
+        if sname == table_name or strip_dt_prefix(sname) == target_clean:
+            return sname, target_path
+
+    strings = shared_strings if shared_strings is not None else _read_zip_shared_strings(z)
+    for sname, target_path in candidates:
+        if _zip_sheet_has_key_header(z, target_path, strings):
+            return sname, target_path
+
+    view = wb_tree.find(f".//{_NS_MAIN}workbookView")
+    if view is not None:
+        try:
+            active_idx = int(view.attrib.get("activeTab", "0"))
+            if 0 <= active_idx < len(candidates):
+                return candidates[active_idx]
+        except ValueError:
+            pass
+
+    return candidates[0]
+
+
+def resolve_zip_worksheet_path(z: Any, table_name: str) -> str:
+    """
+    在 zipfile 中定位目标表格对应的 worksheets/sheetX.xml 路径（委托至 resolve_zip_worksheet）
+    @param z zipfile.ZipFile 对象
+    @param table_name 目标表名或文件名词干
+    @return 工作表 XML 路径
+    """
+    return resolve_zip_worksheet(z, table_name)[1]

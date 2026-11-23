@@ -7,14 +7,18 @@
 """
 
 import os
-
 from typing import Any
 
 from generators import GeneratedFile, GeneratorContext, scaffold_banner
 
 
 def generate_service_scaffold_header(cfg: Any, cat_folder: str) -> str:
-    """生成域服务骨架头文件（F{cat_folder}Service，首次生成不覆盖，强制无状态）"""
+    """
+    生成域服务骨架头文件（F{cat_folder}Service，首次生成不覆盖，强制无状态）
+    @param cfg 运行配置
+    @param cat_folder 分类目录名
+    @return 头文件代码文本
+    """
     lines = [
         *scaffold_banner("service scaffold", cat_folder),
         "#pragma once",
@@ -30,10 +34,8 @@ def generate_service_scaffold_header(cfg: Any, cat_folder: str) -> str:
         f"class {cfg.api_macro} F{cat_folder}Service {{",
         "public:",
         f"    F{cat_folder}Service() = delete;",
-        "",
-        "    /** 开发者在此扩展业务计算（纯函数，便于单测） */",
         "};",
-        ""
+        "",
     ]
     return "\n".join(lines)
 
@@ -45,7 +47,7 @@ def generate(ctx: GeneratorContext) -> list:
     @return 各分类 F{cat_folder}Service.h（preserve）
     """
     files = []
-    for cat_folder in ctx.category_tables:
+    for cat_folder in sorted(ctx.category_tables.keys()):
         content = generate_service_scaffold_header(ctx.cfg, cat_folder)
         out_path = os.path.join(ctx.cfg.static_data_public_dir, cat_folder, f"{cat_folder}Service.h")
         files.append(GeneratedFile(path=out_path, content=content, policy="preserve"))
