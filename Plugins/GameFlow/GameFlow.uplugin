@@ -1,9 +1,9 @@
 {
     "FileVersion": 3,
-    "Version": 1,
-    "VersionName": "1.0.0",
+    "Version": 2,
+    "VersionName": "2.0.0",
     "FriendlyName": "Game Flow",
-    "Description": "Level streaming, loading screen state machine, and asynchronous barrier synchronization.",
+    "Description": "Level streaming state machine, generational RAII readiness barriers, Blueprint async wait actions, and thread-safe C++20 coroutine awaiters.",
     "Category": "Game",
     "CreatedBy": "Taoist Decree Team",
     "CanContainContent": false,
@@ -18,6 +18,10 @@
     "Plugins": [
         {
             "Name": "GameCore",
+            "Enabled": true
+        },
+        {
+            "Name": "GameLogging",
             "Enabled": true
         }
     ]

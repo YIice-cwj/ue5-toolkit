@@ -5,23 +5,80 @@
 
 #include "System/ULoadingSubsystem.h"
 
-#include "Config/GameCompileSwitches.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "HAL/PlatformTime.h"
 #include "Kismet/GameplayStatics.h"
+#include "Logging/GameLogCategories.h"
 #include "TimerManager.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogGameLoading, Log, All);
+namespace {
+
+constexpr float MinBarrierWeight = 0.1f;
+constexpr float DefaultBarrierWeight = 1.0f;
+constexpr float MapProgressWeight = 2.0f;
+constexpr float WatchdogPollIntervalSeconds = 0.5f;
+constexpr int32 InlineTimedOutBarrierCapacity = 8;
+
+/**
+ * @brief 校验并标准化屏障进度加权权重（非有限值回落默认权重，有限值截断至下限）
+ * @param InWeight 原始权重
+ * @return 标准化后的合法正权重
+ */
+float SanitizeWeight(float InWeight) {
+    if (!FMath::IsFinite(InWeight)) {
+        GAME_LOG(Warning, TEXT("【GameFlow】屏障权重为非有限浮点值，已回落至默认权重 %.1f。"), DefaultBarrierWeight);
+        return DefaultBarrierWeight;
+    }
+    return FMath::Max(MinBarrierWeight, InWeight);
+}
+
+/**
+ * @brief 校验并标准化超时秒数（非有限值或非正数视为关闭超时返回 0.0f）
+ * @param InTimeoutSeconds 原始超时秒数
+ * @return 非负有限超时秒数
+ */
+float SanitizeTimeout(float InTimeoutSeconds) {
+    if (!FMath::IsFinite(InTimeoutSeconds)) {
+        GAME_LOG(Warning, TEXT("【GameFlow】超时秒数为非有限浮点值，已关闭该超时阈值。"));
+        return 0.0f;
+    }
+    return FMath::Max(0.0f, InTimeoutSeconds);
+}
+
+/**
+ * @brief 校验并截断外部上报的屏障进度值（拒绝非有限浮点输入）
+ * @param InProgress 原始进度值
+ * @param OutClampedProgress 输出截断至 [0.0f, 1.0f] 的有效进度
+ * @return 输入合法返回 true
+ */
+bool TrySanitizeProgress(float InProgress, float& OutClampedProgress) {
+    if (!FMath::IsFinite(InProgress)) {
+        GAME_LOG(Warning, TEXT("【GameFlow】上报的屏障进度为非有限浮点值，已忽略本次更新。"));
+        return false;
+    }
+    OutClampedProgress = FMath::Clamp(InProgress, 0.0f, 1.0f);
+    return true;
+}
+
+} // namespace
 
 ULoadingSubsystem* ULoadingSubsystem::Get(const UObject* WorldContextObject) {
-    if (WorldContextObject == nullptr) {
+    if (!::IsValid(WorldContextObject)) {
         return nullptr;
     }
 
-    if (const UGameInstance* AsGI = Cast<UGameInstance>(WorldContextObject)) {
-        return AsGI->GetSubsystem<ULoadingSubsystem>();
+    if (const ULoadingSubsystem* AsSelf = Cast<ULoadingSubsystem>(WorldContextObject)) {
+        return const_cast<ULoadingSubsystem*>(AsSelf);
+    }
+
+    if (const UGameInstance* AsGameInstance = Cast<UGameInstance>(WorldContextObject)) {
+        return AsGameInstance->GetSubsystem<ULoadingSubsystem>();
+    }
+
+    if (const UGameInstance* OuterGameInstance = WorldContextObject->GetTypedOuter<UGameInstance>()) {
+        return OuterGameInstance->GetSubsystem<ULoadingSubsystem>();
     }
 
     if (GEngine == nullptr) {
@@ -33,75 +90,74 @@ ULoadingSubsystem* ULoadingSubsystem::Get(const UObject* WorldContextObject) {
         return nullptr;
     }
 
-    UGameInstance* GI = World->GetGameInstance();
-    return GI ? GI->GetSubsystem<ULoadingSubsystem>() : nullptr;
+    const UGameInstance* GameInstance = World->GetGameInstance();
+    return GameInstance != nullptr ? GameInstance->GetSubsystem<ULoadingSubsystem>() : nullptr;
 }
 
 void ULoadingSubsystem::Initialize(FSubsystemCollectionBase& Collection) {
     Super::Initialize(Collection);
-    FCoreUObjectDelegates::PreLoadMap.AddUObject(this, &ULoadingSubsystem::OnPreLoadMap);
+    FCoreUObjectDelegates::PreLoadMapWithContext.AddUObject(this, &ULoadingSubsystem::OnPreLoadMapWithContext);
     FCoreUObjectDelegates::PostLoadMapWithWorld.AddUObject(this, &ULoadingSubsystem::OnPostLoadMap);
-    if constexpr (Game::Config::bEnableLog) {
-        UE_LOG(LogGameLoading, Log, TEXT("【加载子系统】已挂钩引擎地图加载生命周期委托。"));
-    }
+    GAME_LOG(Verbose, TEXT("【GameFlow】加载子系统已挂钩引擎地图加载上下文委托。"));
 }
 
 void ULoadingSubsystem::Deinitialize() {
     StopWatchdogTimer();
-    FCoreUObjectDelegates::PreLoadMap.RemoveAll(this);
+    FCoreUObjectDelegates::PreLoadMapWithContext.RemoveAll(this);
     FCoreUObjectDelegates::PostLoadMapWithWorld.RemoveAll(this);
+
+    const bool bWasLoading = IsLoading();
     ActiveBarriers.Reset();
     FinishedBarriersTelemetry.Reset();
-    bMapLoadCompletedPendingBarriers = false;
-    bIsLoading = false;
+    FinishedBarriersTotalWeight = 0.0f;
+    CustomTimeoutBarrierCount = 0;
+    LoadingPhase = ELoadingTransitionPhase::Idle;
     TargetLevelName = NAME_None;
     CurrentLoadingProgress = 0.0f;
-    OnLoadingStateChangedNative.Broadcast(false, NAME_None);
-    OnLoadingStateChangedNative.Clear();
-    OnLoadingProgressChangedNative.Clear();
-    OnLoadingTelemetryReportNative.Clear();
-    if constexpr (Game::Config::bEnableLog) {
-        UE_LOG(LogGameLoading, Log, TEXT("【加载子系统】已注销引擎地图加载生命周期委托。"));
+    bIsFinishingTransition = false;
+    PendingNextLevelName = NAME_None;
+
+    if (bWasLoading) {
+        OnLoadingAbortedNative.Broadcast();
     }
+    OnLoadingAbortedNative.Clear();
+    OnLoadingStateChanged.Clear();
+    OnLoadingStateChangedNative.Clear();
+    OnLoadingProgressChanged.Clear();
+    OnLoadingProgressChangedNative.Clear();
+    OnLoadingTelemetryReport.Clear();
+    OnLoadingTelemetryReportNative.Clear();
+
+    GAME_LOG(Verbose, TEXT("【GameFlow】加载子系统已注销引擎地图加载委托并清理活跃状态。"));
     Super::Deinitialize();
 }
 
 void ULoadingSubsystem::OpenLevelWithLoading(const FName& LevelName) {
-    if (bIsLoading) {
-        if constexpr (Game::Config::bEnableLog) {
-            UE_LOG(LogGameLoading, Warning, TEXT("【加载子系统】OpenLevelWithLoading 被重复调用，当前仍处于加载中，忽略本次请求。"));
-        }
+    if (IsLoading()) {
+        GAME_LOG(Warning, TEXT("【GameFlow】OpenLevelWithLoading 被重复调用，当前仍处于加载中，忽略本次请求。"));
         return;
     }
     if (LevelName.IsNone()) {
-        if constexpr (Game::Config::bEnableLog) {
-            UE_LOG(LogGameLoading, Warning, TEXT("【加载子系统】OpenLevelWithLoading 执行失败：目标关卡名称为空 (None)。"));
+        GAME_LOG(Warning, TEXT("【GameFlow】OpenLevelWithLoading 执行失败：目标关卡名称为空 (None)。"));
+        return;
+    }
+
+    if (bIsFinishingTransition) {
+        if (!PendingNextLevelName.IsNone()) {
+            GAME_LOG(Warning, TEXT("【GameFlow】收尾广播期间已有排队目标关卡，忽略重复的 OpenLevelWithLoading 请求。"));
+            return;
         }
+        PendingNextLevelName = LevelName;
         return;
     }
 
     UGameInstance* GameInstance = GetGameInstance();
     if (GameInstance == nullptr || GameInstance->GetWorld() == nullptr) {
-        if constexpr (Game::Config::bEnableLog) {
-            UE_LOG(LogGameLoading, Warning, TEXT("【加载子系统】OpenLevelWithLoading 执行失败：GameInstance 或世界上下文无效，未置位加载态。"));
-        }
+        GAME_LOG(Warning, TEXT("【GameFlow】OpenLevelWithLoading 执行失败：GameInstance 或世界上下文无效，未置位加载态。"));
         return;
     }
 
-    bIsLoading = true;
-    bMapLoadCompletedPendingBarriers = false;
-    TargetLevelName = LevelName;
-    CurrentLoadingProgress = 0.0f;
-    FinishedBarriersTelemetry.Reset();
-    LoadingStartTimestamp = FPlatformTime::Seconds();
-    MapLoadFinishedTimestamp = LoadingStartTimestamp;
-
-    StartWatchdogTimer();
-
-    OnLoadingStateChanged.Broadcast(true, TargetLevelName);
-    OnLoadingStateChangedNative.Broadcast(true, TargetLevelName);
-    RecalculateAndBroadcastProgress(FText::GetEmpty());
-
+    BeginLoadingTransition(LevelName);
     UGameplayStatics::OpenLevel(GameInstance, LevelName);
 }
 
@@ -110,300 +166,418 @@ FLoadingBarrierToken ULoadingSubsystem::AcquireBarrierToken(
     float InWeight,
     float InTimeoutSeconds
 ) {
-    const uint64 BarrierId = ++NextBarrierId;
-    FActiveBarrierInfo Info;
-    Info.Name = BarrierName;
-    Info.Weight = FMath::Max(0.1f, InWeight);
-    Info.Progress = 0.0f;
-    Info.StartTimeSeconds = FPlatformTime::Seconds();
-    Info.TimeoutSeconds = InTimeoutSeconds;
-    ActiveBarriers.Add(BarrierId, MoveTemp(Info));
-    RecalculateAndBroadcastProgress(FText::GetEmpty());
-    return FLoadingBarrierToken(this, BarrierId, BarrierName);
-}
-
-TSharedRef<FLoadingBarrierToken> ULoadingSubsystem::AcquireLoadingBarrier(
-    const FName& BarrierName,
-    float InWeight,
-    float InTimeoutSeconds
-) {
-    return MakeShared<FLoadingBarrierToken>(AcquireBarrierToken(BarrierName, InWeight, InTimeoutSeconds));
+    const FLoadingBarrierHandle Handle = RegisterBarrierInternal(BarrierName, InWeight, InTimeoutSeconds);
+    return FLoadingBarrierToken(this, Handle, BarrierName);
 }
 
 int64 ULoadingSubsystem::AcquireLoadingBarrierBp(FName BarrierName, float InWeight, float InTimeoutSeconds) {
-    const uint64 BarrierId = ++NextBarrierId;
-    FActiveBarrierInfo Info;
-    Info.Name = BarrierName;
-    Info.Weight = FMath::Max(0.1f, InWeight);
-    Info.Progress = 0.0f;
-    Info.StartTimeSeconds = FPlatformTime::Seconds();
-    Info.TimeoutSeconds = InTimeoutSeconds;
-    ActiveBarriers.Add(BarrierId, MoveTemp(Info));
-    RecalculateAndBroadcastProgress(FText::GetEmpty());
-    return static_cast<int64>(BarrierId);
+    const FLoadingBarrierHandle Handle = RegisterBarrierInternal(BarrierName, InWeight, InTimeoutSeconds);
+    return static_cast<int64>(Handle.PackUInt64());
 }
 
 bool ULoadingSubsystem::ReleaseLoadingBarrierBp(int64 BarrierId) {
-    if (BarrierId <= 0) {
+    if (BarrierId == 0) {
         return false;
     }
-    const uint64 UId = static_cast<uint64>(BarrierId);
-    if (!ActiveBarriers.Contains(UId)) {
-        return false;
-    }
-    ReleaseLoadingBarrierInternal(UId);
-    return true;
+    const FLoadingBarrierHandle Handle = FLoadingBarrierHandle::FromPackedUInt64(static_cast<uint64>(BarrierId));
+    return ReleaseLoadingBarrierInternal(Handle);
 }
 
 bool ULoadingSubsystem::ReportBarrierProgressBp(int64 BarrierId, float Progress, const FText& Description) {
-    if (BarrierId <= 0) {
+    if (BarrierId == 0) {
         return false;
     }
-    const uint64 UId = static_cast<uint64>(BarrierId);
-    if (!ActiveBarriers.Contains(UId)) {
-        return false;
-    }
-    UpdateBarrierProgressInternal(UId, Progress, Description);
-    return true;
-}
-
-float ULoadingSubsystem::GetLoadingProgress() const {
-    return CurrentLoadingProgress;
+    const FLoadingBarrierHandle Handle = FLoadingBarrierHandle::FromPackedUInt64(static_cast<uint64>(BarrierId));
+    float IgnoredClamped = 0.0f;
+    return UpdateBarrierProgressInternal(Handle, Progress, Description, IgnoredClamped);
 }
 
 void ULoadingSubsystem::SetMaxLoadingTimeoutSeconds(float InTimeoutSeconds) {
-    MaxLoadingTimeoutSeconds = InTimeoutSeconds;
+    MaxLoadingTimeoutSeconds = SanitizeTimeout(InTimeoutSeconds);
+    SyncWatchdogTimer();
 }
 
-float ULoadingSubsystem::GetMaxLoadingTimeoutSeconds() const {
-    return MaxLoadingTimeoutSeconds;
+void ULoadingSubsystem::CheckWatchdogTimeout() {
+    CheckWatchdogTimeoutAt(FPlatformTime::Seconds());
 }
 
-bool ULoadingSubsystem::IsLoading() const {
-    return bIsLoading;
-}
-
-FName ULoadingSubsystem::GetTargetLevelName() const {
-    return TargetLevelName;
-}
-
-bool ULoadingSubsystem::HasActiveBarriers() const {
-    return !ActiveBarriers.IsEmpty();
-}
-
-int32 ULoadingSubsystem::GetActiveBarrierCount() const {
-    return ActiveBarriers.Num();
-}
-
-void ULoadingSubsystem::ReleaseLoadingBarrierInternal(uint64 BarrierId) {
-    FActiveBarrierInfo Info;
-    if (!ActiveBarriers.RemoveAndCopyValue(BarrierId, Info)) {
-        return;
-    }
-
-    const double DurationMs = (FPlatformTime::Seconds() - Info.StartTimeSeconds) * 1000.0;
-    FLoadingBarrierTelemetry Telemetry;
-    Telemetry.BarrierName = Info.Name;
-    Telemetry.DurationMs = static_cast<float>(DurationMs);
-    Telemetry.Weight = Info.Weight;
-    Telemetry.bTimedOut = false;
-    FinishedBarriersTelemetry.Add(Telemetry);
-
-    RecalculateAndBroadcastProgress(FText::GetEmpty());
-
-    if (ActiveBarriers.IsEmpty() && bIsLoading && bMapLoadCompletedPendingBarriers) {
-        FinishLoadingTransition();
-    }
-}
-
-void ULoadingSubsystem::UpdateBarrierProgressInternal(uint64 BarrierId, float InProgress, const FText& InDescription) {
-    if (FActiveBarrierInfo* Found = ActiveBarriers.Find(BarrierId)) {
-        Found->Progress = FMath::Clamp(InProgress, 0.0f, 1.0f);
-        RecalculateAndBroadcastProgress(InDescription);
-    }
-}
-
-void ULoadingSubsystem::RecalculateAndBroadcastProgress(const FText& InDescription) {
-    if (!bIsLoading) {
-        CurrentLoadingProgress = 0.0f;
-        return;
-    }
-
-    constexpr float MapWeight = 2.0f;
-    const float MapProgress = bMapLoadCompletedPendingBarriers ? 1.0f : 0.0f;
-
-    float TotalWeight = MapWeight;
-    float SumWeighted = MapWeight * MapProgress;
-
-    for (const auto& Kvp : ActiveBarriers) {
-        TotalWeight += Kvp.Value.Weight;
-        SumWeighted += Kvp.Value.Weight * Kvp.Value.Progress;
-    }
-
-    for (const FLoadingBarrierTelemetry& Finished : FinishedBarriersTelemetry) {
-        TotalWeight += Finished.Weight;
-        SumWeighted += Finished.Weight * 1.0f;
-    }
-
-    CurrentLoadingProgress = TotalWeight > 0.0f ? FMath::Clamp(SumWeighted / TotalWeight, 0.0f, 1.0f) : 1.0f;
-    OnLoadingProgressChanged.Broadcast(CurrentLoadingProgress, InDescription);
-    OnLoadingProgressChangedNative.Broadcast(CurrentLoadingProgress, InDescription);
-}
-
-void ULoadingSubsystem::CheckWatchdogTimeout(double CurrentTimeSeconds) {
-    if (!bIsLoading) {
+void ULoadingSubsystem::CheckWatchdogTimeoutAt(double CurrentTimeSeconds) {
+    if (!IsLoading()) {
         StopWatchdogTimer();
         return;
     }
 
-    const double Now = (CurrentTimeSeconds > 0.0) ? CurrentTimeSeconds : FPlatformTime::Seconds();
-    const double TotalElapsed = Now - LoadingStartTimestamp;
+    const double Now = (FMath::IsFinite(CurrentTimeSeconds) && CurrentTimeSeconds > 0.0)
+        ? CurrentTimeSeconds
+        : FPlatformTime::Seconds();
 
-    if (MaxLoadingTimeoutSeconds > 0.0f && TotalElapsed >= MaxLoadingTimeoutSeconds) {
-        UE_LOG(LogGameLoading, Error,
-            TEXT("【加载看门狗】关卡流转总耗时 (%.2f 秒) 已超出全局上限 (%.2f 秒)！强制解除当前 %d 个活跃屏障并揭开幕布！"),
-            TotalElapsed, MaxLoadingTimeoutSeconds, ActiveBarriers.Num());
-
-        for (const auto& Kvp : ActiveBarriers) {
-            FLoadingBarrierTelemetry Telemetry;
-            Telemetry.BarrierName = Kvp.Value.Name;
-            Telemetry.DurationMs = static_cast<float>((Now - Kvp.Value.StartTimeSeconds) * 1000.0);
-            Telemetry.Weight = Kvp.Value.Weight;
-            Telemetry.bTimedOut = true;
-            FinishedBarriersTelemetry.Add(Telemetry);
-        }
-        ActiveBarriers.Reset();
-        FinishLoadingTransition();
+    if (MaxLoadingTimeoutSeconds > 0.0f && (Now - LoadingStartTimestamp) >= MaxLoadingTimeoutSeconds) {
+        HandleGlobalWatchdogTimeout(Now);
         return;
     }
 
-    TArray<uint64> TimedOutBarrierIds;
-    for (const auto& Kvp : ActiveBarriers) {
-        const FActiveBarrierInfo& Info = Kvp.Value;
-        if (Info.TimeoutSeconds > 0.0f && (Now - Info.StartTimeSeconds) >= Info.TimeoutSeconds) {
-            TimedOutBarrierIds.Add(Kvp.Key);
-            UE_LOG(LogGameLoading, Error,
-                TEXT("【加载看门狗】屏障 [%s] (ID=%llu) 挂起耗时 (%.2f 秒) 超出单屏障阈值 (%.2f 秒)！强制解除该屏障！"),
-                *Info.Name.ToString(), Kvp.Key, (Now - Info.StartTimeSeconds), Info.TimeoutSeconds);
-        }
+    SweepTimedOutBarriers(Now);
+}
+
+bool ULoadingSubsystem::IsLoading() const noexcept {
+    return LoadingPhase != ELoadingTransitionPhase::Idle;
+}
+
+ELoadingTransitionPhase ULoadingSubsystem::GetLoadingPhase() const noexcept {
+    return LoadingPhase;
+}
+
+FName ULoadingSubsystem::GetTargetLevelName() const noexcept {
+    return TargetLevelName;
+}
+
+float ULoadingSubsystem::GetLoadingProgress() const noexcept {
+    return CurrentLoadingProgress;
+}
+
+float ULoadingSubsystem::GetMaxLoadingTimeoutSeconds() const noexcept {
+    return MaxLoadingTimeoutSeconds;
+}
+
+bool ULoadingSubsystem::HasActiveBarriers() const noexcept {
+    return !ActiveBarriers.IsEmpty();
+}
+
+int32 ULoadingSubsystem::GetActiveBarrierCount() const noexcept {
+    return ActiveBarriers.Num();
+}
+
+const FLoadingTelemetryReport& ULoadingSubsystem::GetLastTelemetryReport() const noexcept {
+    return LastTelemetryReport;
+}
+
+bool ULoadingSubsystem::IsBarrierActiveInternal(FLoadingBarrierHandle BarrierHandle) const noexcept {
+    return ActiveBarriers.IsValidHandle(BarrierHandle);
+}
+
+FLoadingBarrierHandle ULoadingSubsystem::RegisterBarrierInternal(
+    const FName& BarrierName,
+    float InWeight,
+    float InTimeoutSeconds
+) {
+    FActiveBarrierInfo Info;
+    Info.Name = BarrierName;
+    Info.Weight = SanitizeWeight(InWeight);
+    Info.Progress = 0.0f;
+    Info.TimeoutSeconds = SanitizeTimeout(InTimeoutSeconds);
+    Info.StartTimeSeconds = FPlatformTime::Seconds();
+
+    const bool bHasCustomTimeout = Info.TimeoutSeconds > 0.0f;
+    const FLoadingBarrierHandle Handle = ActiveBarriers.Insert(MoveTemp(Info));
+
+    if (bHasCustomTimeout) {
+        ++CustomTimeoutBarrierCount;
+        SyncWatchdogTimer();
     }
 
-    for (const uint64 BarrierId : TimedOutBarrierIds) {
-        FActiveBarrierInfo Info;
-        if (ActiveBarriers.RemoveAndCopyValue(BarrierId, Info)) {
-            FLoadingBarrierTelemetry Telemetry;
-            Telemetry.BarrierName = Info.Name;
-            Telemetry.DurationMs = static_cast<float>((Now - Info.StartTimeSeconds) * 1000.0);
-            Telemetry.Weight = Info.Weight;
-            Telemetry.bTimedOut = true;
-            FinishedBarriersTelemetry.Add(Telemetry);
-        }
-    }
-
-    if (!TimedOutBarrierIds.IsEmpty()) {
+    if (IsLoading()) {
         RecalculateAndBroadcastProgress(FText::GetEmpty());
-        if (ActiveBarriers.IsEmpty() && bMapLoadCompletedPendingBarriers) {
-            FinishLoadingTransition();
+    }
+    return Handle;
+}
+
+bool ULoadingSubsystem::ReleaseLoadingBarrierInternal(FLoadingBarrierHandle BarrierHandle) {
+    const FActiveBarrierInfo* Found = ActiveBarriers.Find(BarrierHandle);
+    if (Found == nullptr) {
+        return false;
+    }
+
+    const FActiveBarrierInfo RemovedInfo = *Found;
+    ActiveBarriers.Remove(BarrierHandle);
+
+    if (RemovedInfo.TimeoutSeconds > 0.0f) {
+        --CustomTimeoutBarrierCount;
+        if (CustomTimeoutBarrierCount == 0) {
+            SyncWatchdogTimer();
         }
     }
+
+    if (!IsLoading()) {
+        return true;
+    }
+
+    const double Now = FPlatformTime::Seconds();
+    RecordBarrierTelemetry(RemovedInfo, Now, false);
+
+    if (ActiveBarriers.IsEmpty() && LoadingPhase == ELoadingTransitionPhase::WaitingBarriers) {
+        FinishLoadingTransition(false, Now);
+        return true;
+    }
+
+    RecalculateAndBroadcastProgress(FText::GetEmpty());
+    return true;
 }
 
-void ULoadingSubsystem::OnWatchdogTimerTick() {
-    CheckWatchdogTimeout(0.0);
+bool ULoadingSubsystem::UpdateBarrierProgressInternal(
+    FLoadingBarrierHandle BarrierHandle,
+    float InProgress,
+    const FText& InDescription,
+    float& OutClampedProgress
+) {
+    FActiveBarrierInfo* Found = ActiveBarriers.Find(BarrierHandle);
+    if (Found == nullptr) {
+        return false;
+    }
+    if (!TrySanitizeProgress(InProgress, OutClampedProgress)) {
+        return false;
+    }
+
+    Found->Progress = OutClampedProgress;
+    if (IsLoading()) {
+        RecalculateAndBroadcastProgress(InDescription);
+    }
+    return true;
 }
 
-void ULoadingSubsystem::StartWatchdogTimer() {
+void ULoadingSubsystem::BeginLoadingTransition(const FName& InLevelName) {
+    LoadingPhase = ELoadingTransitionPhase::LoadingMap;
+    TargetLevelName = InLevelName;
+    CurrentLoadingProgress = 0.0f;
+    FinishedBarriersTelemetry.Reset();
+    FinishedBarriersTotalWeight = 0.0f;
+    LoadingStartTimestamp = FPlatformTime::Seconds();
+    MapLoadFinishedTimestamp = LoadingStartTimestamp;
+
+    SyncWatchdogTimer();
+
+    OnLoadingStateChanged.Broadcast(true, TargetLevelName);
+    OnLoadingStateChangedNative.Broadcast(true, TargetLevelName);
+    RecalculateAndBroadcastProgress(FText::GetEmpty());
+}
+
+void ULoadingSubsystem::FinishLoadingTransition(bool bTimedOut, double CompletionTimestamp) {
     StopWatchdogTimer();
-    if (MaxLoadingTimeoutSeconds <= 0.0f) {
+
+    const bool bMapLoadedBeforeFinish = (LoadingPhase == ELoadingTransitionPhase::WaitingBarriers);
+    LoadingPhase = ELoadingTransitionPhase::Idle;
+    CurrentLoadingProgress = 1.0f;
+    const FName CompletedLevelName = TargetLevelName;
+    TargetLevelName = NAME_None;
+
+    FLoadingTelemetryReport Report;
+    Report.LevelName = CompletedLevelName;
+    Report.TotalDurationMs = static_cast<float>(FMath::Max(0.0, (CompletionTimestamp - LoadingStartTimestamp) * 1000.0));
+    Report.MapLoadDurationMs = bMapLoadedBeforeFinish
+        ? static_cast<float>(FMath::Max(0.0, (MapLoadFinishedTimestamp - LoadingStartTimestamp) * 1000.0))
+        : Report.TotalDurationMs;
+    Report.bTimedOut = bTimedOut;
+    Report.Barriers = MoveTemp(FinishedBarriersTelemetry);
+    FinishedBarriersTelemetry.Reset();
+    FinishedBarriersTotalWeight = 0.0f;
+    LastTelemetryReport = Report;
+
+    bIsFinishingTransition = true;
+    PendingNextLevelName = NAME_None;
+
+    OnLoadingProgressChanged.Broadcast(1.0f, FText::GetEmpty());
+    OnLoadingProgressChangedNative.Broadcast(1.0f, FText::GetEmpty());
+    OnLoadingStateChanged.Broadcast(false, CompletedLevelName);
+    OnLoadingStateChangedNative.Broadcast(false, CompletedLevelName);
+    OnLoadingTelemetryReport.Broadcast(Report);
+    OnLoadingTelemetryReportNative.Broadcast(Report);
+
+    GAME_LOG(
+        Log,
+        TEXT("【GameFlow】关卡 [%s] 加载结束 (超时=%s)！总耗时: %.2f ms (地图阶段: %.2f ms，屏障数: %d)"),
+        *CompletedLevelName.ToString(),
+        bTimedOut ? TEXT("true") : TEXT("false"),
+        Report.TotalDurationMs,
+        Report.MapLoadDurationMs,
+        Report.Barriers.Num()
+    );
+
+    bIsFinishingTransition = false;
+    if (!PendingNextLevelName.IsNone()) {
+        const FName DeferredLevelName = PendingNextLevelName;
+        PendingNextLevelName = NAME_None;
+        OpenLevelWithLoading(DeferredLevelName);
+    }
+}
+
+void ULoadingSubsystem::RecalculateAndBroadcastProgress(const FText& InDescription) {
+    if (!IsLoading()) {
+        CurrentLoadingProgress = 0.0f;
         return;
     }
-    if (UGameInstance* GI = GetGameInstance()) {
-        GI->GetTimerManager().SetTimer(
+
+    const float MapProgress = (LoadingPhase == ELoadingTransitionPhase::WaitingBarriers) ? 1.0f : 0.0f;
+    float TotalWeight = MapProgressWeight + FinishedBarriersTotalWeight;
+    float SumWeighted = (MapProgressWeight * MapProgress) + FinishedBarriersTotalWeight;
+
+    for (const FActiveBarrierInfo& Info : ActiveBarriers.GetDenseValues()) {
+        TotalWeight += Info.Weight;
+        SumWeighted += Info.Weight * Info.Progress;
+    }
+
+    CurrentLoadingProgress = TotalWeight > 0.0f ? FMath::Clamp(SumWeighted / TotalWeight, 0.0f, 1.0f) : 1.0f;
+
+    if (OnLoadingProgressChanged.IsBound()) {
+        OnLoadingProgressChanged.Broadcast(CurrentLoadingProgress, InDescription);
+    }
+    if (OnLoadingProgressChangedNative.IsBound()) {
+        OnLoadingProgressChangedNative.Broadcast(CurrentLoadingProgress, InDescription);
+    }
+}
+
+void ULoadingSubsystem::RecordBarrierTelemetry(const FActiveBarrierInfo& Info, double NowSeconds, bool bTimedOut) {
+    FLoadingBarrierTelemetry Telemetry;
+    Telemetry.BarrierName = Info.Name;
+    Telemetry.DurationMs = static_cast<float>(FMath::Max(0.0, (NowSeconds - Info.StartTimeSeconds) * 1000.0));
+    Telemetry.Weight = Info.Weight;
+    Telemetry.bTimedOut = bTimedOut;
+    FinishedBarriersTelemetry.Add(Telemetry);
+    FinishedBarriersTotalWeight += Info.Weight;
+}
+
+void ULoadingSubsystem::HandleGlobalWatchdogTimeout(double NowSeconds) {
+    const double TotalElapsed = NowSeconds - LoadingStartTimestamp;
+    GAME_LOG(
+        Error,
+        TEXT("【加载看门狗】关卡流转总耗时 (%.2f 秒) 已超出全局上限 (%.2f 秒)！强制解除当前 %d 个活跃屏障并揭开幕布！"),
+        TotalElapsed,
+        MaxLoadingTimeoutSeconds,
+        ActiveBarriers.Num()
+    );
+
+    for (const FActiveBarrierInfo& Info : ActiveBarriers.GetDenseValues()) {
+        RecordBarrierTelemetry(Info, NowSeconds, true);
+    }
+    ActiveBarriers.Reset();
+    CustomTimeoutBarrierCount = 0;
+    FinishLoadingTransition(true, NowSeconds);
+}
+
+void ULoadingSubsystem::SweepTimedOutBarriers(double NowSeconds) {
+    if (CustomTimeoutBarrierCount <= 0) {
+        return;
+    }
+
+    TArray<FLoadingBarrierHandle, TInlineAllocator<InlineTimedOutBarrierCapacity>> TimedOutHandles;
+    ActiveBarriers.ForEach([&TimedOutHandles, NowSeconds](FLoadingBarrierHandle Handle, const FActiveBarrierInfo& Info) {
+        if (Info.TimeoutSeconds > 0.0f && (NowSeconds - Info.StartTimeSeconds) >= Info.TimeoutSeconds) {
+            TimedOutHandles.Add(Handle);
+            GAME_LOG(
+                Error,
+                TEXT("【加载看门狗】屏障 [%s] (Handle=%llu) 挂起耗时 (%.2f 秒) 超出单屏障阈值 (%.2f 秒)！强制解除该屏障！"),
+                *Info.Name.ToString(),
+                Handle.PackUInt64(),
+                NowSeconds - Info.StartTimeSeconds,
+                Info.TimeoutSeconds
+            );
+        }
+    });
+
+    if (TimedOutHandles.IsEmpty()) {
+        return;
+    }
+
+    for (const FLoadingBarrierHandle Handle : TimedOutHandles) {
+        const FActiveBarrierInfo* Found = ActiveBarriers.Find(Handle);
+        if (Found == nullptr) {
+            continue;
+        }
+        const FActiveBarrierInfo RemovedInfo = *Found;
+        ActiveBarriers.Remove(Handle);
+        if (RemovedInfo.TimeoutSeconds > 0.0f) {
+            --CustomTimeoutBarrierCount;
+        }
+        RecordBarrierTelemetry(RemovedInfo, NowSeconds, true);
+    }
+
+    SyncWatchdogTimer();
+
+    if (ActiveBarriers.IsEmpty() && LoadingPhase == ELoadingTransitionPhase::WaitingBarriers) {
+        FinishLoadingTransition(false, NowSeconds);
+        return;
+    }
+
+    RecalculateAndBroadcastProgress(FText::GetEmpty());
+}
+
+bool ULoadingSubsystem::ShouldRunWatchdogTimer() const noexcept {
+    return IsLoading() && (MaxLoadingTimeoutSeconds > 0.0f || CustomTimeoutBarrierCount > 0);
+}
+
+void ULoadingSubsystem::SyncWatchdogTimer() {
+    if (!ShouldRunWatchdogTimer()) {
+        StopWatchdogTimer();
+        return;
+    }
+
+    UGameInstance* GameInstance = GetGameInstance();
+    if (GameInstance == nullptr) {
+        return;
+    }
+
+    FTimerManager& TimerManager = GameInstance->GetTimerManager();
+    if (!TimerManager.IsTimerActive(WatchdogTimerHandle)) {
+        TimerManager.SetTimer(
             WatchdogTimerHandle,
             this,
             &ULoadingSubsystem::OnWatchdogTimerTick,
-            0.5f,
+            WatchdogPollIntervalSeconds,
             true
         );
     }
 }
 
 void ULoadingSubsystem::StopWatchdogTimer() {
-    if (UGameInstance* GI = GetGameInstance()) {
-        GI->GetTimerManager().ClearTimer(WatchdogTimerHandle);
+    if (!WatchdogTimerHandle.IsValid()) {
+        return;
+    }
+    if (UGameInstance* GameInstance = GetGameInstance()) {
+        GameInstance->GetTimerManager().ClearTimer(WatchdogTimerHandle);
     }
     WatchdogTimerHandle.Invalidate();
 }
 
-void ULoadingSubsystem::OnPreLoadMap(const FString& MapName) {
-    bMapLoadCompletedPendingBarriers = false;
-    if (!bIsLoading) {
-        bIsLoading = true;
-        TargetLevelName = FName(*MapName);
-        CurrentLoadingProgress = 0.0f;
-        FinishedBarriersTelemetry.Reset();
-        LoadingStartTimestamp = FPlatformTime::Seconds();
-        MapLoadFinishedTimestamp = LoadingStartTimestamp;
+void ULoadingSubsystem::OnWatchdogTimerTick() {
+    CheckWatchdogTimeout();
+}
 
-        StartWatchdogTimer();
-
-        OnLoadingStateChanged.Broadcast(true, TargetLevelName);
-        OnLoadingStateChangedNative.Broadcast(true, TargetLevelName);
-        RecalculateAndBroadcastProgress(FText::GetEmpty());
-
-        if constexpr (Game::Config::bEnableLog) {
-            UE_LOG(LogGameLoading, Log, TEXT("【加载子系统】引擎触发 PreLoadMap，即将开始载入地图: %s"), *MapName);
-        }
+void ULoadingSubsystem::OnPreLoadMapWithContext(const FWorldContext& WorldContext, const FString& MapName) {
+    if (WorldContext.OwningGameInstance != GetGameInstance()) {
+        return;
     }
+
+    if (LoadingPhase == ELoadingTransitionPhase::LoadingMap) {
+        return;
+    }
+
+    GAME_LOG(Log, TEXT("【GameFlow】引擎触发 PreLoadMapWithContext，即将开始载入地图: %s"), *MapName);
+    BeginLoadingTransition(FName(*MapName));
 }
 
 void ULoadingSubsystem::OnPostLoadMap(UWorld* LoadedWorld) {
-    if (LoadedWorld != nullptr && LoadedWorld->GetGameInstance() != nullptr && LoadedWorld->GetGameInstance() != GetGameInstance()) {
+    if (LoadedWorld != nullptr && LoadedWorld->GetGameInstance() != GetGameInstance()) {
         return;
     }
 
-    if (!bIsLoading) {
+    if (!IsLoading()) {
         return;
+    }
+
+    if (LoadedWorld == nullptr) {
+        GAME_LOG(Warning, TEXT("【GameFlow】PostLoadMapWithWorld 收到空世界指针（地图加载失败兜底），按当前屏障状态推进收尾流程。"));
     }
 
     MapLoadFinishedTimestamp = FPlatformTime::Seconds();
-    bMapLoadCompletedPendingBarriers = true;
-    RecalculateAndBroadcastProgress(FText::GetEmpty());
+    LoadingPhase = ELoadingTransitionPhase::WaitingBarriers;
 
-    if (!ActiveBarriers.IsEmpty()) {
-        if constexpr (Game::Config::bEnableLog) {
-            UE_LOG(LogGameLoading, Log, TEXT("【加载子系统】PostLoadMap 已完成，等待 %d 个异步就绪屏障释放后再关闭幕布。"),
-                ActiveBarriers.Num());
-        }
+    if (ActiveBarriers.IsEmpty()) {
+        FinishLoadingTransition(false, MapLoadFinishedTimestamp);
         return;
     }
 
-    FinishLoadingTransition();
-}
-
-void ULoadingSubsystem::FinishLoadingTransition() {
-    StopWatchdogTimer();
-    bMapLoadCompletedPendingBarriers = false;
-    bIsLoading = false;
-    CurrentLoadingProgress = 1.0f;
-    const FName CompletedLevelName = TargetLevelName;
-    TargetLevelName = NAME_None;
-
-    const double Now = FPlatformTime::Seconds();
-    FLoadingTelemetryReport Report;
-    Report.LevelName = CompletedLevelName;
-    Report.TotalDurationMs = static_cast<float>((Now - LoadingStartTimestamp) * 1000.0);
-    Report.MapLoadDurationMs = static_cast<float>((MapLoadFinishedTimestamp - LoadingStartTimestamp) * 1000.0);
-    Report.Barriers = FinishedBarriersTelemetry;
-
-    OnLoadingProgressChanged.Broadcast(1.0f, FText::GetEmpty());
-    OnLoadingProgressChangedNative.Broadcast(1.0f, FText::GetEmpty());
-    OnLoadingStateChanged.Broadcast(false, CompletedLevelName);
-    OnLoadingStateChangedNative.Broadcast(false, CompletedLevelName);
-    OnLoadingTelemetryReportNative.Broadcast(Report);
-
-    if constexpr (Game::Config::bEnableLog) {
-        UE_LOG(LogGameLoading, Log, TEXT("【加载子系统】关卡 [%s] 加载完成！总耗时: %.2f ms (地图解析: %.2f ms，屏障数: %d)"),
-            *CompletedLevelName.ToString(), Report.TotalDurationMs, Report.MapLoadDurationMs, Report.Barriers.Num());
-    }
+    RecalculateAndBroadcastProgress(FText::GetEmpty());
+    GAME_LOG(
+        Log,
+        TEXT("【GameFlow】PostLoadMap 已完成，等待 %d 个异步就绪屏障释放后再关闭幕布。"),
+        ActiveBarriers.Num()
+    );
 }
