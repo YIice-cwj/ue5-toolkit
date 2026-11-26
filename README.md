@@ -37,6 +37,7 @@ graph TD
         GameGameplayCore["GameGameplayCore<br>零 GAS 伤害管线 / 通用数值与 Buff 核心"]
         GameNetCore["GameNetCore<br>16B 线格式 / 传输与序列化契约 / 预留协议 / 单机内存回环"]
         GamePool["GamePool<br>Actor/UObject 双轨池 / 世代句柄 / 协程预热 / TStructPool"]
+        GameSpatial["GameSpatial<br>2D/3D 空间哈希 / Actor 分层索引 / 视锥节流"]
         GameLogging["GameLogging<br>双轨分发日志 / Epoch 缓存 / 远程日志管道"]
         GameMessage["GameMessage<br>GameplayTag 消息总线 / 零分配祖先匹配 / 跨线程 MPSC / 蓝图节点"]
     end
@@ -73,6 +74,8 @@ graph TD
     GameGameplayCore --> GamePool
     GamePool --> GameCore
     GamePool --> GameLogging
+    GameSpatial --> GameCore
+    GameSpatial --> GameLogging
     GameDataCore --> GameCore
     GameDataCore --> GameLogging
     GameLogging --> GameCore
@@ -86,6 +89,7 @@ graph TD
 | [**GameMessage**](Plugins/GameMessage/README.md) | 全局消息总线 | Pimpl 零 CDO 堆分配、GameplayTag 精确与零堆分配祖先树 `PartialMatch`、单层 Thunk + `CGameplayMessageStruct` 约束、重入安全栈内联快照、无竞态 `ActiveEpoch` RAII 句柄、ARM64 `seq_cst` 跨线程 MPSC 入队、`FStructOnScope` GC 安全蓝图节点 | `GameCore` | [API 参考](Plugins/GameMessage/Docs/API/GameplayMessageSubsystem.md) |
 | [**GameLogging**](Plugins/GameLogging/README.md) | 全局日志中枢 | 模块分类一键 RAII 注册、动态容量注册表、双轨分发架构、Epoch 纪元安全缓存、`GAME_LOG_THROTTLE` 限频、Shipping 零开销、零网络耦合远程日志管道（MPSC 队列 / GLog 挂载 / 总线广播） | `GameCore`, `GameMessage` | [文档中心](Plugins/GameLogging/Docs/Architecture/Overview.md) |
 | [**GamePool**](Plugins/GamePool/README.md) | 通用对象与内存池 | Actor/UObject 双轨对象池（Pimpl 隐藏、1-Pass 组件重置、GC 强引用追踪）、16B 编译期指纹载荷视图、世代防悬空安全句柄与 RAII 租约、事件驱动 C++20 协程预热、`TDeque` TTL 冷淘汰、无锁 MPMC 延迟归还、GC 安全低内存泄洪、原生 `TStructPool` | `GameCore`, `GameLogging` | [API 参考](Plugins/GamePool/Docs/API/ObjectPoolSubsystem.md) |
+| [**GameSpatial**](Plugins/GameSpatial/README.md) | 纯逻辑空间索引与节流 | 脱离物理引擎的 2D/3D 空间哈希（`Hash64To32` 雪崩散列、LWC 双精度、O(1) 桶维护、无开方紧致锥体剪枝、稀疏快路径、栈内联 K 近邻）、`UGameSpatialSubsystem` 分层弱引用检索与流式遍历、`FSpatialThrottleDriver` 视锥迟滞节流 | `GameCore`, `GameLogging` | [文档中心](Plugins/GameSpatial/Docs/Architecture/Overview.md) |
 | [**GameGameplayCore**](Plugins/GameGameplayCore/README.md) | 战斗核心契约 | 零 GAS 强依赖、`IDamageable` 泛型可受击契约、闭环同步打击反馈、通用数值 `UGameStatComponent`（属性字典 / 修正器 / 按 Tag 订阅）、生命组件 `UGameVitalComponent`（存活状态机 / 复活）、通用 Buff `UGameBuffComponent`（全员实现 `IGamePoolable`） | `GameCore`, `GamePool`, `GameLogging` | [文档中心](Plugins/GameGameplayCore/Docs/Architecture/Overview.md) |
 | [**GameGameplay**](Plugins/GameGameplay/README.md) | GAS 业务绑定 | 通用 ASC 基类、全时序自动握手 Bootstrap 组件（实现 `IGamePoolable`）、双轨元属性集、运行时通道 Registry 的 ExecCalc、GAS Buff 桥接、UI 属性解耦映射 | `GameGameplayCore`, `GameplayAbilities`, `GameCore`, `GameMessage`, `GamePool`, `GameLogging`, `GameFeedback` | [文档中心](Plugins/GameGameplay/Docs/Architecture/Overview.md) |
 | [**GameFeedback**](Plugins/GameFeedback/README.md) | 打击感表现中枢 | 消息总线 + 能力组件（无集中上帝类）、顿帧累积预算、闪白绝对时间续期、分屏独立镜头震动、Listen/Dedicated Server 紧凑网络派发（典型 ≤64B、完整 ≤96B、视距裁剪、每帧限流）、本地预测指纹去重 | `GameCore`, `GameGameplayCore`, `GameLogging`, `Niagara` | [文档中心](Plugins/GameFeedback/Docs/Architecture/Overview.md) |
@@ -178,6 +182,7 @@ UEToolkit/
 │   ├── GameMessage/                 # [Layer 1] GameplayTag 消息总线与蓝图异步节点
 │   ├── GameLogging/                 # [Layer 1] 全局日志分发与远程日志管道
 │   ├── GamePool/                    # [Layer 1] Actor/UObject 对象池与原生结构体内存池
+│   ├── GameSpatial/                 # [Layer 1] 纯逻辑 2D/3D 空间哈希网格、Actor 分层子系统与视锥节流
 │   ├── GameGameplayCore/            # [Layer 1] 战斗契约 / 通用数值与 Buff
 │   ├── GameGameplay/                # [Layer 2] GAS 业务绑定与引导组件
 │   ├── GameFeedback/                # [Layer 2] 打击感表现中枢 / 网络派发
