@@ -3,6 +3,7 @@
 #include "System/GameFeedbackHitStopLimiter.h"
 
 #include "Feedback/GameFeedbackActions.h"
+#include "GameFramework/Actor.h"
 
 namespace {
 constexpr double StaleStateLifetimeSeconds = 5.0;
@@ -18,7 +19,7 @@ constexpr double StaleStateLifetimeSeconds = 5.0;
  */
 bool FGameFeedbackHitStopLimiter::PassCooldown(AActor* Attacker, AActor* Target, const FGameFeedbackHitStopAction& Action, double RealTime)
 {
-    const auto PairKey = MakeTuple(TWeakObjectPtr<AActor>(Attacker), TWeakObjectPtr<AActor>(Target));
+    const TPair<TObjectKey<AActor>, TObjectKey<AActor>> PairKey{TObjectKey<AActor>(Attacker), TObjectKey<AActor>(Target)};
     if (double* LastTriggerTime = CooldownMap.Find(PairKey)) {
         if (RealTime - *LastTriggerTime < Action.CooldownInterval) {
             return false;
@@ -43,7 +44,7 @@ float FGameFeedbackHitStopLimiter::AcquireDuration(AActor* Actor, float Requeste
         return 0.0f;
     }
 
-    FTrackState& Track = Tracks.FindOrAdd(Actor);
+    FTrackState& Track = Tracks.FindOrAdd(TObjectKey<AActor>(Actor));
     if (RealTime - Track.LastTriggerRealTime > Action.ResetWindow) {
         Track.CumulativeDuration = 0.0f;
     }
@@ -68,9 +69,10 @@ void FGameFeedbackHitStopLimiter::ClearActor(AActor* Actor)
         return;
     }
 
-    Tracks.Remove(Actor);
+    const TObjectKey<AActor> ActorKey(Actor);
+    Tracks.Remove(ActorKey);
     for (auto It = CooldownMap.CreateIterator(); It; ++It) {
-        if (It.Key().Key == Actor || It.Key().Value == Actor) {
+        if (It.Key().Key == ActorKey || It.Key().Value == ActorKey) {
             It.RemoveCurrent();
         }
     }
@@ -83,14 +85,16 @@ void FGameFeedbackHitStopLimiter::ClearActor(AActor* Actor)
 void FGameFeedbackHitStopLimiter::Prune(double RealTime)
 {
     for (auto It = Tracks.CreateIterator(); It; ++It) {
-        if (!It.Key().IsValid() || RealTime - It.Value().LastTriggerRealTime > StaleStateLifetimeSeconds) {
+        if (It.Key().ResolveObjectPtr() == nullptr || RealTime - It.Value().LastTriggerRealTime > StaleStateLifetimeSeconds) {
             It.RemoveCurrent();
         }
     }
 
+    const TObjectKey<AActor> NullActorKey;
     for (auto It = CooldownMap.CreateIterator(); It; ++It) {
-        const bool bAttackerDead = It.Key().Key.IsStale();
-        const bool bTargetInvalid = !It.Key().Value.IsValid();
+        const TObjectKey<AActor>& AttackerKey = It.Key().Key;
+        const bool bAttackerDead = (AttackerKey != NullActorKey) && (AttackerKey.ResolveObjectPtr() == nullptr);
+        const bool bTargetInvalid = (It.Key().Value.ResolveObjectPtr() == nullptr);
         const bool bExpired = (RealTime - It.Value() > StaleStateLifetimeSeconds);
         if (bAttackerDead || bTargetInvalid || bExpired) {
             It.RemoveCurrent();

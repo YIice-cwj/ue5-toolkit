@@ -19,7 +19,7 @@
 2. **世界级 Actor 分层空间索引子系统 (`UGameSpatialSubsystem`)**
    - 继承自 `UWorldSubsystem`，同时面向蓝图与 C++ 统一暴露（不再维护重复的静态蓝图函数库）；
    - **静态原生默认标签**：通过 `UE_DEFINE_GAMEPLAY_TAG_COMMENT(TAG_Spatial_Layer_Default, "Spatial.Layer.Default", ...)` 静态注册，空 `LayerTag` 自动归入默认层；
-   - **弱引用 GC 安全与状态一致**：内部统一持有 `TWeakObjectPtr<AActor>`，销毁态 Actor 在检索与只读探查中一致排除，`UnregisterActor` 放行销毁期调用以支持 `EndPlay` 清理；
+   - **不可变弱身份键 GC 安全与状态一致**：内部统一采用 `TObjectKey<AActor>` 杜绝已销毁弱指针哈希桶碰撞误删，销毁态 Actor 在检索与只读探查中一致排除，`UnregisterActor` 放行销毁期调用以支持 `EndPlay` 清理；
    - **O(LayerSize) 精准清理与 C++ 流式查询**：`ClearLayer` / `PruneStaleActors` 仅遍历目标图层；`ForEachActorInRadius/Cone/Cylinder/AABB` 与零中间数组分配的 `QueryKNearestActors` / `GetActorsInLayer`。
 
 3. **视锥与重要度心跳节流驱动器 (`FSpatialThrottleDriver`)**

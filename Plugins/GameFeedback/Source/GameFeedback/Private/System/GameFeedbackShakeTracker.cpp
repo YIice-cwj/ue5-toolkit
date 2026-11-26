@@ -25,13 +25,13 @@ void FGameFeedbackShakeTracker::Execute(
     }
 
     for (auto It = States.CreateIterator(); It; ++It) {
-        if (!It.Key().IsValid()) {
+        if (It.Key().ResolveObjectPtr() == nullptr) {
             It.RemoveCurrent();
         }
     }
 
     const uint64 CurrentFrame = GFrameCounter;
-    FState& State = States.FindOrAdd(CameraManager);
+    FState& State = States.FindOrAdd(TObjectKey<APlayerCameraManager>(CameraManager));
 
     if (State.LastFrame == CurrentFrame && ShakeScale <= State.MaxScale) {
         return;
@@ -61,7 +61,7 @@ void FGameFeedbackShakeTracker::Execute(
 void FGameFeedbackShakeTracker::StopAll()
 {
     for (auto It = States.CreateIterator(); It; ++It) {
-        if (APlayerCameraManager* CameraManager = It.Key().Get()) {
+        if (APlayerCameraManager* CameraManager = It.Key().ResolveObjectPtr()) {
             if (UCameraShakeBase* Shake = It.Value().Instance.Get()) {
                 CameraManager->StopCameraShake(Shake, false);
             }

@@ -47,29 +47,29 @@ bool UGameSpatialSubsystem::RegisterActor(AActor* Actor, FGameplayTag LayerTag) 
     }
 
     const FGameplayTag ResolvedTag = ResolveLayerTag(LayerTag);
-    const TWeakObjectPtr<AActor> WeakActor(Actor);
+    const TObjectKey<AActor> ActorKey(Actor);
 
-    if (FActorSpatialEntry* ExistingEntry = TrackedActors.Find(WeakActor)) {
+    if (FActorSpatialEntry* ExistingEntry = TrackedActors.Find(ActorKey)) {
         if (ExistingEntry->LayerTag == ResolvedTag) {
-            LayeredGrids.FindChecked(ResolvedTag).Update(WeakActor, Location);
+            LayeredGrids.FindChecked(ResolvedTag).Update(ActorKey, Location);
             ExistingEntry->LastLocation = Location;
             return true;
         }
 
-        TSpatialHashGrid3D<TWeakObjectPtr<AActor>>& OldGrid = LayeredGrids.FindChecked(ExistingEntry->LayerTag);
-        OldGrid.Remove(WeakActor);
+        TSpatialHashGrid3D<TObjectKey<AActor>>& OldGrid = LayeredGrids.FindChecked(ExistingEntry->LayerTag);
+        OldGrid.Remove(ActorKey);
         if (OldGrid.Num() == 0) {
             LayeredGrids.Remove(ExistingEntry->LayerTag);
         }
 
-        LayeredGrids.FindOrAdd(ResolvedTag).Insert(WeakActor, Location);
+        LayeredGrids.FindOrAdd(ResolvedTag).Insert(ActorKey, Location);
         ExistingEntry->LayerTag = ResolvedTag;
         ExistingEntry->LastLocation = Location;
         return true;
     }
 
-    LayeredGrids.FindOrAdd(ResolvedTag).Insert(WeakActor, Location);
-    TrackedActors.Add(WeakActor, FActorSpatialEntry{ResolvedTag, Location});
+    LayeredGrids.FindOrAdd(ResolvedTag).Insert(ActorKey, Location);
+    TrackedActors.Add(ActorKey, FActorSpatialEntry{ResolvedTag, Location});
     return true;
 }
 
@@ -99,14 +99,14 @@ bool UGameSpatialSubsystem::UnregisterActor(AActor* Actor) {
         return false;
     }
 
-    const TWeakObjectPtr<AActor> WeakActor(Actor);
+    const TObjectKey<AActor> ActorKey(Actor);
     FActorSpatialEntry Entry;
-    if (!TrackedActors.RemoveAndCopyValue(WeakActor, Entry)) {
+    if (!TrackedActors.RemoveAndCopyValue(ActorKey, Entry)) {
         return false;
     }
 
-    TSpatialHashGrid3D<TWeakObjectPtr<AActor>>& Grid = LayeredGrids.FindChecked(Entry.LayerTag);
-    Grid.Remove(WeakActor);
+    TSpatialHashGrid3D<TObjectKey<AActor>>& Grid = LayeredGrids.FindChecked(Entry.LayerTag);
+    Grid.Remove(ActorKey);
     if (Grid.Num() == 0) {
         LayeredGrids.Remove(Entry.LayerTag);
     }
@@ -139,13 +139,13 @@ bool UGameSpatialSubsystem::UpdateActorLocation(AActor* Actor, const FVector& Ne
         return false;
     }
 
-    const TWeakObjectPtr<AActor> WeakActor(Actor);
-    FActorSpatialEntry* Entry = TrackedActors.Find(WeakActor);
+    const TObjectKey<AActor> ActorKey(Actor);
+    FActorSpatialEntry* Entry = TrackedActors.Find(ActorKey);
     if (Entry == nullptr) {
         return false;
     }
 
-    LayeredGrids.FindChecked(Entry->LayerTag).Update(WeakActor, NewLocation);
+    LayeredGrids.FindChecked(Entry->LayerTag).Update(ActorKey, NewLocation);
     Entry->LastLocation = NewLocation;
     return true;
 }
@@ -257,20 +257,20 @@ bool UGameSpatialSubsystem::QueryNearestActor(
     FGameplayTag LayerTag
 ) const {
     OutNearestActor = nullptr;
-    const TSpatialHashGrid3D<TWeakObjectPtr<AActor>>* Grid = LayeredGrids.Find(ResolveLayerTag(LayerTag));
+    const TSpatialHashGrid3D<TObjectKey<AActor>>* Grid = LayeredGrids.Find(ResolveLayerTag(LayerTag));
     if (Grid == nullptr) {
         return false;
     }
 
-    TWeakObjectPtr<AActor> NearestWeak;
-    const bool bFound = Grid->QueryNearest(Center, MaxSearchRadius, NearestWeak, [](const TWeakObjectPtr<AActor>& Item) {
+    TObjectKey<AActor> NearestKey;
+    const bool bFound = Grid->QueryNearest(Center, MaxSearchRadius, NearestKey, [](const TObjectKey<AActor>& Item) {
         return ResolveOperationalActor(Item) != nullptr;
     });
     if (!bFound) {
         return false;
     }
 
-    OutNearestActor = NearestWeak.Get();
+    OutNearestActor = NearestKey.ResolveObjectPtr();
     return true;
 }
 
@@ -294,7 +294,7 @@ void UGameSpatialSubsystem::QueryKNearestActors(
         return;
     }
 
-    const TSpatialHashGrid3D<TWeakObjectPtr<AActor>>* Grid = LayeredGrids.Find(ResolveLayerTag(LayerTag));
+    const TSpatialHashGrid3D<TObjectKey<AActor>>* Grid = LayeredGrids.Find(ResolveLayerTag(LayerTag));
     if (Grid == nullptr) {
         return;
     }
@@ -304,10 +304,10 @@ void UGameSpatialSubsystem::QueryKNearestActors(
         Center,
         MaxSearchRadius,
         K,
-        [&OutActors](const TWeakObjectPtr<AActor>& WeakActor) {
-            OutActors.Add(WeakActor.Get());
+        [&OutActors](const TObjectKey<AActor>& ActorKey) {
+            OutActors.Add(ActorKey.ResolveObjectPtr());
         },
-        [](const TWeakObjectPtr<AActor>& Item) {
+        [](const TObjectKey<AActor>& Item) {
             return ResolveOperationalActor(Item) != nullptr;
         }
     );
@@ -319,13 +319,13 @@ void UGameSpatialSubsystem::QueryKNearestActors(
  */
 void UGameSpatialSubsystem::ClearLayer(FGameplayTag LayerTag) {
     const FGameplayTag ResolvedTag = ResolveLayerTag(LayerTag);
-    const TSpatialHashGrid3D<TWeakObjectPtr<AActor>>* Grid = LayeredGrids.Find(ResolvedTag);
+    const TSpatialHashGrid3D<TObjectKey<AActor>>* Grid = LayeredGrids.Find(ResolvedTag);
     if (Grid == nullptr) {
         return;
     }
 
-    Grid->ForEachElement([this](const TWeakObjectPtr<AActor>& WeakActor) {
-        TrackedActors.Remove(WeakActor);
+    Grid->ForEachElement([this](const TObjectKey<AActor>& ActorKey) {
+        TrackedActors.Remove(ActorKey);
     });
     LayeredGrids.Remove(ResolvedTag);
 }
@@ -345,19 +345,19 @@ void UGameSpatialSubsystem::ClearAll() {
  */
 int32 UGameSpatialSubsystem::PruneStaleActors(FGameplayTag LayerTag) {
     const FGameplayTag ResolvedTag = ResolveLayerTag(LayerTag);
-    TSpatialHashGrid3D<TWeakObjectPtr<AActor>>* Grid = LayeredGrids.Find(ResolvedTag);
+    TSpatialHashGrid3D<TObjectKey<AActor>>* Grid = LayeredGrids.Find(ResolvedTag);
     if (Grid == nullptr) {
         return 0;
     }
 
-    TArray<TWeakObjectPtr<AActor>, TInlineAllocator<32>> StaleActors;
-    Grid->ForEachElement([&StaleActors](const TWeakObjectPtr<AActor>& WeakActor) {
-        if (ResolveOperationalActor(WeakActor) == nullptr) {
-            StaleActors.Add(WeakActor);
+    TArray<TObjectKey<AActor>, TInlineAllocator<32>> StaleActors;
+    Grid->ForEachElement([&StaleActors](const TObjectKey<AActor>& ActorKey) {
+        if (ResolveOperationalActor(ActorKey) == nullptr) {
+            StaleActors.Add(ActorKey);
         }
     });
 
-    for (const TWeakObjectPtr<AActor>& StaleActor : StaleActors) {
+    for (const TObjectKey<AActor>& StaleActor : StaleActors) {
         Grid->Remove(StaleActor);
         TrackedActors.Remove(StaleActor);
     }
@@ -383,7 +383,7 @@ int32 UGameSpatialSubsystem::PruneAllStaleActors() {
             continue;
         }
         const FGameplayTag& EntryLayer = It.Value().LayerTag;
-        TSpatialHashGrid3D<TWeakObjectPtr<AActor>>& Grid = LayeredGrids.FindChecked(EntryLayer);
+        TSpatialHashGrid3D<TObjectKey<AActor>>& Grid = LayeredGrids.FindChecked(EntryLayer);
         Grid.Remove(It.Key());
         if (Grid.Num() == 0) {
             LayeredGrids.Remove(EntryLayer);
@@ -404,7 +404,7 @@ int32 UGameSpatialSubsystem::PruneAllStaleActors() {
  * @return 索引元素数量
  */
 int32 UGameSpatialSubsystem::GetActorCount(FGameplayTag LayerTag) const {
-    const TSpatialHashGrid3D<TWeakObjectPtr<AActor>>* Grid = LayeredGrids.Find(ResolveLayerTag(LayerTag));
+    const TSpatialHashGrid3D<TObjectKey<AActor>>* Grid = LayeredGrids.Find(ResolveLayerTag(LayerTag));
     return Grid != nullptr ? Grid->Num() : 0;
 }
 
@@ -425,7 +425,7 @@ bool UGameSpatialSubsystem::IsActorRegistered(const AActor* Actor) const {
     if (!IsActorOperational(Actor)) {
         return false;
     }
-    return TrackedActors.Contains(Actor);
+    return TrackedActors.Contains(TObjectKey<AActor>(Actor));
 }
 
 /**
@@ -437,7 +437,7 @@ FGameplayTag UGameSpatialSubsystem::GetActorLayer(const AActor* Actor) const {
     if (!IsActorOperational(Actor)) {
         return FGameplayTag();
     }
-    const FActorSpatialEntry* Entry = TrackedActors.Find(Actor);
+    const FActorSpatialEntry* Entry = TrackedActors.Find(TObjectKey<AActor>(Actor));
     return Entry != nullptr ? Entry->LayerTag : FGameplayTag();
 }
 
@@ -452,7 +452,7 @@ bool UGameSpatialSubsystem::GetActorLocation(const AActor* Actor, FVector& OutLo
     if (!IsActorOperational(Actor)) {
         return false;
     }
-    const FActorSpatialEntry* Entry = TrackedActors.Find(Actor);
+    const FActorSpatialEntry* Entry = TrackedActors.Find(TObjectKey<AActor>(Actor));
     if (Entry == nullptr) {
         return false;
     }
@@ -467,14 +467,14 @@ bool UGameSpatialSubsystem::GetActorLocation(const AActor* Actor, FVector& OutLo
  */
 void UGameSpatialSubsystem::GetActorsInLayer(TArray<AActor*>& OutActors, FGameplayTag LayerTag) const {
     OutActors.Reset();
-    const TSpatialHashGrid3D<TWeakObjectPtr<AActor>>* Grid = LayeredGrids.Find(ResolveLayerTag(LayerTag));
+    const TSpatialHashGrid3D<TObjectKey<AActor>>* Grid = LayeredGrids.Find(ResolveLayerTag(LayerTag));
     if (Grid == nullptr) {
         return;
     }
 
     OutActors.Reserve(Grid->Num());
-    Grid->ForEachElement([&OutActors](const TWeakObjectPtr<AActor>& WeakActor) {
-        if (AActor* Actor = ResolveOperationalActor(WeakActor)) {
+    Grid->ForEachElement([&OutActors](const TObjectKey<AActor>& ActorKey) {
+        if (AActor* Actor = ResolveOperationalActor(ActorKey)) {
             OutActors.Add(Actor);
         }
     });

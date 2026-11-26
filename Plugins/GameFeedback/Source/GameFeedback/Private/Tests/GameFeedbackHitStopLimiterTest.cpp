@@ -62,6 +62,27 @@ bool FGameFeedbackHitStopLimiterTest::RunTest([[maybe_unused]] const FString& Pa
     Limiter.Prune(10.16);
     TestTrue(TEXT("攻击者被垃圾回收后相关条目应被 Prune 清理放行"), Limiter.PassCooldown(StaleAttacker, Target, Action, 10.16));
 
+    TArray<AActor*> DeadAttackers;
+    DeadAttackers.Reserve(32);
+    for (int32 Index = 0; Index < 32; ++Index) {
+        AActor* DeadAttacker = NewObject<AActor>(GetTransientPackage());
+        TestTrue(TEXT("批量攻击者首次冷却放行"), Limiter.PassCooldown(DeadAttacker, Target, Action, 20.0));
+        DeadAttackers.Add(DeadAttacker);
+    }
+    for (AActor* DeadAttacker : DeadAttackers) {
+        DeadAttacker->MarkAsGarbage();
+    }
+    for (int32 Index = 0; Index < 16; ++Index) {
+        Limiter.ClearActor(DeadAttackers[Index]);
+    }
+    for (int32 Index = 16; Index < 32; ++Index) {
+        TestFalse(TEXT("批量销毁哈希碰撞下未 Clear 的失效攻击者冷却键不受误删"), Limiter.PassCooldown(DeadAttackers[Index], Target, Action, 20.01));
+    }
+    Limiter.Prune(20.02);
+    for (AActor* DeadAttacker : DeadAttackers) {
+        TestTrue(TEXT("Prune 后全部失效攻击者冷却记录已清理"), Limiter.PassCooldown(DeadAttacker, Target, Action, 20.02));
+    }
+
     return true;
 }
 

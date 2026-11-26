@@ -16,7 +16,8 @@
 void FActorHitStopTable::Request(AActor& InTarget, float InDuration, float InTimeDilation)
 {
     const float ClampedDilation = FMath::Clamp(InTimeDilation, 0.0001f, 20.0f);
-    FActorHitStopState* ExistingState = ActiveActorHitStops.Find(&InTarget);
+    const TObjectKey<AActor> ActorKey(&InTarget);
+    FActorHitStopState* ExistingState = ActiveActorHitStops.Find(ActorKey);
     if (ExistingState != nullptr) {
         ExistingState->RemainingDuration = FMath::Max(ExistingState->RemainingDuration, InDuration);
         ExistingState->HitStopTimeDilation = FMath::Min(ExistingState->HitStopTimeDilation, ClampedDilation);
@@ -31,7 +32,7 @@ void FActorHitStopTable::Request(AActor& InTarget, float InDuration, float InTim
     NewState.RemainingDuration = InDuration;
 
     InTarget.CustomTimeDilation = ClampedDilation;
-    ActiveActorHitStops.Add(&InTarget, NewState);
+    ActiveActorHitStops.Add(ActorKey, NewState);
 }
 
 /**
@@ -44,13 +45,14 @@ void FActorHitStopTable::Clear(AActor* InTarget)
         return;
     }
 
-    FActorHitStopState* ExistingState = ActiveActorHitStops.Find(InTarget);
+    const TObjectKey<AActor> ActorKey(InTarget);
+    FActorHitStopState* ExistingState = ActiveActorHitStops.Find(ActorKey);
     if (ExistingState == nullptr) {
         return;
     }
 
     InTarget->CustomTimeDilation = ExistingState->OriginalCustomTimeDilation;
-    ActiveActorHitStops.Remove(InTarget);
+    ActiveActorHitStops.Remove(ActorKey);
 }
 
 /**
@@ -58,8 +60,8 @@ void FActorHitStopTable::Clear(AActor* InTarget)
  */
 void FActorHitStopTable::ClearAll()
 {
-    for (const TPair<TWeakObjectPtr<AActor>, FActorHitStopState>& Pair : ActiveActorHitStops) {
-        if (AActor* Actor = Pair.Key.Get()) {
+    for (const TPair<TObjectKey<AActor>, FActorHitStopState>& Pair : ActiveActorHitStops) {
+        if (AActor* Actor = Pair.Key.ResolveObjectPtr()) {
             Actor->CustomTimeDilation = Pair.Value.OriginalCustomTimeDilation;
         }
     }
@@ -73,7 +75,7 @@ void FActorHitStopTable::ClearAll()
  */
 bool FActorHitStopTable::IsActive(const AActor* InTarget) const
 {
-    return InTarget != nullptr && ActiveActorHitStops.Contains(InTarget);
+    return InTarget != nullptr && ActiveActorHitStops.Contains(TObjectKey<AActor>(InTarget));
 }
 
 /**
@@ -104,7 +106,7 @@ void FActorHitStopTable::Advance(float InRealDeltaSeconds)
 void FActorHitStopTable::PruneInvalid()
 {
     for (auto Iterator = ActiveActorHitStops.CreateIterator(); Iterator; ++Iterator) {
-        if (!Iterator.Key().IsValid()) {
+        if (Iterator.Key().ResolveObjectPtr() == nullptr) {
             Iterator.RemoveCurrent();
         }
     }

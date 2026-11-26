@@ -9,6 +9,7 @@
 #include "GameFramework/Actor.h"
 #include "GameplayTagContainer.h"
 #include "Subsystems/WorldSubsystem.h"
+#include "UObject/ObjectKey.h"
 #include "Core/SpatialQueryCommon.h"
 #include "Grid/TSpatialHashGrid3D.h"
 #include "UGameSpatialSubsystem.generated.h"
@@ -214,12 +215,12 @@ public:
         TConsumer&& Consumer,
         FGameplayTag LayerTag = FGameplayTag()
     ) const {
-        const TSpatialHashGrid3D<TWeakObjectPtr<AActor>>* Grid = LayeredGrids.Find(ResolveLayerTag(LayerTag));
+        const TSpatialHashGrid3D<TObjectKey<AActor>>* Grid = LayeredGrids.Find(ResolveLayerTag(LayerTag));
         if (Grid == nullptr) {
             return;
         }
-        Grid->QueryRadiusMatching(Center, Radius, [&Consumer](const TWeakObjectPtr<AActor>& WeakActor, const FVector& Loc) {
-            if (AActor* Actor = ResolveOperationalActor(WeakActor)) {
+        Grid->QueryRadiusMatching(Center, Radius, [&Consumer](const TObjectKey<AActor>& ActorKey, const FVector& Loc) {
+            if (AActor* Actor = ResolveOperationalActor(ActorKey)) {
                 Game::Spatial::Private::InvokeConsumer(Consumer, Actor, Loc);
             }
         });
@@ -244,12 +245,12 @@ public:
         TConsumer&& Consumer,
         FGameplayTag LayerTag = FGameplayTag()
     ) const {
-        const TSpatialHashGrid3D<TWeakObjectPtr<AActor>>* Grid = LayeredGrids.Find(ResolveLayerTag(LayerTag));
+        const TSpatialHashGrid3D<TObjectKey<AActor>>* Grid = LayeredGrids.Find(ResolveLayerTag(LayerTag));
         if (Grid == nullptr) {
             return;
         }
-        Grid->QueryConeMatching(Apex, Direction, Radius, HalfAngleDegrees, [&Consumer](const TWeakObjectPtr<AActor>& WeakActor, const FVector& Loc) {
-            if (AActor* Actor = ResolveOperationalActor(WeakActor)) {
+        Grid->QueryConeMatching(Apex, Direction, Radius, HalfAngleDegrees, [&Consumer](const TObjectKey<AActor>& ActorKey, const FVector& Loc) {
+            if (AActor* Actor = ResolveOperationalActor(ActorKey)) {
                 Game::Spatial::Private::InvokeConsumer(Consumer, Actor, Loc);
             }
         });
@@ -272,12 +273,12 @@ public:
         TConsumer&& Consumer,
         FGameplayTag LayerTag = FGameplayTag()
     ) const {
-        const TSpatialHashGrid3D<TWeakObjectPtr<AActor>>* Grid = LayeredGrids.Find(ResolveLayerTag(LayerTag));
+        const TSpatialHashGrid3D<TObjectKey<AActor>>* Grid = LayeredGrids.Find(ResolveLayerTag(LayerTag));
         if (Grid == nullptr) {
             return;
         }
-        Grid->QueryCylinderMatching(Center, Radius, HalfHeight, [&Consumer](const TWeakObjectPtr<AActor>& WeakActor, const FVector& Loc) {
-            if (AActor* Actor = ResolveOperationalActor(WeakActor)) {
+        Grid->QueryCylinderMatching(Center, Radius, HalfHeight, [&Consumer](const TObjectKey<AActor>& ActorKey, const FVector& Loc) {
+            if (AActor* Actor = ResolveOperationalActor(ActorKey)) {
                 Game::Spatial::Private::InvokeConsumer(Consumer, Actor, Loc);
             }
         });
@@ -296,12 +297,12 @@ public:
         TConsumer&& Consumer,
         FGameplayTag LayerTag = FGameplayTag()
     ) const {
-        const TSpatialHashGrid3D<TWeakObjectPtr<AActor>>* Grid = LayeredGrids.Find(ResolveLayerTag(LayerTag));
+        const TSpatialHashGrid3D<TObjectKey<AActor>>* Grid = LayeredGrids.Find(ResolveLayerTag(LayerTag));
         if (Grid == nullptr) {
             return;
         }
-        Grid->QueryAABBMatching(Box, [&Consumer](const TWeakObjectPtr<AActor>& WeakActor, const FVector& Loc) {
-            if (AActor* Actor = ResolveOperationalActor(WeakActor)) {
+        Grid->QueryAABBMatching(Box, [&Consumer](const TObjectKey<AActor>& ActorKey, const FVector& Loc) {
+            if (AActor* Actor = ResolveOperationalActor(ActorKey)) {
                 Game::Spatial::Private::InvokeConsumer(Consumer, Actor, Loc);
             }
         });
@@ -395,12 +396,12 @@ public:
 
 private:
     [[nodiscard]] static bool IsActorOperational(const AActor* Actor) noexcept;
-    [[nodiscard]] static FORCEINLINE AActor* ResolveOperationalActor(const TWeakObjectPtr<AActor>& WeakActor) noexcept {
-        AActor* Actor = WeakActor.Get();
+    [[nodiscard]] static FORCEINLINE AActor* ResolveOperationalActor(const TObjectKey<AActor>& ActorKey) noexcept {
+        AActor* Actor = ActorKey.ResolveObjectPtr();
         return (Actor != nullptr && !Actor->IsActorBeingDestroyed()) ? Actor : nullptr;
     }
 
 private:
-    TMap<FGameplayTag, TSpatialHashGrid3D<TWeakObjectPtr<AActor>>> LayeredGrids;
-    TMap<TWeakObjectPtr<AActor>, FActorSpatialEntry> TrackedActors;
+    TMap<FGameplayTag, TSpatialHashGrid3D<TObjectKey<AActor>>> LayeredGrids;
+    TMap<TObjectKey<AActor>, FActorSpatialEntry> TrackedActors;
 };

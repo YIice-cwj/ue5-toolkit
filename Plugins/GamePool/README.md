@@ -19,7 +19,7 @@
 - 原生类走零反射直调快路径，蓝图派生类自动走 `Execute_OnAcquireFromPool` / `Execute_OnReleaseToPool`，确保蓝图覆写 100% 生效。
 
 ### 3. 防悬空世代句柄与 RAII 租约 (`TPooledObjectHandle<T>` & `TScopedPoolRental<T>`)
-- **防 Use-After-Return**：每次借出分配单调递增世代序号，直接以 `FWeakObjectPtr` 作为追踪键（零 `GUObjectArray` 反查），归还或复用后旧句柄自动失效（`IsValid() == false`、`Get() == nullptr`）。
+- **防 Use-After-Return**：每次借出分配单调递增世代序号，内部以不可变 `FObjectKey` 作为追踪键杜绝已销毁对象哈希碰撞，归还或复用后旧句柄自动失效（`IsValid() == false`、`Get() == nullptr`）。
 - **作用域自动归还**：`TScopedPoolRental<T>` 支持移动语义、解引用（`->` / `*`）、`EarlyRelease()` 单次校验提前归还与 `[[nodiscard]] ReleaseAndDetach()` 所有权分离。
 
 ### 4. 事件驱动协程预热、动态 TTL 淘汰与无锁延迟归还

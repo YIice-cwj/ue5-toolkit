@@ -13,6 +13,7 @@
 #include "Engine/World.h"
 #include "Listener/FNotificationDispatcher.h"
 #include "Misc/StringBuilder.h"
+#include "UObject/ObjectKey.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogGameConfig, Log, All);
 
@@ -204,7 +205,7 @@ uint32 FConfigRegistry::GetVersion() const noexcept {
 namespace {
 
 static FRWLock GWorldRegistryLock;
-static TMap<TWeakObjectPtr<const UWorld>, TSharedPtr<FConfigRegistry>> GWorldRegistries;
+static TMap<FObjectKey, TSharedPtr<FConfigRegistry>> GWorldRegistries;
 static FDelegateHandle GWorldDestroyHandle;
 
 /**
@@ -254,9 +255,10 @@ TSharedPtr<FConfigRegistry> FConfigRegistry::GetShared(const UObject* WorldConte
         return GetGlobalShared();
     }
 
+    const FObjectKey WorldKey(World);
     {
         FReadScopeLock ReadLock(GWorldRegistryLock);
-        if (const TSharedPtr<FConfigRegistry>* Found = GWorldRegistries.Find(World)) {
+        if (const TSharedPtr<FConfigRegistry>* Found = GWorldRegistries.Find(WorldKey)) {
             if (Found->IsValid()) {
                 return *Found;
             }
@@ -264,7 +266,7 @@ TSharedPtr<FConfigRegistry> FConfigRegistry::GetShared(const UObject* WorldConte
     }
 
     FWriteScopeLock WriteLock(GWorldRegistryLock);
-    if (const TSharedPtr<FConfigRegistry>* Found = GWorldRegistries.Find(World)) {
+    if (const TSharedPtr<FConfigRegistry>* Found = GWorldRegistries.Find(WorldKey)) {
         if (Found->IsValid()) {
             return *Found;
         }
@@ -273,13 +275,13 @@ TSharedPtr<FConfigRegistry> FConfigRegistry::GetShared(const UObject* WorldConte
     if (!GWorldDestroyHandle.IsValid()) {
         GWorldDestroyHandle = FWorldDelegates::OnPreWorldFinishDestroy.AddLambda([](UWorld* DyingWorld) {
             FWriteScopeLock CleanupLock(GWorldRegistryLock);
-            GWorldRegistries.Remove(DyingWorld);
+            GWorldRegistries.Remove(FObjectKey(DyingWorld));
         });
     }
 
     TSharedPtr<FConfigRegistry> NewRegistry = MakeShared<FConfigRegistry>();
     NewRegistry->InheritFrom(*GetGlobalShared());
-    GWorldRegistries.Add(World, NewRegistry);
+    GWorldRegistries.Add(WorldKey, NewRegistry);
     return NewRegistry;
 }
 

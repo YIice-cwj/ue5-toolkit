@@ -390,6 +390,41 @@ bool FGameSpatialSubsystemWeakPtrAndPruningTest::RunTest([[maybe_unused]] const 
 
     Subsystem->ClearAll();
     LiveActor->Destroy();
+
+    constexpr int32 BatchSize = 32;
+    TArray<AActor*> DefaultBatch;
+    TArray<AActor*> OtherBatch;
+    DefaultBatch.Reserve(BatchSize);
+    OtherBatch.Reserve(BatchSize);
+    for (int32 Index = 0; Index < BatchSize; ++Index) {
+        AActor* DefaultItem = SpawnSpatialTestActor(World, FVector(10.0, 10.0, 0.0));
+        AActor* OtherItem = SpawnSpatialTestActor(World, FVector(10.0, 10.0, 0.0));
+        DefaultBatch.Add(DefaultItem);
+        OtherBatch.Add(OtherItem);
+        Subsystem->RegisterActor(DefaultItem);
+        Subsystem->RegisterActor(OtherItem, PruneLayer);
+    }
+
+    for (AActor* Actor : DefaultBatch) {
+        Actor->Destroy();
+    }
+    for (AActor* Actor : OtherBatch) {
+        Actor->Destroy();
+    }
+
+    for (int32 Index = 0; Index < BatchSize / 2; ++Index) {
+        TestTrue(
+            TEXT("大量失效 Actor 哈希桶碰撞场景下按对象身份精准反注册"),
+            Subsystem->UnregisterActor(DefaultBatch[Index])
+        );
+    }
+    TestEqual(TEXT("默认层剩余恰好一半未反注册的失效条目"), Subsystem->GetActorCount(), BatchSize / 2);
+    TestEqual(TEXT("另一层失效条目数量完全不受哈希碰撞误删影响"), Subsystem->GetActorCount(PruneLayer), BatchSize);
+    TestEqual(TEXT("按层清理仅清理默认层剩余失效条目"), Subsystem->PruneStaleActors(), BatchSize / 2);
+    TestEqual(TEXT("另一层失效条目依然完整保留待清理"), Subsystem->GetActorCount(PruneLayer), BatchSize);
+    TestEqual(TEXT("全局清理精确回收另一层全部失效条目"), Subsystem->PruneAllStaleActors(), BatchSize);
+    TestEqual(TEXT("全部清理后总条目归零"), Subsystem->GetTotalActorCount(), 0);
+
     return true;
 }
 

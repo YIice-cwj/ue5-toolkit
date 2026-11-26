@@ -7,6 +7,7 @@
 
 #include "CoreMinimal.h"
 #include "Time/TimeDilationTypes.h"
+#include "UObject/ObjectKey.h"
 
 class AActor;
 
@@ -52,5 +53,5 @@ struct GAMEFEEDBACK_API FActorHitStopTable {
     void PruneInvalid();
 
 private:
-    TMap<TWeakObjectPtr<AActor>, FActorHitStopState> ActiveActorHitStops;
+    TMap<TObjectKey<AActor>, FActorHitStopState> ActiveActorHitStops;
 };

@@ -55,7 +55,7 @@ flowchart TD
 
 ### 4. 世界级分层空间子系统 (`UGameSpatialSubsystem`)
 - **静态原生默认标签**：通过 `UE_DEFINE_GAMEPLAY_TAG_COMMENT(TAG_Spatial_Layer_Default, "Spatial.Layer.Default", ...)` 在模块加载期静态注册，杜绝运行期懒注册风险。
-- **弱引用防悬垂与状态一致**：内部全部持有 `TWeakObjectPtr<AActor>`；通过 `ResolveOperationalActor` 统一校验 `WeakActor.Get()` 与 `!IsActorBeingDestroyed()`，即使在 `OnDestroyed` / `EndPlay` 销毁回调窗口期内，全部几何检索、只读探查与惰性清理也保持 100% 状态一致，同时放行 `UnregisterActor` 以支持 `EndPlay` 清理。
+- **不可变对象键防悬垂与状态一致**：内部统一采用 `TObjectKey<AActor>`（不可变弱身份键，彻底免疫已销毁 `TWeakObjectPtr::operator==` 哈希桶碰撞误删）；通过 `ResolveOperationalActor` 统一校验 `ResolveObjectPtr()` 与 `!IsActorBeingDestroyed()`，即使在 `OnDestroyed` / `EndPlay` 销毁回调窗口期内，全部几何检索、只读探查与惰性清理也保持 100% 状态一致，同时放行 `UnregisterActor` 以支持 `EndPlay` 清理。
 - **O(LayerSize) 精准清理与零中间数组查询**：`ClearLayer` / `PruneStaleActors` 仅遍历目标图层；`GetActorsInLayer` 与 `QueryKNearestActors` 分别复用 `ForEachElement` 与 `QueryKNearestMatching`，消除中间弱指针数组堆分配；并向 C++ 暴露 `ForEachActorIn*` 流式遍历原语。
 
 ### 5. 视锥节流驱动器 (`FSpatialThrottleDriver`)

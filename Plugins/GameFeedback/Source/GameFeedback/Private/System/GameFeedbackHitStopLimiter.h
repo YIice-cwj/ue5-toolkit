@@ -6,7 +6,9 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "UObject/ObjectKey.h"
 
+class AActor;
 struct FGameFeedbackHitStopAction;
 
 /**
@@ -58,6 +60,6 @@ public:
     void Prune(double RealTime);
 
 private:
-    TMap<TWeakObjectPtr<AActor>, FTrackState> Tracks;
-    TMap<TPair<TWeakObjectPtr<AActor>, TWeakObjectPtr<AActor>>, double> CooldownMap;
+    TMap<TObjectKey<AActor>, FTrackState> Tracks;
+    TMap<TPair<TObjectKey<AActor>, TObjectKey<AActor>>, double> CooldownMap;
 };

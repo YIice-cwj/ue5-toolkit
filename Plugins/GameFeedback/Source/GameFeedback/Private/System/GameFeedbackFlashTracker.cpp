@@ -74,9 +74,10 @@ void FGameFeedbackFlashTracker::Execute(UWorld* World, AActor* Target, const FHi
             continue;
         }
 
-        FRecord* ExistingRecord = Records.Find(Mesh);
+        const TObjectKey<UMeshComponent> MeshKey(Mesh);
+        FRecord* ExistingRecord = Records.Find(MeshKey);
         if (!ExistingRecord) {
-            ExistingRecord = &Records.Add(Mesh);
+            ExistingRecord = &Records.Add(MeshKey);
             ExistingRecord->OriginalOverlayMaterial = TStrongObjectPtr<UMaterialInterface>(Mesh->GetOverlayMaterial());
         }
         FRecord& Record = *ExistingRecord;
@@ -85,10 +86,9 @@ void FGameFeedbackFlashTracker::Execute(UWorld* World, AActor* Target, const FHi
 
         const float RemainingDuration = static_cast<float>(FMath::Max(0.0, Record.ExpirationRealTime - CurrentRealTime));
         World->GetTimerManager().ClearTimer(Record.TimerHandle);
-        TWeakObjectPtr<UMeshComponent> WeakMesh(Mesh);
         World->GetTimerManager().SetTimer(
             Record.TimerHandle,
-            FTimerDelegate::CreateRaw(this, &FGameFeedbackFlashTracker::OnExpiration, WeakMesh),
+            FTimerDelegate::CreateRaw(this, &FGameFeedbackFlashTracker::OnExpiration, MeshKey),
             RemainingDuration,
             false);
     }
@@ -111,13 +111,14 @@ void FGameFeedbackFlashTracker::ClearActor(UWorld* World, AActor* Target)
         if (!Mesh) {
             continue;
         }
-        if (FRecord* Record = Records.Find(Mesh)) {
+        const TObjectKey<UMeshComponent> MeshKey(Mesh);
+        if (FRecord* Record = Records.Find(MeshKey)) {
             UWorld* TargetWorld = EffectiveWorld ? EffectiveWorld : Mesh->GetWorld();
             if (TargetWorld) {
                 TargetWorld->GetTimerManager().ClearTimer(Record->TimerHandle);
             }
             Mesh->SetOverlayMaterial(Record->OriginalOverlayMaterial.Get());
-            Records.Remove(Mesh);
+            Records.Remove(MeshKey);
         }
     }
 }
@@ -129,11 +130,12 @@ void FGameFeedbackFlashTracker::ClearActor(UWorld* World, AActor* Target)
 void FGameFeedbackFlashTracker::Shutdown(UWorld* World)
 {
     for (auto& Pair : Records) {
-        UWorld* TargetWorld = World ? World : (Pair.Key.IsValid() ? Pair.Key.Get()->GetWorld() : nullptr);
+        UMeshComponent* Mesh = Pair.Key.ResolveObjectPtr();
+        UWorld* TargetWorld = World ? World : (Mesh != nullptr ? Mesh->GetWorld() : nullptr);
         if (TargetWorld) {
             TargetWorld->GetTimerManager().ClearTimer(Pair.Value.TimerHandle);
         }
-        if (UMeshComponent* Mesh = Pair.Key.Get()) {
+        if (Mesh != nullptr) {
             Mesh->SetOverlayMaterial(Pair.Value.OriginalOverlayMaterial.Get());
         }
     }
@@ -147,7 +149,7 @@ void FGameFeedbackFlashTracker::Shutdown(UWorld* World)
 void FGameFeedbackFlashTracker::PruneInvalid()
 {
     for (auto It = Records.CreateIterator(); It; ++It) {
-        if (!It.Key().IsValid()) {
+        if (It.Key().ResolveObjectPtr() == nullptr) {
             It.RemoveCurrent();
         }
     }
@@ -173,17 +175,17 @@ double FGameFeedbackFlashTracker::GetCurrentTime() const
 
 /**
  * @brief 到期回调按真实时间还原 Overlay；提前触发时按剩余时间重新 arm
- * @param WeakMesh 目标网格弱引用
+ * @param MeshKey 目标网格不可变对象键
  */
-void FGameFeedbackFlashTracker::OnExpiration(TWeakObjectPtr<UMeshComponent> WeakMesh)
+void FGameFeedbackFlashTracker::OnExpiration(TObjectKey<UMeshComponent> MeshKey)
 {
-    UMeshComponent* TargetMesh = WeakMesh.Get();
+    UMeshComponent* TargetMesh = MeshKey.ResolveObjectPtr();
     if (!TargetMesh) {
-        Records.Remove(WeakMesh);
+        Records.Remove(MeshKey);
         return;
     }
 
-    FRecord* Record = Records.Find(TargetMesh);
+    FRecord* Record = Records.Find(MeshKey);
     if (!Record) {
         return;
     }
@@ -191,20 +193,20 @@ void FGameFeedbackFlashTracker::OnExpiration(TWeakObjectPtr<UMeshComponent> Weak
     const double RemainingTime = Record->ExpirationRealTime - GetCurrentTime();
     if (RemainingTime <= 0.0) {
         TargetMesh->SetOverlayMaterial(Record->OriginalOverlayMaterial.Get());
-        Records.Remove(TargetMesh);
+        Records.Remove(MeshKey);
         return;
     }
 
     UWorld* World = TargetMesh->GetWorld();
     if (!World) {
         TargetMesh->SetOverlayMaterial(Record->OriginalOverlayMaterial.Get());
-        Records.Remove(TargetMesh);
+        Records.Remove(MeshKey);
         return;
     }
 
     World->GetTimerManager().SetTimer(
         Record->TimerHandle,
-        FTimerDelegate::CreateRaw(this, &FGameFeedbackFlashTracker::OnExpiration, WeakMesh),
+        FTimerDelegate::CreateRaw(this, &FGameFeedbackFlashTracker::OnExpiration, MeshKey),
         static_cast<float>(RemainingTime),
         false);
 }

@@ -24,7 +24,7 @@
 `FGameFeedbackShakeTracker`（私有头文件：`System/GameFeedbackShakeTracker.h`）管理本地摄像机的震动实例。
 
 ### 2.1 核心机制
-- **分屏隔离管理**：以 `TWeakObjectPtr<APlayerCameraManager>` 为键建立字典，本地多玩家分屏时互不干扰；
+- **分屏隔离管理**：以不可变对象键 `TObjectKey<APlayerCameraManager>` 为键建立字典，本地多玩家分屏时互不干扰且杜绝失效相机键哈希碰撞；
 - **同帧最大振幅择优**：同一帧内多枚子弹或多段爆炸同时命中时，若新震动幅度小于等于本帧已播放的 `MaxScale`，直接跳过；若新振幅更大，则先停止旧震动并启动更强的新震动，避免多重震屏剧烈叠加造成晕眩；
 - **局部冲击朝向适配**：当开启 `bOrientShakeToImpactDirection` 时，通过 `CameraRotation.UnrotateVector(Signal.ImpactDirection)` 将世界冲击方向转为摄像机局部坐标系，并以 `ECameraShakePlaySpace::UserDefined` 播放，精准反映受击方向。
 

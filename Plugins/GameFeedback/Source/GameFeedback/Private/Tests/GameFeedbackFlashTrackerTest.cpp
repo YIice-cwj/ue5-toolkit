@@ -153,6 +153,30 @@ bool FGameFeedbackFlashTrackerPruneDeadMeshesTest::RunTest([[maybe_unused]] cons
     Tracker.PruneInvalid();
     TestEqual(TEXT("网格销毁后调用 PruneInvalid 应成功修剪失效记录"), Tracker.GetTrackedCount(), 0);
 
+    TArray<AActor*> DeadActors;
+    DeadActors.Reserve(24);
+    for (int32 Index = 0; Index < 24; ++Index) {
+        AActor* DeadActor = World->SpawnActor<AActor>();
+        UStaticMeshComponent* DeadMesh = NewObject<UStaticMeshComponent>(DeadActor);
+        DeadActor->SetRootComponent(DeadMesh);
+        DeadMesh->RegisterComponent();
+        HitResult.Component = DeadMesh;
+        Action.Duration = (Index < 12) ? 0.05f : 10.0f;
+        Tracker.Execute(World, DeadActor, HitResult, Action, 10.0f);
+        DeadActors.Add(DeadActor);
+    }
+    TestEqual(TEXT("批量注册 24 条网格追踪记录"), Tracker.GetTrackedCount(), 24);
+    for (AActor* DeadActor : DeadActors) {
+        DeadActor->Destroy();
+    }
+    ++GFrameCounter;
+    World->GetTimerManager().Tick(0.0f);
+    ++GFrameCounter;
+    World->GetTimerManager().Tick(0.1f);
+    TestEqual(TEXT("前半批失效网格到期回调仅移除自身 12 条，绝不误删后半批失效键"), Tracker.GetTrackedCount(), 12);
+    Tracker.PruneInvalid();
+    TestEqual(TEXT("PruneInvalid 清理剩余全部 12 条失效记录"), Tracker.GetTrackedCount(), 0);
+
     Tracker.Shutdown(World);
     World->DestroyWorld(false);
     World->RemoveFromRoot();

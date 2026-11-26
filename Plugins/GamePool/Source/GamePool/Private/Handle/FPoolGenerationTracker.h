@@ -1,12 +1,13 @@
 /**
  * @file FPoolGenerationTracker.h
- * @brief 池化对象世代代数内部追踪器（直接以 FWeakObjectPtr 索引防悬空与 Use-After-Return 窜号）
+ * @brief 池化对象世代代数内部追踪器（以不可变 FObjectKey 索引防悬空、防失效弱指针哈希碰撞与 Use-After-Return 窜号）
  */
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "UObject/Object.h"
+#include "UObject/ObjectKey.h"
 #include "UObject/WeakObjectPtr.h"
 
 /**
@@ -23,7 +24,7 @@ public:
         if (Object == nullptr) {
             return 0u;
         }
-        uint32& Gen = Generations.FindOrAdd(FWeakObjectPtr(Object), 0u);
+        uint32& Gen = Generations.FindOrAdd(FObjectKey(Object), 0u);
         return AdvanceGeneration(Gen);
     }
 
@@ -36,21 +37,25 @@ public:
         if (Object == nullptr) {
             return 0u;
         }
-        const uint32* FoundGen = Generations.Find(FWeakObjectPtr(Object));
+        const uint32* FoundGen = Generations.Find(FObjectKey(Object));
         return FoundGen != nullptr ? *FoundGen : 0u;
     }
 
     /**
-     * @brief 直接基于 FWeakObjectPtr 校验句柄世代代数是否仍匹配（零额外 GUObjectArray 反向查表）
+     * @brief 校验句柄弱引用存活状态及其不可变对象键对应的世代代数是否匹配
      * @param ObjectWeak 目标对象弱引用
      * @param InGeneration 待比对世代代数
      * @return 弱引用有效且代数一致返回 true
      */
     [[nodiscard]] bool ValidateGeneration(const FWeakObjectPtr& ObjectWeak, uint32 InGeneration) const {
-        if (InGeneration == 0u || !ObjectWeak.IsValid()) {
+        if (InGeneration == 0u) {
             return false;
         }
-        const uint32* FoundGen = Generations.Find(ObjectWeak);
+        const UObject* ResolvedObject = ObjectWeak.Get();
+        if (ResolvedObject == nullptr) {
+            return false;
+        }
+        const uint32* FoundGen = Generations.Find(FObjectKey(ResolvedObject));
         return FoundGen != nullptr && *FoundGen == InGeneration;
     }
 
@@ -62,7 +67,7 @@ public:
         if (Object == nullptr) {
             return;
         }
-        if (uint32* Gen = Generations.Find(FWeakObjectPtr(Object))) {
+        if (uint32* Gen = Generations.Find(FObjectKey(Object))) {
             AdvanceGeneration(*Gen);
         }
     }
@@ -75,17 +80,17 @@ public:
         if (Object == nullptr) {
             return;
         }
-        Generations.Remove(FWeakObjectPtr(Object));
+        Generations.Remove(FObjectKey(Object));
     }
 
     /**
-     * @brief 清理映射表中已失效的弱引用死键，抑制长期运行哈希表退化
+     * @brief 清理映射表中已失效对象的死键，抑制长期运行哈希表退化
      * @return 本次移除的死键数量
      */
     int32 CompactStaleEntries() {
         int32 RemovedCount = 0;
         for (auto It = Generations.CreateIterator(); It; ++It) {
-            if (!It.Key().IsValid()) {
+            if (It.Key().ResolveObjectPtr() == nullptr) {
                 It.RemoveCurrent();
                 ++RemovedCount;
             }
@@ -110,5 +115,5 @@ private:
     }
 
 private:
-    TMap<FWeakObjectPtr, uint32> Generations;
+    TMap<FObjectKey, uint32> Generations;
 };

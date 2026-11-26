@@ -89,6 +89,28 @@ bool FGameTimeHitStopTableTest::RunTest([[maybe_unused]] const FString& Paramete
         Table.PruneInvalid();
     }
 
+    TArray<AActor*> DeadBatch;
+    DeadBatch.Reserve(32);
+    for (int32 Index = 0; Index < 32; ++Index) {
+        if (AActor* DeadItem = World->SpawnActor<AActor>(AActor::StaticClass(), FTransform::Identity, SpawnParams)) {
+            Table.Request(*DeadItem, 1.0f, 0.1f);
+            DeadBatch.Add(DeadItem);
+        }
+    }
+    for (AActor* DeadItem : DeadBatch) {
+        DeadItem->Destroy();
+    }
+    for (int32 Index = 0; Index < DeadBatch.Num() / 2; ++Index) {
+        Table.Clear(DeadBatch[Index]);
+    }
+    for (int32 Index = DeadBatch.Num() / 2; Index < DeadBatch.Num(); ++Index) {
+        TestTrue(TEXT("批量销毁哈希桶碰撞下未 Clear 的失效 Actor 键保持独立存在"), Table.IsActive(DeadBatch[Index]));
+    }
+    Table.PruneInvalid();
+    for (AActor* DeadItem : DeadBatch) {
+        TestFalse(TEXT("PruneInvalid 后全部失效 Actor 记录均已清理"), Table.IsActive(DeadItem));
+    }
+
     ActorA->Destroy();
     ActorB->Destroy();
     return true;

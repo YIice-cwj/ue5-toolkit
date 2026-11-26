@@ -6,6 +6,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "UObject/ObjectKey.h"
 
 class APlayerCameraManager;
 class UCameraShakeBase;
@@ -56,5 +57,5 @@ public:
     }
 
 private:
-    TMap<TWeakObjectPtr<APlayerCameraManager>, FState> States;
+    TMap<TObjectKey<APlayerCameraManager>, FState> States;
 };

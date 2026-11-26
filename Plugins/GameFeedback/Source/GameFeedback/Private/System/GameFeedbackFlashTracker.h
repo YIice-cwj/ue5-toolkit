@@ -9,6 +9,7 @@
 #include "Engine/HitResult.h"
 #include "Engine/TimerHandle.h"
 #include "Feedback/GameFeedbackActions.h"
+#include "UObject/ObjectKey.h"
 
 class UMaterialInterface;
 class UMeshComponent;
@@ -82,10 +83,10 @@ private:
 
     /**
      * @brief 到期回调按真实时间还原 Overlay；提前触发时按剩余时间重新 arm
-     * @param WeakMesh 目标网格弱引用
+     * @param MeshKey 目标网格不可变对象键
      */
-    void OnExpiration(TWeakObjectPtr<UMeshComponent> WeakMesh);
+    void OnExpiration(TObjectKey<UMeshComponent> MeshKey);
 
     TFunction<double()> TimeProvider;
-    TMap<TWeakObjectPtr<UMeshComponent>, FRecord> Records;
+    TMap<TObjectKey<UMeshComponent>, FRecord> Records;
 };
