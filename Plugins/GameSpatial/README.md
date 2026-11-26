@@ -1,86 +1,76 @@
 # GameSpatial 插件
 
-**GameSpatial** 是面向 Gameplay、战斗逻辑、视锥剔除与 AI 感知的纯逻辑轻量空间几何检索基础设施插件。它**完全脱离 PhysX / Chaos 物理引擎依赖**，提供纳秒级 2D/3D 空间哈希网格、世界级 Actor 分层空间索引子系统与视野重要度节流驱动器。
+**GameSpatial**（v2.0.0）是面向 Unreal Engine 5（UE 5.1 ~ 5.8）的纯逻辑轻量空间几何检索与视锥节流基础设施插件。它**完全脱离 PhysX / Chaos 物理引擎依赖**，公开仅依赖 `GameCore` 与引擎基础模块，私有单向接入 `GameLogging`（`LogGameSpatial`），严格遵守单向无环分层矩阵（**零 `GamePool` 或横向 Level 1 依赖**）。
 
 ---
 
-## 一、 核心功能与架构设计
+## 一、 核心功能与架构特性
 
-### 1. 2D 均匀空间哈希网格 (`TSpatialHashGrid2D<TElement>`)
-- **纯逻辑无碰撞哈希**：基于 `uint64` 双 32 位整型无碰撞直接位拼接（`(UX << 32) | UY`），纳秒级单元格寻址；
-- **动态实体增量迁移**：同单元格内坐标微移零桶迁移开销，跨桶更新原子维护；
-- **多形态几何范围查询**：
-  - **半径圆形查询** (`QueryRadius`)
-  - **轴对齐矩形包围盒查询** (`QueryAABB`)
-  - **扇形前向范围查询** (`QuerySector`，带半角余弦判定与角隅 AABB 剪枝，常用于 2D/俯视角攻击扇面与前向视野)
-  - **最近邻查找** (`QueryNearest`，中心单元格优先探测收缩 + 角隅最短距离动态剪枝)
-  - **K 近邻多目标检索** (`QueryKNearest`，维护升序候选堆并自适应收缩截断上界)
-- **现代 C++20 谓词体系**：全系查询支持可调用对象过滤（自动适配 `(Item)` 或 `(Item, Loc)` 双签名），原地过滤零额外内存分配。
+1. **2D / 3D 均匀空间哈希网格 (`TSpatialHashGrid2D<TElement>` / `TSpatialHashGrid3D<TElement>`)**
+   - **抗碰撞 64→32 雪崩散列**：复用 `GameCore::Game::Hash::Hash64To32` 定制单元格 `TMap` 键策略，消除 3D 平面地图（`CellZ == 0`）与 2D 周期格网的哈希桶碰撞退化；
+   - **全 O(1) 增删改查**：`FElementRecord` 双向维护 `CellKey` 与 `BucketIndex`，同格微移原地直写、跨格迁移与移除采用 O(1) Swap-Pop 并自动回收空桶；
+   - **UE5 LWC 全双精度映射**：底层统一以 `double InvCellSize` 与 `FloorToClampedCellCoord` 计算格网索引，3D 采用 21 位有符号偏置压缩（默认 `500cm` 边长覆盖 ±524km），拦截 `NaN`/`Inf` 非法坐标（`6003`）；
+   - **紧致剪枝与零开方求交**：
+     - 2D：`QueryRadius`、`QueryAABB`、`QuerySector`、`QueryNearest`、`QueryKNearest`；
+     - 3D：`QueryRadius`、`QueryAABB`、`QueryCylinder`、`QueryCone`、`QueryNearest`、`QueryKNearest`；
+     - 扇形/锥体查询同时采用**精确轴向紧致包围盒**与**零开方点积平方判别**；稀疏大半径自动切换直扫快路径；`K <= 16` K 近邻采用栈内联缓冲零堆分配；
+   - **统一默认谓词与零分配流式原语**：全部查询以编译期零开销 `FAcceptAllPredicate` 统一重载，配套 `Query*Matching` 就地流式消费接口。
 
-### 2. 3D 均匀空间哈希网格 (`TSpatialHashGrid3D<TElement>`)
-- **21 位高维坐标位压缩**：采用 21 位偏置位压缩技术（`COORD_BITS = 21`，偏移量 $2^{20}$），将三维网格坐标压缩至单个 64 位整型（`UX << 42 | UY << 21 | UZ`）；
-- **开放世界超大地图支持**：默认 500.0f 边长下，三轴覆盖范围达 $\pm 524$ 公里，100% 确定性无哈希碰撞；
-- **全方位空间立体查询**：
-  - **球形立体查询** (`QueryRadius`)
-  - **三维包围盒查询** (`QueryAABB`)
-  - **直立圆柱体查询** (`QueryCylinder`，地面战斗判定与垂直范围伤害神器)
-  - **锥体范围查询** (`QueryCone`，视锥范围、手电筒光锥与 3D 前向攻击范围判定)
-  - **三维最近邻查找** (`QueryNearest`，三级轴向包围盒动态剪枝)
-  - **三维 K 近邻检索** (`QueryKNearest`，升序排列多目标检索)
-- **角隅动态剪枝技术**：三维空间外接球中有约 47.6% 的单元格完全落在球体外，通过三级包围盒最短距离投影剪枝（$D_x^2$ 剪面，$D_x^2+D_y^2$ 剪线，$D_x^2+D_y^2+D_z^2$ 剪格），压降近一半的哈希查桶与点积开销。
+2. **世界级 Actor 分层空间索引子系统 (`UGameSpatialSubsystem`)**
+   - 继承自 `UWorldSubsystem`，同时面向蓝图与 C++ 统一暴露（不再维护重复的静态蓝图函数库）；
+   - **静态原生默认标签**：通过 `UE_DEFINE_GAMEPLAY_TAG_COMMENT(TAG_Spatial_Layer_Default, "Spatial.Layer.Default", ...)` 静态注册，空 `LayerTag` 自动归入默认层；
+   - **弱引用 GC 安全与状态一致**：内部统一持有 `TWeakObjectPtr<AActor>`，销毁态 Actor 在检索与只读探查中一致排除，`UnregisterActor` 放行销毁期调用以支持 `EndPlay` 清理；
+   - **O(LayerSize) 精准清理与 C++ 流式查询**：`ClearLayer` / `PruneStaleActors` 仅遍历目标图层；`ForEachActorInRadius/Cone/Cylinder/AABB` 与零中间数组分配的 `QueryKNearestActors` / `GetActorsInLayer`。
 
-### 3. 世界级 Actor 空间索引子系统 (`UGameSpatialSubsystem`)
-- **无物理开销的高频检索**：继承自 `UWorldSubsystem`，在客户端与服务端均可独立运行，无需 PhysX / Chaos 物理碰撞体；
-- **GameplayTag 分层隔离**：基于 `FGameplayTag`（如 `Spatial.Layer.Enemy`、`Spatial.Layer.Item`）实现图层物理隔离；传入空 Tag 自动归入 `Spatial.Layer.Default`；
-- **GC 友好与弱引用防悬垂**：内部统一采用 `TWeakObjectPtr<AActor>`，绝对不阻碍引擎垃圾回收；查询时自动剔除失效 Actor，并提供 `PruneStaleActors` 惰性清理。
+3. **视锥与重要度心跳节流驱动器 (`FSpatialThrottleDriver`)**
+   - 协同 `GameCore` 的 `FThrottledTickScheduler` / `UThrottledTickerSubsystem`（弱引用追踪防悬垂）；
+   - 同时生效 `Config.DistanceFar` 与 `ViewContext.MaxDistance` 双上限，支持 Near / Mid / Far / OutOfRange 四级距离迟滞带与 FOV 角度双向迟滞带；
+   - 基于 `PendingAdditions` 重入队列消除评估热路径 `TFunction` 拷贝，基于 `HandleToIndex` 实现 O(1) 注销、重要度切换与注册态查询。
 
-### 4. 空间检索蓝图函数库 (`UGameSpatialBlueprintLibrary`)
-- 为蓝图提供基于 `WorldContextObject` 的纯静态节点（`QuerySpatialActorsInRadius`、`QuerySpatialActorsInCone`、`QueryNearestSpatialActor` 等），一键融入蓝图工作流。
-
-### 5. 空间视锥节流驱动器 (`FSpatialThrottleDriver`)
-- 协同 `GameCore` 插件的 `FThrottledTickScheduler` / `UThrottledTickerSubsystem`；
-- 集中批量评估观察者/摄像机视锥投影（FOV 视锥包含度与距离分级 Near / Mid / Far / OutOfRange）；
-- **双向迟滞带保护 (Hysteresis)**：提供角度迟滞与距离迟滞带，彻底消除实体在边界处的乒乓跳频抽搐；
-- **高鲁棒性与防悬垂**：弱引用绑定世界子系统，全面支持在更新与坐标获取回调中安全重入注销或批量扩容。
+4. **分级可观测日志 (`LogGameSpatial`)**
+   - 私有接入 `GameLogging`，模块启停输出 `Log` 里程碑，子系统销毁/递归重入/非法视图输出 `Warning`，注册拒绝与惰性清理输出 `Verbose`，高频更新与查询热路径 100% 静默。
 
 ---
 
 ## 二、 目录结构
 
-```
+```text
 Plugins/GameSpatial/
+├── Docs/
+│   ├── Architecture/Overview.md                # 物理分层、雪崩散列、紧致剪枝与节流架构说明
+│   ├── API/SpatialReference.md                 # 全量公共 API 与错误码契约手册
+│   └── Guides/QuickStart.md                    # C++ / 蓝图接入示例与性能最佳实践
 ├── Source/
 │   └── GameSpatial/
 │       ├── Public/
-│       │   ├── Library/
-│       │   │   └── UGameSpatialBlueprintLibrary.h
-│       │   ├── Spatial/
-│       │   │   ├── Algorithms/
-│       │   │   │   ├── SpatialQuery2D.h
-│       │   │   │   └── SpatialQuery3D.h
-│       │   │   ├── Containers/
-│       │   │   │   ├── TSpatialHashContainer2D.h
-│       │   │   │   └── TSpatialHashContainer3D.h
-│       │   │   ├── FSpatialThrottleDriver.h
-│       │   │   ├── SpatialErrorCodes.h
+│       │   ├── Core/
+│       │   │   ├── SpatialErrorCodes.h         # Game::SpatialErrorCodes (6001 ~ 6003)
+│       │   │   ├── SpatialGameplayTags.h       # TAG_Spatial_Layer_Default 原生标签声明
+│       │   │   └── SpatialQueryCommon.h        # 雪崩键策略、锥体几何与栈内联 K 近邻缓冲
+│       │   ├── Grid/
+│       │   │   ├── TSpatialHashContainer2D.h
+│       │   │   ├── TSpatialHashContainer3D.h
+│       │   │   ├── FSpatialQuery2D.h
+│       │   │   ├── FSpatialQuery3D.h
 │       │   │   ├── TSpatialHashGrid2D.h
 │       │   │   └── TSpatialHashGrid3D.h
+│       │   ├── Throttle/
+│       │   │   ├── FSpatialViewContext.h
+│       │   │   ├── FSpatialThrottleTierConfig.h
+│       │   │   └── FSpatialThrottleDriver.h
 │       │   ├── Subsystem/
 │       │   │   └── UGameSpatialSubsystem.h
-│       │   └── GameSpatial.h
+│       │   └── GameSpatial.h                   # 模块入口与全量公共聚合门面头
 │       ├── Private/
-│       │   ├── Library/
-│       │   │   └── UGameSpatialBlueprintLibrary.cpp
-│       │   ├── Spatial/
-│       │   │   └── FSpatialThrottleDriver.cpp
-│       │   ├── Subsystem/
-│       │   │   └── UGameSpatialSubsystem.cpp
-│       │   ├── Tests/
+│       │   ├── Core/SpatialGameplayTags.cpp
+│       │   ├── Throttle/FSpatialThrottleDriver.cpp
+│       │   ├── Subsystem/UGameSpatialSubsystem.cpp
+│       │   ├── Tests/                          # 18 项自动化功能与 25 项微基准回归套件
+│       │   │   ├── TSpatialHashGrid2DTest.cpp
+│       │   │   ├── TSpatialHashGrid3DTest.cpp
 │       │   │   ├── FSpatialThrottleDriverTest.cpp
 │       │   │   ├── GameSpatialSubsystemTest.cpp
-│       │   │   ├── SpatialPerformanceTest.cpp
-│       │   │   ├── TSpatialHashGrid2DTest.cpp
-│       │   │   └── TSpatialHashGrid3DTest.cpp
+│       │   │   └── SpatialPerformanceTest.cpp
 │       │   └── GameSpatial.cpp
 │       └── GameSpatial.Build.cs
 ├── GameSpatial.uplugin
@@ -89,122 +79,49 @@ Plugins/GameSpatial/
 
 ---
 
-## 三、 使用示例
+## 三、 错误码规范 (`Game::SpatialErrorCodes`)
 
-### 1. 2D 空间网格与扇形/近邻检索
-```cpp
-// 初始化 500 边长的 2D 网格
-TSpatialHashGrid2D<int32> UnitGrid(500.0f);
-
-// 插入单位
-UnitGrid.Insert(UnitIdA, FVector2D(100.0f, 200.0f));
-UnitGrid.Insert(UnitIdB, FVector2D(150.0f, 220.0f));
-
-// 扇形前向范围查询（朝向 (1, 0)，半径 600，半开角 45°）
-TArray<int32> EnemiesInSector;
-UnitGrid.QuerySector(PlayerPos2D, FVector2D(1.0f, 0.0f), 600.0f, 45.0f, EnemiesInSector, [](int32 Id) {
-    return IsHostile(Id);
-});
-
-// 多目标 K 近邻检索（查找最近的 3 个存活友军）
-TArray<int32> NearestAllies;
-UnitGrid.QueryKNearest(PlayerPos2D, 2000.0f, 3, NearestAllies, [](int32 Id) {
-    return IsAlive(Id);
-});
-```
-
-### 2. 3D 空间网格与锥体/圆柱体检索
-```cpp
-TSpatialHashGrid3D<int32> SpatialGrid(500.0f);
-
-// 插入目标
-SpatialGrid.Insert(TargetId, TargetLocation);
-
-// 地面战斗圆柱体范围判定（半径 800，上下高度各 150）
-TArray<int32> HitTargets;
-SpatialGrid.QueryCylinder(ImpactCenter, 800.0f, 150.0f, HitTargets);
-
-// 视锥/前向光锥查询（顶点 Apex，中轴方向 Direction，距离 1200，顶角半角 30°）
-TArray<int32> TargetsInCone;
-SpatialGrid.QueryCone(Apex, Direction, 1200.0f, 30.0f, TargetsInCone);
-```
-
-### 3. 世界子系统 `UGameSpatialSubsystem` 管理 Actor
-```cpp
-// 获取世界子系统
-UGameSpatialSubsystem* SpatialSubsystem = World->GetSubsystem<UGameSpatialSubsystem>();
-
-// 按标签注册 Actor（敌对层）
-const FGameplayTag EnemyLayer = FGameplayTag::RequestGameplayTag(FName("Spatial.Layer.Enemy"));
-SpatialSubsystem->RegisterActor(EnemyActor, EnemyLayer);
-
-// 广播或技能时查询半径内的敌对 Actor
-TArray<AActor*> NearbyEnemies;
-SpatialSubsystem->QueryActorsInRadius(PlayerLocation, 1000.0f, EnemyLayer, NearbyEnemies);
-
-// 查找最近的单个敌对 Actor
-AActor* NearestEnemy = nullptr;
-if (SpatialSubsystem->QueryNearestActor(PlayerLocation, 2500.0f, EnemyLayer, NearestEnemy)) {
-    // 锁定目标...
-}
-```
-
-### 4. 零堆分配流式就地消费查询 (`QueryXXXMatching`)
-针对高频循环与海量实体交互场景，提供就地流式消费接口，避免中间数组构造与堆内存分配开销：
-```cpp
-// 零堆分配就地遍历累加伤害或状态
-SpatialGrid.QueryRadiusMatching(ExplosionCenter, 500.0f, [](int32 TargetId, const FVector& Loc) {
-    ApplyRadialDamage(TargetId, Loc);
-});
-```
-
-### 5. 蓝图中使用静态函数库
-在蓝图事件图表中直接搜索并调用：
-- **Actor 生命周期与位置**：
-  - `Register Spatial Actor`（带濒死销毁状态保护）
-  - `Register Spatial Actors`（批量注册）
-  - `Unregister Spatial Actor`
-  - `Unregister Spatial Actors`（批量注销）
-  - `Update Spatial Actor Location`
-  - `Update Spatial Actor`
-  - `Is Spatial Actor Registered`
-  - `Get Spatial Actor Layer`（图层反查）
-  - `Get Spatial Actor Location`（最后同步空间坐标反查）
-- **几何范围与目标检索**：
-  - `Query Spatial Actors In Radius`
-  - `Query Spatial Actors In Cone`
-  - `Query Spatial Actors In Cylinder`
-  - `Query Spatial Actors In AABB`
-  - `Query Nearest Spatial Actor`
-  - `Query K Nearest Spatial Actors`
-  - `Get Spatial Actors In Layer`（全图层有效实体导出）
-- **图层管理与弱引用清理**：
-  - `Clear Spatial Layer`
-  - `Clear All Spatial Layers`
-  - `Prune Spatial Stale Actors`（单图层失效弱引用清理）
-  - `Prune All Spatial Stale Actors`（跨图层全局失效弱引用清理）
-  - `Get Spatial Actor Count`
-  - `Get Total Spatial Actor Count`
-
----
-
-## 四、 错误码规范 (`Game::SpatialErrorCodes`)
-
-插件全量统一使用 `GameCore` 的 `TGameStatusResult<T>` 契约体系，错误码定义于 `Public/Spatial/SpatialErrorCodes.h`：
+全部失败结果归属 `Game::ModuleId::Spatial (6)`，定义于 [SpatialErrorCodes.h](Source/GameSpatial/Public/Core/SpatialErrorCodes.h)：
 
 | 错误码 | 标识符 | 含义与典型场景 |
 |:---:|---|---|
-| `6001` | `ElementNotFound` | 目标空间元素未在网格中注册或已注销（如 `GetLocation`、`Update`、`Remove` 不存在元素） |
-| `6002` | `ElementAlreadyExists` | 目标空间元素已被占用，拦截重复插入（如 `Insert` 重复元素） |
-| `6003` | `InvalidQueryParameter` | 查询几何参数非法（如检索半径 $\le 0$、颠倒的 AABB 包围盒等） |
+| `6001` | `ElementNotFound` | 目标空间元素未注册或已移除（`Update` / `Remove`） |
+| `6002` | `ElementAlreadyExists` | 目标空间元素已存在，拦截重复插入（`Insert`） |
+| `6003` | `InvalidCoordinate` | 输入坐标包含 `NaN` 或 `Inf` 非有限浮点分量（`Insert` / `Update`） |
 
 ---
 
-## 五、 性能基准
+## 四、 性能基准
 
-在 Apple M3 Pro 平台下的基准测试结果（`SpatialPerformanceTest.cpp`）：
-- **2D/3D 网格更新**：$< 800\text{ ns/op}$（超过 $1,250,000\text{ ops/s}$）；
-- **2D/3D 球形/扇形/锥体查询**：$1000 \sim 2500\text{ ns/op}$（超过 $500,000\text{ ops/s}$）；
-- **动态剪枝最近邻/K 近邻查询**：$1200 \sim 2800\text{ ns/op}$（超过 $400,000\text{ ops/s}$）；
-- **视锥节流驱动器**：500 实体集中批量投影与迟滞带评估 $< 20\ \mu\text{s}$；
-- **Actor 空间子系统 (1000 活跃 Actor)**：高频坐标更新 $< 3000\text{ ns/op}$，零分配球形流式查询 $< 8000\text{ ns/op}$。
+实测环境：Apple M5（macOS 27.2.1 arm64，UE 5.8 Development 构建，Apple Clang 21.1.6，2 轮预热 + 7 轮采样中位数，基线提交 `e147fbd`，复现命令 `python3 .scripts/run_automation_tests.py --case Game.Spatial`）：
+
+| 基准项 | 中位数耗时 | 离散度 (CV%) | 吞吐量 |
+|---|---:|---:|---:|
+| 2D 同格 O(1) 真实更新 | `10.39 ns/op` | `1.25%` | `96.27 Mops/s` |
+| 2D 跨格 O(1) 迁移更新 | `18.28 ns/op` | `2.71%` | `54.69 Mops/s` |
+| 2D `Remove` + `Insert` 往返 | `28.06 ns/op` | `0.83%` | `35.63 Mops/s` |
+| 2D 分布式千实体流式半径查询（零分配） | `58.35 ns/op` | `0.76%` | `17.14 Mops/s` |
+| 2D 分布式千实体 AABB / 30° 紧致扇形查询 | `77.07 / 73.54 ns/op` | `2.90% / 0.81%` | `12.98 / 13.60 Mops/s` |
+| 2D 分布式千实体最近邻 / K=5 内联近邻 | `18.12 / 277.78 ns/op` | `5.87% / 0.96%` | `55.19 / 3.60 Mops/s` |
+| 3D 同格 / 跨格 O(1) 真实更新 | `10.98 / 19.98 ns/op` | `38.12% / 3.55%` | `91.05 / 50.04 Mops/s` |
+| 3D 分布式千实体球形 / AABB / 圆柱体查询 | `474.61 / 190.71 / 157.91 ns/op` | `2.21% / 5.15% / 1.93%` | `2.11 / 5.24 / 6.33 Mops/s` |
+| 3D 分布式千实体 30° 紧致锥体查询 | `193.80 ns/op` | `5.15%` | `5.16 Mops/s` |
+| 3D 分布式千实体最近邻 / K=5 内联近邻 | `41.22 / 797.80 ns/op` | `3.94% / 1.66%` | `24.26 / 1.25 Mops/s` |
+| 3D 平面地图 Z=0（1,000 独立桶）雪崩哈希流式查询 | `113.97 ns/op` | `1.22%` | `8.77 Mops/s` |
+| 3D 稀疏图超大半径（500m / 100 实体）快路径近邻 | `135.70 ns/op` | `2.28%` | `7.37 Mops/s` |
+| 子系统千级 Actor 真实位移更新 | `946.17 ns/op` | `1.05%` | `1.06 Mops/s` |
+| 子系统千级 Actor 零分配流式球形 / K=5 近邻 | `249.58 / 141.91 ns/op` | `1.23% / 9.45%` | `4.01 / 7.05 Mops/s` |
+| 节流驱动器 500 实体稳态 / 动态旋转视锥评估 | `3,367.21 / 5,442.08 ns/op` | `2.46% / 1.39%` | `296.98 / 183.75 Kops/s` |
+| 节流驱动器单实体 O(1) 注册 + 注销往返 | `441.92 ns/op` | `0.80%` | `2.26 Mops/s` |
+
+---
+
+## 五、 自动化测试与延伸文档
+
+```bash
+python3 .scripts/run_automation_tests.py --case Game.Spatial
+```
+
+- [架构概述与核心机制](Docs/Architecture/Overview.md)
+- [公共 API 参考手册](Docs/API/SpatialReference.md)
+- [快速上手与最佳实践指南](Docs/Guides/QuickStart.md)

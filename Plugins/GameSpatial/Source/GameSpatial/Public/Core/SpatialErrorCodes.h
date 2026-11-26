@@ -1,6 +1,6 @@
 /**
  * @file SpatialErrorCodes.h
- * @brief GameSpatial 空间模块强类型错误码与业务常量契约定义
+ * @brief GameSpatial 空间模块强类型错误码契约定义
  */
 
 #pragma once
@@ -19,7 +19,7 @@ namespace Game::SpatialErrorCodes {
     inline constexpr int32 ElementAlreadyExists = 6002;
 
     /**
-     * @brief 非法空间检索参数（如负半径或反向包围盒）
+     * @brief 非法空间坐标（包含 NaN 或 Inf 非有限浮点分量）
      */
-    inline constexpr int32 InvalidQueryParameter = 6003;
+    inline constexpr int32 InvalidCoordinate = 6003;
 }

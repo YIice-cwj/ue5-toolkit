@@ -16,6 +16,7 @@ public class GameSpatial : ModuleRules {
         });
 
         PrivateDependencyModuleNames.AddRange(new string[] {
+            "GameLogging",
         });
     }
 }
