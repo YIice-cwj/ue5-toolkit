@@ -3,7 +3,7 @@
  * @brief FGameAssetLoadHandle 异步资产流式加载控制句柄实现
  */
 
-#include "Asset/FGameAssetLoadHandle.h"
+#include "Loader/FGameAssetLoadHandle.h"
 
 #include "Engine/StreamableManager.h"
 
@@ -18,19 +18,20 @@ void FGameAssetLoadHandle::Cancel() {
     if (StreamableHandle->IsActive()) {
         StreamableHandle->CancelHandle();
     }
-    StreamableHandle.Reset();
 }
 
 void FGameAssetLoadHandle::Reset() {
     if (!StreamableHandle.IsValid()) {
         return;
     }
-    StreamableHandle->ReleaseHandle();
+    if (StreamableHandle->IsActive()) {
+        StreamableHandle->ReleaseHandle();
+    }
     StreamableHandle.Reset();
 }
 
 bool FGameAssetLoadHandle::IsValid() const noexcept {
-    return StreamableHandle.IsValid() && !StreamableHandle->WasCanceled();
+    return StreamableHandle.IsValid() && StreamableHandle->IsActive();
 }
 
 bool FGameAssetLoadHandle::IsLoading() const {
@@ -38,7 +39,7 @@ bool FGameAssetLoadHandle::IsLoading() const {
 }
 
 bool FGameAssetLoadHandle::HasCompleted() const {
-    return StreamableHandle.IsValid() && StreamableHandle->HasLoadCompleted();
+    return StreamableHandle.IsValid() && !StreamableHandle->WasCanceled() && StreamableHandle->HasLoadCompleted();
 }
 
 bool FGameAssetLoadHandle::HasError() const {
@@ -50,7 +51,7 @@ bool FGameAssetLoadHandle::WasCanceled() const {
 }
 
 float FGameAssetLoadHandle::GetProgress() const {
-    if (!StreamableHandle.IsValid() || StreamableHandle->WasCanceled()) {
+    if (!StreamableHandle.IsValid() || !StreamableHandle->IsActive()) {
         return 0.0f;
     }
     if (StreamableHandle->HasLoadCompleted()) {
@@ -60,15 +61,33 @@ float FGameAssetLoadHandle::GetProgress() const {
 }
 
 UObject* FGameAssetLoadHandle::GetLoadedAsset() const {
-    if (!StreamableHandle.IsValid() || StreamableHandle->WasCanceled() || !StreamableHandle->HasLoadCompleted()) {
+    if (!StreamableHandle.IsValid() || !StreamableHandle->IsActive() || !StreamableHandle->HasLoadCompleted()) {
         return nullptr;
     }
-    return StreamableHandle->GetLoadedAsset();
+    return ::GetValid(StreamableHandle->GetLoadedAsset());
+}
+
+void FGameAssetLoadHandle::ForEachLoadedAsset(TFunctionRef<void(UObject*)> Visitor) const {
+    if (!StreamableHandle.IsValid() || !StreamableHandle->IsActive() || !StreamableHandle->HasLoadCompleted()) {
+        return;
+    }
+    StreamableHandle->ForEachLoadedAsset([&Visitor](UObject* LoadedAsset) {
+        if (UObject* ValidAsset = ::GetValid(LoadedAsset)) {
+            Visitor(ValidAsset);
+        }
+    });
 }
 
 void FGameAssetLoadHandle::GetLoadedAssets(TArray<UObject*>& OutLoadedAssets) const {
     OutLoadedAssets.Reset();
-    if (StreamableHandle.IsValid() && !StreamableHandle->WasCanceled() && StreamableHandle->HasLoadCompleted()) {
-        StreamableHandle->GetLoadedAssets(OutLoadedAssets);
+    if (!StreamableHandle.IsValid() || !StreamableHandle->IsActive() || !StreamableHandle->HasLoadCompleted()) {
+        return;
     }
+    int32 LoadedCount = 0;
+    int32 RequestedCount = 0;
+    StreamableHandle->GetLoadedCount(LoadedCount, RequestedCount);
+    OutLoadedAssets.Reserve(RequestedCount);
+    ForEachLoadedAsset([&OutLoadedAssets](UObject* ValidAsset) {
+        OutLoadedAssets.Add(ValidAsset);
+    });
 }

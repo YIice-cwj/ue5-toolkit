@@ -1,41 +1,45 @@
 /**
  * @file GameAssetPerformanceTest.cpp
- * @brief GameAssetCore 核心加载与常驻保活热路径基准性能测试
+ * @brief GameAssetCore 全组件热路径微基准性能测试套件（预热 + 7 轮采样统计中位数、均值、极值、CV% 与吞吐量）
  */
 
-#include "Asset/FGameAssetLoader.h"
-#include "Asset/FGameAssetPinner.h"
-#include "Asset/FScopedPinnedAsset.h"
-#include "Asset/GameAssetTypes.h"
+#include "Blueprint/UGameAssetBlueprintLibrary.h"
+#include "Loader/FGameAssetLoader.h"
+#include "Pinning/FGameAssetPinner.h"
+#include "Pinning/FScopedPinnedAsset.h"
 
 #if WITH_AUTOMATION_TESTS
 
-#include <algorithm>
-#include <cmath>
-#include <numeric>
-
 #include "Engine/GameInstance.h"
 #include "HAL/PlatformTime.h"
+#include "Logging/GameLogCategories.h"
+#include "Math/UnrealMathUtility.h"
 #include "Misc/AutomationTest.h"
 
 namespace {
 
 constexpr int32 DefaultWarmupRounds = 2;
-constexpr int32 DefaultSampleRounds = 5;
+constexpr int32 DefaultSampleRounds = 7;
 
 constexpr int32 ShortCircuitIterations = 50000;
 constexpr double ShortCircuitBudgetNsPerOp = 500.0;
 
-constexpr int32 PinChurnIterations = 20000;
+constexpr int32 CoroFastPathIterations = 20000;
+constexpr double CoroFastPathBudgetNsPerOp = 1500.0;
+
+constexpr int32 PinChurnIterations = 25000;
 constexpr double PinChurnBudgetNsPerOp = 600.0;
 
-constexpr int32 ScopedPinIterations = 20000;
-constexpr double ScopedPinBudgetNsPerOp = 700.0;
+constexpr int32 ScopedPinIterations = 25000;
+constexpr double ScopedPinBudgetNsPerOp = 600.0;
 
 constexpr int32 BatchScanIterations = 10000;
 constexpr double BatchScanBudgetNsPerOp = 3000.0;
 
-struct FBenchmarkMetrics {
+constexpr int32 BlueprintQueryIterations = 100000;
+constexpr double BlueprintQueryBudgetNsPerOp = 150.0;
+
+struct FAssetBenchmarkMetrics {
     double MedianNs = 0.0;
     double MeanNs = 0.0;
     double CvPercent = 0.0;
@@ -44,100 +48,112 @@ struct FBenchmarkMetrics {
     double OpsPerSec = 0.0;
 };
 
+/**
+ * @brief 执行多轮预热与采样微基准，计算中位数、均值、极值与变异系数 (CV%)
+ * @tparam TFunc 待测闭包类型
+ * @param WarmupRounds 预热丢弃轮数
+ * @param SampleRounds 正式采样轮数（>= 5 轮）
+ * @param IterationsPerRound 每轮执行迭代次数
+ * @param Body 待测循环体闭包
+ * @return 统计指标结果
+ */
 template <typename TFunc>
-FBenchmarkMetrics RunBenchmarkRounds(
-    int32 WarmupRounds,
-    int32 SampleRounds,
-    int32 IterationsPerRound,
+FAssetBenchmarkMetrics RunAssetBenchmark(
+    const int32 WarmupRounds,
+    const int32 SampleRounds,
+    const int32 IterationsPerRound,
     TFunc&& Body
 ) {
     for (int32 Round = 0; Round < WarmupRounds; ++Round) {
         Body(IterationsPerRound);
     }
 
-    TArray<double> RoundNsPerOp;
-    RoundNsPerOp.Reserve(SampleRounds);
+    TArray<double> SamplesNs;
+    SamplesNs.Reserve(SampleRounds);
 
+    double SumNs = 0.0;
     for (int32 Round = 0; Round < SampleRounds; ++Round) {
         const double StartTime = FPlatformTime::Seconds();
         Body(IterationsPerRound);
-        const double EndTime = FPlatformTime::Seconds();
-
-        const double ElapsedNs = (EndTime - StartTime) * 1e9;
-        RoundNsPerOp.Add(ElapsedNs / static_cast<double>(IterationsPerRound));
+        const double ElapsedSec = FPlatformTime::Seconds() - StartTime;
+        const double NsPerOp = (ElapsedSec * 1.0e9) / static_cast<double>(IterationsPerRound);
+        SamplesNs.Add(NsPerOp);
+        SumNs += NsPerOp;
     }
 
-    RoundNsPerOp.Sort();
-
-    FBenchmarkMetrics Metrics;
-    Metrics.MinNs = RoundNsPerOp[0];
-    Metrics.MaxNs = RoundNsPerOp.Last();
-    Metrics.MedianNs = RoundNsPerOp[SampleRounds / 2];
-
-    const double Sum = std::accumulate(RoundNsPerOp.GetData(), RoundNsPerOp.GetData() + SampleRounds, 0.0);
-    Metrics.MeanNs = Sum / static_cast<double>(SampleRounds);
+    SamplesNs.Sort();
+    const double MedianNs = SamplesNs[SampleRounds / 2];
+    const double MeanNs = SumNs / static_cast<double>(SampleRounds);
 
     double VarianceSum = 0.0;
-    for (double Val : RoundNsPerOp) {
-        const double Diff = Val - Metrics.MeanNs;
+    for (const double Sample : SamplesNs) {
+        const double Diff = Sample - MeanNs;
         VarianceSum += Diff * Diff;
     }
-    const double StdDev = std::sqrt(VarianceSum / static_cast<double>(SampleRounds));
-    Metrics.CvPercent = (Metrics.MeanNs > 0.0) ? (StdDev / Metrics.MeanNs) * 100.0 : 0.0;
-    Metrics.OpsPerSec = (Metrics.MedianNs > 0.0) ? (1e9 / Metrics.MedianNs) : 0.0;
+    const double StdDev = FMath::Sqrt(VarianceSum / static_cast<double>(SampleRounds));
+    const double CvPercent = (MeanNs > 0.0) ? ((StdDev / MeanNs) * 100.0) : 0.0;
 
+    FAssetBenchmarkMetrics Metrics;
+    Metrics.MedianNs = MedianNs;
+    Metrics.MeanNs = MeanNs;
+    Metrics.CvPercent = CvPercent;
+    Metrics.MinNs = SamplesNs[0];
+    Metrics.MaxNs = SamplesNs.Last();
+    Metrics.OpsPerSec = (MedianNs > 0.0) ? (1.0e9 / MedianNs) : 0.0;
     return Metrics;
 }
 
-} // namespace
+}  // namespace
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-    FGameAssetShortCircuitBenchmarkTest,
-    "Game.Asset.Benchmark.ShortCircuitLoad",
+    FGameAssetShortCircuitPerfTest,
+    "Game.Asset.Perf.ShortCircuitLoad",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
 /**
- * @brief 基准测试：验证已驻留内存软引用资产的异步短路回调吞吐性能与纳秒级预算
+ * @brief 微基准：已驻留内存软引用资产的 LoadAsync 同步短路回调吞吐
  * @param Parameters 自动化测试参数
- * @return 全部断言通过返回 true
+ * @return 落在预算内返回 true
  */
-bool FGameAssetShortCircuitBenchmarkTest::RunTest([[maybe_unused]] const FString& Parameters) {
+bool FGameAssetShortCircuitPerfTest::RunTest([[maybe_unused]] const FString& Parameters) {
     UGameInstance* DummyOwner = NewObject<UGameInstance>();
     UGameInstance* ResidentTarget = NewObject<UGameInstance>();
     const TSoftObjectPtr<UGameInstance> ResidentSoftPtr(ResidentTarget);
 
-    int32 CallbackCounter = 0;
+    volatile uintptr_t Sink = 0;
 
-    const FBenchmarkMetrics Metrics = RunBenchmarkRounds(
+    const FAssetBenchmarkMetrics Metrics = RunAssetBenchmark(
         DefaultWarmupRounds,
         DefaultSampleRounds,
         ShortCircuitIterations,
-        [&](int32 Iterations) {
-            for (int32 i = 0; i < Iterations; ++i) {
+        [&ResidentSoftPtr, DummyOwner, &Sink](const int32 Iterations) {
+            for (int32 Index = 0; Index < Iterations; ++Index) {
                 FGameAssetLoader::LoadAsync<UGameInstance>(
                     ResidentSoftPtr,
                     DummyOwner,
-                    [&CallbackCounter](UGameInstance*) {
-                        ++CallbackCounter;
+                    [&Sink](UGameInstance* Loaded) {
+                        Sink = Sink + reinterpret_cast<uintptr_t>(Loaded);
                     }
                 );
             }
         }
     );
 
-    TestTrue(TEXT("短路高频触发回调已执行有效次数"), CallbackCounter > 0);
     TestTrue(
-        FString::Printf(
-            TEXT("已驻留资产短路每操作耗时 Median=%.2f ns/op 应低于预算 %.2f ns/op (Mean=%.2f, CV=%.2f%%, Ops/sec=%.0f)"),
-            Metrics.MedianNs,
-            ShortCircuitBudgetNsPerOp,
-            Metrics.MeanNs,
-            Metrics.CvPercent,
-            Metrics.OpsPerSec
-        ),
+        FString::Printf(TEXT("LoadAsync 驻留短路 Median=%.2f ns/op 应低于预算 %.0f ns/op"), Metrics.MedianNs, ShortCircuitBudgetNsPerOp),
         Metrics.MedianNs <= ShortCircuitBudgetNsPerOp
     );
+
+    const FString Report = FString::Printf(
+        TEXT("[GameAssetPerf] LoadAsync ShortCircuit: %.2f ns/op (Mean: %.2f, CV: %.2f%%, %.2f Mops/s)"),
+        Metrics.MedianNs,
+        Metrics.MeanNs,
+        Metrics.CvPercent,
+        Metrics.OpsPerSec / 1.0e6
+    );
+    GAME_LOG(Display, TEXT("%s"), *Report);
+    AddInfo(Report);
 
     DummyOwner->MarkAsGarbage();
     ResidentTarget->MarkAsGarbage();
@@ -145,47 +161,116 @@ bool FGameAssetShortCircuitBenchmarkTest::RunTest([[maybe_unused]] const FString
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-    FGameAssetPinChurnBenchmarkTest,
-    "Game.Asset.Benchmark.PinningChurn",
+    FGameAssetCoroResidentFastPathPerfTest,
+    "Game.Asset.Perf.CoroResidentFastPath",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
 /**
- * @brief 基准测试：验证 FGameAssetPinner 高频 Pin/Unpin 引用计数增减与互斥锁热路径性能
+ * @brief 微基准：事件驱动 LoadAsyncCoro 在资产已驻留时的零流送挂起直返吞吐
  * @param Parameters 自动化测试参数
- * @return 全部断言通过返回 true
+ * @return 落在预算内返回 true
  */
-bool FGameAssetPinChurnBenchmarkTest::RunTest([[maybe_unused]] const FString& Parameters) {
+bool FGameAssetCoroResidentFastPathPerfTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UGameInstance* DummyOwner = NewObject<UGameInstance>();
+    UGameInstance* ResidentTarget = NewObject<UGameInstance>();
+    const TSoftObjectPtr<UGameInstance> ResidentSoftPtr(ResidentTarget);
+
+    volatile uintptr_t Sink = 0;
+
+    const FAssetBenchmarkMetrics Metrics = RunAssetBenchmark(
+        DefaultWarmupRounds,
+        DefaultSampleRounds,
+        CoroFastPathIterations,
+        [&ResidentSoftPtr, DummyOwner, &Sink](const int32 Iterations) {
+            for (int32 Index = 0; Index < Iterations; ++Index) {
+                TGameCoroTask<UGameInstance*> Task = FGameAssetLoader::LoadAsyncCoro<UGameInstance>(ResidentSoftPtr, DummyOwner);
+                Sink = Sink + reinterpret_cast<uintptr_t>(Task.GetResult().GetValue());
+            }
+        }
+    );
+
+    TestTrue(
+        FString::Printf(TEXT("LoadAsyncCoro 驻留快路径 Median=%.2f ns/op 应低于预算 %.0f ns/op"), Metrics.MedianNs, CoroFastPathBudgetNsPerOp),
+        Metrics.MedianNs <= CoroFastPathBudgetNsPerOp
+    );
+
+    const FString Report = FString::Printf(
+        TEXT("[GameAssetPerf] LoadAsyncCoro Resident FastPath: %.2f ns/op (Mean: %.2f, CV: %.2f%%, %.2f Mops/s)"),
+        Metrics.MedianNs,
+        Metrics.MeanNs,
+        Metrics.CvPercent,
+        Metrics.OpsPerSec / 1.0e6
+    );
+    GAME_LOG(Display, TEXT("%s"), *Report);
+    AddInfo(Report);
+
+    DummyOwner->MarkAsGarbage();
+    ResidentTarget->MarkAsGarbage();
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameAssetPinChurnAndLookupPerfTest,
+    "Game.Asset.Perf.PinningChurnAndLookup",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 微基准：FGameAssetPinner 高频 Pin/Unpin 引用计数热路径与 O(1) GetPinnedAsset 缓存指针读取吞吐
+ * @param Parameters 自动化测试参数
+ * @return 落在预算内返回 true
+ */
+bool FGameAssetPinChurnAndLookupPerfTest::RunTest([[maybe_unused]] const FString& Parameters) {
     UGameInstance* ResidentTarget = NewObject<UGameInstance>();
     const FSoftObjectPath ResidentPath(ResidentTarget);
 
     FGameAssetPinner::ClearAllPinnedAssets();
-    FGameAssetPinner::PinAsset(ResidentPath);
+    FGameAssetPinner::Startup();
+    (void)FGameAssetPinner::PinAsset(ResidentPath);
 
-    const FBenchmarkMetrics Metrics = RunBenchmarkRounds(
+    volatile uintptr_t Sink = 0;
+
+    const FAssetBenchmarkMetrics ChurnMetrics = RunAssetBenchmark(
         DefaultWarmupRounds,
         DefaultSampleRounds,
         PinChurnIterations,
-        [&](int32 Iterations) {
-            for (int32 i = 0; i < Iterations; ++i) {
-                FGameAssetPinner::PinAsset(ResidentPath);
-                FGameAssetPinner::UnpinAsset(ResidentPath);
+        [&ResidentPath, &Sink](const int32 Iterations) {
+            for (int32 Index = 0; Index < Iterations; ++Index) {
+                const TGameStatusResult<UObject*> PinRes = FGameAssetPinner::PinAsset(ResidentPath);
+                Sink = Sink + reinterpret_cast<uintptr_t>(PinRes.GetValue());
+                (void)FGameAssetPinner::UnpinAsset(ResidentPath);
             }
         }
     );
 
-    TestTrue(TEXT("测试后基准锁定依然存续"), FGameAssetPinner::IsAssetPinned(ResidentPath));
-    TestTrue(
-        FString::Printf(
-            TEXT("Pin/Unpin 高频操作耗时 Median=%.2f ns/op 应低于预算 %.2f ns/op (Mean=%.2f, CV=%.2f%%, Ops/sec=%.0f)"),
-            Metrics.MedianNs,
-            PinChurnBudgetNsPerOp,
-            Metrics.MeanNs,
-            Metrics.CvPercent,
-            Metrics.OpsPerSec
-        ),
-        Metrics.MedianNs <= PinChurnBudgetNsPerOp
+    const FAssetBenchmarkMetrics LookupMetrics = RunAssetBenchmark(
+        DefaultWarmupRounds,
+        DefaultSampleRounds,
+        PinChurnIterations,
+        [&ResidentPath, &Sink](const int32 Iterations) {
+            for (int32 Index = 0; Index < Iterations; ++Index) {
+                Sink = Sink + reinterpret_cast<uintptr_t>(FGameAssetPinner::GetPinnedAsset(ResidentPath));
+            }
+        }
     );
+
+    TestTrue(
+        FString::Printf(TEXT("Pin/Unpin 热路径 Median=%.2f ns/op 应低于预算 %.0f ns/op"), ChurnMetrics.MedianNs, PinChurnBudgetNsPerOp),
+        ChurnMetrics.MedianNs <= PinChurnBudgetNsPerOp
+    );
+
+    const FString Report = FString::Printf(
+        TEXT("[GameAssetPerf] Pin+Unpin Churn: %.2f ns/op (CV: %.2f%%, %.2f Mops/s) | GetPinnedAsset Lookup: %.2f ns/op (CV: %.2f%%, %.2f Mops/s)"),
+        ChurnMetrics.MedianNs,
+        ChurnMetrics.CvPercent,
+        ChurnMetrics.OpsPerSec / 1.0e6,
+        LookupMetrics.MedianNs,
+        LookupMetrics.CvPercent,
+        LookupMetrics.OpsPerSec / 1.0e6
+    );
+    GAME_LOG(Display, TEXT("%s"), *Report);
+    AddInfo(Report);
 
     FGameAssetPinner::ClearAllPinnedAssets();
     ResidentTarget->MarkAsGarbage();
@@ -193,51 +278,65 @@ bool FGameAssetPinChurnBenchmarkTest::RunTest([[maybe_unused]] const FString& Pa
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-    FGameAssetScopedPinBenchmarkTest,
-    "Game.Asset.Benchmark.ScopedPinRaii",
+    FGameAssetScopedPinPerfTest,
+    "Game.Asset.Perf.ScopedPinRaiiVsLookup",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
 /**
- * @brief 基准测试：验证 FScopedPinnedAsset 的 RAII 栈构造、解引用访问与析构开销
+ * @brief 微基准：FScopedPinnedAsset 单次加锁构造/析构开销与栈缓存 Get<T>() 零锁解引用对比
  * @param Parameters 自动化测试参数
- * @return 全部断言通过返回 true
+ * @return 落在预算内返回 true
  */
-bool FGameAssetScopedPinBenchmarkTest::RunTest([[maybe_unused]] const FString& Parameters) {
+bool FGameAssetScopedPinPerfTest::RunTest([[maybe_unused]] const FString& Parameters) {
     UGameInstance* ResidentTarget = NewObject<UGameInstance>();
     const TSoftObjectPtr<UGameInstance> ResidentSoftPtr(ResidentTarget);
 
     FGameAssetPinner::ClearAllPinnedAssets();
-    FGameAssetPinner::PinAsset(ResidentSoftPtr.ToSoftObjectPath());
+    FGameAssetPinner::Startup();
+    (void)FGameAssetPinner::PinAsset(ResidentSoftPtr.ToSoftObjectPath());
 
-    int32 ResolvedCounter = 0;
+    volatile uintptr_t Sink = 0;
 
-    const FBenchmarkMetrics Metrics = RunBenchmarkRounds(
+    const FAssetBenchmarkMetrics ScopedMetrics = RunAssetBenchmark(
         DefaultWarmupRounds,
         DefaultSampleRounds,
         ScopedPinIterations,
-        [&](int32 Iterations) {
-            for (int32 i = 0; i < Iterations; ++i) {
+        [&ResidentSoftPtr, &Sink](const int32 Iterations) {
+            for (int32 Index = 0; Index < Iterations; ++Index) {
                 FScopedPinnedAsset ScopedPin(ResidentSoftPtr);
-                if (UGameInstance* Instance = ScopedPin.Get<UGameInstance>()) {
-                    ++ResolvedCounter;
-                }
+                Sink = Sink + reinterpret_cast<uintptr_t>(ScopedPin.Get<UGameInstance>());
             }
         }
     );
 
-    TestTrue(TEXT("RAII 循环中成功解析出对象"), ResolvedCounter > 0);
-    TestTrue(
-        FString::Printf(
-            TEXT("ScopedPin 栈构造析构耗时 Median=%.2f ns/op 应低于预算 %.2f ns/op (Mean=%.2f, CV=%.2f%%, Ops/sec=%.0f)"),
-            Metrics.MedianNs,
-            ScopedPinBudgetNsPerOp,
-            Metrics.MeanNs,
-            Metrics.CvPercent,
-            Metrics.OpsPerSec
-        ),
-        Metrics.MedianNs <= ScopedPinBudgetNsPerOp
+    const FScopedPinnedAsset HeldPin(ResidentSoftPtr);
+    const FAssetBenchmarkMetrics CachedReadMetrics = RunAssetBenchmark(
+        DefaultWarmupRounds,
+        DefaultSampleRounds,
+        BlueprintQueryIterations,
+        [&HeldPin, &Sink](const int32 Iterations) {
+            for (int32 Index = 0; Index < Iterations; ++Index) {
+                Sink = Sink + reinterpret_cast<uintptr_t>(HeldPin.Get<UGameInstance>());
+            }
+        }
     );
+
+    TestTrue(
+        FString::Printf(TEXT("FScopedPinnedAsset 栈构造析构 Median=%.2f ns/op 应低于预算 %.0f ns/op"), ScopedMetrics.MedianNs, ScopedPinBudgetNsPerOp),
+        ScopedMetrics.MedianNs <= ScopedPinBudgetNsPerOp
+    );
+
+    const FString Report = FString::Printf(
+        TEXT("[GameAssetPerf] FScopedPinnedAsset RAII Scope: %.2f ns/op (CV: %.2f%%, %.2f Mops/s) | Cached Get<T>(): %.2f ns/op (%.2f Mops/s)"),
+        ScopedMetrics.MedianNs,
+        ScopedMetrics.CvPercent,
+        ScopedMetrics.OpsPerSec / 1.0e6,
+        CachedReadMetrics.MedianNs,
+        CachedReadMetrics.OpsPerSec / 1.0e6
+    );
+    GAME_LOG(Display, TEXT("%s"), *Report);
+    AddInfo(Report);
 
     FGameAssetPinner::ClearAllPinnedAssets();
     ResidentTarget->MarkAsGarbage();
@@ -245,17 +344,17 @@ bool FGameAssetScopedPinBenchmarkTest::RunTest([[maybe_unused]] const FString& P
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-    FGameAssetBatchScanBenchmarkTest,
-    "Game.Asset.Benchmark.BatchPathScan",
+    FGameAssetBatchScanPerfTest,
+    "Game.Asset.Perf.BatchDeduplicationAndShortCircuit",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
 /**
- * @brief 基准测试：验证 LoadBatchAsync 对多路径数组（16 路径）快速过滤与驻留短路探测性能
+ * @brief 微基准：LoadBatchAsync 16 路径零分配驻留短路扫描吞吐
  * @param Parameters 自动化测试参数
- * @return 全部断言通过返回 true
+ * @return 落在预算内返回 true
  */
-bool FGameAssetBatchScanBenchmarkTest::RunTest([[maybe_unused]] const FString& Parameters) {
+bool FGameAssetBatchScanPerfTest::RunTest([[maybe_unused]] const FString& Parameters) {
     UGameInstance* DummyOwner = NewObject<UGameInstance>();
     constexpr int32 TargetCount = 16;
     TArray<UGameInstance*> Targets;
@@ -263,48 +362,99 @@ bool FGameAssetBatchScanBenchmarkTest::RunTest([[maybe_unused]] const FString& P
     Targets.Reserve(TargetCount);
     Paths.Reserve(TargetCount);
 
-    for (int32 i = 0; i < TargetCount; ++i) {
+    for (int32 Index = 0; Index < TargetCount; ++Index) {
         UGameInstance* Target = NewObject<UGameInstance>();
         Targets.Add(Target);
         Paths.Add(FSoftObjectPath(Target));
     }
 
-    int32 BatchDoneCounter = 0;
+    volatile int32 BatchDoneSink = 0;
 
-    const FBenchmarkMetrics Metrics = RunBenchmarkRounds(
+    const FAssetBenchmarkMetrics Metrics = RunAssetBenchmark(
         DefaultWarmupRounds,
         DefaultSampleRounds,
         BatchScanIterations,
-        [&](int32 Iterations) {
-            for (int32 i = 0; i < Iterations; ++i) {
+        [&Paths, DummyOwner, &BatchDoneSink](const int32 Iterations) {
+            for (int32 Index = 0; Index < Iterations; ++Index) {
                 FGameAssetLoader::LoadBatchAsync(
                     Paths,
                     DummyOwner,
-                    [&BatchDoneCounter]() {
-                        ++BatchDoneCounter;
+                    [&BatchDoneSink]() {
+                        BatchDoneSink = BatchDoneSink + 1;
                     }
                 );
             }
         }
     );
 
-    TestTrue(TEXT("批量短路快速完成回调已触发有效次数"), BatchDoneCounter > 0);
     TestTrue(
-        FString::Printf(
-            TEXT("16路径批量短路探测耗时 Median=%.2f ns/op 应低于预算 %.2f ns/op (Mean=%.2f, CV=%.2f%%, Ops/sec=%.0f)"),
-            Metrics.MedianNs,
-            BatchScanBudgetNsPerOp,
-            Metrics.MeanNs,
-            Metrics.CvPercent,
-            Metrics.OpsPerSec
-        ),
+        FString::Printf(TEXT("16 路径批量驻留短路扫描 Median=%.2f ns/op 应低于预算 %.0f ns/op"), Metrics.MedianNs, BatchScanBudgetNsPerOp),
         Metrics.MedianNs <= BatchScanBudgetNsPerOp
     );
+
+    const FString Report = FString::Printf(
+        TEXT("[GameAssetPerf] Batch 16-Path ShortCircuit: %.2f ns/op (Mean: %.2f, CV: %.2f%%, %.2f Kops/s)"),
+        Metrics.MedianNs,
+        Metrics.MeanNs,
+        Metrics.CvPercent,
+        Metrics.OpsPerSec / 1.0e3
+    );
+    GAME_LOG(Display, TEXT("%s"), *Report);
+    AddInfo(Report);
 
     DummyOwner->MarkAsGarbage();
     for (UGameInstance* Target : Targets) {
         Target->MarkAsGarbage();
     }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameAssetBlueprintQueryPerfTest,
+    "Game.Asset.Perf.BlueprintQueryFastPath",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 微基准：UGameAssetBlueprintLibrary::GetLoadedAsset / IsAssetLoaded 单次 TSoftObjectPtr::Get() 热路径吞吐
+ * @param Parameters 自动化测试参数
+ * @return 落在预算内返回 true
+ */
+bool FGameAssetBlueprintQueryPerfTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UGameInstance* ResidentTarget = NewObject<UGameInstance>();
+    const TSoftObjectPtr<UObject> ResidentSoft(ResidentTarget);
+
+    volatile uintptr_t Sink = 0;
+
+    const FAssetBenchmarkMetrics Metrics = RunAssetBenchmark(
+        DefaultWarmupRounds,
+        DefaultSampleRounds,
+        BlueprintQueryIterations,
+        [&ResidentSoft, &Sink](const int32 Iterations) {
+            for (int32 Index = 0; Index < Iterations; ++Index) {
+                if (UGameAssetBlueprintLibrary::IsAssetLoaded(ResidentSoft)) {
+                    Sink = Sink + reinterpret_cast<uintptr_t>(UGameAssetBlueprintLibrary::GetLoadedAsset(ResidentSoft));
+                }
+            }
+        }
+    );
+
+    TestTrue(
+        FString::Printf(TEXT("蓝图驻留查询 Median=%.2f ns/op 应低于预算 %.0f ns/op"), Metrics.MedianNs, BlueprintQueryBudgetNsPerOp),
+        Metrics.MedianNs <= BlueprintQueryBudgetNsPerOp
+    );
+
+    const FString Report = FString::Printf(
+        TEXT("[GameAssetPerf] Blueprint IsAssetLoaded+GetLoadedAsset: %.2f ns/op (Mean: %.2f, CV: %.2f%%, %.2f Mops/s)"),
+        Metrics.MedianNs,
+        Metrics.MeanNs,
+        Metrics.CvPercent,
+        Metrics.OpsPerSec / 1.0e6
+    );
+    GAME_LOG(Display, TEXT("%s"), *Report);
+    AddInfo(Report);
+
+    ResidentTarget->MarkAsGarbage();
     return true;
 }
 

@@ -1,20 +1,25 @@
 /**
  * @file FScopedPinnedAsset.cpp
- * @brief FScopedPinnedAsset 内存保活作用域守卫实现
+ * @brief FScopedPinnedAsset 资产内存保活作用域守卫实现
  */
 
-#include "Asset/FScopedPinnedAsset.h"
-#include "Asset/FGameAssetPinner.h"
+#include "Pinning/FScopedPinnedAsset.h"
+
+#include "Pinning/FGameAssetPinner.h"
 
 FScopedPinnedAsset::FScopedPinnedAsset(FSoftObjectPath InPath)
     : PinnedPath(MoveTemp(InPath))
     , CachedAsset(nullptr) {
-    if (PinnedPath.IsValid()) {
-        if (FGameAssetPinner::PinAsset(PinnedPath)) {
-            CachedAsset = FGameAssetPinner::GetPinnedAsset(PinnedPath);
-        } else {
-            PinnedPath.Reset();
-        }
+    if (!PinnedPath.IsValid()) {
+        PinnedPath.Reset();
+        return;
+    }
+
+    const TGameStatusResult<UObject*> PinResult = FGameAssetPinner::PinAsset(PinnedPath);
+    if (PinResult.IsSuccess()) {
+        CachedAsset = PinResult.GetValue();
+    } else {
+        PinnedPath.Reset();
     }
 }
 
@@ -42,14 +47,14 @@ FScopedPinnedAsset& FScopedPinnedAsset::operator=(FScopedPinnedAsset&& Other) no
 
 void FScopedPinnedAsset::Release() noexcept {
     if (PinnedPath.IsValid()) {
-        FGameAssetPinner::UnpinAsset(PinnedPath);
+        (void)FGameAssetPinner::UnpinAsset(PinnedPath);
         PinnedPath.Reset();
         CachedAsset = nullptr;
     }
 }
 
 bool FScopedPinnedAsset::IsPinned() const noexcept {
-    return PinnedPath.IsValid();
+    return CachedAsset != nullptr && PinnedPath.IsValid();
 }
 
 const FSoftObjectPath& FScopedPinnedAsset::GetPath() const noexcept {

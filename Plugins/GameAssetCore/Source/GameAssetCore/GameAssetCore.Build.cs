@@ -15,6 +15,7 @@ public class GameAssetCore : ModuleRules {
         });
 
         PrivateDependencyModuleNames.AddRange(new string[] {
+            "GameLogging",
         });
     }
 }

@@ -1,21 +1,30 @@
 /**
  * @file UGameAssetBlueprintLibrary.cpp
- * @brief 资产常驻保活与状态查询蓝图函数库实现
+ * @brief UGameAssetBlueprintLibrary 资产常驻保活与免阻塞状态查询蓝图函数库实现
  */
 
-#include "Library/UGameAssetBlueprintLibrary.h"
+#include "Blueprint/UGameAssetBlueprintLibrary.h"
 
-#include "Asset/FGameAssetPinner.h"
+#include "Pinning/FGameAssetPinner.h"
 
 bool UGameAssetBlueprintLibrary::IsAssetPinned(const TSoftObjectPtr<UObject>& Asset) {
+    if (Asset.IsNull()) {
+        return false;
+    }
     return FGameAssetPinner::IsAssetPinned(Asset.ToSoftObjectPath());
 }
 
 bool UGameAssetBlueprintLibrary::PinAsset(const TSoftObjectPtr<UObject>& Asset) {
+    if (Asset.IsNull()) {
+        return false;
+    }
     return FGameAssetPinner::PinAsset(Asset.ToSoftObjectPath()).IsSuccess();
 }
 
 bool UGameAssetBlueprintLibrary::UnpinAsset(const TSoftObjectPtr<UObject>& Asset) {
+    if (Asset.IsNull()) {
+        return false;
+    }
     return FGameAssetPinner::UnpinAsset(Asset.ToSoftObjectPath()).IsSuccess();
 }
 
@@ -40,22 +49,25 @@ int32 UGameAssetBlueprintLibrary::UnpinAssets(const TArray<TSoftObjectPtr<UObjec
 }
 
 int32 UGameAssetBlueprintLibrary::GetAssetPinRefCount(const TSoftObjectPtr<UObject>& Asset) {
+    if (Asset.IsNull()) {
+        return 0;
+    }
     return FGameAssetPinner::GetPinRefCount(Asset.ToSoftObjectPath());
 }
 
 UObject* UGameAssetBlueprintLibrary::GetPinnedAsset(const TSoftObjectPtr<UObject>& Asset) {
+    if (Asset.IsNull()) {
+        return nullptr;
+    }
     return FGameAssetPinner::GetPinnedAsset(Asset.ToSoftObjectPath());
 }
 
 bool UGameAssetBlueprintLibrary::IsAssetLoaded(const TSoftObjectPtr<UObject>& Asset) {
-    return Asset.Get() != nullptr || Asset.ToSoftObjectPath().ResolveObject() != nullptr;
+    return Asset.Get() != nullptr;
 }
 
 UObject* UGameAssetBlueprintLibrary::GetLoadedAsset(const TSoftObjectPtr<UObject>& Asset) {
-    if (UObject* Direct = Asset.Get()) {
-        return Direct;
-    }
-    return Asset.ToSoftObjectPath().ResolveObject();
+    return Asset.Get();
 }
 
 int32 UGameAssetBlueprintLibrary::GetTotalPinnedAssetCount() {

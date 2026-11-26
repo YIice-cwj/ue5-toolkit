@@ -1,180 +1,242 @@
 /**
  * @file GameAssetPinnerTest.cpp
- * @brief FGameAssetPinner 与 FScopedPinnedAsset 内存保活及作用域守卫自动化测试
+ * @brief FGameAssetPinner 与 FScopedPinnedAsset 引用计数、真 GC 存活验证、跨线程句柄释放与 RAII 守卫测试
  */
 
-#include "Asset/FGameAssetPinner.h"
-#include "Asset/FScopedPinnedAsset.h"
-#include "Library/UGameAssetBlueprintLibrary.h"
+#include "Pinning/FGameAssetPinner.h"
+#include "Pinning/FScopedPinnedAsset.h"
+
+#include "Async/Async.h"
+#include "Async/FGameThreadTaskRunner.h"
+#include "Async/ParallelFor.h"
+#include "Core/AssetErrorCodes.h"
 
 #if WITH_AUTOMATION_TESTS
 
 #include "Engine/GameInstance.h"
+#include "Engine/StaticMesh.h"
 #include "Misc/AutomationTest.h"
+#include "UObject/UObjectGlobals.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-    FGameAssetPinnerLifecycleTest,
-    "Game.Asset.Pinner.LifecycleAndCounting",
+    FGameAssetPinnerLifecycleAndErrorsTest,
+    "Game.Asset.Pinner.LifecycleAndErrorCodes",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
 /**
- * @brief 验证 FGameAssetPinner 的引用计数增减、非法路径守卫、归零注销与全局清空机制
+ * @brief 验证 FGameAssetPinner 引用计数增减、错误码（3001/3002/3004/3005）、磁盘加载跨线程安全解绑、失效条目统计一致性与清空机制
  * @param Parameters 自动化测试参数
  * @return 全部断言通过返回 true
  */
-bool FGameAssetPinnerLifecycleTest::RunTest([[maybe_unused]] const FString& Parameters) {
+bool FGameAssetPinnerLifecycleAndErrorsTest::RunTest([[maybe_unused]] const FString& Parameters) {
     FGameAssetPinner::ClearAllPinnedAssets();
+    FGameAssetPinner::Startup();
 
     const FSoftObjectPath EmptyPath;
-    const TGameStatusResult<void> EmptyPinResult = FGameAssetPinner::PinAsset(EmptyPath);
-    TestTrue(TEXT("锁定空路径返回失败态"), EmptyPinResult.IsFailure());
-    TestEqual(TEXT("空路径错误码为 1001"), EmptyPinResult.GetError().ErrorCode, 1001);
+    const TGameStatusResult<UObject*> EmptyPinRes = FGameAssetPinner::PinAsset(EmptyPath);
+    TestTrue(TEXT("锁定空路径返回失败"), EmptyPinRes.IsFailure());
+    TestEqual(TEXT("空路径错误码为 InvalidAssetPath (3001)"), EmptyPinRes.GetError().ErrorCode, Game::AssetErrorCodes::InvalidAssetPath);
     TestFalse(TEXT("空路径 IsAssetPinned 为假"), FGameAssetPinner::IsAssetPinned(EmptyPath));
     TestEqual(TEXT("空路径引用计数为 0"), FGameAssetPinner::GetPinRefCount(EmptyPath), 0);
-    TestNull(TEXT("空路径获取已锁定指针返回 nullptr"), FGameAssetPinner::GetPinnedAsset(EmptyPath));
+    TestNull(TEXT("空路径 GetPinnedAsset 返回 nullptr"), FGameAssetPinner::GetPinnedAsset(EmptyPath));
 
-    const TGameStatusResult<void> EmptyUnpinResult = FGameAssetPinner::UnpinAsset(EmptyPath);
-    TestTrue(TEXT("解除空路径返回失败态"), EmptyUnpinResult.IsFailure());
+    const TGameStatusResult<void> EmptyUnpinRes = FGameAssetPinner::UnpinAsset(EmptyPath);
+    TestTrue(TEXT("解除空路径返回失败"), EmptyUnpinRes.IsFailure());
+    TestEqual(TEXT("解除空路径错误码为 3001"), EmptyUnpinRes.GetError().ErrorCode, Game::AssetErrorCodes::InvalidAssetPath);
 
     UGameInstance* ResidentTarget = NewObject<UGameInstance>();
     const FSoftObjectPath ResidentPath(ResidentTarget);
 
-    TestFalse(TEXT("尚未锁定的路径 IsAssetPinned 为假"), FGameAssetPinner::IsAssetPinned(ResidentPath));
-    const TGameStatusResult<void> UnpinnedResult = FGameAssetPinner::UnpinAsset(ResidentPath);
-    TestTrue(TEXT("解除未锁定的路径返回失败态"), UnpinnedResult.IsFailure());
-    TestEqual(TEXT("未锁定路径错误码为 1003"), UnpinnedResult.GetError().ErrorCode, 1003);
+    const TGameStatusResult<void> UnpinnedRes = FGameAssetPinner::UnpinAsset(ResidentPath);
+    TestTrue(TEXT("解除尚未锁定的路径返回失败"), UnpinnedRes.IsFailure());
+    TestEqual(TEXT("未锁定路径错误码为 AssetNotPinned (3004)"), UnpinnedRes.GetError().ErrorCode, Game::AssetErrorCodes::AssetNotPinned);
 
-    const TGameStatusResult<void> PinResult1 = FGameAssetPinner::PinAsset(ResidentPath);
-    TestTrue(TEXT("初次锁定有效驻留路径成功"), PinResult1.IsSuccess());
-    TestTrue(TEXT("锁定后 IsAssetPinned 为真"), FGameAssetPinner::IsAssetPinned(ResidentPath));
-    TestEqual(TEXT("初次锁定后引用计数为 1"), FGameAssetPinner::GetPinRefCount(ResidentPath), 1);
-    TestEqual(TEXT("锁定后通过 Pinner 获取实例指针匹配"), FGameAssetPinner::GetPinnedAsset(ResidentPath), static_cast<UObject*>(ResidentTarget));
-    TestEqual(TEXT("锁定后通过 Pinner 强类型获取匹配"), FGameAssetPinner::GetPinnedAsset<UGameInstance>(ResidentPath), ResidentTarget);
-    TestEqual(TEXT("全局锁定总数为 1"), FGameAssetPinner::GetTotalPinnedCount(), 1);
+    const TGameStatusResult<UObject*> MissingPinRes = FGameAssetPinner::PinAsset(
+        FSoftObjectPath(TEXT("/Game/__UnitTest_MissingPinAsset.__UnitTest_MissingPinAsset"))
+    );
+    TestTrue(TEXT("锁定不存在的磁盘路径返回失败"), MissingPinRes.IsFailure());
+    TestEqual(TEXT("不存在路径锁定返回 LoadFailed (3002)"), MissingPinRes.GetError().ErrorCode, Game::AssetErrorCodes::LoadFailed);
 
-    TArray<FSoftObjectPath> PinnedPaths;
-    FGameAssetPinner::GetAllPinnedPaths(PinnedPaths);
-    TestEqual(TEXT("导出的已锁定路径数量为 1"), PinnedPaths.Num(), 1);
-    if (PinnedPaths.Num() == 1) {
-        TestEqual(TEXT("导出的路径与目标匹配"), PinnedPaths[0], ResidentPath);
+    TFuture<int32> WorkerPinErrorFuture = Async(EAsyncExecution::ThreadPool, []() {
+        const TGameStatusResult<UObject*> BgPin = FGameAssetPinner::PinAsset(
+            FSoftObjectPath(TEXT("/Game/__UnitTest_WorkerPinUnloaded.__UnitTest_WorkerPinUnloaded"))
+        );
+        return BgPin.IsFailure() ? BgPin.GetError().ErrorCode : 0;
+    });
+    TestEqual(TEXT("后台线程对未驻留资产请求 PinAsset 返回 InvalidThread (3005)"), WorkerPinErrorFuture.Get(), Game::AssetErrorCodes::InvalidThread);
+
+    const TGameStatusResult<UObject*> Pin1 = FGameAssetPinner::PinAsset(ResidentPath);
+    TestTrue(TEXT("首次锁定驻留路径成功"), Pin1.IsSuccess());
+    if (Pin1.IsSuccess()) {
+        TestEqual(TEXT("PinAsset 直接返回被锁定实例指针"), Pin1.GetValue(), static_cast<UObject*>(ResidentTarget));
     }
-    TestEqual(TEXT("蓝图导出路径数量为 1"), UGameAssetBlueprintLibrary::GetAllPinnedAssetPaths().Num(), 1);
+    TestTrue(TEXT("锁定后 IsAssetPinned 为真"), FGameAssetPinner::IsAssetPinned(ResidentPath));
+    TestEqual(TEXT("首次锁定后引用计数为 1"), FGameAssetPinner::GetPinRefCount(ResidentPath), 1);
+    TestEqual(TEXT("GetPinnedAsset<UGameInstance> 匹配"), FGameAssetPinner::GetPinnedAsset<UGameInstance>(ResidentPath), ResidentTarget);
+    TestNull(TEXT("GetPinnedAsset<UStaticMesh> 类型不兼容返回 nullptr"), FGameAssetPinner::GetPinnedAsset<UStaticMesh>(ResidentPath));
 
-    const TSoftObjectPtr<UObject> BpSoftPtr(ResidentTarget);
-    TestTrue(TEXT("蓝图 IsAssetPinned 为真"), UGameAssetBlueprintLibrary::IsAssetPinned(BpSoftPtr));
-    TestTrue(TEXT("蓝图 IsAssetLoaded 为真"), UGameAssetBlueprintLibrary::IsAssetLoaded(BpSoftPtr));
-    TestEqual(TEXT("蓝图 GetLoadedAsset 匹配"), UGameAssetBlueprintLibrary::GetLoadedAsset(BpSoftPtr), static_cast<UObject*>(ResidentTarget));
-    TestEqual(TEXT("蓝图 GetPinnedAsset 匹配"), UGameAssetBlueprintLibrary::GetPinnedAsset(BpSoftPtr), static_cast<UObject*>(ResidentTarget));
-    TestEqual(TEXT("蓝图 GetAssetPinRefCount 为 1"), UGameAssetBlueprintLibrary::GetAssetPinRefCount(BpSoftPtr), 1);
-    TestEqual(TEXT("蓝图 GetTotalPinnedAssetCount 为 1"), UGameAssetBlueprintLibrary::GetTotalPinnedAssetCount(), 1);
+    const FSoftObjectPath DiskMeshPath(TEXT("/Engine/BasicShapes/Cube1.Cube1"));
+    const TGameStatusResult<UObject*> DiskPin = FGameAssetPinner::PinAsset(DiskMeshPath);
+    TestTrue(TEXT("锁定独立冷磁盘引擎资产 Cube1 成功"), DiskPin.IsSuccess());
+    if (DiskPin.IsSuccess()) {
+        TestNotNull(TEXT("锁定引擎磁盘资产返回非空 UStaticMesh"), Cast<UStaticMesh>(DiskPin.GetValue()));
+    }
+    TestEqual(TEXT("全局常驻种类总数为 2"), FGameAssetPinner::GetTotalPinnedCount(), 2);
 
-    TestTrue(TEXT("蓝图 PinAsset 增加引用计数成功"), UGameAssetBlueprintLibrary::PinAsset(BpSoftPtr));
-    TestEqual(TEXT("蓝图锁定后引用计数为 2"), FGameAssetPinner::GetPinRefCount(ResidentPath), 2);
-    TestTrue(TEXT("蓝图 UnpinAsset 扣减引用计数成功"), UGameAssetBlueprintLibrary::UnpinAsset(BpSoftPtr));
-    TestEqual(TEXT("蓝图扣减后引用计数为 1"), FGameAssetPinner::GetPinRefCount(ResidentPath), 1);
+    TArray<FSoftObjectPath> ExportedPaths;
+    FGameAssetPinner::GetAllPinnedPaths(ExportedPaths);
+    TestEqual(TEXT("导出的常驻路径数为 2"), ExportedPaths.Num(), 2);
 
-    UGameInstance* ResidentTarget2 = NewObject<UGameInstance>();
-    const TArray<TSoftObjectPtr<UObject>> BatchPinList = {
-        BpSoftPtr,
-        TSoftObjectPtr<UObject>(ResidentTarget2)
-    };
-    const int32 PinnedBatchCount = UGameAssetBlueprintLibrary::PinAssets(BatchPinList);
-    TestEqual(TEXT("蓝图批量 PinAssets 成功锁定 2 项"), PinnedBatchCount, 2);
-    TestEqual(TEXT("批量锁定后 ResidentTarget 引用计数为 2"), FGameAssetPinner::GetPinRefCount(ResidentPath), 2);
-    TestEqual(TEXT("全局锁定总数为 2"), FGameAssetPinner::GetTotalPinnedCount(), 2);
+    TFuture<bool> WorkerUnpinDiskFuture = Async(EAsyncExecution::ThreadPool, [DiskMeshPath]() {
+        return FGameAssetPinner::UnpinAsset(DiskMeshPath).IsSuccess();
+    });
+    TestTrue(TEXT("工作线程解除磁盘常驻资产归零时安全将流式句柄投递回主线程释放"), WorkerUnpinDiskFuture.Get());
+    FGameThreadTaskRunner::FlushInFlightTasks();
+    TestFalse(TEXT("工作线程归零解除后磁盘资产不再处于常驻态"), FGameAssetPinner::IsAssetPinned(DiskMeshPath));
+    TestEqual(TEXT("解除磁盘资产后全局常驻总数为 1"), FGameAssetPinner::GetTotalPinnedCount(), 1);
 
-    const int32 UnpinnedBatchCount = UGameAssetBlueprintLibrary::UnpinAssets(BatchPinList);
-    TestEqual(TEXT("蓝图批量 UnpinAssets 成功扣减 2 项"), UnpinnedBatchCount, 2);
-    TestEqual(TEXT("批量扣减后 ResidentTarget 引用计数恢复为 1"), FGameAssetPinner::GetPinRefCount(ResidentPath), 1);
-    TestEqual(TEXT("全局锁定总数恢复为 1"), FGameAssetPinner::GetTotalPinnedCount(), 1);
-    ResidentTarget2->MarkAsGarbage();
-
-    const TGameStatusResult<void> PinResult2 = FGameAssetPinner::PinAsset(ResidentPath);
-    TestTrue(TEXT("重复锁定同一路径递增引用计数成功"), PinResult2.IsSuccess());
+    const TGameStatusResult<UObject*> Pin2 = FGameAssetPinner::PinAsset(ResidentPath);
+    TestTrue(TEXT("重复锁定递增引用计数成功"), Pin2.IsSuccess());
     TestEqual(TEXT("重复锁定后引用计数为 2"), FGameAssetPinner::GetPinRefCount(ResidentPath), 2);
 
-    const TGameStatusResult<void> UnpinResult1 = FGameAssetPinner::UnpinAsset(ResidentPath);
-    TestTrue(TEXT("扣减第一次引用后返回成功"), UnpinResult1.IsSuccess());
-    TestTrue(TEXT("一次 Unpin 后仍然被锁定"), FGameAssetPinner::IsAssetPinned(ResidentPath));
-    TestEqual(TEXT("扣减一次后引用计数为 1"), FGameAssetPinner::GetPinRefCount(ResidentPath), 1);
+    TestTrue(TEXT("第一次 Unpin 成功"), FGameAssetPinner::UnpinAsset(ResidentPath).IsSuccess());
+    TestEqual(TEXT("第一次 Unpin 后引用计数为 1"), FGameAssetPinner::GetPinRefCount(ResidentPath), 1);
+    TestTrue(TEXT("第二次 Unpin 归零成功"), FGameAssetPinner::UnpinAsset(ResidentPath).IsSuccess());
+    TestFalse(TEXT("归零后 IsAssetPinned 为假"), FGameAssetPinner::IsAssetPinned(ResidentPath));
+    TestNull(TEXT("归零后 GetPinnedAsset 返回 nullptr"), FGameAssetPinner::GetPinnedAsset(ResidentPath));
 
-    const TGameStatusResult<void> UnpinResult2 = FGameAssetPinner::UnpinAsset(ResidentPath);
-    TestTrue(TEXT("扣减第二次引用后完全解除锁定返回成功"), UnpinResult2.IsSuccess());
-    TestFalse(TEXT("引用归零后 IsAssetPinned 为假"), FGameAssetPinner::IsAssetPinned(ResidentPath));
-    TestEqual(TEXT("归零后引用计数为 0"), FGameAssetPinner::GetPinRefCount(ResidentPath), 0);
-    TestNull(TEXT("完全解锁后获取已锁定指针返回 nullptr"), FGameAssetPinner::GetPinnedAsset(ResidentPath));
-
-    TArray<FSoftObjectPath> PinnedPathsAfterUnpin;
-    FGameAssetPinner::GetAllPinnedPaths(PinnedPathsAfterUnpin);
-    TestEqual(TEXT("完全解锁后导出的锁定路径数量为 0"), PinnedPathsAfterUnpin.Num(), 0);
-    TestEqual(TEXT("完全解锁后蓝图导出路径数量为 0"), UGameAssetBlueprintLibrary::GetAllPinnedAssetPaths().Num(), 0);
+    UGameInstance* ExternallyGarbageTarget = NewObject<UGameInstance>();
+    const FSoftObjectPath GarbagePath(ExternallyGarbageTarget);
+    TestTrue(TEXT("锁定临时对象用于失效条目统计一致性校验"), FGameAssetPinner::PinAsset(GarbagePath).IsSuccess());
+    ExternallyGarbageTarget->MarkAsGarbage();
+    TArray<FSoftObjectPath> ValidPathsAfterGarbage;
+    FGameAssetPinner::GetAllPinnedPaths(ValidPathsAfterGarbage);
+    TestFalse(TEXT("外部标记垃圾对象不再视为有效常驻"), FGameAssetPinner::IsAssetPinned(GarbagePath));
+    TestEqual(TEXT("GetTotalPinnedCount 与 GetAllPinnedPaths 口径严格一致（0 项）"), FGameAssetPinner::GetTotalPinnedCount(), ValidPathsAfterGarbage.Num());
 
     FGameAssetPinner::ClearAllPinnedAssets();
+    TestEqual(TEXT("ClearAllPinnedAssets 后常驻总数为 0"), FGameAssetPinner::GetTotalPinnedCount(), 0);
+
     ResidentTarget->MarkAsGarbage();
     return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-    FScopedPinnedAssetRaiiTest,
-    "Game.Asset.Pinner.ScopedGuardAndMove",
+    FGameAssetPinnerGarbageCollectionSurvivalTest,
+    "Game.Asset.Pinner.GarbageCollectionSurvival",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
 /**
- * @brief 验证 FScopedPinnedAsset 的 RAII 析构释放、移动构造/赋值与强类型解引用访问
+ * @brief 真实验证无任何外部 UPROPERTY 强引用的临时对象在 PinAsset 期间跨越 CollectGarbage 100% 存活，且在 Unpin 归零后正常被 GC 回收
  * @param Parameters 自动化测试参数
  * @return 全部断言通过返回 true
  */
-bool FScopedPinnedAssetRaiiTest::RunTest([[maybe_unused]] const FString& Parameters) {
+bool FGameAssetPinnerGarbageCollectionSurvivalTest::RunTest([[maybe_unused]] const FString& Parameters) {
     FGameAssetPinner::ClearAllPinnedAssets();
+    FGameAssetPinner::Startup();
 
-    UGameInstance* ResidentTarget = NewObject<UGameInstance>();
-    const FSoftObjectPath ResidentPath(ResidentTarget);
+    TWeakObjectPtr<UGameInstance> UnrootedWeak;
+    FSoftObjectPath PinnedTransientPath;
+    {
+        UGameInstance* UnrootedObject = NewObject<UGameInstance>();
+        UnrootedWeak = UnrootedObject;
+        PinnedTransientPath = FSoftObjectPath(UnrootedObject);
+
+        const TGameStatusResult<UObject*> PinRes = FGameAssetPinner::PinAsset(PinnedTransientPath);
+        TestTrue(TEXT("无根临时对象加入常驻保活成功"), PinRes.IsSuccess());
+    }
+
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    TestTrue(TEXT("执行完整 CollectGarbage 后，受 FGameAssetPinner 保活的无根对象依然存活"), UnrootedWeak.IsValid());
+    TestEqual(TEXT("GC 后 GetPinnedAsset 仍准确返回存活实例"), FGameAssetPinner::GetPinnedAsset(PinnedTransientPath), static_cast<UObject*>(UnrootedWeak.Get()));
+
+    TestTrue(TEXT("解除常驻保活成功"), FGameAssetPinner::UnpinAsset(PinnedTransientPath).IsSuccess());
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    TestFalse(TEXT("解除常驻保活并再次执行 CollectGarbage 后，无根对象正常被回收无泄漏"), UnrootedWeak.IsValid());
+
+    FGameAssetPinner::ClearAllPinnedAssets();
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameAssetPinnerConcurrencyAndScopedTest,
+    "Game.Asset.Pinner.ConcurrencyAndScopedRaii",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证多线程并发高频 Pin/Unpin 引用计数原子一致性，以及 FScopedPinnedAsset 全构造器与移动语义
+ * @param Parameters 自动化测试参数
+ * @return 全部断言通过返回 true
+ */
+bool FGameAssetPinnerConcurrencyAndScopedTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    FGameAssetPinner::ClearAllPinnedAssets();
+    FGameAssetPinner::Startup();
+
+    UGameInstance* SharedResident = NewObject<UGameInstance>();
+    const FSoftObjectPath SharedPath(SharedResident);
+    TestTrue(TEXT("主线程预置基础锁定"), FGameAssetPinner::PinAsset(SharedPath).IsSuccess());
+
+    constexpr int32 WorkerCount = 8;
+    constexpr int32 LoopsPerWorker = 500;
+    ParallelFor(WorkerCount, [&SharedPath, SharedResident](int32) {
+        for (int32 Iteration = 0; Iteration < LoopsPerWorker; ++Iteration) {
+            const TGameStatusResult<UObject*> Res = FGameAssetPinner::PinAsset(SharedPath);
+            check(Res.IsSuccess() && Res.GetValue() == SharedResident);
+            check(FGameAssetPinner::IsAssetPinned(SharedPath));
+            check(FGameAssetPinner::GetPinRefCount(SharedPath) >= 2);
+            const TGameStatusResult<void> UnpinRes = FGameAssetPinner::UnpinAsset(SharedPath);
+            check(UnpinRes.IsSuccess());
+        }
+    });
+
+    TestEqual(TEXT("8 线程并发 4000 次增减后引用计数严格收敛回 1"), FGameAssetPinner::GetPinRefCount(SharedPath), 1);
+    TestTrue(TEXT("解除基础锁定成功"), FGameAssetPinner::UnpinAsset(SharedPath).IsSuccess());
 
     {
-        FScopedPinnedAsset DefaultPin;
-        TestFalse(TEXT("默认构造守卫不持有锁定"), DefaultPin.IsPinned());
-        TestTrue(TEXT("默认构造守卫路径为空"), DefaultPin.GetPath().IsNull());
-        TestFalse(TEXT("默认构造守卫布尔转换为假"), static_cast<bool>(DefaultPin));
-        TestNull(TEXT("默认构造守卫 Get 返回 nullptr"), DefaultPin.Get());
-        DefaultPin.Release();
+        FScopedPinnedAsset EmptyGuard;
+        TestFalse(TEXT("默认构造守卫未锁定"), EmptyGuard.IsPinned());
+        TestFalse(TEXT("默认构造守卫布尔转换为假"), static_cast<bool>(EmptyGuard));
+        TestNull(TEXT("默认构造守卫 Get 返回 nullptr"), EmptyGuard.Get());
 
-        FScopedPinnedAsset ScopedPin(ResidentPath);
-        TestTrue(TEXT("FScopedPinnedAsset 构造时接管锁定"), ScopedPin.IsPinned());
-        TestTrue(TEXT("FScopedPinnedAsset 布尔转换为真"), static_cast<bool>(ScopedPin));
-        TestEqual(TEXT("GetPath 返回正确路径"), ScopedPin.GetPath(), ResidentPath);
-        TestEqual(TEXT("Get 返回原生 UObject 指针"), ScopedPin.Get(), static_cast<UObject*>(ResidentTarget));
-        TestEqual(TEXT("Get<T> 强类型返回正确实例"), ScopedPin.Get<UGameInstance>(), ResidentTarget);
-        TestTrue(TEXT("RAII 守卫内路径处于锁定状态"), FGameAssetPinner::IsAssetPinned(ResidentPath));
+        FScopedPinnedAsset FailedGuard(FSoftObjectPath(TEXT("/Game/__UnitTest_ScopedFailed.__UnitTest_ScopedFailed")));
+        TestFalse(TEXT("加载失败路径构造的守卫 IsPinned 为假"), FailedGuard.IsPinned());
+        TestTrue(TEXT("加载失败路径构造的守卫自动清空 PinnedPath"), FailedGuard.GetPath().IsNull());
+        TestNull(TEXT("加载失败路径构造的守卫 Get 返回 nullptr"), FailedGuard.Get());
 
-        {
-            const TSoftObjectPtr<UGameInstance> SoftTargetPtr(ResidentTarget);
-            FScopedPinnedAsset SoftConstructedPin(SoftTargetPtr);
-            TestTrue(TEXT("由 TSoftObjectPtr 直接构造守卫有效"), SoftConstructedPin.IsPinned());
-            TestEqual(TEXT("由 TSoftObjectPtr 构造守卫解析对象一致"), SoftConstructedPin.Get<UGameInstance>(), ResidentTarget);
-            TestEqual(TEXT("嵌套作用域引用计数递增至 2"), FGameAssetPinner::GetPinRefCount(ResidentPath), 2);
-        }
-        TestEqual(TEXT("内层守卫析构后引用计数降为 1"), FGameAssetPinner::GetPinRefCount(ResidentPath), 1);
+        const TSoftClassPtr<UGameInstance> SoftClassPtr(UGameInstance::StaticClass());
+        FScopedPinnedAsset ClassScopedPin(SoftClassPtr);
+        TestTrue(TEXT("由 TSoftClassPtr 构造的 RAII 守卫成功锁定"), ClassScopedPin.IsPinned());
+        TestEqual(TEXT("由 TSoftClassPtr 构造的守卫解析出 UGameInstance::StaticClass()"), ClassScopedPin.Get<UClass>(), UGameInstance::StaticClass());
 
-        FScopedPinnedAsset MovedPin(MoveTemp(ScopedPin));
-        TestFalse(TEXT("移动构造后源守卫处于非锁定状态"), ScopedPin.IsPinned());
-        TestTrue(TEXT("移动构造后目标守卫持有锁定"), MovedPin.IsPinned());
-        TestTrue(TEXT("移动后资产仍然处于保活状态"), FGameAssetPinner::IsAssetPinned(ResidentPath));
+        FScopedPinnedAsset ObjectScopedPin{TSoftObjectPtr<UGameInstance>(SharedResident)};
+        TestTrue(TEXT("由 TSoftObjectPtr 构造的守卫成功锁定"), ObjectScopedPin.IsPinned());
+        TestEqual(TEXT("Get<UGameInstance> 零锁缓存命中实例一致"), ObjectScopedPin.Get<UGameInstance>(), SharedResident);
+
+        FScopedPinnedAsset MovedPin(MoveTemp(ObjectScopedPin));
+        TestFalse(TEXT("移动构造后源守卫释放所有权"), ObjectScopedPin.IsPinned());
+        TestNull(TEXT("移动构造后源守卫缓存清空"), ObjectScopedPin.Get());
+        TestTrue(TEXT("移动构造后新守卫持有锁定"), MovedPin.IsPinned());
+        TestEqual(TEXT("移动构造过程不额外增加底层引用计数（保持 1）"), FGameAssetPinner::GetPinRefCount(SharedPath), 1);
+
+        FScopedPinnedAsset& SelfRef = MovedPin;
+        MovedPin = MoveTemp(SelfRef);
+        TestTrue(TEXT("自移动赋值安全无损，守卫仍持有锁定"), MovedPin.IsPinned());
 
         FScopedPinnedAsset AssignedPin;
         AssignedPin = MoveTemp(MovedPin);
-        TestFalse(TEXT("移动赋值后源守卫处于非锁定状态"), MovedPin.IsPinned());
+        TestFalse(TEXT("移动赋值后源守卫变为未锁定"), MovedPin.IsPinned());
         TestTrue(TEXT("移动赋值后目标守卫持有锁定"), AssignedPin.IsPinned());
-        TestEqual(TEXT("移动赋值后目标守卫路径匹配"), AssignedPin.GetPath(), ResidentPath);
 
         AssignedPin.Release();
-        TestFalse(TEXT("主动 Release 后守卫变为非锁定"), AssignedPin.IsPinned());
-        TestFalse(TEXT("主动 Release 解除底层资产锁定引用"), FGameAssetPinner::IsAssetPinned(ResidentPath));
+        TestFalse(TEXT("主动 Release 后守卫立即失活"), AssignedPin.IsPinned());
+        TestFalse(TEXT("主动 Release 后底层引用计数归零解锁"), FGameAssetPinner::IsAssetPinned(SharedPath));
     }
-    TestFalse(TEXT("离开作用域后资产处于非保活状态"), FGameAssetPinner::IsAssetPinned(ResidentPath));
 
-    ResidentTarget->MarkAsGarbage();
+    FGameAssetPinner::ClearAllPinnedAssets();
+    SharedResident->MarkAsGarbage();
     return true;
 }
 

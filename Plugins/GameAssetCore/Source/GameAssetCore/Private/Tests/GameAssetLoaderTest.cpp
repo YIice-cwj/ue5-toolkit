@@ -1,154 +1,352 @@
 /**
  * @file GameAssetLoaderTest.cpp
- * @brief FGameAssetLoadHandle 与 FGameAssetLoader 软引用资产异步与协程加载测试
+ * @brief FGameAssetLoadHandle 与 FGameAssetLoader 异步流式、同步阻塞、类契约校验、跨线程取消及批次去重自动化测试
  */
 
-#include "Asset/FGameAssetLoader.h"
+#include "Loader/FGameAssetLoader.h"
+
+#include "Async/Async.h"
 #include "Async/FCancellationTokenSource.h"
+#include "Async/FGameThreadTaskRunner.h"
+#include "Core/AssetErrorCodes.h"
 
 #if WITH_AUTOMATION_TESTS
 
 #include "Engine/GameInstance.h"
 #include "Engine/StaticMesh.h"
+#include "GameFramework/Actor.h"
+#include "Materials/MaterialInterface.h"
 #include "Misc/AutomationTest.h"
+#include "UObject/StrongObjectPtr.h"
 
 namespace {
 
-struct FAsyncAssetTestState {
+struct FLoaderLatentTestState {
     TStrongObjectPtr<UGameInstance> AliveOwner;
     FGameAssetLoadHandle ActiveHandle;
     UStaticMesh* LoadedMesh = nullptr;
+    TArray<UStaticMesh*> LoadedMeshes;
+    float LastProgress = 0.0f;
+    float MaxProgressReported = -1.0f;
     bool bCallbackInvoked = false;
+    int32 PostCompleteFrames = 0;
     int32 FramesWaited = 0;
 };
 
 DEFINE_LATENT_AUTOMATION_COMMAND_TWO_PARAMETER(
-    FWaitForAssetLoadLatentCommand,
+    FWaitForGameAssetDiskLoadCommand,
     FAutomationTestBase&,
     TestRunner,
-    TSharedRef<FAsyncAssetTestState>,
+    TSharedRef<FLoaderLatentTestState>,
     SharedState
 );
 
-bool FWaitForAssetLoadLatentCommand::Update() {
+bool FWaitForGameAssetDiskLoadCommand::Update() {
     if (SharedState->bCallbackInvoked) {
-        TestRunner.TestNotNull(TEXT("异步磁盘软引用成功解析出 UStaticMesh 实例"), SharedState->LoadedMesh);
+        TestRunner.TestNotNull(TEXT("磁盘异步加载成功解析出 UStaticMesh 实例"), SharedState->LoadedMesh);
         TestRunner.TestTrue(TEXT("加载完成后句柄 HasCompleted 为真"), SharedState->ActiveHandle.HasCompleted());
+        TestRunner.TestFalse(TEXT("加载完成后句柄 WasCanceled 为假"), SharedState->ActiveHandle.WasCanceled());
         TestRunner.TestEqual(TEXT("加载完成后进度为 1.0"), SharedState->ActiveHandle.GetProgress(), 1.0f);
-        TestRunner.TestNotNull(TEXT("加载完成后句柄直接获取 GetLoadedAsset 有效"), SharedState->ActiveHandle.GetLoadedAsset());
-        TestRunner.TestNotNull(TEXT("加载完成后句柄强类型 GetLoadedAsset<UStaticMesh> 有效"), SharedState->ActiveHandle.GetLoadedAsset<UStaticMesh>());
+        TestRunner.TestEqual(
+            TEXT("句柄强类型 GetLoadedAsset<UStaticMesh> 与回调结果一致"),
+            SharedState->ActiveHandle.GetLoadedAsset<UStaticMesh>(),
+            SharedState->LoadedMesh
+        );
+        SharedState->ActiveHandle.Reset();
+        TestRunner.TestFalse(TEXT("Reset 释放后句柄变为无效"), SharedState->ActiveHandle.IsValid());
         SharedState->AliveOwner.Reset();
         return true;
     }
 
     ++SharedState->FramesWaited;
     if (SharedState->FramesWaited > 300) {
-        TestRunner.AddError(TEXT("等待异步资产加载回调超时"));
+        TestRunner.AddError(TEXT("等待磁盘异步资产加载回调超时"));
         SharedState->AliveOwner.Reset();
         return true;
     }
     return false;
 }
 
-} // namespace
+DEFINE_LATENT_AUTOMATION_COMMAND_TWO_PARAMETER(
+    FWaitForDyingOwnerGuardCommand,
+    FAutomationTestBase&,
+    TestRunner,
+    TSharedRef<FLoaderLatentTestState>,
+    SharedState
+);
+
+bool FWaitForDyingOwnerGuardCommand::Update() {
+    if (!SharedState->ActiveHandle.IsLoading()) {
+        ++SharedState->PostCompleteFrames;
+        if (SharedState->PostCompleteFrames >= 3) {
+            TestRunner.TestFalse(TEXT("宿主在完成前销毁后跨越延迟委托帧依然拦截回调"), SharedState->bCallbackInvoked);
+            SharedState->ActiveHandle.Reset();
+            return true;
+        }
+    }
+
+    ++SharedState->FramesWaited;
+    if (SharedState->FramesWaited > 300) {
+        TestRunner.AddError(TEXT("等待死亡宿主保护流式句柄完结超时"));
+        SharedState->ActiveHandle.Reset();
+        return true;
+    }
+    return false;
+}
+
+DEFINE_LATENT_AUTOMATION_COMMAND_TWO_PARAMETER(
+    FWaitForDiskBatchLoadCommand,
+    FAutomationTestBase&,
+    TestRunner,
+    TSharedRef<FLoaderLatentTestState>,
+    SharedState
+);
+
+bool FWaitForDiskBatchLoadCommand::Update() {
+    if (SharedState->bCallbackInvoked) {
+        TestRunner.TestEqual(TEXT("磁盘强类型批次输出 3 项"), SharedState->LoadedMeshes.Num(), 3);
+        TestRunner.TestEqual(TEXT("成功磁盘批次上报进度 1.0"), SharedState->LastProgress, 1.0f);
+        if (SharedState->LoadedMeshes.Num() == 3) {
+            TestRunner.TestNotNull(TEXT("槽位 0 Cone 网格加载有效"), SharedState->LoadedMeshes[0]);
+            TestRunner.TestNull(TEXT("槽位 1 空项保持 nullptr"), SharedState->LoadedMeshes[1]);
+            TestRunner.TestEqual(TEXT("槽位 2 重复项与槽位 0 指向同一实例"), SharedState->LoadedMeshes[2], SharedState->LoadedMeshes[0]);
+        }
+        if (SharedState->ActiveHandle.HasCompleted()) {
+            TArray<UStaticMesh*> HandleMeshes;
+            SharedState->ActiveHandle.GetLoadedAssets<UStaticMesh>(HandleMeshes);
+            TestRunner.TestEqual(TEXT("底层句柄去重后实际仅流送 1 个唯一网格"), HandleMeshes.Num(), 1);
+        }
+        SharedState->ActiveHandle.Reset();
+        SharedState->AliveOwner.Reset();
+        return true;
+    }
+
+    ++SharedState->FramesWaited;
+    if (SharedState->FramesWaited > 300) {
+        TestRunner.AddError(TEXT("等待磁盘强类型批量异步加载回调超时"));
+        SharedState->ActiveHandle.Reset();
+        SharedState->AliveOwner.Reset();
+        return true;
+    }
+    return false;
+}
+
+DEFINE_LATENT_AUTOMATION_COMMAND_TWO_PARAMETER(
+    FWaitForMissingBatchProgressCheckCommand,
+    FAutomationTestBase&,
+    TestRunner,
+    TSharedRef<FLoaderLatentTestState>,
+    SharedState
+);
+
+bool FWaitForMissingBatchProgressCheckCommand::Update() {
+    if (SharedState->bCallbackInvoked) {
+        TestRunner.TestTrue(
+            TEXT("缺失资产导致失败的批次绝不误报 OnProgress(1.0f)"),
+            SharedState->MaxProgressReported < 1.0f
+        );
+        SharedState->ActiveHandle.Reset();
+        SharedState->AliveOwner.Reset();
+        return true;
+    }
+
+    ++SharedState->FramesWaited;
+    if (SharedState->FramesWaited > 300) {
+        TestRunner.AddError(TEXT("等待缺失批次异步回调超时"));
+        SharedState->ActiveHandle.Reset();
+        SharedState->AliveOwner.Reset();
+        return true;
+    }
+    return false;
+}
+
+}  // namespace
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-    FGameAssetLoaderShortCircuitAndGuardsTest,
-    "Game.Asset.AssetLoader.ShortCircuitAndGuards",
+    FGameAssetHandleLifecycleTest,
+    "Game.Asset.Loader.HandleLifecycleAndCancel",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
 /**
- * @brief 验证空句柄状态、非法参数守卫、已驻留内存资产同步短路、主动取消以及失效宿主自动拦截
+ * @brief 验证 FGameAssetLoadHandle 默认态、句柄主动取消与令牌自动解绑、跨工作线程取消及 Reset 释放
  * @param Parameters 自动化测试参数
  * @return 全部断言通过返回 true
  */
-bool FGameAssetLoaderShortCircuitAndGuardsTest::RunTest([[maybe_unused]] const FString& Parameters) {
+bool FGameAssetHandleLifecycleTest::RunTest([[maybe_unused]] const FString& Parameters) {
     FGameAssetLoadHandle EmptyHandle;
-    TestFalse(TEXT("默认句柄无效"), EmptyHandle.IsValid());
-    TestFalse(TEXT("默认句柄不在加载中"), EmptyHandle.IsLoading());
-    TestFalse(TEXT("默认句柄未完成"), EmptyHandle.HasCompleted());
-    TestFalse(TEXT("默认句柄无错误"), EmptyHandle.HasError());
-    TestFalse(TEXT("默认句柄未取消"), EmptyHandle.WasCanceled());
-    TestEqual(TEXT("默认句柄进度为 0"), EmptyHandle.GetProgress(), 0.0f);
-    TestNull(TEXT("默认空句柄 GetLoadedAsset 返回 nullptr"), EmptyHandle.GetLoadedAsset());
-    TArray<UObject*> EmptyAssetList;
-    EmptyHandle.GetLoadedAssets(EmptyAssetList);
-    TestEqual(TEXT("默认空句柄 GetLoadedAssets 为空数组"), EmptyAssetList.Num(), 0);
+    TestFalse(TEXT("默认句柄 IsValid 为假"), EmptyHandle.IsValid());
+    TestFalse(TEXT("默认句柄 operator bool 为假"), static_cast<bool>(EmptyHandle));
+    TestFalse(TEXT("默认句柄 IsLoading 为假"), EmptyHandle.IsLoading());
+    TestFalse(TEXT("默认句柄 HasCompleted 为假"), EmptyHandle.HasCompleted());
+    TestFalse(TEXT("默认句柄 HasError 为假"), EmptyHandle.HasError());
+    TestFalse(TEXT("默认句柄 WasCanceled 为假"), EmptyHandle.WasCanceled());
+    TestEqual(TEXT("默认句柄进度为 0.0"), EmptyHandle.GetProgress(), 0.0f);
+    TestNull(TEXT("默认句柄 GetLoadedAsset 返回 nullptr"), EmptyHandle.GetLoadedAsset());
+
+    TArray<UObject*> EmptyList;
+    EmptyHandle.GetLoadedAssets(EmptyList);
+    TestEqual(TEXT("默认句柄 GetLoadedAssets 为空数组"), EmptyList.Num(), 0);
     EmptyHandle.Reset();
     EmptyHandle.Cancel();
 
     UGameInstance* Owner = NewObject<UGameInstance>();
+    FCancellationTokenSource SharedLongLivedSource;
+    TSharedRef<bool> bCancelledCallbackInvoked = MakeShared<bool>(false);
+    const TArray<FSoftObjectPath> PendingPaths = {
+        FSoftObjectPath(TEXT("/Game/__UnitTest_HandleCancel_PendingAsset.__UnitTest_HandleCancel_PendingAsset"))
+    };
+
+    FGameAssetLoadHandle ActiveHandle = FGameAssetLoader::LoadBatchAsync(
+        PendingPaths,
+        Owner,
+        [bCancelledCallbackInvoked]() {
+            *bCancelledCallbackInvoked = true;
+        },
+        nullptr,
+        SharedLongLivedSource.GetToken()
+    );
+    TestTrue(TEXT("确定未驻留路径建立活跃流式句柄"), ActiveHandle.IsValid());
+    TestTrue(TEXT("活跃句柄布尔转换为真"), static_cast<bool>(ActiveHandle));
+
+    ActiveHandle.Cancel();
+    TestFalse(TEXT("Cancel 后句柄立即变为非活跃"), ActiveHandle.IsValid());
+    TestTrue(TEXT("Cancel 后句柄保留 WasCanceled 为真"), ActiveHandle.WasCanceled());
+    TestFalse(TEXT("Cancel 后句柄 HasCompleted 为假"), ActiveHandle.HasCompleted());
+    TestFalse(TEXT("Cancel 后句柄 IsLoading 为假"), ActiveHandle.IsLoading());
+    TestEqual(TEXT("Cancel 后句柄进度归零"), ActiveHandle.GetProgress(), 0.0f);
+    TestNull(TEXT("Cancel 后 GetLoadedAsset 返回 nullptr"), ActiveHandle.GetLoadedAsset());
+
+    SharedLongLivedSource.Cancel();
+    FlushAsyncLoading();
+    TestFalse(TEXT("已取消句柄在令牌取消与 FlushAsyncLoading 后绝不触发完成回调"), *bCancelledCallbackInvoked);
+
+    ActiveHandle.Reset();
+    TestFalse(TEXT("Reset 清空后 WasCanceled 复位为假"), ActiveHandle.WasCanceled());
+
+    FCancellationTokenSource WorkerCancelSource;
+    TSharedRef<bool> bWorkerCancelledCallbackInvoked = MakeShared<bool>(false);
+    FGameAssetLoadHandle WorkerCancelHandle = FGameAssetLoader::LoadBatchAsync(
+        {FSoftObjectPath(TEXT("/Game/__UnitTest_WorkerCancelBatch.__UnitTest_WorkerCancelBatch"))},
+        Owner,
+        [bWorkerCancelledCallbackInvoked]() {
+            *bWorkerCancelledCallbackInvoked = true;
+        },
+        nullptr,
+        WorkerCancelSource.GetToken()
+    );
+    TestTrue(TEXT("工作线程取消测试成功建立活跃句柄"), WorkerCancelHandle.IsValid());
+    TFuture<void> CancelFuture = Async(EAsyncExecution::ThreadPool, [&WorkerCancelSource]() {
+        WorkerCancelSource.Cancel();
+    });
+    CancelFuture.Wait();
+    FGameThreadTaskRunner::FlushInFlightTasks();
+    TestTrue(TEXT("工作线程触发取消令牌后句柄在 GameThread 正确转为 WasCanceled"), WorkerCancelHandle.WasCanceled());
+    TestFalse(TEXT("工作线程取消后绝不触发完成回调"), *bWorkerCancelledCallbackInvoked);
+    WorkerCancelHandle.Reset();
+
+    Owner->MarkAsGarbage();
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameAssetLoaderGuardsAndTypeCheckTest,
+    "Game.Asset.Loader.AsyncGuardsShortCircuitAndTypes",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证单资产与单类异步加载的空守卫、驻留短路、跨基类类型不匹配拦截与延迟帧死亡宿主防护
+ * @param Parameters 自动化测试参数
+ * @return 全部断言通过返回 true
+ */
+bool FGameAssetLoaderGuardsAndTypeCheckTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UGameInstance* Owner = NewObject<UGameInstance>();
     UGameInstance* ResidentTarget = NewObject<UGameInstance>();
 
-    bool bNullPathCalled = false;
-    const TSoftObjectPtr<UGameInstance> NullSoftPtr;
-    const FGameAssetLoadHandle NullResult = FGameAssetLoader::LoadAsync<UGameInstance>(
-        NullSoftPtr,
+    bool bNullAssetCalled = false;
+    const FGameAssetLoadHandle NullHandle = FGameAssetLoader::LoadAsync<UGameInstance>(
+        TSoftObjectPtr<UGameInstance>(),
         Owner,
-        [&bNullPathCalled](UGameInstance*) { bNullPathCalled = true; }
+        [&bNullAssetCalled](UGameInstance*) {
+            bNullAssetCalled = true;
+        }
     );
-    TestFalse(TEXT("空软引用返回无效句柄"), NullResult.IsValid());
-    TestFalse(TEXT("空软引用不触发回调"), bNullPathCalled);
+    TestFalse(TEXT("空软引用返回无效句柄"), NullHandle.IsValid());
+    TestFalse(TEXT("空软引用不触发回调"), bNullAssetCalled);
 
     bool bDeadOwnerCalled = false;
     const TSoftObjectPtr<UGameInstance> ResidentSoftPtr(ResidentTarget);
-    const FGameAssetLoadHandle DeadOwnerResult = FGameAssetLoader::LoadAsync<UGameInstance>(
+    const FGameAssetLoadHandle DeadOwnerHandle = FGameAssetLoader::LoadAsync<UGameInstance>(
         ResidentSoftPtr,
         nullptr,
-        [&bDeadOwnerCalled](UGameInstance*) { bDeadOwnerCalled = true; }
+        [&bDeadOwnerCalled](UGameInstance*) {
+            bDeadOwnerCalled = true;
+        }
     );
-    TestFalse(TEXT("空宿主返回无效句柄"), DeadOwnerResult.IsValid());
+    TestFalse(TEXT("空宿主返回无效句柄"), DeadOwnerHandle.IsValid());
     TestFalse(TEXT("空宿主绝不触发回调"), bDeadOwnerCalled);
 
-    UGameInstance* ResolvedResident = nullptr;
+    UGameInstance* ResolvedInstance = nullptr;
     const FGameAssetLoadHandle ResidentHandle = FGameAssetLoader::LoadAsync<UGameInstance>(
         ResidentSoftPtr,
         Owner,
-        [&ResolvedResident](UGameInstance* Loaded) { ResolvedResident = Loaded; }
+        [&ResolvedInstance](UGameInstance* Loaded) {
+            ResolvedInstance = Loaded;
+        }
     );
-    TestFalse(TEXT("已驻留内存对象走同步短路无需保留流式句柄"), ResidentHandle.IsValid());
-    TestEqual(TEXT("已驻留内存对象同步精确传回目标实例"), ResolvedResident, ResidentTarget);
+    TestFalse(TEXT("已驻留资产同步短路无需保留句柄"), ResidentHandle.IsValid());
+    TestEqual(TEXT("已驻留资产同步传回精确实例"), ResolvedInstance, ResidentTarget);
 
-    bool bEmptyBatchDone = false;
-    const TArray<FSoftObjectPath> EmptyPaths = {FSoftObjectPath()};
-    FGameAssetLoader::LoadBatchAsync(EmptyPaths, Owner, [&bEmptyBatchDone]() { bEmptyBatchDone = true; });
-    TestTrue(TEXT("过滤无效路径后为空批次时立即通知完成"), bEmptyBatchDone);
-
-    bool bResidentBatchDone = false;
-    const TArray<FSoftObjectPath> ResidentPaths = {FSoftObjectPath(ResidentTarget)};
-    FGameAssetLoader::LoadBatchAsync(ResidentPaths, Owner, [&bResidentBatchDone]() { bResidentBatchDone = true; });
-    TestTrue(TEXT("全部路径均已驻留内存时批量接口同步完成"), bResidentBatchDone);
-
-    bool bCancelledBatchInvoked = false;
-    const TArray<FSoftObjectPath> UnloadedPaths = {
-        FSoftObjectPath(TEXT("/Engine/BasicShapes/Cylinder.Cylinder"))
-    };
-    FGameAssetLoadHandle CancelBatchHandle = FGameAssetLoader::LoadBatchAsync(
-        UnloadedPaths,
+    bool bMismatchAssetCallbackInvoked = false;
+    UStaticMesh* MismatchedMeshResult = reinterpret_cast<UStaticMesh*>(0x1);
+    const TSoftObjectPtr<UStaticMesh> WrongTypeAssetPtr{FSoftObjectPath(ResidentTarget)};
+    FGameAssetLoader::LoadAsync<UStaticMesh>(
+        WrongTypeAssetPtr,
         Owner,
-        [&bCancelledBatchInvoked]() { bCancelledBatchInvoked = true; }
+        [&bMismatchAssetCallbackInvoked, &MismatchedMeshResult](UStaticMesh* LoadedMesh) {
+            bMismatchAssetCallbackInvoked = true;
+            MismatchedMeshResult = LoadedMesh;
+        }
     );
-    if (CancelBatchHandle.IsValid()) {
-        CancelBatchHandle.Cancel();
-        TestFalse(TEXT("取消后句柄立即变为无效"), CancelBatchHandle.IsValid());
-        TestTrue(TEXT("取消后 WasCanceled 为真"), CancelBatchHandle.WasCanceled());
-        TestEqual(TEXT("取消后进度归零"), CancelBatchHandle.GetProgress(), 0.0f);
-        FlushAsyncLoading();
-        TestFalse(TEXT("已取消请求在 FlushAsyncLoading 后绝不触发完成回调"), bCancelledBatchInvoked);
-    }
+    TestTrue(TEXT("驻留类型不匹配资产仍触发结果回调通知"), bMismatchAssetCallbackInvoked);
+    TestNull(TEXT("驻留类型不匹配资产必须向回调传入 nullptr"), MismatchedMeshResult);
 
-    UGameInstance* TransientDyingOwner = NewObject<UGameInstance>();
-    bool bDyingAsyncCallbackFired = false;
-    const TSoftObjectPtr<UStaticMesh> SphereSoft(FSoftObjectPath(TEXT("/Engine/BasicShapes/Torus.Torus")));
-    [[maybe_unused]] FGameAssetLoadHandle DyingAsyncHandle = FGameAssetLoader::LoadAsync<UStaticMesh>(
-        SphereSoft,
-        TransientDyingOwner,
-        [&bDyingAsyncCallbackFired](UStaticMesh*) { bDyingAsyncCallbackFired = true; }
+    TSubclassOf<UGameInstance> LoadedValidClass;
+    FGameAssetLoader::LoadClassAsync<UGameInstance>(
+        TSoftClassPtr<UGameInstance>(UGameInstance::StaticClass()),
+        Owner,
+        [&LoadedValidClass](TSubclassOf<UGameInstance> Cls) {
+            LoadedValidClass = Cls;
+        }
     );
-    TransientDyingOwner->MarkAsGarbage();
-    FlushAsyncLoading();
-    TestFalse(TEXT("异步回调执行前宿主销毁时自动短路绝不解引用"), bDyingAsyncCallbackFired);
+    TestEqual(TEXT("兼容基类的软类引用正确返回 UGameInstance::StaticClass()"), LoadedValidClass.Get(), UGameInstance::StaticClass());
+
+    bool bWrongBaseClassCalled = false;
+    UClass* WrongBaseClassPtr = UGameInstance::StaticClass();
+    const TSoftClassPtr<AActor> WrongHierarchySoftClass{FSoftObjectPath(UGameInstance::StaticClass())};
+    FGameAssetLoader::LoadClassAsync<AActor>(
+        WrongHierarchySoftClass,
+        Owner,
+        [&bWrongBaseClassCalled, &WrongBaseClassPtr](UClass* Cls) {
+            bWrongBaseClassCalled = true;
+            WrongBaseClassPtr = Cls;
+        }
+    );
+    TestTrue(TEXT("跨继承树不兼容类触发结果回调"), bWrongBaseClassCalled);
+    TestNull(TEXT("UGameInstance 非 AActor 子类，LoadClassAsync<AActor> 必须传入 nullptr"), WrongBaseClassPtr);
+
+    TSharedRef<FLoaderLatentTestState> DyingState = MakeShared<FLoaderLatentTestState>();
+    UGameInstance* DyingOwner = NewObject<UGameInstance>();
+    DyingState->ActiveHandle = FGameAssetLoader::LoadAsync<UStaticMesh>(
+        TSoftObjectPtr<UStaticMesh>(FSoftObjectPath(TEXT("/Game/__UnitTest_DyingOwner_Mesh.__UnitTest_DyingOwner_Mesh"))),
+        DyingOwner,
+        [DyingState](UStaticMesh*) {
+            DyingState->bCallbackInvoked = true;
+        }
+    );
+    DyingOwner->MarkAsGarbage();
+    ADD_LATENT_AUTOMATION_COMMAND(FWaitForDyingOwnerGuardCommand(*this, DyingState));
 
     Owner->MarkAsGarbage();
     ResidentTarget->MarkAsGarbage();
@@ -156,28 +354,223 @@ bool FGameAssetLoaderShortCircuitAndGuardsTest::RunTest([[maybe_unused]] const F
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-    FGameAssetLoaderDiskStreamingLatentTest,
-    "Game.Asset.AssetLoader.DiskStreamingLatent",
+    FGameAssetLoaderSyncAndErrorCodesTest,
+    "Game.Asset.Loader.SyncLoadAndErrorCodes",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
 /**
- * @brief 通过引擎 Latent 帧循环真实验证未驻留引擎资产的异步加载与完成投递（零 Sleep 盲等）
+ * @brief 验证同步加载全错误码分支（3001 空路径 / 3002 加载失败 / 3003 类型不匹配 / 3005 非游戏线程拦截）
  * @param Parameters 自动化测试参数
- * @return Latent 命令挂载成功返回 true
+ * @return 全部断言通过返回 true
  */
-bool FGameAssetLoaderDiskStreamingLatentTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    TSharedRef<FAsyncAssetTestState> State = MakeShared<FAsyncAssetTestState>();
+bool FGameAssetLoaderSyncAndErrorCodesTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UGameInstance* ResidentTarget = NewObject<UGameInstance>();
+
+    const TGameStatusResult<UGameInstance*> NullAssetRes = FGameAssetLoader::LoadSync<UGameInstance>(TSoftObjectPtr<UGameInstance>());
+    TestTrue(TEXT("空软引用同步加载失败"), NullAssetRes.IsFailure());
+    TestEqual(TEXT("空软引用模块 ID 为 Asset"), NullAssetRes.GetError().ModuleId, Game::ModuleId::Asset);
+    TestEqual(TEXT("空软引用错误码为 InvalidAssetPath (3001)"), NullAssetRes.GetError().ErrorCode, Game::AssetErrorCodes::InvalidAssetPath);
+
+    const TGameStatusResult<UGameInstance*> ResidentRes = FGameAssetLoader::LoadSync<UGameInstance>(TSoftObjectPtr<UGameInstance>(ResidentTarget));
+    TestTrue(TEXT("已驻留资产同步加载成功"), ResidentRes.IsSuccess());
+    TestEqual(TEXT("已驻留资产返回正确实例"), ResidentRes.GetValue(), ResidentTarget);
+
+    const TGameStatusResult<UStaticMesh*> CubeRes = FGameAssetLoader::LoadSync<UStaticMesh>(
+        TSoftObjectPtr<UStaticMesh>(FSoftObjectPath(TEXT("/Engine/BasicShapes/Cube.Cube")))
+    );
+    TestTrue(TEXT("引擎磁盘资产 Cube 同步加载成功"), CubeRes.IsSuccess());
+    TestNotNull(TEXT("引擎磁盘资产 Cube 非空"), CubeRes.GetValue());
+
+    const TGameStatusResult<UMaterialInterface*> MismatchAssetRes = FGameAssetLoader::LoadSync<UMaterialInterface>(
+        TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Engine/BasicShapes/Cube.Cube")))
+    );
+    TestTrue(TEXT("将 UStaticMesh 当作 UMaterialInterface 加载必须返回失败"), MismatchAssetRes.IsFailure());
+    TestEqual(TEXT("资产类型不匹配返回 TypeMismatch (3003)"), MismatchAssetRes.GetError().ErrorCode, Game::AssetErrorCodes::TypeMismatch);
+
+    const TGameStatusResult<UStaticMesh*> MissingAssetRes = FGameAssetLoader::LoadSync<UStaticMesh>(
+        TSoftObjectPtr<UStaticMesh>(FSoftObjectPath(TEXT("/Game/__UnitTest_NonExistent_Asset.__UnitTest_NonExistent_Asset")))
+    );
+    TestTrue(TEXT("不存在的磁盘路径同步加载失败"), MissingAssetRes.IsFailure());
+    TestEqual(TEXT("不存在路径返回 LoadFailed (3002)"), MissingAssetRes.GetError().ErrorCode, Game::AssetErrorCodes::LoadFailed);
+
+    const TGameStatusResult<TSubclassOf<UGameInstance>> NullClassRes =
+        FGameAssetLoader::LoadClassSync<UGameInstance>(TSoftClassPtr<UGameInstance>());
+    TestTrue(TEXT("空软类引用同步加载失败"), NullClassRes.IsFailure());
+    TestEqual(TEXT("空软类引用错误码为 3001"), NullClassRes.GetError().ErrorCode, Game::AssetErrorCodes::InvalidAssetPath);
+
+    const TGameStatusResult<TSubclassOf<UGameInstance>> ValidClassRes =
+        FGameAssetLoader::LoadClassSync<UGameInstance>(TSoftClassPtr<UGameInstance>(UGameInstance::StaticClass()));
+    TestTrue(TEXT("有效软类引用同步加载成功"), ValidClassRes.IsSuccess());
+    TestEqual(TEXT("有效软类引用返回 UGameInstance::StaticClass()"), ValidClassRes.GetValue().Get(), UGameInstance::StaticClass());
+
+    const TGameStatusResult<TSubclassOf<AActor>> MismatchClassRes =
+        FGameAssetLoader::LoadClassSync<AActor>(TSoftClassPtr<AActor>(FSoftObjectPath(UGameInstance::StaticClass())));
+    TestTrue(TEXT("非 AActor 子类的软类引用同步加载必须失败"), MismatchClassRes.IsFailure());
+    TestEqual(TEXT("类继承契约不匹配返回 TypeMismatch (3003)"), MismatchClassRes.GetError().ErrorCode, Game::AssetErrorCodes::TypeMismatch);
+
+    const TGameStatusResult<TSubclassOf<AActor>> NonClassObjectRes =
+        FGameAssetLoader::LoadClassSync<AActor>(TSoftClassPtr<AActor>(FSoftObjectPath(TEXT("/Engine/BasicShapes/Cube.Cube"))));
+    TestTrue(TEXT("指向普通资产而非 UClass 的软类引用同步加载必须失败"), NonClassObjectRes.IsFailure());
+    TestEqual(TEXT("非 UClass 对象返回 TypeMismatch (3003)"), NonClassObjectRes.GetError().ErrorCode, Game::AssetErrorCodes::TypeMismatch);
+
+    TFuture<int32> WorkerErrorCodeFuture = Async(EAsyncExecution::ThreadPool, []() {
+        const TGameStatusResult<UStaticMesh*> BgRes = FGameAssetLoader::LoadSync<UStaticMesh>(
+            TSoftObjectPtr<UStaticMesh>(FSoftObjectPath(TEXT("/Game/__UnitTest_WorkerSyncLoad.__UnitTest_WorkerSyncLoad")))
+        );
+        return BgRes.IsFailure() ? BgRes.GetError().ErrorCode : 0;
+    });
+    TestEqual(TEXT("后台线程请求未驻留资产同步加载返回 InvalidThread (3005)"), WorkerErrorCodeFuture.Get(), Game::AssetErrorCodes::InvalidThread);
+
+    ResidentTarget->MarkAsGarbage();
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameAssetLoaderBatchTest,
+    "Game.Asset.Loader.BatchTypedAndUntyped",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证路径级与强类型模板级批量加载在去重、空项顺序对齐、取消令牌联动、失败进度过滤与真实磁盘流送上的契约
+ * @param Parameters 自动化测试参数
+ * @return 全部断言通过返回 true
+ */
+bool FGameAssetLoaderBatchTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UGameInstance* Owner = NewObject<UGameInstance>();
+    UGameInstance* Resident1 = NewObject<UGameInstance>();
+    UGameInstance* Resident2 = NewObject<UGameInstance>();
+
+    FCancellationTokenSource PreCancelledSource;
+    PreCancelledSource.Cancel();
+    bool bPreCancelledCalled = false;
+    const FGameAssetLoadHandle PreCancelledHandle = FGameAssetLoader::LoadBatchAsync(
+        {FSoftObjectPath(TEXT("/Engine/BasicShapes/Cone.Cone"))},
+        Owner,
+        [&bPreCancelledCalled]() {
+            bPreCancelledCalled = true;
+        },
+        nullptr,
+        PreCancelledSource.GetToken()
+    );
+    TestFalse(TEXT("预取消令牌返回空句柄"), PreCancelledHandle.IsValid());
+    TestFalse(TEXT("预取消令牌不触发回调"), bPreCancelledCalled);
+
+    bool bTypedImmediateCalled = false;
+    float TypedImmediateProgress = 0.0f;
+    TArray<UGameInstance*> DeliveredTypedBatch;
+    const TArray<TSoftObjectPtr<UGameInstance>> MixedResidentBatch = {
+        TSoftObjectPtr<UGameInstance>(Resident1),
+        TSoftObjectPtr<UGameInstance>(),
+        TSoftObjectPtr<UGameInstance>(Resident2),
+        TSoftObjectPtr<UGameInstance>(Resident1)
+    };
+    const FGameAssetLoadHandle TypedResidentHandle = FGameAssetLoader::LoadBatchAsync<UGameInstance>(
+        MixedResidentBatch,
+        Owner,
+        [&bTypedImmediateCalled, &DeliveredTypedBatch](const TArray<UGameInstance*>& LoadedList) {
+            bTypedImmediateCalled = true;
+            DeliveredTypedBatch = LoadedList;
+        },
+        [&TypedImmediateProgress](float Progress) {
+            TypedImmediateProgress = Progress;
+        }
+    );
+    TestFalse(TEXT("全驻留强类型批次走同步短路返回空句柄"), TypedResidentHandle.IsValid());
+    TestTrue(TEXT("全驻留强类型批次同步触发回调"), bTypedImmediateCalled);
+    TestEqual(TEXT("全驻留强类型批次汇报进度 1.0"), TypedImmediateProgress, 1.0f);
+    TestEqual(TEXT("交付数组与输入长度严格一致（4 项）"), DeliveredTypedBatch.Num(), 4);
+    if (DeliveredTypedBatch.Num() == 4) {
+        TestEqual(TEXT("槽位 0 对齐 Resident1"), DeliveredTypedBatch[0], Resident1);
+        TestNull(TEXT("槽位 1 空引用对齐 nullptr"), DeliveredTypedBatch[1]);
+        TestEqual(TEXT("槽位 2 对齐 Resident2"), DeliveredTypedBatch[2], Resident2);
+        TestEqual(TEXT("槽位 3 重复项对齐 Resident1"), DeliveredTypedBatch[3], Resident1);
+    }
+
+    FCancellationTokenSource InFlightSource;
+    TSharedRef<bool> bInFlightBatchCalled = MakeShared<bool>(false);
+    FGameAssetLoadHandle InFlightHandle = FGameAssetLoader::LoadBatchAsync(
+        {FSoftObjectPath(TEXT("/Game/__UnitTest_InFlightTokenCancel.__UnitTest_InFlightTokenCancel"))},
+        Owner,
+        [bInFlightBatchCalled]() {
+            *bInFlightBatchCalled = true;
+        },
+        nullptr,
+        InFlightSource.GetToken()
+    );
+    TestTrue(TEXT("在途请求有效建立句柄"), InFlightHandle.IsValid());
+    InFlightSource.Cancel();
+    TestTrue(TEXT("取消令牌触发后句柄标记 WasCanceled"), InFlightHandle.WasCanceled());
+    FlushAsyncLoading();
+    TestFalse(TEXT("令牌中途取消后绝不触发完成回调"), *bInFlightBatchCalled);
+
+    TSharedRef<FLoaderLatentTestState> DiskBatchState = MakeShared<FLoaderLatentTestState>();
+    DiskBatchState->AliveOwner = TStrongObjectPtr<UGameInstance>(NewObject<UGameInstance>());
+    const FSoftObjectPath ConePath(TEXT("/Engine/BasicShapes/Cone.Cone"));
+    const TArray<TSoftObjectPtr<UStaticMesh>> DiskBatchInput = {
+        TSoftObjectPtr<UStaticMesh>(ConePath),
+        TSoftObjectPtr<UStaticMesh>(),
+        TSoftObjectPtr<UStaticMesh>(ConePath)
+    };
+    DiskBatchState->ActiveHandle = FGameAssetLoader::LoadBatchAsync<UStaticMesh>(
+        DiskBatchInput,
+        DiskBatchState->AliveOwner.Get(),
+        [DiskBatchState](const TArray<UStaticMesh*>& LoadedMeshes) {
+            DiskBatchState->bCallbackInvoked = true;
+            DiskBatchState->LoadedMeshes = LoadedMeshes;
+        },
+        [DiskBatchState](float Progress) {
+            DiskBatchState->LastProgress = Progress;
+        }
+    );
+    ADD_LATENT_AUTOMATION_COMMAND(FWaitForDiskBatchLoadCommand(*this, DiskBatchState));
+
+    TSharedRef<FLoaderLatentTestState> MissingBatchState = MakeShared<FLoaderLatentTestState>();
+    MissingBatchState->AliveOwner = TStrongObjectPtr<UGameInstance>(NewObject<UGameInstance>());
+    MissingBatchState->ActiveHandle = FGameAssetLoader::LoadBatchAsync(
+        {FSoftObjectPath(TEXT("/Game/__UnitTest_BatchMissingProgress.__UnitTest_BatchMissingProgress"))},
+        MissingBatchState->AliveOwner.Get(),
+        [MissingBatchState]() {
+            MissingBatchState->bCallbackInvoked = true;
+        },
+        [MissingBatchState](float Progress) {
+            MissingBatchState->MaxProgressReported = FMath::Max(MissingBatchState->MaxProgressReported, Progress);
+        }
+    );
+    ADD_LATENT_AUTOMATION_COMMAND(FWaitForMissingBatchProgressCheckCommand(*this, MissingBatchState));
+
+    Owner->MarkAsGarbage();
+    Resident1->MarkAsGarbage();
+    Resident2->MarkAsGarbage();
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameAssetLoaderDiskLatentTest,
+    "Game.Asset.Loader.DiskStreamingLatent",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 通过引擎 Latent 帧循环验证真实引擎网格资产流式加载与句柄提取（零 Sleep 盲等）
+ * @param Parameters 自动化测试参数
+ * @return Latent 命令挂载或短路断言成功返回 true
+ */
+bool FGameAssetLoaderDiskLatentTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    TSharedRef<FLoaderLatentTestState> State = MakeShared<FLoaderLatentTestState>();
     State->AliveOwner = TStrongObjectPtr<UGameInstance>(NewObject<UGameInstance>());
 
-    const TSoftObjectPtr<UStaticMesh> ConeSoft(FSoftObjectPath(TEXT("/Engine/BasicShapes/Cone.Cone")));
+    const TSoftObjectPtr<UStaticMesh> SphereSoft(FSoftObjectPath(TEXT("/Engine/BasicShapes/Sphere.Sphere")));
     State->ActiveHandle = FGameAssetLoader::LoadAsync<UStaticMesh>(
-        ConeSoft,
+        SphereSoft,
         State->AliveOwner.Get(),
         [State](UStaticMesh* Loaded) {
             State->LoadedMesh = Loaded;
             State->bCallbackInvoked = true;
-        }
+        },
+        FCancellationToken::None(),
+        EGameAssetPriority::High
     );
 
     if (State->bCallbackInvoked) {
@@ -187,314 +580,7 @@ bool FGameAssetLoaderDiskStreamingLatentTest::RunTest([[maybe_unused]] const FSt
     }
 
     TestTrue(TEXT("未驻留资产返回有效异步加载句柄"), State->ActiveHandle.IsValid());
-    ADD_LATENT_AUTOMATION_COMMAND(FWaitForAssetLoadLatentCommand(*this, State));
-    return true;
-}
-
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-    FGameAssetLoaderClassLoadingTest,
-    "Game.Asset.AssetLoader.ClassLoading",
-    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
-)
-
-/**
- * @brief 验证软引用类的异步安全加载、短路判定与同步获取
- * @param Parameters 自动化测试参数
- * @return 全部断言通过返回 true
- */
-bool FGameAssetLoaderClassLoadingTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UGameInstance* Owner = NewObject<UGameInstance>();
-
-    bool bNullClassCalled = false;
-    const TSoftClassPtr<UGameInstance> NullSoftClass;
-    const FGameAssetLoadHandle NullHandle = FGameAssetLoader::LoadClassAsync<UGameInstance>(
-        NullSoftClass,
-        Owner,
-        [&bNullClassCalled](UClass*) { bNullClassCalled = true; }
-    );
-    TestFalse(TEXT("空软类引用返回无效句柄"), NullHandle.IsValid());
-    TestFalse(TEXT("空软类引用不触发回调"), bNullClassCalled);
-
-    const TSoftClassPtr<UGameInstance> ResidentClassPtr(UGameInstance::StaticClass());
-    bool bResidentClassCalled = false;
-    UClass* LoadedResidentClass = nullptr;
-    const FGameAssetLoadHandle ResidentHandle = FGameAssetLoader::LoadClassAsync<UGameInstance>(
-        ResidentClassPtr,
-        Owner,
-        [&bResidentClassCalled, &LoadedResidentClass](UClass* ClassPtr) {
-            bResidentClassCalled = true;
-            LoadedResidentClass = ClassPtr;
-        }
-    );
-    TestFalse(TEXT("已驻留内存的类走同步短路返回空句柄"), ResidentHandle.IsValid());
-    TestTrue(TEXT("已驻留内存的类同步短路触发回调"), bResidentClassCalled);
-    TestEqual(TEXT("短路回调精确返回 UGameInstance::StaticClass()"), LoadedResidentClass, UGameInstance::StaticClass());
-
-    const TGameStatusResult<UClass*> NullSyncResult = FGameAssetLoader::LoadClassSync<UGameInstance>(NullSoftClass);
-    TestTrue(TEXT("同步加载空软类引用返回失败态"), NullSyncResult.IsFailure());
-    TestEqual(TEXT("空软类引用错误码为 1001"), NullSyncResult.GetError().ErrorCode, 1001);
-
-    const TGameStatusResult<UClass*> ResidentSyncResult = FGameAssetLoader::LoadClassSync<UGameInstance>(ResidentClassPtr);
-    TestTrue(TEXT("同步加载已驻留类返回成功态"), ResidentSyncResult.IsSuccess());
-    TestEqual(TEXT("同步加载已驻留类返回正确 UClass 指针"), ResidentSyncResult.GetValue(), UGameInstance::StaticClass());
-
-    Owner->MarkAsGarbage();
-    return true;
-}
-
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-    FGameAssetLoaderSyncTest,
-    "Game.Asset.AssetLoader.SyncLoad",
-    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
-)
-
-/**
- * @brief 验证资产同步阻塞加载成功与失败契约
- * @param Parameters 自动化测试参数
- * @return 全部断言通过返回 true
- */
-bool FGameAssetLoaderSyncTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UGameInstance* ResidentTarget = NewObject<UGameInstance>();
-
-    const TGameStatusResult<UGameInstance*> NullSync = FGameAssetLoader::LoadSync<UGameInstance>(TSoftObjectPtr<UGameInstance>());
-    TestTrue(TEXT("同步加载空软引用返回失败态"), NullSync.IsFailure());
-    TestEqual(TEXT("同步加载空软引用错误码为 1001"), NullSync.GetError().ErrorCode, 1001);
-
-    const TGameStatusResult<UGameInstance*> ResidentSync = FGameAssetLoader::LoadSync<UGameInstance>(TSoftObjectPtr<UGameInstance>(ResidentTarget));
-    TestTrue(TEXT("同步加载已驻留实例返回成功态"), ResidentSync.IsSuccess());
-    TestEqual(TEXT("同步加载已驻留实例返回自身"), ResidentSync.GetValue(), ResidentTarget);
-
-    ResidentTarget->MarkAsGarbage();
-    return true;
-}
-
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-    FGameAssetLoaderBatchWithTokenTest,
-    "Game.Asset.AssetLoader.BatchWithToken",
-    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
-)
-
-/**
- * @brief 验证批量资产加载门面在空路径短路、预取消令牌拦截以及进度汇报机制
- * @param Parameters 自动化测试参数
- * @return 全部断言通过返回 true
- */
-bool FGameAssetLoaderBatchWithTokenTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UGameInstance* DummyOwner = NewObject<UGameInstance>();
-
-    FCancellationTokenSource CancelledSource;
-    CancelledSource.Cancel();
-    bool bCancelledCallbackInvoked = false;
-    FGameAssetLoadHandle AbortedHandle = FGameAssetLoader::LoadBatchAsync(
-        {FSoftObjectPath(TEXT("/Engine/BasicShapes/Cube.Cube"))},
-        DummyOwner,
-        [&bCancelledCallbackInvoked]() {
-            bCancelledCallbackInvoked = true;
-        },
-        nullptr,
-        CancelledSource.GetToken()
-    );
-    TestFalse(TEXT("已取消令牌拦截加载，句柄无效"), AbortedHandle.IsValid());
-    TestFalse(TEXT("已取消令牌不会触发完成回调"), bCancelledCallbackInvoked);
-
-    bool bEmptyAllLoaded = false;
-    float LastProgress = 0.0f;
-    FGameAssetLoadHandle EmptyHandle = FGameAssetLoader::LoadBatchAsync(
-        {},
-        DummyOwner,
-        [&bEmptyAllLoaded]() {
-            bEmptyAllLoaded = true;
-        },
-        [&LastProgress](float Progress) {
-            LastProgress = Progress;
-        },
-        FCancellationToken::None()
-    );
-    TestFalse(TEXT("空路径短路返回空句柄"), EmptyHandle.IsValid());
-    TestTrue(TEXT("空路径立即触发 OnAllLoaded"), bEmptyAllLoaded);
-    TestEqual(TEXT("空路径汇报进度为 1.0"), LastProgress, 1.0f);
-
-    UGameInstance* ResidentTarget = NewObject<UGameInstance>();
-    bool bTypedSoftBatchCalled = false;
-    float TypedSoftBatchProgress = 0.0f;
-    const TArray<TSoftObjectPtr<UGameInstance>> TypedSoftList = {
-        TSoftObjectPtr<UGameInstance>(ResidentTarget)
-    };
-    FGameAssetLoadHandle TypedBatchHandle = FGameAssetLoader::LoadBatchAsync<UGameInstance>(
-        TypedSoftList,
-        DummyOwner,
-        [&bTypedSoftBatchCalled]() {
-            bTypedSoftBatchCalled = true;
-        },
-        [&TypedSoftBatchProgress](float Progress) {
-            TypedSoftBatchProgress = Progress;
-        }
-    );
-    TestFalse(TEXT("驻留软引用模板批次短路返回空句柄"), TypedBatchHandle.IsValid());
-    TestTrue(TEXT("驻留软引用模板批次立即触发完成回调"), bTypedSoftBatchCalled);
-    TestEqual(TEXT("驻留软引用模板批次进度汇报为 1.0"), TypedSoftBatchProgress, 1.0f);
-    ResidentTarget->MarkAsGarbage();
-
-    FCancellationTokenSource InFlightSource;
-    bool bInFlightCallbackInvoked = false;
-    FGameAssetLoadHandle InFlightHandle = FGameAssetLoader::LoadBatchAsync(
-        {FSoftObjectPath(TEXT("/Game/UnitTest_UnloadedMesh_Pending.UnitTest_UnloadedMesh_Pending"))},
-        DummyOwner,
-        [&bInFlightCallbackInvoked]() {
-            bInFlightCallbackInvoked = true;
-        },
-        nullptr,
-        InFlightSource.GetToken()
-    );
-    TestTrue(TEXT("在途加载有效建立句柄"), InFlightHandle.IsValid());
-    InFlightSource.Cancel();
-    TestFalse(TEXT("令牌触发取消后句柄转为非加载中"), InFlightHandle.IsLoading());
-    TestFalse(TEXT("中途取消不触发完成回调"), bInFlightCallbackInvoked);
-
-    DummyOwner->MarkAsGarbage();
-    return true;
-}
-
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-    FGameAssetLoaderCoroAndTokenTest,
-    "Game.Asset.AssetLoader.CoroAndToken",
-    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
-)
-
-/**
- * @brief 验证单资产带取消令牌的异步加载以及 C++20 协程加载驻留资产/取消任务
- * @param Parameters 自动化测试参数
- * @return 全部断言通过返回 true
- */
-bool FGameAssetLoaderCoroAndTokenTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UGameInstance* DummyOwner = NewObject<UGameInstance>();
-    UGameInstance* ResidentTarget = NewObject<UGameInstance>();
-
-    FCancellationTokenSource CancelledSource;
-    CancelledSource.Cancel();
-    bool bCancelledAssetCalled = false;
-    const TSoftObjectPtr<UGameInstance> ResidentSoftPtr(ResidentTarget);
-    const FGameAssetLoadHandle AbortedHandle = FGameAssetLoader::LoadAsync<UGameInstance>(
-        ResidentSoftPtr,
-        DummyOwner,
-        [&bCancelledAssetCalled](UGameInstance*) { bCancelledAssetCalled = true; },
-        CancelledSource.GetToken()
-    );
-    TestFalse(TEXT("已取消令牌拦截单资产异步加载"), AbortedHandle.IsValid());
-    TestFalse(TEXT("已取消令牌不触发单资产加载回调"), bCancelledAssetCalled);
-
-    bool bCancelledClassCalled = false;
-    const TSoftClassPtr<UGameInstance> ResidentClassPtr(UGameInstance::StaticClass());
-    const FGameAssetLoadHandle AbortedClassHandle = FGameAssetLoader::LoadClassAsync<UGameInstance>(
-        ResidentClassPtr,
-        DummyOwner,
-        [&bCancelledClassCalled](UClass*) { bCancelledClassCalled = true; },
-        CancelledSource.GetToken()
-    );
-    TestFalse(TEXT("已取消令牌拦截单类异步加载"), AbortedClassHandle.IsValid());
-    TestFalse(TEXT("已取消令牌不触发单类加载回调"), bCancelledClassCalled);
-
-    TGameCoroTask<UGameInstance*> CoroTask = FGameAssetLoader::LoadAsyncCoro<UGameInstance>(
-        ResidentSoftPtr,
-        DummyOwner
-    );
-    TestTrue(TEXT("驻留资产协程任务立即完成"), CoroTask.IsDone());
-    TestTrue(TEXT("驻留资产协程任务成功"), CoroTask.GetResult().IsSuccess());
-    TestEqual(TEXT("驻留资产协程返回正确实例"), CoroTask.GetResult().GetValue(), ResidentTarget);
-
-    TGameCoroTask<UClass*> CoroClassTask = FGameAssetLoader::LoadClassAsyncCoro<UGameInstance>(
-        ResidentClassPtr,
-        DummyOwner
-    );
-    TestTrue(TEXT("驻留类协程任务立即完成"), CoroClassTask.IsDone());
-    TestTrue(TEXT("驻留类协程任务成功"), CoroClassTask.GetResult().IsSuccess());
-    TestEqual(TEXT("驻留类协程返回正确 UClass"), CoroClassTask.GetResult().GetValue(), UGameInstance::StaticClass());
-
-    TGameCoroTask<UGameInstance*> CancelledCoroTask = FGameAssetLoader::LoadAsyncCoro<UGameInstance>(
-        ResidentSoftPtr,
-        DummyOwner,
-        CancelledSource.GetToken()
-    );
-    TestTrue(TEXT("已取消令牌协程任务立即完成"), CancelledCoroTask.IsDone());
-    TestTrue(TEXT("已取消令牌协程任务状态为失败或取消"), CancelledCoroTask.GetResult().IsFailure() || CancelledCoroTask.IsCancelled());
-
-    DummyOwner->MarkAsGarbage();
-    ResidentTarget->MarkAsGarbage();
-    return true;
-}
-
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-    FGameAssetLoaderCoroBatchTest,
-    "Game.Asset.AssetLoader.CoroBatch",
-    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
-)
-
-/**
- * @brief 验证 FGameAssetLoader::LoadBatchAsyncCoro C++20 协程批量异步加载原语
- * @param Parameters 自动化测试参数
- * @return 全部断言通过返回 true
- */
-bool FGameAssetLoaderCoroBatchTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UGameInstance* DummyOwner = NewObject<UGameInstance>();
-    UGameInstance* ResidentTarget1 = NewObject<UGameInstance>();
-    UGameInstance* ResidentTarget2 = NewObject<UGameInstance>();
-
-    TGameCoroTask<TArray<UGameInstance*>> EmptyBatchTask = FGameAssetLoader::LoadBatchAsyncCoro<UGameInstance>(
-        {},
-        DummyOwner
-    );
-    TestTrue(TEXT("空数组协程任务立即完成"), EmptyBatchTask.IsDone());
-    TestTrue(TEXT("空数组协程任务成功"), EmptyBatchTask.GetResult().IsSuccess());
-    TestEqual(TEXT("空数组协程返回空结果"), EmptyBatchTask.GetResult().GetValue().Num(), 0);
-
-    const TArray<TSoftObjectPtr<UGameInstance>> Targets = {
-        TSoftObjectPtr<UGameInstance>(ResidentTarget1),
-        TSoftObjectPtr<UGameInstance>(ResidentTarget2)
-    };
-
-    TGameCoroTask<TArray<UGameInstance*>> ResidentBatchTask = FGameAssetLoader::LoadBatchAsyncCoro<UGameInstance>(
-        Targets,
-        DummyOwner
-    );
-    TestTrue(TEXT("驻留资产批次协程立即完成"), ResidentBatchTask.IsDone());
-    TestTrue(TEXT("驻留资产批次协程返回成功"), ResidentBatchTask.GetResult().IsSuccess());
-    const TArray<UGameInstance*> Results = ResidentBatchTask.GetResult().GetValue();
-    TestEqual(TEXT("驻留资产批次返回 2 项"), Results.Num(), 2);
-    if (Results.Num() == 2) {
-        TestEqual(TEXT("第 1 项实例匹配"), Results[0], ResidentTarget1);
-        TestEqual(TEXT("第 2 项实例匹配"), Results[1], ResidentTarget2);
-    }
-
-    const TArray<TSoftObjectPtr<UGameInstance>> TargetsWithNull = {
-        TSoftObjectPtr<UGameInstance>(ResidentTarget1),
-        TSoftObjectPtr<UGameInstance>()
-    };
-    TGameCoroTask<TArray<UGameInstance*>> NullBatchTask = FGameAssetLoader::LoadBatchAsyncCoro<UGameInstance>(
-        TargetsWithNull,
-        DummyOwner
-    );
-    TestTrue(TEXT("含空软引用的协程任务立即完成"), NullBatchTask.IsDone());
-    TestTrue(TEXT("含空软引用的协程任务成功返回"), NullBatchTask.GetResult().IsSuccess());
-    const TArray<UGameInstance*> NullResults = NullBatchTask.GetResult().GetValue();
-    TestEqual(TEXT("含空软引用的协程返回 2 项"), NullResults.Num(), 2);
-    if (NullResults.Num() == 2) {
-        TestEqual(TEXT("第 1 项为有效实例"), NullResults[0], ResidentTarget1);
-        TestNull(TEXT("第 2 项空软引用对齐为 nullptr"), NullResults[1]);
-    }
-
-    FCancellationTokenSource CancelledSource;
-    CancelledSource.Cancel();
-    TGameCoroTask<TArray<UGameInstance*>> CancelledBatchTask = FGameAssetLoader::LoadBatchAsyncCoro<UGameInstance>(
-        Targets,
-        DummyOwner,
-        CancelledSource.GetToken()
-    );
-    TestTrue(TEXT("预先取消令牌的批次协程立即完成"), CancelledBatchTask.IsDone());
-    TestTrue(TEXT("预先取消令牌的批次协程状态为取消或失败"), CancelledBatchTask.IsCancelled() || CancelledBatchTask.GetResult().IsFailure());
-
-    DummyOwner->MarkAsGarbage();
-    ResidentTarget1->MarkAsGarbage();
-    ResidentTarget2->MarkAsGarbage();
+    ADD_LATENT_AUTOMATION_COMMAND(FWaitForGameAssetDiskLoadCommand(*this, State));
     return true;
 }
 
