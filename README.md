@@ -29,6 +29,7 @@ graph TD
         GameDataSamples["GameDataSamples<br>Item / Shop / Profile 示例（不随通用安装）"]
         GameGameplay["GameGameplay<br>GAS 绑定 / 全时序握手 / ExecCalc / Buff 桥接"]
         GameFeedback["GameFeedback<br>打击感表现中枢 / 网络派发 / 预测去重"]
+        GameFlow["GameFlow<br>关卡流转状态机 / 代际就绪屏障 / 协程与蓝图等待"]
         GameNetService["GameNetService<br>WebSocket 长连接 / 心跳 / 退避重连 / 异步 RPC / 日志转发"]
         GameNetSession["GameNetSession [按需]<br>零 SDK 局域网 UDP 发现 / OSS 会话 / Travel"]
     end
@@ -50,6 +51,7 @@ graph TD
     MyGame --> GameData
     MyGame --> GameGameplay
     MyGame --> GameFeedback
+    MyGame --> GameFlow
     MyGame --> GameNetService
     MyGame --> GameNetSession
     GameDataSamples --> GameData
@@ -65,6 +67,8 @@ graph TD
     GameFeedback --> GameLogging
     GameFeedback --> GameMessage
     GameFeedback --> GameCore
+    GameFlow --> GameCore
+    GameFlow --> GameLogging
     GameNetService --> GameNetCore
     GameNetService --> GameMessage
     GameNetSession --> GameNetCore
@@ -97,6 +101,7 @@ graph TD
 | [**GameGameplayCore**](Plugins/GameGameplayCore/README.md) | 战斗核心契约 | 零 GAS 强依赖、`IDamageable` 泛型可受击契约、闭环同步打击反馈、通用数值 `UGameStatComponent`（属性字典 / 修正器 / 按 Tag 订阅）、生命组件 `UGameVitalComponent`（存活状态机 / 复活）、通用 Buff `UGameBuffComponent`（全员实现 `IGamePoolable`） | `GameCore`, `GamePool`, `GameLogging` | [文档中心](Plugins/GameGameplayCore/Docs/Architecture/Overview.md) |
 | [**GameGameplay**](Plugins/GameGameplay/README.md) | GAS 业务绑定 | 通用 ASC 基类、全时序自动握手 Bootstrap 组件（实现 `IGamePoolable`）、双轨元属性集、运行时通道 Registry 的 ExecCalc、GAS Buff 桥接、UI 属性解耦映射 | `GameGameplayCore`, `GameplayAbilities`, `GameCore`, `GameMessage`, `GamePool`, `GameLogging`, `GameFeedback` | [文档中心](Plugins/GameGameplay/Docs/Architecture/Overview.md) |
 | [**GameFeedback**](Plugins/GameFeedback/README.md) | 打击感表现中枢 | 消息总线 + 能力组件（无集中上帝类）、顿帧累积预算、闪白绝对时间续期、分屏独立镜头震动、Listen/Dedicated Server 紧凑网络派发（典型 ≤64B、完整 ≤96B、视距裁剪、每帧限流）、本地预测指纹去重 | `GameCore`, `GameGameplayCore`, `GameLogging`, `Niagara` | [文档中心](Plugins/GameFeedback/Docs/Architecture/Overview.md) |
+| [**GameFlow**](Plugins/GameFlow/README.md) | 关卡流转与就绪屏障 | `ELoadingTransitionPhase` 显式三态流转、多 PIE `PreLoadMapWithContext` 与预览世界隔离、`GameCore::TSlotMap` 代际零堆分配 `FLoadingBarrierToken`、O(1) 加权进度与遥测报告、自动联动全局/单屏障看门狗、跨线程安全零直通分配 C++20 协程等待器与重入安全蓝图异步节点 | `GameCore`, `GameLogging` | [文档中心](Plugins/GameFlow/Docs/Architecture/Overview.md) |
 | [**GameDataCore**](Plugins/GameData/Source/GameDataCore/README.md) | 通用数据与持久化 | 二进制 `.bin` 脱机仓库（CRC32 强校验）、不可变快照与版本原子发布、通用分段存档（段注册 / 版本迁移 / 槽位白名单） | `GameCore`, `GameLogging`, `Json` | [GameData 文档](Plugins/GameData/Docs/Architecture/Overview.md) |
 | [**GameData**](Plugins/GameData/README.md) | 业务宿主与云同步 | 由 Excel 管线写入 `Public/Generated`、`Private/Generated`；提供 `UGameCloudSaveSubsystem` 强类型 RPC 云存档上传/拉取/落盘热应用门面 | `GameDataCore`, `GameNetCore`, `GameNetService` | [GameData 文档](Plugins/GameData/Docs/Architecture/Overview.md) |
 | [**GameDataSamples**](Plugins/GameDataSamples/README.md) | 示例插件 | Item / Shop 生成域、PlayerProfile 存档段适配器与示例测试；`install.py --all` 默认跳过 | `GameData`, `GameCore`, `GameLogging` | [README](Plugins/GameDataSamples/README.md) |
@@ -191,6 +196,7 @@ UEToolkit/
 │   ├── GameGameplayCore/            # [Layer 1] 战斗契约 / 通用数值与 Buff
 │   ├── GameGameplay/                # [Layer 2] GAS 业务绑定与引导组件
 │   ├── GameFeedback/                # [Layer 2] 打击感表现中枢 / 网络派发
+│   ├── GameFlow/                    # [Layer 2] 关卡流转状态机、代际就绪屏障与协程/蓝图等待原语
 │   ├── GameData/                    # [Layer 2] GameDataCore + 生成宿主双模块
 │   ├── GameDataSamples/             # 示例域与 Profile 适配器（不随通用安装）
 │   ├── GameNetCore/                 # [Layer 1] 网络报文头契约 / 序列化器 / 单机内存回环
