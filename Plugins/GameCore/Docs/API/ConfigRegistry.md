@@ -243,7 +243,7 @@ if (DamageScaleHandle.IsBound()) {
 
 > [!NOTE]
 > **组件解耦与迁移提示**：
-> 模块化 GM / 作弊调试指令注册中心（`FGameCheatRegistry`）已在多插件解耦架构中剥离至专职调试插件 **`Plugins/GameDebug`**（头文件 `#include "GameDebugCheatRegistry.h"`）。
+> 模块化 GM / 作弊调试指令注册中心（`FGameCheatRegistry`）已在多插件解耦架构中剥离至专职调试插件 **`Plugins/GameDebug`**（头文件 `#include "Cheat/FGameCheatRegistry.h"`）。
 > `GameCore` 专注于纯底层配置生命周期管理；若需在开发期注册控制台 GM 命令，请直接依赖并引入 `GameDebug` 模块。
 
 
