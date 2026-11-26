@@ -8,6 +8,19 @@
 #include "Config/GameCompileSwitches.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/World.h"
+#include "GameFramework/Actor.h"
+
+namespace {
+
+[[nodiscard]] FORCEINLINE bool IsPositiveFinite(float Value) noexcept {
+    return FMath::IsFinite(Value) && Value > 0.0f;
+}
+
+[[nodiscard]] FORCEINLINE bool IsValidStrokeStyle(float Duration, float Thickness) noexcept {
+    return FMath::IsFinite(Duration) && Duration >= 0.0f && FMath::IsFinite(Thickness) && Thickness >= 0.0f;
+}
+
+}  // namespace
 
 void FGameDebugDraw::DrawLine(
     const UWorld* World,
@@ -19,11 +32,13 @@ void FGameDebugDraw::DrawLine(
 ) {
     if constexpr (!Game::Config::bEnableDebugDraw) {
         return;
-    } else {
-        if (World != nullptr) {
-            DrawDebugLine(World, LineStart, LineEnd, Color, false, Duration, 0, Thickness);
-        }
     }
+
+    if (World == nullptr || LineStart.ContainsNaN() || LineEnd.ContainsNaN() || !IsValidStrokeStyle(Duration, Thickness)) {
+        return;
+    }
+
+    DrawDebugLine(World, LineStart, LineEnd, Color, false, Duration, 0, Thickness);
 }
 
 void FGameDebugDraw::DrawSphere(
@@ -37,11 +52,13 @@ void FGameDebugDraw::DrawSphere(
 ) {
     if constexpr (!Game::Config::bEnableDebugDraw) {
         return;
-    } else {
-        if (World != nullptr && Radius > 0.0f) {
-            DrawDebugSphere(World, Center, Radius, Segments, Color, false, Duration, 0, Thickness);
-        }
     }
+
+    if (World == nullptr || Center.ContainsNaN() || !IsPositiveFinite(Radius) || Segments <= 0 || !IsValidStrokeStyle(Duration, Thickness)) {
+        return;
+    }
+
+    DrawDebugSphere(World, Center, Radius, Segments, Color, false, Duration, 0, Thickness);
 }
 
 void FGameDebugDraw::DrawBox(
@@ -55,11 +72,15 @@ void FGameDebugDraw::DrawBox(
 ) {
     if constexpr (!Game::Config::bEnableDebugDraw) {
         return;
-    } else {
-        if (World != nullptr && Extent.X >= 0.0f && Extent.Y >= 0.0f && Extent.Z >= 0.0f) {
-            DrawDebugBox(World, Center, Extent, Rotation, Color, false, Duration, 0, Thickness);
-        }
     }
+
+    const bool bHasInvalidVector = Center.ContainsNaN() || Extent.ContainsNaN() || Rotation.ContainsNaN();
+    const bool bHasValidExtent = Extent.X >= 0.0 && Extent.Y >= 0.0 && Extent.Z >= 0.0 && !Extent.IsNearlyZero();
+    if (World == nullptr || bHasInvalidVector || !bHasValidExtent || !IsValidStrokeStyle(Duration, Thickness)) {
+        return;
+    }
+
+    DrawDebugBox(World, Center, Extent, Rotation.GetNormalized(), Color, false, Duration, 0, Thickness);
 }
 
 void FGameDebugDraw::DrawCapsule(
@@ -74,11 +95,14 @@ void FGameDebugDraw::DrawCapsule(
 ) {
     if constexpr (!Game::Config::bEnableDebugDraw) {
         return;
-    } else {
-        if (World != nullptr && HalfHeight > 0.0f && Radius > 0.0f) {
-            DrawDebugCapsule(World, Center, HalfHeight, Radius, Rotation, Color, false, Duration, 0, Thickness);
-        }
     }
+
+    const bool bHasInvalidTransform = Center.ContainsNaN() || Rotation.ContainsNaN();
+    if (World == nullptr || bHasInvalidTransform || !IsPositiveFinite(HalfHeight) || !IsPositiveFinite(Radius) || !IsValidStrokeStyle(Duration, Thickness)) {
+        return;
+    }
+
+    DrawDebugCapsule(World, Center, HalfHeight, Radius, Rotation.GetNormalized(), Color, false, Duration, 0, Thickness);
 }
 
 void FGameDebugDraw::DrawCylinder(
@@ -93,11 +117,14 @@ void FGameDebugDraw::DrawCylinder(
 ) {
     if constexpr (!Game::Config::bEnableDebugDraw) {
         return;
-    } else {
-        if (World != nullptr && Radius > 0.0f && !Start.Equals(End)) {
-            DrawDebugCylinder(World, Start, End, Radius, Segments, Color, false, Duration, 0, Thickness);
-        }
     }
+
+    const bool bInvalidEndpoints = Start.ContainsNaN() || End.ContainsNaN() || Start.Equals(End);
+    if (World == nullptr || bInvalidEndpoints || !IsPositiveFinite(Radius) || Segments <= 0 || !IsValidStrokeStyle(Duration, Thickness)) {
+        return;
+    }
+
+    DrawDebugCylinder(World, Start, End, Radius, Segments, Color, false, Duration, 0, Thickness);
 }
 
 void FGameDebugDraw::DrawCone(
@@ -114,24 +141,28 @@ void FGameDebugDraw::DrawCone(
 ) {
     if constexpr (!Game::Config::bEnableDebugDraw) {
         return;
-    } else {
-        if (World != nullptr && Length > 0.0f && !Direction.IsNearlyZero()) {
-            DrawDebugCone(
-                World,
-                Origin,
-                Direction.GetSafeNormal(),
-                Length,
-                AngleWidthRad,
-                AngleHeightRad,
-                NumSides,
-                Color,
-                false,
-                Duration,
-                0,
-                Thickness
-            );
-        }
     }
+
+    const bool bInvalidGeometry = Origin.ContainsNaN() || Direction.ContainsNaN() || Direction.IsNearlyZero();
+    const bool bInvalidAngles = !IsPositiveFinite(AngleWidthRad) || !IsPositiveFinite(AngleHeightRad) || NumSides <= 0;
+    if (World == nullptr || bInvalidGeometry || !IsPositiveFinite(Length) || bInvalidAngles || !IsValidStrokeStyle(Duration, Thickness)) {
+        return;
+    }
+
+    DrawDebugCone(
+        World,
+        Origin,
+        Direction.GetSafeNormal(),
+        Length,
+        AngleWidthRad,
+        AngleHeightRad,
+        NumSides,
+        Color,
+        false,
+        Duration,
+        0,
+        Thickness
+    );
 }
 
 void FGameDebugDraw::DrawArrow(
@@ -145,11 +176,14 @@ void FGameDebugDraw::DrawArrow(
 ) {
     if constexpr (!Game::Config::bEnableDebugDraw) {
         return;
-    } else {
-        if (World != nullptr && ArrowSize > 0.0f) {
-            DrawDebugDirectionalArrow(World, LineStart, LineEnd, ArrowSize, Color, false, Duration, 0, Thickness);
-        }
     }
+
+    const bool bInvalidEndpoints = LineStart.ContainsNaN() || LineEnd.ContainsNaN() || LineStart.Equals(LineEnd);
+    if (World == nullptr || bInvalidEndpoints || !IsPositiveFinite(ArrowSize) || !IsValidStrokeStyle(Duration, Thickness)) {
+        return;
+    }
+
+    DrawDebugDirectionalArrow(World, LineStart, LineEnd, ArrowSize, Color, false, Duration, 0, Thickness);
 }
 
 void FGameDebugDraw::DrawCoordinateSystem(
@@ -162,11 +196,14 @@ void FGameDebugDraw::DrawCoordinateSystem(
 ) {
     if constexpr (!Game::Config::bEnableDebugDraw) {
         return;
-    } else {
-        if (World != nullptr && Scale > 0.0f) {
-            DrawDebugCoordinateSystem(World, AxisLoc, AxisRot, Scale, false, Duration, 0, Thickness);
-        }
     }
+
+    const bool bInvalidTransform = AxisLoc.ContainsNaN() || AxisRot.ContainsNaN();
+    if (World == nullptr || bInvalidTransform || !IsPositiveFinite(Scale) || !IsValidStrokeStyle(Duration, Thickness)) {
+        return;
+    }
+
+    DrawDebugCoordinateSystem(World, AxisLoc, AxisRot, Scale, false, Duration, 0, Thickness);
 }
 
 void FGameDebugDraw::DrawString(
@@ -181,9 +218,13 @@ void FGameDebugDraw::DrawString(
 ) {
     if constexpr (!Game::Config::bEnableDebugDraw) {
         return;
-    } else {
-        if (World != nullptr && !Text.IsEmpty()) {
-            DrawDebugString(World, TextLocation, Text, TestActor, TextColor, Duration, bDrawShadow, FontScale);
-        }
     }
+
+    const bool bInvalidStyle = !IsPositiveFinite(FontScale) || !FMath::IsFinite(Duration) || Duration < 0.0f;
+    const bool bInvalidActor = (TestActor != nullptr) && (!IsValid(TestActor) || TestActor->GetWorld() != World);
+    if (World == nullptr || TextLocation.ContainsNaN() || Text.IsEmpty() || bInvalidStyle || bInvalidActor) {
+        return;
+    }
+
+    DrawDebugString(World, TextLocation, Text, TestActor, TextColor, Duration, bDrawShadow, FontScale);
 }

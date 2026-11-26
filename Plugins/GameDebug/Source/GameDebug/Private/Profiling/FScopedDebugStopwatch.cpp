@@ -6,56 +6,60 @@
 #include "Profiling/FScopedDebugStopwatch.h"
 
 #include "Config/GameCompileSwitches.h"
-#include "HAL/PlatformTime.h"
+#include "Logging/GameLogCategories.h"
+#include "Misc/StringBuilder.h"
 #include "Print/FGameDebugPrint.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogGameProfiler, Log, All);
+#if GAME_ENABLE_CPU_PROFILER != 0
 
 FScopedDebugStopwatch::FScopedDebugStopwatch(
-    const FName& InScopeName,
-    float InThresholdMs,
-    const FName& InChannel
+    FName InScopeName,
+    double InThresholdMs,
+    FName InChannel
 )
     : ScopeName(InScopeName)
-    , ThresholdMs(InThresholdMs)
-    , Channel(InChannel)
-    , StartTimeSeconds(0.0) {
-    if constexpr (Game::Config::bEnableDebugDraw) {
-        StartTimeSeconds = FPlatformTime::Seconds();
-    }
+    , ThresholdMs((FMath::IsFinite(InThresholdMs) && InThresholdMs > 0.0) ? InThresholdMs : 0.0)
+    , Channel(InChannel) {
 }
 
 FScopedDebugStopwatch::~FScopedDebugStopwatch() {
-    if constexpr (!Game::Config::bEnableDebugDraw) {
+    const double ElapsedMs = GetElapsedMs();
+    if (ElapsedMs < ThresholdMs) {
         return;
-    } else {
-        const float ElapsedMs = GetElapsedMs();
-        if (ElapsedMs >= ThresholdMs) {
-            const FString FormattedText = FString::Printf(
-                TEXT("【性能诊断】[%s] 耗时 %.3f ms (告警阈值: %.2f ms)"),
-                *ScopeName.ToString(),
-                ElapsedMs,
-                ThresholdMs
-            );
-
-            const FColor MsgColor = (ElapsedMs >= ThresholdMs * 2.0f && ThresholdMs > 0.0f)
-                ? FColor::Red
-                : FColor::Orange;
-
-            FGameDebugPrint::PrintChannel(Channel, FormattedText, MsgColor, 3.0f);
-
-            if constexpr (Game::Config::bEnableLog) {
-                UE_LOG(LogGameProfiler, Warning, TEXT("%s"), *FormattedText);
-            }
-        }
     }
+
+    TStringBuilder<256> Builder;
+    Builder.Append(TEXT("【GameDebug】【Profiler】["));
+    ScopeName.AppendString(Builder);
+    Builder.Appendf(TEXT("] 耗时 %.3f ms (告警阈值: %.2f ms)"), ElapsedMs, ThresholdMs);
+
+    const FString FormattedText(Builder.ToView());
+    if constexpr (Game::Config::bEnableDebugDraw) {
+        const bool bIsSevere = (ThresholdMs > 0.0) && (ElapsedMs >= ThresholdMs * SevereThresholdMultiplier);
+        const FColor MsgColor = bIsSevere ? FColor::Red : FColor::Orange;
+        FGameDebugPrint::PrintChannel(Channel, FormattedText, MsgColor, AlertDisplayDurationSeconds);
+    }
+
+    GAME_LOG(Warning, TEXT("%s"), *FormattedText);
 }
 
-float FScopedDebugStopwatch::GetElapsedMs() const {
-    if constexpr (!Game::Config::bEnableDebugDraw) {
-        return 0.0f;
-    } else {
-        const double Now = FPlatformTime::Seconds();
-        return static_cast<float>((Now - StartTimeSeconds) * 1000.0);
-    }
+double FScopedDebugStopwatch::GetElapsedMs() const noexcept {
+    return CpuTimer.GetElapsedMilliseconds();
 }
+
+#else
+
+FScopedDebugStopwatch::FScopedDebugStopwatch(
+    [[maybe_unused]] FName InScopeName,
+    [[maybe_unused]] double InThresholdMs,
+    [[maybe_unused]] FName InChannel
+) {
+}
+
+FScopedDebugStopwatch::~FScopedDebugStopwatch() = default;
+
+double FScopedDebugStopwatch::GetElapsedMs() const noexcept {
+    return 0.0;
+}
+
+#endif

@@ -23,7 +23,7 @@ public:
      * @param Message 消息文本
      * @param Color 字体颜色
      * @param Duration 屏幕驻留时长（秒）
-     * @param Key 覆盖槽位 Key（-1 为追加）
+     * @param Key 覆盖槽位 Key（-1 为追加新行）
      */
     UFUNCTION(BlueprintCallable, Category = "GameDebug|Print")
     static void PrintDebugMessage(
@@ -34,7 +34,7 @@ public:
     );
 
     /**
-     * @brief 蓝图专用：基于通道名称输出屏幕调试消息（同通道原地刷新防刷屏）
+     * @brief 蓝图专用：基于通道名称输出屏幕调试消息（同通道经 64 位独立域盐原地刷新防刷屏）
      * @param Channel 通道唯一名称
      * @param Message 消息文本
      * @param Color 字体颜色
@@ -155,7 +155,7 @@ public:
      * @param End 顶面中心
      * @param Radius 底面半径
      * @param Segments 细分段数
-     * @param Color 线框颜色
+     * @param Color 线框颜色（与 FGameDebugDraw 对齐，默认橙色）
      * @param Duration 持续秒数（0 为单帧）
      * @param Thickness 线条粗细
      */
@@ -166,7 +166,7 @@ public:
         FVector End,
         float Radius = 50.0f,
         int32 Segments = 16,
-        FColor Color = FColor::Yellow,
+        FColor Color = FColor(243, 156, 18, 255),
         float Duration = 0.0f,
         float Thickness = 1.0f
     );
@@ -204,7 +204,7 @@ public:
      * @param LineStart 箭头起点
      * @param LineEnd 箭头终点
      * @param ArrowSize 箭头头部尺寸
-     * @param Color 线框颜色
+     * @param Color 线框颜色（与 FGameDebugDraw 对齐，默认紫色）
      * @param Duration 持续秒数（0 为单帧）
      * @param Thickness 线条粗细
      */
@@ -214,7 +214,7 @@ public:
         FVector LineStart,
         FVector LineEnd,
         float ArrowSize = 20.0f,
-        FColor Color = FColor::Red,
+        FColor Color = FColor(169, 7, 228, 255),
         float Duration = 0.0f,
         float Thickness = 1.0f
     );
@@ -260,9 +260,9 @@ public:
     );
 
     /**
-     * @brief 蓝图专用：设置全局时间膨胀缩放倍率（慢动作或快进）
+     * @brief 蓝图专用：设置全局时间膨胀缩放倍率（慢动作或快进，合法范围 [0.001, 20.0]）
      * @param WorldContextObject 世界上下文
-     * @param TimeDilation 时间缩放倍率 (0.001 ~ 20.0)
+     * @param TimeDilation 时间缩放倍率（钳制至 [0.001, 20.0]）
      * @return 设置成功返回 true
      */
     UFUNCTION(BlueprintCallable, Category = "GameDebug|Time", meta = (WorldContext = "WorldContextObject"))

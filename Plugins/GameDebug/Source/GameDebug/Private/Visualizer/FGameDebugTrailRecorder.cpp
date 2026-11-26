@@ -15,32 +15,53 @@ FGameDebugTrailRecorder::FGameDebugTrailRecorder(
     float InMinDistance
 )
     : MaxSamples(FMath::Max(2, InMaxSamples))
-    , LifetimeSeconds(FMath::Max(0.1f, InLifetimeSeconds))
-    , MinDistanceSquared(FMath::Square(FMath::Max(0.0f, InMinDistance))) {
-    Samples.Reserve(MaxSamples);
+    , HeadIndex(0)
+    , SampleCount(0)
+    , LifetimeSeconds((FMath::IsFinite(InLifetimeSeconds) && InLifetimeSeconds > 0.1f) ? InLifetimeSeconds : 0.1f)
+    , MinDistanceSquared(FMath::Square(static_cast<double>((FMath::IsFinite(InMinDistance) && InMinDistance > 0.0f) ? InMinDistance : 0.0f))) {
+    if constexpr (Game::Config::bEnableDebugDraw) {
+        RingBuffer.SetNum(MaxSamples);
+    }
 }
 
 bool FGameDebugTrailRecorder::AddSample(const FVector& NewLocation, double CurrentTimeSeconds) {
     if constexpr (!Game::Config::bEnableDebugDraw) {
         return false;
-    } else {
-        const double Now = (CurrentTimeSeconds > 0.0) ? CurrentTimeSeconds : FPlatformTime::Seconds();
-
-        if (!Samples.IsEmpty()) {
-            const FVector& LastLoc = Samples.Last().Location;
-            if (FVector::DistSquared(LastLoc, NewLocation) < MinDistanceSquared) {
-                return false;
-            }
-        }
-
-        const int32 ExcessCount = Samples.Num() - MaxSamples + 1;
-        if (ExcessCount > 0) {
-            Samples.RemoveAt(0, ExcessCount, EAllowShrinking::No);
-        }
-
-        Samples.Add(FTrailSample{NewLocation, Now});
-        return true;
     }
+
+    if (NewLocation.ContainsNaN() || !FMath::IsFinite(CurrentTimeSeconds)) {
+        return false;
+    }
+
+    double Now = (CurrentTimeSeconds >= 0.0) ? CurrentTimeSeconds : FPlatformTime::Seconds();
+    if (SampleCount > 0) {
+        const double LastTimestamp = RingBuffer[ToPhysicalIndex(SampleCount - 1)].Timestamp;
+        if (Now < LastTimestamp) {
+            Now = LastTimestamp;
+        }
+    }
+
+    PruneExpired(Now);
+
+    if (SampleCount > 0 && MinDistanceSquared > 0.0) {
+        const FVector& LastLoc = RingBuffer[ToPhysicalIndex(SampleCount - 1)].Location;
+        if (FVector::DistSquared(LastLoc, NewLocation) < MinDistanceSquared) {
+            return false;
+        }
+    }
+
+    if (SampleCount < MaxSamples) {
+        const int32 WriteIndex = ToPhysicalIndex(SampleCount);
+        RingBuffer[WriteIndex] = FTrailSample{NewLocation, Now};
+        ++SampleCount;
+    } else {
+        RingBuffer[HeadIndex] = FTrailSample{NewLocation, Now};
+        ++HeadIndex;
+        if (HeadIndex >= MaxSamples) {
+            HeadIndex = 0;
+        }
+    }
+    return true;
 }
 
 void FGameDebugTrailRecorder::DrawTrail(
@@ -53,53 +74,74 @@ void FGameDebugTrailRecorder::DrawTrail(
 ) {
     if constexpr (!Game::Config::bEnableDebugDraw) {
         return;
-    } else {
-        if (World == nullptr || Samples.Num() < 2) {
-            return;
-        }
+    }
 
-        const double Now = (CurrentTimeSeconds > 0.0) ? CurrentTimeSeconds : FPlatformTime::Seconds();
+    if (!FMath::IsFinite(CurrentTimeSeconds)) {
+        return;
+    }
 
-        const double ExpireCutoff = Now - static_cast<double>(LifetimeSeconds);
-        int32 ValidStartIndex = 0;
-        while (ValidStartIndex < Samples.Num() && Samples[ValidStartIndex].Timestamp < ExpireCutoff) {
-            ++ValidStartIndex;
-        }
+    const double Now = (CurrentTimeSeconds >= 0.0) ? CurrentTimeSeconds : FPlatformTime::Seconds();
+    PruneExpired(Now);
 
-        if (ValidStartIndex > 0) {
-            Samples.RemoveAt(0, ValidStartIndex, EAllowShrinking::No);
-        }
+    const bool bValidStyle = FMath::IsFinite(Thickness) && Thickness >= 0.0f && FMath::IsFinite(Duration) && Duration >= 0.0f;
+    if (World == nullptr || SampleCount < 2 || !bValidStyle) {
+        return;
+    }
 
-        const int32 NumSegments = Samples.Num() - 1;
-        if (NumSegments <= 0) {
-            return;
-        }
+    const FLinearColor TailLinear(TailColor);
+    const FLinearColor HeadLinear(HeadColor);
+    const double InvLifetime = 1.0 / static_cast<double>(LifetimeSeconds);
 
-        for (int32 Index = 0; Index < NumSegments; ++Index) {
-            const float Alpha = static_cast<float>(Index) / static_cast<float>(NumSegments);
-            const FColor SegmentColor = FMath::Lerp(FLinearColor(TailColor), FLinearColor(HeadColor), Alpha).ToFColor(true);
+    for (int32 Index = 0; Index < SampleCount - 1; ++Index) {
+        const FTrailSample& StartSample = RingBuffer[ToPhysicalIndex(Index)];
+        const FTrailSample& EndSample = RingBuffer[ToPhysicalIndex(Index + 1)];
+        const double AgeSeconds = Now - EndSample.Timestamp;
+        const float TimeAlpha = FMath::Clamp(1.0f - static_cast<float>(AgeSeconds * InvLifetime), 0.0f, 1.0f);
+        const FColor SegmentColor = FMath::Lerp(TailLinear, HeadLinear, TimeAlpha).ToFColor(true);
 
-            FGameDebugDraw::DrawLine(
-                World,
-                Samples[Index].Location,
-                Samples[Index + 1].Location,
-                SegmentColor,
-                Duration,
-                Thickness
-            );
-        }
+        FGameDebugDraw::DrawLine(
+            World,
+            StartSample.Location,
+            EndSample.Location,
+            SegmentColor,
+            Duration,
+            Thickness
+        );
     }
 }
 
-void FGameDebugTrailRecorder::Clear() {
-    Samples.Reset();
+void FGameDebugTrailRecorder::Clear() noexcept {
+    HeadIndex = 0;
+    SampleCount = 0;
 }
 
 int32 FGameDebugTrailRecorder::GetSampleCount() const noexcept {
-    return Samples.Num();
+    return SampleCount;
 }
 
 const FGameDebugTrailRecorder::FTrailSample& FGameDebugTrailRecorder::GetSample(int32 Index) const {
-    check(Samples.IsValidIndex(Index));
-    return Samples[Index];
+    check(Index >= 0 && Index < SampleCount);
+    return RingBuffer[ToPhysicalIndex(Index)];
+}
+
+void FGameDebugTrailRecorder::PruneExpired(double CurrentTimeSeconds) noexcept {
+    const double ExpireCutoff = CurrentTimeSeconds - static_cast<double>(LifetimeSeconds);
+    while (SampleCount > 0 && RingBuffer[HeadIndex].Timestamp < ExpireCutoff) {
+        ++HeadIndex;
+        if (HeadIndex >= MaxSamples) {
+            HeadIndex = 0;
+        }
+        --SampleCount;
+    }
+    if (SampleCount == 0) {
+        HeadIndex = 0;
+    }
+}
+
+int32 FGameDebugTrailRecorder::ToPhysicalIndex(int32 LogicalIndex) const noexcept {
+    int32 PhysicalIndex = HeadIndex + LogicalIndex;
+    if (PhysicalIndex >= MaxSamples) {
+        PhysicalIndex -= MaxSamples;
+    }
+    return PhysicalIndex;
 }

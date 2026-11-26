@@ -6,6 +6,7 @@
 #include "Library/UGameDebugBlueprintLibrary.h"
 
 #include "Config/GameCompileSwitches.h"
+#include "Core/GameDebugWorldResolver.h"
 #include "Print/FGameDebugPrint.h"
 #include "Time/FGameDebugTimeController.h"
 #include "Visualizer/FGameDebugDraw.h"
@@ -16,9 +17,11 @@ void UGameDebugBlueprintLibrary::PrintDebugMessage(
     float Duration,
     int64 Key
 ) {
-    if constexpr (Game::Config::bEnableDebugDraw) {
-        FGameDebugPrint::Print(Message, Color, Duration, static_cast<uint64>(Key));
+    if constexpr (!Game::Config::bEnableDebugDraw) {
+        return;
     }
+
+    FGameDebugPrint::Print(Message, Color, Duration, static_cast<uint64>(Key));
 }
 
 void UGameDebugBlueprintLibrary::PrintChannelMessage(
@@ -27,21 +30,27 @@ void UGameDebugBlueprintLibrary::PrintChannelMessage(
     FColor Color,
     float Duration
 ) {
-    if constexpr (Game::Config::bEnableDebugDraw) {
-        FGameDebugPrint::PrintChannel(Channel, Message, Color, Duration);
+    if constexpr (!Game::Config::bEnableDebugDraw) {
+        return;
     }
+
+    FGameDebugPrint::PrintChannel(Channel, Message, Color, Duration);
 }
 
 void UGameDebugBlueprintLibrary::PrintWarning(const FString& Message, float Duration) {
-    if constexpr (Game::Config::bEnableDebugDraw) {
-        FGameDebugPrint::PrintWarning(Message, Duration);
+    if constexpr (!Game::Config::bEnableDebugDraw) {
+        return;
     }
+
+    FGameDebugPrint::PrintWarning(Message, Duration);
 }
 
 void UGameDebugBlueprintLibrary::PrintError(const FString& Message, float Duration) {
-    if constexpr (Game::Config::bEnableDebugDraw) {
-        FGameDebugPrint::PrintError(Message, Duration);
+    if constexpr (!Game::Config::bEnableDebugDraw) {
+        return;
     }
+
+    FGameDebugPrint::PrintError(Message, Duration);
 }
 
 void UGameDebugBlueprintLibrary::DrawDebugLine(
@@ -52,16 +61,18 @@ void UGameDebugBlueprintLibrary::DrawDebugLine(
     float Duration,
     float Thickness
 ) {
-    if constexpr (Game::Config::bEnableDebugDraw) {
-        FGameDebugDraw::DrawLine(
-            FGameDebugTimeController::ResolveWorld(WorldContextObject),
-            LineStart,
-            LineEnd,
-            Color,
-            Duration,
-            Thickness
-        );
+    if constexpr (!Game::Config::bEnableDebugDraw) {
+        return;
     }
+
+    FGameDebugDraw::DrawLine(
+        Game::Debug::Private::ResolveWorld(WorldContextObject),
+        LineStart,
+        LineEnd,
+        Color,
+        Duration,
+        Thickness
+    );
 }
 
 void UGameDebugBlueprintLibrary::DrawDebugSphere(
@@ -73,17 +84,19 @@ void UGameDebugBlueprintLibrary::DrawDebugSphere(
     float Duration,
     float Thickness
 ) {
-    if constexpr (Game::Config::bEnableDebugDraw) {
-        FGameDebugDraw::DrawSphere(
-            FGameDebugTimeController::ResolveWorld(WorldContextObject),
-            Center,
-            Radius,
-            Color,
-            Segments,
-            Duration,
-            Thickness
-        );
+    if constexpr (!Game::Config::bEnableDebugDraw) {
+        return;
     }
+
+    FGameDebugDraw::DrawSphere(
+        Game::Debug::Private::ResolveWorld(WorldContextObject),
+        Center,
+        Radius,
+        Color,
+        Segments,
+        Duration,
+        Thickness
+    );
 }
 
 void UGameDebugBlueprintLibrary::DrawDebugBox(
@@ -95,17 +108,19 @@ void UGameDebugBlueprintLibrary::DrawDebugBox(
     float Duration,
     float Thickness
 ) {
-    if constexpr (Game::Config::bEnableDebugDraw) {
-        FGameDebugDraw::DrawBox(
-            FGameDebugTimeController::ResolveWorld(WorldContextObject),
-            Center,
-            Extent,
-            Rotation.Quaternion(),
-            Color,
-            Duration,
-            Thickness
-        );
+    if constexpr (!Game::Config::bEnableDebugDraw) {
+        return;
     }
+
+    FGameDebugDraw::DrawBox(
+        Game::Debug::Private::ResolveWorld(WorldContextObject),
+        Center,
+        Extent,
+        Rotation.Quaternion(),
+        Color,
+        Duration,
+        Thickness
+    );
 }
 
 void UGameDebugBlueprintLibrary::DrawDebugCapsule(
@@ -118,18 +133,20 @@ void UGameDebugBlueprintLibrary::DrawDebugCapsule(
     float Duration,
     float Thickness
 ) {
-    if constexpr (Game::Config::bEnableDebugDraw) {
-        FGameDebugDraw::DrawCapsule(
-            FGameDebugTimeController::ResolveWorld(WorldContextObject),
-            Center,
-            HalfHeight,
-            Radius,
-            Rotation.Quaternion(),
-            Color,
-            Duration,
-            Thickness
-        );
+    if constexpr (!Game::Config::bEnableDebugDraw) {
+        return;
     }
+
+    FGameDebugDraw::DrawCapsule(
+        Game::Debug::Private::ResolveWorld(WorldContextObject),
+        Center,
+        HalfHeight,
+        Radius,
+        Rotation.Quaternion(),
+        Color,
+        Duration,
+        Thickness
+    );
 }
 
 void UGameDebugBlueprintLibrary::DrawDebugCylinder(
@@ -142,18 +159,20 @@ void UGameDebugBlueprintLibrary::DrawDebugCylinder(
     float Duration,
     float Thickness
 ) {
-    if constexpr (Game::Config::bEnableDebugDraw) {
-        FGameDebugDraw::DrawCylinder(
-            FGameDebugTimeController::ResolveWorld(WorldContextObject),
-            Start,
-            End,
-            Radius,
-            Segments,
-            Color,
-            Duration,
-            Thickness
-        );
+    if constexpr (!Game::Config::bEnableDebugDraw) {
+        return;
     }
+
+    FGameDebugDraw::DrawCylinder(
+        Game::Debug::Private::ResolveWorld(WorldContextObject),
+        Start,
+        End,
+        Radius,
+        Segments,
+        Color,
+        Duration,
+        Thickness
+    );
 }
 
 void UGameDebugBlueprintLibrary::DrawDebugCone(
@@ -168,20 +187,22 @@ void UGameDebugBlueprintLibrary::DrawDebugCone(
     float Duration,
     float Thickness
 ) {
-    if constexpr (Game::Config::bEnableDebugDraw) {
-        FGameDebugDraw::DrawCone(
-            FGameDebugTimeController::ResolveWorld(WorldContextObject),
-            Origin,
-            Direction,
-            Length,
-            FMath::DegreesToRadians(AngleWidthDeg),
-            FMath::DegreesToRadians(AngleHeightDeg),
-            NumSides,
-            Color,
-            Duration,
-            Thickness
-        );
+    if constexpr (!Game::Config::bEnableDebugDraw) {
+        return;
     }
+
+    FGameDebugDraw::DrawCone(
+        Game::Debug::Private::ResolveWorld(WorldContextObject),
+        Origin,
+        Direction,
+        Length,
+        FMath::DegreesToRadians(AngleWidthDeg),
+        FMath::DegreesToRadians(AngleHeightDeg),
+        NumSides,
+        Color,
+        Duration,
+        Thickness
+    );
 }
 
 void UGameDebugBlueprintLibrary::DrawDebugArrow(
@@ -193,17 +214,19 @@ void UGameDebugBlueprintLibrary::DrawDebugArrow(
     float Duration,
     float Thickness
 ) {
-    if constexpr (Game::Config::bEnableDebugDraw) {
-        FGameDebugDraw::DrawArrow(
-            FGameDebugTimeController::ResolveWorld(WorldContextObject),
-            LineStart,
-            LineEnd,
-            ArrowSize,
-            Color,
-            Duration,
-            Thickness
-        );
+    if constexpr (!Game::Config::bEnableDebugDraw) {
+        return;
     }
+
+    FGameDebugDraw::DrawArrow(
+        Game::Debug::Private::ResolveWorld(WorldContextObject),
+        LineStart,
+        LineEnd,
+        ArrowSize,
+        Color,
+        Duration,
+        Thickness
+    );
 }
 
 void UGameDebugBlueprintLibrary::DrawDebugCoordinateSystem(
@@ -214,16 +237,18 @@ void UGameDebugBlueprintLibrary::DrawDebugCoordinateSystem(
     float Duration,
     float Thickness
 ) {
-    if constexpr (Game::Config::bEnableDebugDraw) {
-        FGameDebugDraw::DrawCoordinateSystem(
-            FGameDebugTimeController::ResolveWorld(WorldContextObject),
-            AxisLoc,
-            AxisRot,
-            Scale,
-            Duration,
-            Thickness
-        );
+    if constexpr (!Game::Config::bEnableDebugDraw) {
+        return;
     }
+
+    FGameDebugDraw::DrawCoordinateSystem(
+        Game::Debug::Private::ResolveWorld(WorldContextObject),
+        AxisLoc,
+        AxisRot,
+        Scale,
+        Duration,
+        Thickness
+    );
 }
 
 void UGameDebugBlueprintLibrary::DrawDebugString(
@@ -235,18 +260,20 @@ void UGameDebugBlueprintLibrary::DrawDebugString(
     bool bDrawShadow,
     float FontScale
 ) {
-    if constexpr (Game::Config::bEnableDebugDraw) {
-        FGameDebugDraw::DrawString(
-            FGameDebugTimeController::ResolveWorld(WorldContextObject),
-            TextLocation,
-            Text,
-            nullptr,
-            TextColor,
-            Duration,
-            bDrawShadow,
-            FontScale
-        );
+    if constexpr (!Game::Config::bEnableDebugDraw) {
+        return;
     }
+
+    FGameDebugDraw::DrawString(
+        Game::Debug::Private::ResolveWorld(WorldContextObject),
+        TextLocation,
+        Text,
+        nullptr,
+        TextColor,
+        Duration,
+        bDrawShadow,
+        FontScale
+    );
 }
 
 bool UGameDebugBlueprintLibrary::SetGlobalTimeDilation(const UObject* WorldContextObject, float TimeDilation) {

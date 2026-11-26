@@ -15,8 +15,7 @@ public class GameDebug : ModuleRules {
         });
 
         PrivateDependencyModuleNames.AddRange(new string[] {
-            "Slate",
-            "SlateCore",
+            "GameLogging",
         });
     }
 }
