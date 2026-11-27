@@ -63,7 +63,6 @@ graph TD
     GameGameplay --> GameLogging
     GameGameplay --> GameMessage
     GameGameplay --> GamePool
-    GameFeedback --> GameGameplayCore
     GameFeedback --> GameLogging
     GameFeedback --> GameMessage
     GameFeedback --> GameCore
@@ -100,7 +99,7 @@ graph TD
 | [**GameDebug**](Plugins/GameDebug/README.md) | 调试与诊断工具链 | 锁序安全 GM 指令中心（`FStringView` 前置短路/引号转义）、64 位正交域盐屏幕通道打印、全边界防卫 3D 绘制、O(1) 定长环形轨迹记录器、按世界隔离时间膨胀与单步步进、零拷贝快照观察中心、`FScopedCpuTimer` 耗时秒表与蓝图函数库（Shipping 零开销剥离） | `GameCore`, `GameLogging` | [文档中心](Plugins/GameDebug/Docs/Architecture/Overview.md) |
 | [**GameGameplayCore**](Plugins/GameGameplayCore/README.md) | 战斗核心契约 | 零 GAS 强依赖、`IDamageable` 泛型可受击契约、闭环同步打击反馈、通用数值 `UGameStatComponent`（属性字典 / 修正器 / 按 Tag 订阅）、生命组件 `UGameVitalComponent`（存活状态机 / 复活）、通用 Buff `UGameBuffComponent`（全员实现 `IGamePoolable`） | `GameCore`, `GamePool`, `GameLogging` | [文档中心](Plugins/GameGameplayCore/Docs/Architecture/Overview.md) |
 | [**GameGameplay**](Plugins/GameGameplay/README.md) | GAS 业务绑定 | 通用 ASC 基类、全时序自动握手 Bootstrap 组件（实现 `IGamePoolable`）、双轨元属性集、运行时通道 Registry 的 ExecCalc、GAS Buff 桥接、UI 属性解耦映射 | `GameGameplayCore`, `GameplayAbilities`, `GameCore`, `GameMessage`, `GamePool`, `GameLogging`, `GameFeedback` | [文档中心](Plugins/GameGameplay/Docs/Architecture/Overview.md) |
-| [**GameFeedback**](Plugins/GameFeedback/README.md) | 打击感表现中枢 | 消息总线 + 能力组件（无集中上帝类）、顿帧累积预算、闪白绝对时间续期、分屏独立镜头震动、Listen/Dedicated Server 紧凑网络派发（典型 ≤64B、完整 ≤96B、视距裁剪、每帧限流）、本地预测指纹去重 | `GameCore`, `GameGameplayCore`, `GameLogging`, `Niagara` | [文档中心](Plugins/GameFeedback/Docs/Architecture/Overview.md) |
+| [**GameFeedback**](Plugins/GameFeedback/README.md) | 打击感表现中枢 | 零玩法耦合消息总线 + 独立能力组件、空闲零 Tick 分层时间膨胀（`TStaticArray` 零堆分配）、单次预解析与 O(1) ID 缓存、统一软资产去重预热、弱存活令牌防 UAF 闪白、分屏交错去重、紧凑 41B/44B 网络派发（`TBitMask` / 零受众免耗配额 / 视距裁剪）、有界预测指纹去重 | `GameCore`, `GameMessage`, `GameLogging`, `Niagara` | [文档中心](Plugins/GameFeedback/Docs/Architecture/Overview.md) |
 | [**GameFlow**](Plugins/GameFlow/README.md) | 关卡流转与就绪屏障 | `ELoadingTransitionPhase` 显式三态流转、多 PIE `PreLoadMapWithContext` 与预览世界隔离、`GameCore::TSlotMap` 代际零堆分配 `FLoadingBarrierToken`、O(1) 加权进度与遥测报告、自动联动全局/单屏障看门狗、跨线程安全零直通分配 C++20 协程等待器与重入安全蓝图异步节点 | `GameCore`, `GameLogging` | [文档中心](Plugins/GameFlow/Docs/Architecture/Overview.md) |
 | [**GameDataCore**](Plugins/GameData/Source/GameDataCore/README.md) | 通用数据与持久化 | 二进制 `.bin` 脱机仓库（CRC32 强校验）、不可变快照与版本原子发布、通用分段存档（段注册 / 版本迁移 / 槽位白名单） | `GameCore`, `GameLogging`, `Json` | [GameData 文档](Plugins/GameData/Docs/Architecture/Overview.md) |
 | [**GameData**](Plugins/GameData/README.md) | 业务宿主与云同步 | 由 Excel 管线写入 `Public/Generated`、`Private/Generated`；提供 `UGameCloudSaveSubsystem` 强类型 RPC 云存档上传/拉取/落盘热应用门面 | `GameDataCore`, `GameNetCore`, `GameNetService` | [GameData 文档](Plugins/GameData/Docs/Architecture/Overview.md) |
