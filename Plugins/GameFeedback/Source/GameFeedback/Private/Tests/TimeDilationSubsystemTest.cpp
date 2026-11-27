@@ -4,43 +4,43 @@
 
 #if WITH_AUTOMATION_TESTS
 
-#include "Engine/Engine.h"
+#include "Engine/World.h"
 #include "GameFramework/Actor.h"
 #include "Misc/AutomationTest.h"
-
-namespace {
-
-UWorld* GetTimeDilationTestWorld() {
-    for (const FWorldContext& Context : GEngine->GetWorldContexts()) {
-        if (Context.World()) {
-            return Context.World();
-        }
-    }
-    return nullptr;
-}
-
-} // namespace
+#include "Tests/GameFeedbackTestHelpers.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameTimeActorHitStopTest, "Game.Feedback.Time.ActorHitStop",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 /**
- * @brief 验证 Actor 打击顿帧申请、定时步进、自定义缩放还原与即时清理
+ * @brief 验证 Actor 打击顿帧申请、空闲零 Tick 休眠/唤醒、定时步进与即时清理
+ * @param Parameters 自动化框架参数（未使用）
+ * @return 全部断言通过返回 true
  */
 bool FGameTimeActorHitStopTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UWorld* World = GetTimeDilationTestWorld();
-    TestNotNull(TEXT("测试世界有效"), World);
+    GameFeedbackTestHelpers::FScopedLightweightGameWorld WorldGuard;
+    UWorld* World = WorldGuard.GetWorld();
+    TestNotNull(TEXT("隔离测试世界有效"), World);
     if (!World) {
         return false;
     }
 
     UTimeDilationSubsystem* TimeSubsystem = World->GetSubsystem<UTimeDilationSubsystem>();
-    TestNotNull(TEXT("时间膨胀子系统有效"), TimeSubsystem);
+    TestNotNull(TEXT("游戏世界时间膨胀子系统有效"), TimeSubsystem);
     if (!TimeSubsystem) {
         return false;
     }
 
-    TimeSubsystem->ClearAllHitStops();
+    UWorld* EditorWorld = UWorld::CreateWorld(EWorldType::Editor, false);
+    if (EditorWorld) {
+        TestFalse(
+            TEXT("非游戏世界（Editor）严禁创建 TimeDilationSubsystem"),
+            GetDefault<UTimeDilationSubsystem>()->ShouldCreateSubsystem(EditorWorld));
+        EditorWorld->DestroyWorld(false);
+        EditorWorld->RemoveFromRoot();
+    }
+
+    TestFalse(TEXT("空闲态 IsTickable 必须为 false（零空转休眠）"), TimeSubsystem->IsTickable());
 
     FActorSpawnParameters SpawnParams;
     SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
@@ -53,6 +53,7 @@ bool FGameTimeActorHitStopTest::RunTest([[maybe_unused]] const FString& Paramete
     TargetActor->CustomTimeDilation = 1.0f;
 
     TimeSubsystem->RequestHitStop(TargetActor, 0.1f, 0.05f);
+    TestTrue(TEXT("激活顿帧后 IsTickable 必须唤醒为 true"), TimeSubsystem->IsTickable());
     TestTrue(TEXT("Actor 正处于顿帧中"), TimeSubsystem->IsActorInHitStop(TargetActor));
     TestNearlyEqual(TEXT("Actor 时间缩放已设定为顿帧值"), TargetActor->CustomTimeDilation, 0.05f, 0.0001f);
 
@@ -62,15 +63,16 @@ bool FGameTimeActorHitStopTest::RunTest([[maybe_unused]] const FString& Paramete
 
     TimeSubsystem->AdvanceTime(0.06f);
     TestFalse(TEXT("超过持续时间后退出顿帧"), TimeSubsystem->IsActorInHitStop(TargetActor));
+    TestFalse(TEXT("全部顿帧结束后自动恢复空闲休眠"), TimeSubsystem->IsTickable());
     TestNearlyEqual(TEXT("Actor 时间缩放自动还原"), TargetActor->CustomTimeDilation, 1.0f, 0.0001f);
 
     TimeSubsystem->RequestHitStop(TargetActor, 0.5f, 0.01f);
     TestTrue(TEXT("再次请求顿帧生效"), TimeSubsystem->IsActorInHitStop(TargetActor));
     TimeSubsystem->ClearHitStop(TargetActor);
     TestFalse(TEXT("主动清除后立即退出顿帧"), TimeSubsystem->IsActorInHitStop(TargetActor));
+    TestFalse(TEXT("清除全部顿帧后恢复空闲休眠"), TimeSubsystem->IsTickable());
     TestNearlyEqual(TEXT("主动清除后时间缩放立即还原"), TargetActor->CustomTimeDilation, 1.0f, 0.0001f);
 
-    TargetActor->Destroy();
     return true;
 }
 
@@ -78,10 +80,13 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameTimePriorityStackTest, "Game.Feedback.Time
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 /**
- * @brief 验证分层时间膨胀通道优先级覆盖与退栈还原机制
+ * @brief 验证分层时间膨胀通道优先级覆盖、下界安全钳制与退栈还原机制
+ * @param Parameters 自动化框架参数（未使用）
+ * @return 全部断言通过返回 true
  */
 bool FGameTimePriorityStackTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UWorld* World = GetTimeDilationTestWorld();
+    GameFeedbackTestHelpers::FScopedLightweightGameWorld WorldGuard;
+    UWorld* World = WorldGuard.GetWorld();
     TestNotNull(TEXT("测试世界有效"), World);
     if (!World) {
         return false;
@@ -97,6 +102,7 @@ bool FGameTimePriorityStackTest::RunTest([[maybe_unused]] const FString& Paramet
     TestNearlyEqual(TEXT("初始状态全局时间缩放为 1.0"), TimeSubsystem->GetEffectiveGlobalTimeDilation(), 1.0f, 0.0001f);
 
     TimeSubsystem->RequestGlobalDilation(ETimeDilationChannel::WorldModifier, 10.0f, 0.8f);
+    TestTrue(TEXT("激活全局通道后唤醒 Tick"), TimeSubsystem->IsTickable());
     TestNearlyEqual(TEXT("激活 WorldModifier 通道"), TimeSubsystem->GetEffectiveGlobalTimeDilation(), 0.8f, 0.0001f);
     TestNearlyEqual(TEXT("读取指定通道时间膨胀值"), TimeSubsystem->GetChannelTimeDilation(ETimeDilationChannel::WorldModifier), 0.8f, 0.0001f);
     TestNearlyEqual(TEXT("未激活通道时间膨胀默认为 1.0"), TimeSubsystem->GetChannelTimeDilation(ETimeDilationChannel::SlowMo), 1.0f, 0.0001f);
@@ -112,7 +118,11 @@ bool FGameTimePriorityStackTest::RunTest([[maybe_unused]] const FString& Paramet
     TestNearlyEqual(TEXT("退栈后回落至 SlowMo"), TimeSubsystem->GetEffectiveGlobalTimeDilation(), 0.3f, 0.0001f);
 
     TimeSubsystem->RequestGlobalDilation(ETimeDilationChannel::SystemPause, 0.0f, 0.0f);
-    TestNearlyEqual(TEXT("SystemPause 拥有最高优先级"), TimeSubsystem->GetEffectiveGlobalTimeDilation(), 0.0f, 0.0001f);
+    TestNearlyEqual(
+        TEXT("SystemPause 拥有最高优先级并安全钳制下界为 0.0001f"),
+        TimeSubsystem->GetEffectiveGlobalTimeDilation(),
+        0.0001f,
+        0.00001f);
 
     TimeSubsystem->ClearGlobalDilation(ETimeDilationChannel::SystemPause);
     TestNearlyEqual(TEXT("解除暂停后回落至 SlowMo"), TimeSubsystem->GetEffectiveGlobalTimeDilation(), 0.3f, 0.0001f);
@@ -123,6 +133,7 @@ bool FGameTimePriorityStackTest::RunTest([[maybe_unused]] const FString& Paramet
 
     TimeSubsystem->ClearGlobalDilation(ETimeDilationChannel::WorldModifier);
     TestNearlyEqual(TEXT("清空全部通道后恢复默认 1.0"), TimeSubsystem->GetEffectiveGlobalTimeDilation(), 1.0f, 0.0001f);
+    TestFalse(TEXT("清空全部通道后恢复空闲休眠"), TimeSubsystem->IsTickable());
 
     return true;
 }
@@ -132,9 +143,12 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameTimeBlendOutRecoveryTest, "Game.Feedback.T
 
 /**
  * @brief 验证时间膨胀平滑插值淡出回弹曲线
+ * @param Parameters 自动化框架参数（未使用）
+ * @return 全部断言通过返回 true
  */
 bool FGameTimeBlendOutRecoveryTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UWorld* World = GetTimeDilationTestWorld();
+    GameFeedbackTestHelpers::FScopedLightweightGameWorld WorldGuard;
+    UWorld* World = WorldGuard.GetWorld();
     TestNotNull(TEXT("测试世界有效"), World);
     if (!World) {
         return false;
@@ -146,8 +160,6 @@ bool FGameTimeBlendOutRecoveryTest::RunTest([[maybe_unused]] const FString& Para
         return false;
     }
 
-    TimeSubsystem->ClearAllGlobalDilations();
-
     TimeSubsystem->RequestGlobalDilation(ETimeDilationChannel::SlowMo, 1.0f, 0.2f, 1.0f);
     TestNearlyEqual(TEXT("慢放初始时间缩放为 0.2"), TimeSubsystem->GetEffectiveGlobalTimeDilation(), 0.2f, 0.0001f);
 
@@ -158,7 +170,7 @@ bool FGameTimeBlendOutRecoveryTest::RunTest([[maybe_unused]] const FString& Para
     TestTrue(TEXT("持续时间结束进入淡出阶段"), TimeSubsystem->IsChannelActive(ETimeDilationChannel::SlowMo));
 
     TimeSubsystem->AdvanceTime(0.5f);
-    TestNearlyEqual(TEXT("淡出过半时插值接近 0.6"), TimeSubsystem->GetEffectiveGlobalTimeDilation(), 0.6f, 0.05f);
+    TestNearlyEqual(TEXT("淡出过半时插值接近 0.6"), TimeSubsystem->GetEffectiveGlobalTimeDilation(), 0.6f, 0.001f);
 
     TimeSubsystem->AdvanceTime(0.6f);
     TestFalse(TEXT("淡出完成通道关闭"), TimeSubsystem->IsChannelActive(ETimeDilationChannel::SlowMo));
@@ -176,7 +188,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGameTimePersistentBlendOutTest, "Game.Feedback
  * @return 全部断言通过返回 true
  */
 bool FGameTimePersistentBlendOutTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UWorld* World = GetTimeDilationTestWorld();
+    GameFeedbackTestHelpers::FScopedLightweightGameWorld WorldGuard;
+    UWorld* World = WorldGuard.GetWorld();
     TestNotNull(TEXT("测试世界有效"), World);
     if (!World) {
         return false;
@@ -188,8 +201,6 @@ bool FGameTimePersistentBlendOutTest::RunTest([[maybe_unused]] const FString& Pa
         return false;
     }
 
-    TimeSubsystem->ClearAllGlobalDilations();
-
     TimeSubsystem->RequestGlobalDilation(ETimeDilationChannel::SlowMo, 0.0f, 0.5f);
     TestNearlyEqual(TEXT("持久通道生效为 0.5"), TimeSubsystem->GetEffectiveGlobalTimeDilation(), 0.5f, 0.0001f);
 
@@ -198,9 +209,7 @@ bool FGameTimePersistentBlendOutTest::RunTest([[maybe_unused]] const FString& Pa
 
     TimeSubsystem->AdvanceTime(0.1f);
     TestTrue(TEXT("淡出未完成前仍激活"), TimeSubsystem->IsChannelActive(ETimeDilationChannel::SlowMo));
-    TestTrue(TEXT("淡出中时间缩放在 0.5 与 1.0 之间"),
-        TimeSubsystem->GetEffectiveGlobalTimeDilation() > 0.5f
-        && TimeSubsystem->GetEffectiveGlobalTimeDilation() < 1.0f);
+    TestNearlyEqual(TEXT("淡出过半时应线性插值到 0.75"), TimeSubsystem->GetEffectiveGlobalTimeDilation(), 0.75f, 0.001f);
 
     TimeSubsystem->AdvanceTime(0.2f);
     TestFalse(TEXT("淡出完成后通道关闭"), TimeSubsystem->IsChannelActive(ETimeDilationChannel::SlowMo));
@@ -227,4 +236,4 @@ bool FGameTimeDilationMixerCrossBoundaryTest::RunTest([[maybe_unused]] const FSt
     return true;
 }
 
-#endif // WITH_AUTOMATION_TESTS
+#endif  // WITH_AUTOMATION_TESTS

@@ -1,25 +1,34 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "System/GameFeedbackPredictionHistory.h"
+#include "Tracker/GameFeedbackPredictionHistory.h"
 
 namespace {
 constexpr double PredictionMatchWindowSeconds = 0.5;
 }
 
 /**
- * @brief 记录一次具有非零跨端事件身份的本地预测表现
+ * @brief 记录一次具有非零跨端事件身份的本地预测表现（达到上限时自动淘汰最旧记录）
  * @param PredictionEventId 跨端预测事件 ID；0 不记录
  * @param Attacker 攻击者实体
  * @param Target 目标实体
  * @param RealTime 当前真实时间（秒）
  */
-void FGameFeedbackPredictionHistory::Add(uint16 PredictionEventId, const TWeakObjectPtr<AActor>& Attacker, const TWeakObjectPtr<AActor>& Target, double RealTime)
-{
+void FGameFeedbackPredictionHistory::Add(uint16 PredictionEventId, const TWeakObjectPtr<AActor>& Attacker, const TWeakObjectPtr<AActor>& Target, double RealTime) {
     if (PredictionEventId == 0) {
         return;
     }
 
     Prune(RealTime);
+
+    if (Entries.Num() >= MaxEntries) {
+        int32 OldestIndex = 0;
+        for (int32 Index = 1; Index < Entries.Num(); ++Index) {
+            if (Entries[Index].Timestamp < Entries[OldestIndex].Timestamp) {
+                OldestIndex = Index;
+            }
+        }
+        Entries.RemoveAtSwap(OldestIndex);
+    }
 
     FEntry& Entry = Entries.Emplace_GetRef();
     Entry.PredictionEventId = PredictionEventId;
@@ -36,8 +45,7 @@ void FGameFeedbackPredictionHistory::Add(uint16 PredictionEventId, const TWeakOb
  * @param RealTime 当前真实时间（秒）
  * @return 命中并消费返回 true；无匹配返回 false
  */
-bool FGameFeedbackPredictionHistory::ConsumeMatch(uint16 PredictionEventId, const TWeakObjectPtr<AActor>& Attacker, const TWeakObjectPtr<AActor>& Target, double RealTime)
-{
+bool FGameFeedbackPredictionHistory::ConsumeMatch(uint16 PredictionEventId, const TWeakObjectPtr<AActor>& Attacker, const TWeakObjectPtr<AActor>& Target, double RealTime) {
     if (PredictionEventId == 0) {
         return false;
     }
@@ -57,12 +65,13 @@ bool FGameFeedbackPredictionHistory::ConsumeMatch(uint16 PredictionEventId, cons
 }
 
 /**
- * @brief 清理超出有效窗口的指纹
+ * @brief 清理超出有效窗口或实体已失效的指纹
  * @param RealTime 当前真实时间（秒）
  */
-void FGameFeedbackPredictionHistory::Prune(double RealTime)
-{
-    Entries.RemoveAll([RealTime](const FEntry& Entry) {
-        return RealTime - Entry.Timestamp > PredictionMatchWindowSeconds;
+void FGameFeedbackPredictionHistory::Prune(double RealTime) {
+    Entries.RemoveAllSwap([RealTime](const FEntry& Entry) {
+        const bool bExpired = (RealTime - Entry.Timestamp) > PredictionMatchWindowSeconds;
+        const bool bEntityStale = Entry.Attacker.IsStale() || Entry.Target.IsStale();
+        return bExpired || bEntityStale;
     });
 }

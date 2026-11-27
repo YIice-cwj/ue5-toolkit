@@ -1,12 +1,13 @@
 /**
  * @file GameFeedbackDefinitionProvider.h
- * @brief 表现资产解析与流式预热服务（唯一定义来源）
+ * @brief 表现资产解析与流式预热服务（唯一定义与媒体软引用异步预热来源）
  */
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
+#include "UObject/ObjectKey.h"
 
 #include "GameFeedbackDefinitionProvider.generated.h"
 
@@ -16,7 +17,7 @@ struct FGameFeedbackSignal;
 struct FStreamableHandle;
 
 /**
- * @brief 负责 Registry 加载、最优定义解析与软引用预热的世界服务
+ * @brief 负责 Registry 加载、最优定义解析与软引用去重预热的世界服务
  */
 UCLASS()
 class GAMEFEEDBACK_API UGameFeedbackDefinitionProvider : public UWorldSubsystem {
@@ -31,17 +32,17 @@ public:
     const UGameFeedbackDefinition* Resolve(const FGameFeedbackSignal& Signal);
 
     /**
-     * @brief 查询已登记 Definition 的稳定网络 ID
+     * @brief O(1) 查询已登记 Definition 的稳定网络 ID（带版本校验的指针直查缓存）
      * @param Definition 待查询资产
      * @return 非零 ID；未登记、冲突或 Registry 未配置时返回 0
      */
-    uint32 GetDefinitionId(const UGameFeedbackDefinition* Definition) const;
+    [[nodiscard]] uint32 GetDefinitionId(const UGameFeedbackDefinition* Definition) const;
 
     /**
      * @brief 获取当前 Registry 的确定性映射版本
      * @return 映射版本；Registry 未配置时返回 0
      */
-    uint32 GetDefinitionMappingVersion() const;
+    [[nodiscard]] uint32 GetDefinitionMappingVersion() const;
 
     /**
      * @brief 按稳定 ID 与映射版本还原服务端最终 Definition
@@ -58,6 +59,18 @@ public:
     void PreloadFeedbackBundle(TConstArrayView<TSoftObjectPtr<UGameFeedbackDefinition>> Definitions);
 
     /**
+     * @brief 按路径去重异步预热通用视听软资产（VFX / Audio），加载完成后随世界生命周期保活并在注销时释放
+     * @param AssetPath 目标软资产对象路径
+     */
+    void PreloadSoftAsset(const FSoftObjectPath& AssetPath);
+
+    /**
+     * @brief 查询当前处于在飞状态的流式异步预热句柄总数（含 Definition 与视听软资产）
+     * @return 在飞句柄数量
+     */
+    [[nodiscard]] int32 GetActivePreloadHandleCount() const;
+
+    /**
      * @brief 仅在游戏世界创建（包含 Dedicated Server）
      * @param Outer 外层对象
      * @return 是否创建
@@ -71,7 +84,7 @@ public:
     void Initialize(FSubsystemCollectionBase& Collection) override;
 
     /**
-     * @brief 注销：取消异步加载并释放注册表、句柄与强缓存
+     * @brief 注销：取消全部异步加载并释放注册表、句柄与强缓存
      */
     void Deinitialize() override;
 
@@ -80,7 +93,7 @@ public:
      * @param WorldContextObject 世界上下文对象
      * @return 服务指针；未就绪时返回 nullptr
      */
-    static UGameFeedbackDefinitionProvider* GetPtr(const UObject* WorldContextObject);
+    [[nodiscard]] static UGameFeedbackDefinitionProvider* GetPtr(const UObject* WorldContextObject);
 
 private:
     /**
@@ -89,6 +102,13 @@ private:
      * @return 已加载定义；加载中或加载失败时返回 nullptr
      */
     const UGameFeedbackDefinition* ResolveDefinition(const TSoftObjectPtr<UGameFeedbackDefinition>& Definition);
+
+    /**
+     * @brief 为未驻留内存的 Definition 发起去重异步流式加载（正确处理同步完成竞态）
+     * @param Path 目标 Definition 完整软对象路径
+     * @return 若引擎同步完成加载则立即返回已解析指针，否则返回 nullptr
+     */
+    const UGameFeedbackDefinition* RequestDefinitionAsyncLoad(const FSoftObjectPath& Path);
 
     /**
      * @brief 配置缺失时输出一次性诊断，避免每次查询重复刷屏
@@ -103,5 +123,12 @@ private:
     UPROPERTY()
     TMap<FSoftObjectPath, TObjectPtr<UGameFeedbackDefinition>> LoadedDefinitions;
 
+    UPROPERTY()
+    TMap<FSoftObjectPath, TObjectPtr<UObject>> PreloadedMediaAssets;
+
     TMap<FSoftObjectPath, TSharedPtr<FStreamableHandle>> DefinitionLoads;
+    TMap<FSoftObjectPath, TSharedPtr<FStreamableHandle>> PendingMediaLoads;
+
+    mutable uint32 CachedMappingVersion = 0;
+    mutable TMap<TObjectKey<UGameFeedbackDefinition>, uint32> DefinitionIdCache;
 };

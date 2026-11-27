@@ -16,17 +16,15 @@ public class GameFeedback : ModuleRules {
             "Niagara",
             "DeveloperSettings",
             "GameCore",
-            "GameMessage",
-            "GameGameplayCore",
-            "NetCore",
         });
 
         PrivateDependencyModuleNames.AddRange(new string[] {
             "GameLogging",
+            "GameMessage",
+            "NetCore",
         });
 
         PublicIncludePaths.AddRange(new string[] {
-            ModuleDirectory,
             Path.Combine(ModuleDirectory, "Public"),
         });
     }

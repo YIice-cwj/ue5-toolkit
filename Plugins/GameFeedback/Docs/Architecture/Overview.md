@@ -104,6 +104,9 @@ namespace GameFeedback {
 - **只在游戏世界（GameWorld）运行**：根据 `ShouldCreateSubsystem` 过滤，排除非游戏世界（编辑器视口等）；
 - **拓扑预装配**：
   - 在 `GameStateBase` 上装配 `UGameFeedbackWorldComponent`（非 Dedicated Server）与 `UGameFeedbackNetworkDispatcherComponent`（权威端）；
-  - 在权威服务端为连接的 `PlayerController` 预装配 `UGameFeedbackReceiverComponent`（随网络复制同步至客户端）；
+  - 在权威服务端仅为远端连接的 `PlayerController` 预装配 `UGameFeedbackReceiverComponent`（免除 ListenServer 本地主机 PC 的冗余复制组件，随组件复制同步至客户端）；
   - 在本地 `PlayerController` 上装配 `UGameFeedbackPlayerComponent`；
-- **迟到玩家自愈补齐**：启动 `0.25s` 轻量定时器轮询新加入的玩家控制器，确保热连接玩家无缝获取表现组件；并在 `Deinitialize` 时安全释放。
+- **多世界隔离与热加入自愈**：
+  - 订阅 `FGameModeEvents::GameModePostLoginEvent` 并严格校验 `NewPlayer->GetWorld() == GetWorld()` 隔离多 PIE 世界，确保服务端新连接远端玩家立即获得 `ReceiverComponent`；
+  - 订阅 `UGameInstance::OnLocalPlayerAddedEvent` 支持本地分屏玩家热加入后自动补齐 `PlayerComponent`；
+  - 启动期若 `GameState` 或初始玩家尚未就绪，则以 `0.25s` 轻量定时器收敛补齐并在就绪后自动停止，`Deinitialize` 时安全清理定时器与全部委托。

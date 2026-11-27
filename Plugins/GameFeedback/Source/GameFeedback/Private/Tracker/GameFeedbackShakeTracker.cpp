@@ -1,6 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "System/GameFeedbackShakeTracker.h"
+#include "Tracker/GameFeedbackShakeTracker.h"
 
 #include "Camera/CameraShakeBase.h"
 #include "Camera/PlayerCameraManager.h"
@@ -18,14 +18,13 @@ void FGameFeedbackShakeTracker::Execute(
     TSubclassOf<UCameraShakeBase> ShakeClass,
     float ShakeScale,
     const FVector& LocalImpactDirection,
-    bool bOrientToImpact)
-{
+    bool bOrientToImpact) {
     if (!CameraManager || !ShakeClass || ShakeScale <= 0.0f) {
         return;
     }
 
     for (auto It = States.CreateIterator(); It; ++It) {
-        if (It.Key().ResolveObjectPtr() == nullptr) {
+        if (!IsValid(It.Key().ResolveObjectPtr())) {
             It.RemoveCurrent();
         }
     }
@@ -56,16 +55,15 @@ void FGameFeedbackShakeTracker::Execute(
 }
 
 /**
- * @brief 停止全部已启动震动并清理失效摄像机记录
+ * @brief 停止全部已启动震动并清理记录
  */
-void FGameFeedbackShakeTracker::StopAll()
-{
-    for (auto It = States.CreateIterator(); It; ++It) {
-        if (APlayerCameraManager* CameraManager = It.Key().ResolveObjectPtr()) {
-            if (UCameraShakeBase* Shake = It.Value().Instance.Get()) {
+void FGameFeedbackShakeTracker::StopAll() {
+    for (const auto& Pair : States) {
+        if (APlayerCameraManager* CameraManager = Pair.Key.ResolveObjectPtr(); IsValid(CameraManager)) {
+            if (UCameraShakeBase* Shake = Pair.Value.Instance.Get()) {
                 CameraManager->StopCameraShake(Shake, false);
             }
         }
-        It.RemoveCurrent();
     }
+    States.Empty();
 }

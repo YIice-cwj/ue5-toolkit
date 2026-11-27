@@ -2,7 +2,9 @@
 
 `UGameplayCueNotify_GameFeedback` 是将 Unreal Engine GAS 原生 `GameplayCue` 事件统一收敛至 `GameFeedback` 表现中枢的静态无状态桥接器。
 
-- **头文件**：`#include "Bridge/UGameplayCueNotify_GameFeedback.h"`
+- **头文件**：
+  - `#include "Bridge/UGameplayCueNotify_GameFeedback.h"`
+  - `#include "Bridge/UGameFeedbackAdapter.h"`（伤害契约到 `FGameFeedbackSignal` 适配器）
 - **基类**：`UGameplayCueNotify_Static`
 - **形态**：静态无状态 Cue 处理器
 - **核心职责**：提取 `FGameplayCueParameters` 中的伤害上下文与命中数据，组装为标准的 `FGameFeedbackSignal` 信号，调用 `UGameFeedbackBlueprintLibrary::BroadcastFeedback` 派发至表现总线，实现 GAS 战斗与视听表现彻底解耦。

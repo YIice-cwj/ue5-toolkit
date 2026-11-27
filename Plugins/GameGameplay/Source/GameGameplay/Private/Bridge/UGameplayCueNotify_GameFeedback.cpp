@@ -5,7 +5,7 @@
 
 #include "Bridge/UGameplayCueNotify_GameFeedback.h"
 
-#include "Adapter/GameFeedbackAdapter.h"
+#include "Bridge/UGameFeedbackAdapter.h"
 #include "Bus/GameFeedbackBlueprintLibrary.h"
 #include "Damage/FGameGameplayEffectContext.h"
 #include "Feedback/GameFeedbackSignal.h"

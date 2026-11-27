@@ -15,10 +15,12 @@
   - `ImpactNormal`、`ImpactDirection`、`TraceDirection`：`FVector_NetQuantizeNormal`（单位球面量化，仅 16 位）；
 - **确定性资产身份**：`DefinitionId`（uint32）+ `DefinitionMappingVersion`（uint32）；
 - **伤害数值半精度编码**：`SetDamage` / `GetDamage` 基于 IEEE 754 半精度浮点 `FFloat16`（uint16），经过 NaN 过滤并钳制至 `[0.0f, 65504.0f]`，既能满足常规伤害精度又节省 50% 浮点带宽；
-- **状态标记与预测 ID**：`StateFlags`（uint8，含致死标记）、`PredictionEventId`（uint16，跨端预测去重）；
-- **紧凑骨骼索引**：受击命中 `USkeletalMeshComponent` 时，自动提取 `GetBoneIndex` 压缩为 `uint16` 传输；客户端还原时由骨骼数二次校验后还原 `BoneName`，未命中或静态网格体则使用 `MAX_uint16` 哨兵。
+- **状态标记与预测 ID**：`StateFlags`（uint8，经 `GameCore::TBitMask<EGameFeedbackNetFlag>` 强类型读写）、`PredictionEventId`（uint16，跨端预测去重）；
+- **主通道索引哨兵与安全校验**：`PrimaryChannelIndex` 默认初始化为 `MAX_uint16` 哨兵；仅在开启 `FastReplication` 且主通道合法非 `InvalidTagNetIndex` 时编码，客户端仅在开启 `FastReplication` 且索引落于有效表范围内时还原，绝不触发引擎 `ensure` 断言；
+- **错误归并**：`NetSerialize` 对每个子向量使用独立步进结果并按位与归并至 `bOutSuccess`，杜绝后续字段覆盖前序序列化失败；
+- **紧凑骨骼索引**：受击命中 `USkeletalMeshComponent` 且 `BoneName` 非空时，自动提取 `GetBoneIndex` 压缩为 `uint16` 传输；客户端还原时由骨骼数二次校验后还原 `BoneName`，未命中或静态网格体则使用 `MAX_uint16` 哨兵。
 
-> **带宽保证**：在正常 Gameplay 网络流（启用 PackageMap 缓存）下，单条报文典型尺寸 $\le 64$ 字节，极端全字段尺寸 $\le 96$ 字节。
+> **带宽保证**：在真实 `UPackageMapClient` 下实测典型载荷 **41 字节**（$\le 64$ 字节预算），完整载荷 **44 字节**（$\le 96$ 字节预算）。
 
 ---
 
@@ -31,7 +33,7 @@
 2. **冲突拒绝**：
    - 在 `RebuildDefinitionIndex` 阶段，遍历所有映射来源（默认资产、通道字典、反馈标签字典、复合规则条目）；若发现不同资产路径碰撞为同一 CRC32，自动加入 `ConflictedDefinitionIds` 冲突黑名单并在服务端打印 Warning；冲突 ID 严禁网络派发与远端解析；
 3. **确定性版本指纹 (`DefinitionMappingVersion`)**：
-   - 提取注册表全部条目的规范化字符串排序连接后生成 CRC32 版本哈希；
+   - 提取注册表全部条目的规范化字符串排序连接后生成 CRC32 版本哈希，其中复合规则提取 `FGameplayTagQuery` 真实表达式 `TokenStream` 与 `TagDictionary`（不受可选 `UserDescription` 备注干扰）；
    - 客户端收到报文后比对本地与远端的 `DefinitionMappingVersion`；若因热更或资源不同步导致版本不一致，直接拒绝解析，杜绝跨版本资产错乱。
 
 ---
@@ -44,27 +46,25 @@
 flowchart TD
     In[收到总线 Play 消息] --> CheckEnable{配置 bEnableFeedback 开启?}
     CheckEnable -- 否 --> Drop[丢弃]
-    CheckEnable -- 是 --> CheckRate{单帧派发已达 MaxDispatchPerFrame?}
+    CheckEnable -- 是 --> CalcOrigin[提取派发中心点 Origin<br>ImpactPoint / TargetLocation]
+    CalcOrigin --> CollectClients[筛选视距内远端 PlayerController<br>距离 Origin <= DefaultNetworkCullDistance]
+    CollectClients --> HasVisible{可见远端受众非空?}
+    HasVisible -- 否 --> DropNoQuota[直接早退：不耗配额、不构造报文]
+    HasVisible -- 是 --> CheckRate{单帧派发已达 MaxDispatchPerFrame?}
     CheckRate -- 是 --> Drop
-    CheckRate -- 否 --> IncRate[自增本帧派发计数]
-
-    IncRate --> CalcOrigin[提取派发中心点 Origin<br>ImpactPoint / TargetLocation]
-    CalcOrigin --> LoopClients[遍历远端 PlayerController]
-
-    LoopClients --> CheckDistance{距离 Origin <= DefaultNetworkCullDistance?}
-    CheckDistance -- 否 --> NextClient[跳过该客户端]
-    CheckDistance -- 是 --> SendRPC[向客户端接收组件发送 Client RPC]
+    CheckRate -- 否 --> IncRate[自增本帧派发计数并构造紧凑报文]
+    IncRate --> SendRPC[向可见远端客户端发送 Client RPC]
 ```
 
-### 3.1 空间视距裁剪
-- 优先以 `HitResult.ImpactPoint`（非零时）作为中心点，无端点时回退至 `Target->GetActorLocation()`；
-- 遍历所有非本地玩家控制器：
-  - 优先调用 `PC->GetPlayerViewPoint` 计算视点空间；
-  - 若处于自由观战或视点为零，回退至 `Pawn->GetActorLocation()`；
-  - 超过 `DefaultNetworkCullDistance`（平方距离比较）的客户端直接剪裁，避免全图广播无意义的受击特效。
+### 3.1 空间视距裁剪与零受众快路径
+- 优先通过共享 `TryResolveImpactLocation` 提取有效命中点，无命中点时回退至 `Target->GetActorLocation()`；
+- 遍历所有非本地玩家控制器筛选视距内可见受众列表：
+  - 优先采用 `Pawn` 与 `GetPlayerViewPoint` 计算真实观察点（避免将世界原点 `(0,0,0)` 误判为无效视点）；
+  - 超过 `DefaultNetworkCullDistance`（平方距离比较）的客户端直接裁剪；
+  - 若可见远端受众为空，直接早退，**既不消耗单帧派发配额，也不执行网络报文构造**。
 
 ### 3.2 单帧派发上限
-- 配合 `MaxDispatchPerFrame`（项目配置），当大范围 AOE 或连环爆炸瞬时触发大量受击时，超过上限的报文在服务端平滑截断，保障服务器网络带宽与帧率稳定。
+- 仅在存在有效远端受众时检查并递增 `DispatchedThisFrame`，配合 `MaxDispatchPerFrame`（项目配置）平滑截断 AOE 瞬发风暴。
 
 ---
 

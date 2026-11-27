@@ -1,6 +1,6 @@
 /**
  * @file GameFeedbackNetworkTest.cpp
- * @brief 反馈系统网络序列化、定义契约与 Dedicated Server 服务自动化测试
+ * @brief 反馈系统网络序列化、哨兵/错误归并、定义契约与 Dedicated Server 服务自动化测试
  */
 
 #include "CoreMinimal.h"
@@ -17,7 +17,6 @@
 #include "Config/GameFeedbackSettings.h"
 #include "Engine/DemoNetDriver.h"
 #include "Engine/Engine.h"
-#include "Engine/GameInstance.h"
 #include "Engine/NetConnection.h"
 #include "Engine/PackageMapClient.h"
 #include "Engine/SkeletalMesh.h"
@@ -31,10 +30,12 @@
 #include "Network/GameFeedbackReceiverComponent.h"
 #include "System/GameFeedbackDefinitionProvider.h"
 #include "System/GameFeedbackHitStopService.h"
-#include "Tests/GameFeedbackNetworkTestHelpers.h"
+#include "Tests/GameFeedbackTestHelpers.h"
 #include "Time/TimeDilationSubsystem.h"
 #include "UObject/Package.h"
 #include "UObject/SoftObjectPtr.h"
+
+#include <limits>
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameFeedbackNetSerializeTest,
@@ -43,12 +44,37 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证真实 PackageMap 下的完整网络载荷、对象与骨骼还原及字节预算
+ * @brief 验证真实 PackageMap 下的完整网络载荷、默认哨兵、NaN/限幅、序列化错误不吞并与字节预算
  * @param Parameters 自动化测试参数
- * @return 测试是否通过
+ * @return 全部断言通过返回 true
  */
 bool FGameFeedbackNetSerializeTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+    FGameFeedbackEventNet DefaultConstructed;
+    TestEqual(TEXT("默认构造 PrimaryChannelIndex 必须为 MAX_uint16 哨兵"), DefaultConstructed.PrimaryChannelIndex, MAX_uint16);
+    TestFalse(TEXT("默认构造还原出的 PrimaryChannel 必须无效"), FGameFeedbackEventNet::ToSignal(DefaultConstructed).PrimaryChannel.IsValid());
+
+    FGameFeedbackSignal EmptyChannelSignal;
+    const FGameFeedbackEventNet EmptyChannelEvent = FGameFeedbackEventNet::FromSignal(EmptyChannelSignal, 1u, 2u);
+    TestEqual(TEXT("空 PrimaryChannel 在任何复制模式下都必须归一化为 MAX_uint16 哨兵"), EmptyChannelEvent.PrimaryChannelIndex, MAX_uint16);
+
+    FGameFeedbackEventNet OutOfRangeChannelEvent = DefaultConstructed;
+    OutOfRangeChannelEvent.PrimaryChannelIndex = 60000;
+    TestFalse(
+        TEXT("越界 PrimaryChannelIndex 必须静默忽略且不触发引擎 ensure 断言"),
+        FGameFeedbackEventNet::ToSignal(OutOfRangeChannelEvent).PrimaryChannel.IsValid());
+
+    DefaultConstructed.SetDamage(std::numeric_limits<float>::quiet_NaN());
+    TestEqual(TEXT("NaN 伤害必须安全归零"), DefaultConstructed.GetDamage(), 0.0f);
+    DefaultConstructed.SetDamage(-50.0f);
+    TestEqual(TEXT("负伤害必须安全限幅至 0"), DefaultConstructed.GetDamage(), 0.0f);
+
+    GameFeedbackTestHelpers::FScopedLightweightGameWorld WorldGuard;
+    UWorld* World = WorldGuard.GetWorld();
+    TestNotNull(TEXT("测试世界有效"), World);
+    if (!World) {
+        return false;
+    }
+
     UDemoNetDriver* Driver = NewObject<UDemoNetDriver>(GetTransientPackage());
     Driver->World = World;
     USimulatedClientNetConnection* Connection = NewObject<USimulatedClientNetConnection>(Driver);
@@ -59,10 +85,8 @@ bool FGameFeedbackNetSerializeTest::RunTest([[maybe_unused]] const FString& Para
     PackageMap->Initialize(Connection, GuidCache);
     Connection->PackageMap = PackageMap;
     ON_SCOPE_EXIT {
-        GameFeedbackNetworkTestHelpers::CleanupSimulatedConnection(Connection);
-        GameFeedbackNetworkTestHelpers::CleanupTestDemoNetDriver(Driver);
-        World->DestroyWorld(false);
-        World->RemoveFromRoot();
+        GameFeedbackTestHelpers::CleanupSimulatedConnection(Connection);
+        GameFeedbackTestHelpers::CleanupTestDemoNetDriver(Driver);
     };
 
     AActor* Instigator = World->SpawnActor<AActor>();
@@ -105,6 +129,7 @@ bool FGameFeedbackNetSerializeTest::RunTest([[maybe_unused]] const FString& Para
     }
 
     FGameFeedbackEventNet NetEvent = FGameFeedbackEventNet::FromSignal(Signal, 0x10203040u, 0x50607080u);
+    TestTrue(TEXT("强类型 TBitMask 应准确设置致死标记"), NetEvent.GetFlags().Has(EGameFeedbackNetFlag::Lethal));
 
     FGameFeedbackEventNet MissingMapEvent = NetEvent;
     FNetBitWriter MissingMapWriter(nullptr, 1024);
@@ -119,6 +144,15 @@ bool FGameFeedbackNetSerializeTest::RunTest([[maybe_unused]] const FString& Para
     const int32 FullBytes = BitWriter.GetNumBytes();
     AddInfo(FString::Printf(TEXT("真实 PackageMap 完整事件载荷：%d 字节"), FullBytes));
     TestTrue(TEXT("完整网络载荷必须满足预算 <= 96 字节"), FullBytes <= 96);
+
+    FGameFeedbackEventNet ErrorReadEvent;
+    FNetBitReader ErrorReader(PackageMap, BitWriter.GetData(), BitWriter.GetNumBits());
+    ErrorReader.SetError();
+    bool bErrorSuccess = true;
+    TestFalse(
+        TEXT("归档存在错误状态时 NetSerialize 必须返回 false 且不被后续向量字段覆盖"),
+        ErrorReadEvent.NetSerialize(ErrorReader, PackageMap, bErrorSuccess));
+    TestFalse(TEXT("归档错误时 bOutSuccess 必须保持 false"), bErrorSuccess);
 
     FGameFeedbackEventNet ReadEvent;
     FNetBitReader BitReader(PackageMap, BitWriter.GetData(), BitWriter.GetNumBits());
@@ -188,36 +222,33 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 /**
  * @brief 验证 Dispatcher 的真实 RPC 出口及客户端 Receiver 的同版本身份闭环
  * @param Parameters 自动化测试参数
- * @return 测试是否通过
+ * @return 全部断言通过返回 true
  */
 bool FGameFeedbackNetworkDefinitionContractTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    GameFeedbackTestHelpers::FScopedFeedbackSettingsGuard SettingsGuard;
+    UGameFeedbackSettings* Settings = SettingsGuard.Get();
+
     UGameFeedbackRegistry* Registry = NewObject<UGameFeedbackRegistry>();
-    UGameFeedbackDefinition* Definition = GameFeedbackNetworkTestHelpers::CreateDefinitionAtPath(TEXT("/Game/Feedback/Network/Resolved.Resolved"));
-    UGameFeedbackDefinition* OverrideDefinition = GameFeedbackNetworkTestHelpers::CreateDefinitionAtPath(TEXT("/Game/Feedback/Network/Override.Override"));
+    UGameFeedbackDefinition* Definition = GameFeedbackTestHelpers::CreateDefinitionAtPath(TEXT("/Game/Feedback/Network/Resolved.Resolved"));
+    UGameFeedbackDefinition* OverrideDefinition = GameFeedbackTestHelpers::CreateDefinitionAtPath(TEXT("/Game/Feedback/Network/Override.Override"));
     const FGameplayTag ChannelTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Damage.Test.Network.Resolved")));
     const FGameplayTag OverrideTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Feedback.Test.Network.Override")));
     Registry->ExactChannelMap.Add(ChannelTag, Definition);
     Registry->ExactFeedbackTagMap.Add(OverrideTag, OverrideDefinition);
     Registry->RebuildDefinitionIndex();
-
-    UGameFeedbackSettings* Settings = GetMutableDefault<UGameFeedbackSettings>();
-    const TSoftObjectPtr<UGameFeedbackRegistry> PreviousRegistry = Settings->GlobalRegistry;
     Settings->GlobalRegistry = Registry;
 
-    UGameInstance* GameInstance = NewObject<UGameInstance>(GEngine);
-    GameInstance->InitializeStandalone(FName(TEXT("GameFeedbackNetworkDefinitionContractTestWorld")));
-    UWorld* World = GameInstance->GetWorld();
+    GameFeedbackTestHelpers::FScopedStandaloneFeedbackWorld TestEnv(FName(TEXT("GameFeedbackNetworkDefinitionContractTestWorld")));
+    UWorld* World = TestEnv.GetWorld();
     TestNotNull(TEXT("网络契约测试世界有效"), World);
     if (!World) {
-        Settings->GlobalRegistry = PreviousRegistry;
-        GameInstance->Shutdown();
         return false;
     }
     UGameFeedbackDefinitionProvider* Provider = World->GetSubsystem<UGameFeedbackDefinitionProvider>();
+    UGameplayMessageSubsystem* Bus = TestEnv.GetGameInstance()->GetSubsystem<UGameplayMessageSubsystem>();
     TestNotNull(TEXT("Provider 必须可用于网络定义解析"), Provider);
-    if (!Provider) {
-        Settings->GlobalRegistry = PreviousRegistry;
-        GameInstance->Shutdown();
+    TestNotNull(TEXT("消息总线有效"), Bus);
+    if (!Provider || !Bus) {
         return false;
     }
 
@@ -229,13 +260,6 @@ bool FGameFeedbackNetworkDefinitionContractTest::RunTest([[maybe_unused]] const 
     TestNull(TEXT("未知 ID 必须拒绝解析"), Provider->ResolveById(0xFFFFFFFFu, MappingVersion));
     TestNull(TEXT("映射版本不一致必须拒绝解析"), Provider->ResolveById(DefinitionId, MappingVersion + 1));
 
-    UGameplayMessageSubsystem* Bus = GameInstance->GetSubsystem<UGameplayMessageSubsystem>();
-    TestNotNull(TEXT("消息总线有效"), Bus);
-    if (!Bus) {
-        Settings->GlobalRegistry = PreviousRegistry;
-        GameInstance->Shutdown();
-        return false;
-    }
     int32 ReceivedCount = 0;
     FGameFeedbackNetworkMessage ReceivedMessage;
     FGameplayMessageListenerHandle Handle = Bus->RegisterListener<FGameFeedbackNetworkMessage>(
@@ -252,8 +276,6 @@ bool FGameFeedbackNetworkDefinitionContractTest::RunTest([[maybe_unused]] const 
     TestNotNull(TEXT("WorldContext 有效"), WorldContext);
     if (!WorldContext) {
         Handle.Unregister();
-        Settings->GlobalRegistry = PreviousRegistry;
-        GameInstance->Shutdown();
         return false;
     }
     UDemoNetDriver* Driver = NewObject<UDemoNetDriver>(GetTransientPackage());
@@ -272,17 +294,21 @@ bool FGameFeedbackNetworkDefinitionContractTest::RunTest([[maybe_unused]] const 
     TestNotEqual(TEXT("远端控制器必须具备复制角色"), PC->GetRemoteRole(), ROLE_None);
     TestEqual(TEXT("测试世界必须能枚举到唯一远端控制器"), World->GetNumPlayerControllers(), 1);
     TestNotNull(TEXT("远端控制器必须绑定网络连接"), PC->GetNetConnection());
-    AddInfo(FString::Printf(
-        TEXT("远端控制器 NetMode=%d LocalRole=%d NetConnection=%s"),
-        static_cast<int32>(PC->GetNetMode()),
-        static_cast<int32>(PC->GetLocalRole()),
-        PC->GetNetConnection() ? TEXT("valid") : TEXT("null")));
+
     UGameFeedbackReceiverComponent* Receiver = UGameFeedbackReceiverComponent::EnsureOnPlayerController(PC);
     AActor* DispatcherOwner = World->SpawnActor<AActor>();
     UGameFeedbackNetworkDispatcherComponent* Dispatcher = NewObject<UGameFeedbackNetworkDispatcherComponent>(DispatcherOwner);
     DispatcherOwner->AddInstanceComponent(Dispatcher);
     Dispatcher->RegisterComponent();
     Dispatcher->BeginPlay();
+
+    ON_SCOPE_EXIT {
+        Dispatcher->EndPlay(EEndPlayReason::Destroyed);
+        PC->Player = nullptr;
+        GameFeedbackTestHelpers::CleanupSimulatedConnection(Connection);
+        GameFeedbackTestHelpers::CleanupTestDemoNetDriver(Driver, WorldContext);
+        Handle.Unregister();
+    };
 
     TArray<FGameFeedbackEventNet> DispatchedEvents;
     Driver->SendRPCDel.BindLambda(
@@ -324,7 +350,7 @@ bool FGameFeedbackNetworkDefinitionContractTest::RunTest([[maybe_unused]] const 
     }
 
     FGameFeedbackMessage UnregisteredMessage = RegularMessage;
-    UnregisteredMessage.OverrideDefinition = GameFeedbackNetworkTestHelpers::CreateDefinitionAtPath(TEXT("/Game/Feedback/Network/Unregistered.Unregistered"));
+    UnregisteredMessage.OverrideDefinition = GameFeedbackTestHelpers::CreateDefinitionAtPath(TEXT("/Game/Feedback/Network/Unregistered.Unregistered"));
     Bus->BroadcastMessage(TAG_Feedback_Channel_Play, UnregisteredMessage);
     TestEqual(TEXT("未登记 Override 不得进行远端派发"), DispatchedEvents.Num(), 2);
 
@@ -346,13 +372,6 @@ bool FGameFeedbackNetworkDefinitionContractTest::RunTest([[maybe_unused]] const 
     Receiver->ClientReceiveFeedback(StaleEvent);
     TestEqual(TEXT("过期映射版本不得回灌"), ReceivedCount, 1);
 
-    Dispatcher->EndPlay(EEndPlayReason::Destroyed);
-    PC->Player = nullptr;
-    GameFeedbackNetworkTestHelpers::CleanupSimulatedConnection(Connection);
-    GameFeedbackNetworkTestHelpers::CleanupTestDemoNetDriver(Driver, WorldContext);
-    Handle.Unregister();
-    Settings->GlobalRegistry = PreviousRegistry;
-    GameInstance->Shutdown();
     return true;
 }
 
@@ -365,30 +384,26 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 /**
  * @brief 验证 DS 可创建 Provider 与 HitStopService，且权威顿帧仍受配置门禁控制
  * @param Parameters 自动化测试参数
- * @return 测试是否通过
+ * @return 全部断言通过返回 true
  */
 bool FGameFeedbackDedicatedServerServicesTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    GameFeedbackTestHelpers::FScopedFeedbackSettingsGuard SettingsGuard;
+    UGameFeedbackSettings* Settings = SettingsGuard.Get();
+
     UGameFeedbackRegistry* Registry = NewObject<UGameFeedbackRegistry>();
-    UGameFeedbackDefinition* Definition = GameFeedbackNetworkTestHelpers::CreateDefinitionAtPath(TEXT("/Game/Feedback/Lifetime/DedicatedServer.DedicatedServer"));
+    UGameFeedbackDefinition* Definition = GameFeedbackTestHelpers::CreateDefinitionAtPath(TEXT("/Game/Feedback/Lifetime/DedicatedServer.DedicatedServer"));
     Definition->HitStop.bEnable = true;
     Definition->HitStop.VictimDuration = 0.08f;
     Definition->HitStop.AttackerDuration = 0.0f;
     const FGameplayTag ChannelTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Damage.Test.Lifetime.DedicatedServer")));
     Registry->ExactChannelMap.Add(ChannelTag, Definition);
     Registry->RebuildDefinitionIndex();
-
-    UGameFeedbackSettings* Settings = GetMutableDefault<UGameFeedbackSettings>();
-    const TSoftObjectPtr<UGameFeedbackRegistry> PreviousRegistry = Settings->GlobalRegistry;
-    const bool bPreviousAllowAuthoritativeHitStop = Settings->bAllowAuthoritativeHitStop;
     Settings->GlobalRegistry = Registry;
-    UGameInstance* GameInstance = NewObject<UGameInstance>(GEngine);
-    GameInstance->InitializeStandalone(FName(TEXT("GameFeedbackDedicatedServerServicesTestWorld")));
-    UWorld* World = GameInstance->GetWorld();
+
+    GameFeedbackTestHelpers::FScopedStandaloneFeedbackWorld TestEnv(FName(TEXT("GameFeedbackDedicatedServerServicesTestWorld")));
+    UWorld* World = TestEnv.GetWorld();
     TestNotNull(TEXT("DS 生命周期测试世界有效"), World);
     if (!World) {
-        Settings->GlobalRegistry = PreviousRegistry;
-        Settings->bAllowAuthoritativeHitStop = bPreviousAllowAuthoritativeHitStop;
-        GameInstance->Shutdown();
         return false;
     }
 
@@ -401,15 +416,12 @@ bool FGameFeedbackDedicatedServerServicesTest::RunTest([[maybe_unused]] const FS
     UGameFeedbackDefinitionProvider* Provider = World->GetSubsystem<UGameFeedbackDefinitionProvider>();
     UGameFeedbackHitStopService* HitStopService = World->GetSubsystem<UGameFeedbackHitStopService>();
     UTimeDilationSubsystem* TimeDilation = World->GetSubsystem<UTimeDilationSubsystem>();
-    UGameplayMessageSubsystem* Bus = GameInstance->GetSubsystem<UGameplayMessageSubsystem>();
+    UGameplayMessageSubsystem* Bus = TestEnv.GetGameInstance()->GetSubsystem<UGameplayMessageSubsystem>();
     TestNotNull(TEXT("DS Provider 实例有效"), Provider);
     TestNotNull(TEXT("DS HitStopService 实例有效"), HitStopService);
     TestNotNull(TEXT("DS TimeDilationSubsystem 实例有效"), TimeDilation);
     TestNotNull(TEXT("DS 消息总线实例有效"), Bus);
     if (!Provider || !HitStopService || !TimeDilation || !Bus) {
-        Settings->GlobalRegistry = PreviousRegistry;
-        Settings->bAllowAuthoritativeHitStop = bPreviousAllowAuthoritativeHitStop;
-        GameInstance->Shutdown();
         return false;
     }
 
@@ -429,9 +441,6 @@ bool FGameFeedbackDedicatedServerServicesTest::RunTest([[maybe_unused]] const FS
     TestTrue(TEXT("允许配置下 DS 必须形成完整顿帧链路"), TimeDilation->IsActorInHitStop(Target));
 
     TimeDilation->ClearHitStop(Target);
-    Settings->GlobalRegistry = PreviousRegistry;
-    Settings->bAllowAuthoritativeHitStop = bPreviousAllowAuthoritativeHitStop;
-    GameInstance->Shutdown();
     return true;
 }
 

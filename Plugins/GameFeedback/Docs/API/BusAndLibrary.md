@@ -6,7 +6,7 @@
   - `#include "Bus/GameFeedbackChannels.h"`
   - `#include "Bus/GameFeedbackMessages.h"`
   - `#include "Bus/GameFeedbackBlueprintLibrary.h"`
-  - `#include "Adapter/GameFeedbackAdapter.h"`
+  - 伤害契约适配器已归位至 Level 3 插件 `GameGameplay`：`#include "Bridge/UGameFeedbackAdapter.h"`
 
 ---
 
@@ -43,7 +43,7 @@ struct GAMEFEEDBACK_API FGameFeedbackMessage {
 };
 
 /**
- * @brief 网络回执广播载荷（携带本地预测抑制标记）
+ * @brief 网络回执广播载荷（携带本地预测抑制标记与可选定向接收控制器）
  */
 USTRUCT(BlueprintType)
 struct GAMEFEEDBACK_API FGameFeedbackNetworkMessage {
@@ -59,6 +59,10 @@ struct GAMEFEEDBACK_API FGameFeedbackNetworkMessage {
     /** 本地预测已播放而需要抑制重复表现的标志 */
     UPROPERTY(BlueprintReadWrite, Category = "GameFeedback")
     bool bSuppressed = false;
+
+    /** 可选定向接收控制器（非空时仅对应本地玩家组件响应，杜绝分屏重复触发） */
+    UPROPERTY(BlueprintReadWrite, Category = "GameFeedback")
+    TWeakObjectPtr<APlayerController> ReceivingController = nullptr;
 };
 
 /**
@@ -86,23 +90,23 @@ class GAMEFEEDBACK_API UGameFeedbackBlueprintLibrary : public UBlueprintFunction
 
 public:
     /**
-     * @brief 广播一次打击表现信号（由总线上的各能力监听者自行消费）
-     * @param WorldContextObject 世界上下文对象
+     * @brief 广播一次打击表现信号（未指定 Definition 时自动预解析一次供全部监听者零重复复用）
+     * @param WorldContextObject 世界上下文对象（蓝图自动隐式绑定）
      * @param Signal 纯表现信号
-     * @param Definition 指定的表现资产（可选，为空时按注册表解析）
+     * @param Definition 指定的表现资产（可选，为空时按注册表预解析）
      */
-    UFUNCTION(BlueprintCallable, Category = "GameFeedback", meta = (AdvancedDisplay = "Definition"))
+    UFUNCTION(BlueprintCallable, Category = "GameFeedback", meta = (WorldContext = "WorldContextObject", AdvancedDisplay = "Definition"))
     static void BroadcastFeedback(
         const UObject* WorldContextObject,
         const FGameFeedbackSignal& Signal,
         const UGameFeedbackDefinition* Definition = nullptr);
 
     /**
-     * @brief 广播清除指定实体的表现状态（还原受击闪白 Overlay 与解除顿帧）
-     * @param WorldContextObject 世界上下文对象
+     * @brief 广播清除指定实体的表现状态（不受 bEnableFeedback 热关断阻断，始终放行清理复位）
+     * @param WorldContextObject 世界上下文对象（蓝图自动隐式绑定）
      * @param Target 待重置的目标实体
      */
-    UFUNCTION(BlueprintCallable, Category = "GameFeedback")
+    UFUNCTION(BlueprintCallable, Category = "GameFeedback", meta = (WorldContext = "WorldContextObject"))
     static void BroadcastClearFeedback(const UObject* WorldContextObject, AActor* Target);
 
     /**
@@ -111,45 +115,19 @@ public:
      * @param Signal 还原后的表现信号
      * @param ResolvedDefinition 服务端最终 Definition
      * @param bSuppressed 本地预测已播放而需要抑制重复表现
+     * @param ReceivingController 可选定向接收该回执的本地玩家控制器（分屏下隔离玩家侧组件重复执行）
      */
     static void BroadcastNetworkFeedback(
         const UObject* WorldContextObject,
         const FGameFeedbackSignal& Signal,
         const UGameFeedbackDefinition* ResolvedDefinition,
-        bool bSuppressed);
+        bool bSuppressed,
+        APlayerController* ReceivingController = nullptr);
 };
 ```
 
 ---
 
-## 4. 伤害契约转换适配器 (`UGameFeedbackAdapter`)
+## 4. 伤害契约转换适配器（已归位至 `GameGameplay`）
 
-当业务工程使用 `GameGameplayCore` 伤害管线时，无需手写赋值逻辑，适配器提供一键标准化转换：
-
-```cpp
-UCLASS()
-class GAMEFEEDBACK_API UGameFeedbackAdapter : public UBlueprintFunctionLibrary {
-    GENERATED_BODY()
-
-public:
-    /**
-     * @brief 从伤害分发上下文与结算结果提取标准视听表现信号
-     * @param InTarget 受击目标实体（显式传入；若为空则自动从 HitResult 提取）
-     * @param Context 伤害上下文（提供 Instigator, DamageCauser, HitResult 等）
-     * @param Result 伤害结算结果（提供 TotalActualDamage, FeedbackTags, Channels 等）
-     * @return 转换后的视听表现信号
-     */
-    UFUNCTION(BlueprintPure, Category = "GameFeedback|Adapter")
-    static FGameFeedbackSignal MakeSignalFromDamage(
-        AActor* InTarget,
-        const FGameDamageContext& Context,
-        const FGameDamageResult& Result);
-};
-```
-
-### 转换映射规则：
-1. **目标实体绑定**：`Signal.Target = InTarget ? InTarget : Context.HitResult.GetActor()`；
-2. **冲击方向判定**：若伤害造成者（`DamageCauser`）存在且速度非零，优先以速度归一化向量作为 `ImpactDirection`；否则使用 `Context.HitResult.ImpactNormal`；
-3. **主通道选取**：自动读取 `Result.GetDominantActualChannel()`（结算伤害数值最大的通道）；
-4. **致死标记**：自动检查 `Result.FeedbackTags.HasTag(TAG_Feedback_State_Lethal)` 填充 `Signal.bLethal`；
-5. **弹道方向**：自动计算 `(TraceEnd - TraceStart).GetSafeNormal()` 赋予 `Signal.TraceDirection`。
+为严格遵守四级无环插件依赖拓扑（Level 2 的 `GameFeedback` 不依赖 Level 3 的 `GameGameplayCore`），`UGameFeedbackAdapter` 已迁至 `Plugins/GameGameplay/Source/GameGameplay/Public/Bridge/UGameFeedbackAdapter.h`（详见 [GameplayCueFeedbackBridge.md](../../../GameGameplay/Docs/API/GameplayCueFeedbackBridge.md)）。

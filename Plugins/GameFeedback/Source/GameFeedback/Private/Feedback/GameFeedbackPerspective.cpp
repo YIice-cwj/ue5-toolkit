@@ -5,6 +5,10 @@
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 
+namespace {
+constexpr int32 MaxOwnershipChainDepth = 5;
+}
+
 namespace GameFeedback {
 
 /**
@@ -30,7 +34,7 @@ EGameFeedbackPerspective ResolvePerspective(
     auto IsOwnedByLocal = [LocalPC, LocalPawn](const AActor* InActor) -> bool {
         int32 Depth = 0;
         const AActor* Curr = InActor;
-        while (Curr && Depth++ < 5) {
+        while (Curr && Depth++ < MaxOwnershipChainDepth) {
             if (Curr == LocalPC || Curr == LocalPawn || Curr->GetInstigatorController() == LocalPC) {
                 return true;
             }

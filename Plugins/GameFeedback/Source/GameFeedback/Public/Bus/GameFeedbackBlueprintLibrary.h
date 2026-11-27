@@ -11,6 +11,7 @@
 
 #include "GameFeedbackBlueprintLibrary.generated.h"
 
+class APlayerController;
 class UGameFeedbackDefinition;
 
 /**
@@ -27,18 +28,18 @@ public:
      * @param Signal 纯表现信号
      * @param Definition 指定的表现资产（可选，为空时按注册表解析）
      */
-    UFUNCTION(BlueprintCallable, Category = "GameFeedback", meta = (AdvancedDisplay = "Definition"))
+    UFUNCTION(BlueprintCallable, Category = "GameFeedback", meta = (WorldContext = "WorldContextObject", AdvancedDisplay = "Definition"))
     static void BroadcastFeedback(
         const UObject* WorldContextObject,
         const FGameFeedbackSignal& Signal,
         const UGameFeedbackDefinition* Definition = nullptr);
 
     /**
-     * @brief 广播清除指定实体的表现状态
+     * @brief 广播清除指定实体的表现状态（不受 bEnableFeedback 热关断开关阻断，始终放行清理复位）
      * @param WorldContextObject 世界上下文对象
      * @param Target 待重置的目标实体
      */
-    UFUNCTION(BlueprintCallable, Category = "GameFeedback")
+    UFUNCTION(BlueprintCallable, Category = "GameFeedback", meta = (WorldContext = "WorldContextObject"))
     static void BroadcastClearFeedback(const UObject* WorldContextObject, AActor* Target);
 
     /**
@@ -47,10 +48,12 @@ public:
      * @param Signal 还原后的表现信号
      * @param ResolvedDefinition 服务端最终 Definition
      * @param bSuppressed 本地预测已播放而需要抑制重复表现
+     * @param ReceivingController 可选定向接收该回执的本地玩家控制器（分屏下隔离玩家侧组件重复执行）
      */
     static void BroadcastNetworkFeedback(
         const UObject* WorldContextObject,
         const FGameFeedbackSignal& Signal,
         const UGameFeedbackDefinition* ResolvedDefinition,
-        bool bSuppressed);
+        bool bSuppressed,
+        APlayerController* ReceivingController = nullptr);
 };

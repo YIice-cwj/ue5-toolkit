@@ -6,12 +6,13 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Bus/GameFeedbackMessages.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "Templates/PimplPtr.h"
-#include "Bus/GameFeedbackMessages.h"
 
 #include "GameFeedbackHitStopService.generated.h"
 
+struct FGameFeedbackHitStopAction;
 struct FGameFeedbackHitStopServiceState;
 class UGameFeedbackDefinition;
 
@@ -24,7 +25,7 @@ class GAMEFEEDBACK_API UGameFeedbackHitStopService : public UWorldSubsystem {
 
 public:
     /**
-     * @brief 构造：装配顿帧限流状态
+     * @brief 构造：仅在非 CDO 实例装配内部状态（CDO 零堆分配）
      */
     UGameFeedbackHitStopService();
 
@@ -50,7 +51,7 @@ public:
     void OnWorldBeginPlay(UWorld& InWorld) override;
 
     /**
-     * @brief 注销：退订全部通道并释放状态
+     * @brief 注销：退订全部通道并清空限流状态
      */
     void Deinitialize() override;
 
@@ -82,6 +83,29 @@ private:
      * @param OverrideDefinition 覆盖资产；为空时按注册表解析
      */
     void ApplyHitStop(const FGameFeedbackSignal& Signal, const UGameFeedbackDefinition* OverrideDefinition);
+
+    /**
+     * @brief 判断本次命中是否应为攻击者应用卡肉顿帧（排除自伤双重顿帧，并对称支持分屏多玩家）
+     * @param World 当前世界
+     * @param Signal 表现信号
+     * @param AttackerActor 攻击者实体
+     * @param TargetActor 受击者实体
+     * @return 应应用攻击者顿帧返回 true
+     */
+    [[nodiscard]] bool ShouldApplyAttackerHitStop(
+        const UWorld& World,
+        const FGameFeedbackSignal& Signal,
+        const AActor* AttackerActor,
+        const AActor* TargetActor) const;
+
+    /**
+     * @brief 为单个实体申请累积预算内的顿帧并提交给时间膨胀子系统
+     * @param Actor 目标实体
+     * @param RequestedDuration 期望持续时长（秒）
+     * @param Action 顿帧参数
+     * @param CurrentRealTime 当前真实时间（秒）
+     */
+    void ApplyActorHitStop(AActor* Actor, float RequestedDuration, const FGameFeedbackHitStopAction& Action, double CurrentRealTime);
 
     TPimplPtr<FGameFeedbackHitStopServiceState> State;
 };

@@ -89,9 +89,10 @@ void AMyWeapon::OnHit(AActor* TargetActor, const FHitResult& HitResult)
 
 ## 5. 结合战斗管线无缝接入
 
-### 5.1 配合 `GameGameplayCore` 伤害管线
+### 5.1 配合 `GameGameplay` / `GameGameplayCore` 伤害管线
+需启用 `GameGameplay` 插件并在模块 `Build.cs` 中添加 `"GameGameplay"` 依赖：
 ```cpp
-#include "Adapter/GameFeedbackAdapter.h"
+#include "Bridge/UGameFeedbackAdapter.h"
 #include "Bus/GameFeedbackBlueprintLibrary.h"
 
 void AMyCharacter::HandleDamageResult(const FGameDamageContext& Context, const FGameDamageResult& Result)

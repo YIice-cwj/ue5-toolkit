@@ -1,10 +1,13 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
+/**
+ * @file UGameFeedbackAdapter.cpp
+ * @brief 战斗伤害契约转换为表现信号的适配器实现
+ */
 
-#include "Adapter/GameFeedbackAdapter.h"
+#include "Bridge/UGameFeedbackAdapter.h"
 
 /**
  * @brief 从伤害分发上下文与结算结果提取标准视听表现信号
- * @param InTarget 受击目标实体（显式传入）
+ * @param InTarget 受击目标实体（显式传入；为空时自动回退至 HitResult.GetActor()）
  * @param Context 伤害上下文
  * @param Result 伤害结算结果
  * @return 转换后的视听表现信号
@@ -29,7 +32,6 @@ FGameFeedbackSignal UGameFeedbackAdapter::MakeSignalFromDamage(
 
     Signal.TraceDirection = (Context.HitResult.TraceEnd - Context.HitResult.TraceStart).GetSafeNormal();
     Signal.FeedbackTags = Result.FeedbackTags;
-
     Signal.PrimaryChannel = Result.GetDominantActualChannel();
     Signal.Magnitude = Result.TotalActualDamage;
     Signal.bLethal = Result.FeedbackTags.HasTag(TAG_Feedback_State_Lethal);

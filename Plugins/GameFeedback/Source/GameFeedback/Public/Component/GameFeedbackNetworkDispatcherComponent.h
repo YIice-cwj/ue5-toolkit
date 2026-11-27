@@ -6,12 +6,14 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Bus/GameFeedbackMessages.h"
 #include "Components/ActorComponent.h"
 #include "Templates/PimplPtr.h"
-#include "Bus/GameFeedbackMessages.h"
 
 #include "GameFeedbackNetworkDispatcherComponent.generated.h"
 
+class APlayerController;
+class UWorld;
 struct FGameFeedbackNetworkDispatcherComponentState;
 
 /**
@@ -23,7 +25,7 @@ class GAMEFEEDBACK_API UGameFeedbackNetworkDispatcherComponent : public UActorCo
 
 public:
     /**
-     * @brief 构造：装配派发限流状态
+     * @brief 构造：关闭 Tick 并按需装配内部状态（CDO 零堆分配）
      */
     UGameFeedbackNetworkDispatcherComponent();
 
@@ -45,6 +47,11 @@ public:
 
 private:
     /**
+     * @brief 确保非 CDO 实例已创建内部状态
+     */
+    void EnsureState();
+
+    /**
      * @brief 本地表现广播回调（仅权威端响应）
      * @param Channel 广播通道
      * @param Message 表现载荷
@@ -56,6 +63,21 @@ private:
      * @param Message 本地表现消息（含可选 OverrideDefinition）
      */
     void Dispatch(const FGameFeedbackMessage& Message);
+
+    /**
+     * @brief 筛选当前在视距裁剪范围内的所有远端玩家控制器
+     * @param World 当前世界
+     * @param BroadcastOrigin 表现源世界坐标
+     * @param bHasBroadcastOrigin 是否存在有效表现源坐标
+     * @param CullDistance 视距裁剪半径（<= 0 时不裁剪）
+     * @param OutControllers 输出满足条件的远端控制器列表
+     */
+    static void CollectVisibleRemoteControllers(
+        const UWorld& World,
+        const FVector& BroadcastOrigin,
+        bool bHasBroadcastOrigin,
+        float CullDistance,
+        TArray<APlayerController*, TInlineAllocator<8>>& OutControllers);
 
     TPimplPtr<FGameFeedbackNetworkDispatcherComponentState> State;
 };

@@ -86,7 +86,10 @@ struct GAMEFEEDBACK_API FGameFeedbackSignal {
 - `float CooldownInterval = 0.05f`：同攻击者对同目标的触发冷却间隔（秒），避免多段高频伤害瞬间把角色卡死；
 - `float MaxCumulativeDuration = 0.20f`：滑动窗口内最大累积定格上限（秒）；
 - `float ResetWindow = 0.50f`：累积预算清零重置窗口（秒）；
-- `bool bGlobalFreezeOnLethal = false`：致死打击时是否触发全局微缩时间特写。
+- `bool bGlobalFreezeOnLethal = false`：致死打击时是否触发全局微缩时间特写；
+- `float LethalGlobalFreezeDuration = 0.05f`：致死全局定格持续时长（秒）；
+- `float LethalGlobalFreezeDilation = 0.1f`：致死全局定格时间缩放系数；
+- `float LethalGlobalFreezeBlendOut = 0.02f`：致死全局定格平滑淡出时长（秒）。
 
 ### 2.2 镜头震动 (`FGameFeedbackCameraShakeAction`)
 驱动基于 PlayerCameraManager 的镜头震屏：

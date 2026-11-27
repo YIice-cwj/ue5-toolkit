@@ -1,4 +1,7 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
+/**
+ * @file TimeDilationTypes.h
+ * @brief 分层时间膨胀与 Actor 局部顿帧数据类型定义
+ */
 
 #pragma once
 
@@ -79,11 +82,6 @@ struct GAMEFEEDBACK_API FGlobalChannelState {
  * @brief 单个 Actor HitStop 顿帧记录
  */
 struct FActorHitStopState {
-    /**
-     * @brief 目标 Actor 弱指针
-     */
-    TWeakObjectPtr<AActor> TargetActor;
-
     /**
      * @brief 进入顿帧前的原始自定义时间膨胀率
      */

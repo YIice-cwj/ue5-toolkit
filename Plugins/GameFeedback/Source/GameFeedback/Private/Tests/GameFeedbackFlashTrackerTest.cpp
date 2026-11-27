@@ -1,6 +1,6 @@
 /**
  * @file GameFeedbackFlashTrackerTest.cpp
- * @brief 材质闪白追踪器生命周期与定时还原自动化测试
+ * @brief 材质闪白追踪器生命周期、定时还原与析构防 UAF 自动化测试
  */
 
 #include "CoreMinimal.h"
@@ -12,8 +12,9 @@
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
 #include "Materials/Material.h"
-#include "System/GameFeedbackFlashTracker.h"
+#include "Tests/GameFeedbackTestHelpers.h"
 #include "TimerManager.h"
+#include "Tracker/GameFeedbackFlashTracker.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameFeedbackFlashTrackerLifecycleTest,
@@ -22,12 +23,18 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证闪白按最大绝对到期续期、提前回调重新 arm，并在 GC 后安全还原
+ * @brief 验证闪白按最大绝对到期续期、提前回调重新 arm、GC 强保活与析构防 UAF 安全还原
  * @param Parameters 自动化测试参数
- * @return 测试是否通过
+ * @return 全部断言通过返回 true
  */
 bool FGameFeedbackFlashTrackerLifecycleTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+    GameFeedbackTestHelpers::FScopedLightweightGameWorld WorldGuard;
+    UWorld* World = WorldGuard.GetWorld();
+    TestNotNull(TEXT("测试世界有效"), World);
+    if (!World) {
+        return false;
+    }
+
     FTimerManager& TimerManager = World->GetTimerManager();
     FGameFeedbackFlashTracker Tracker;
     double SimulatedTime = 1000.0;
@@ -45,10 +52,21 @@ bool FGameFeedbackFlashTrackerLifecycleTest::RunTest([[maybe_unused]] const FStr
     Action.TargetMode = EGameFeedbackFlashTargetMode::HitComponentOnly;
     Action.OverlayMaterial = FlashMaterial;
     Action.Duration = 10.0f;
-    FGameFeedbackHitFlashAction ShorterAction = Action;
-    ShorterAction.Duration = 0.001f;
+    Action.MinMagnitude = 5.0f;
     FHitResult HitResult;
     HitResult.Component = MaxMesh;
+
+    Tracker.Execute(World, MaxTarget, HitResult, Action, 1.0f);
+    TestEqual(TEXT("低于 MinMagnitude 门禁不应追踪或改写材质"), Tracker.GetTrackedCount(), 0);
+    TestEqual(TEXT("低于门禁时原 Overlay 保持不变"), MaxMesh->GetOverlayMaterial(), static_cast<UMaterialInterface*>(OriginalMaterial));
+
+    Action.bEnable = false;
+    Tracker.Execute(World, MaxTarget, HitResult, Action, 10.0f);
+    TestEqual(TEXT("bEnable 为 false 时不应追踪"), Tracker.GetTrackedCount(), 0);
+    Action.bEnable = true;
+
+    FGameFeedbackHitFlashAction ShorterAction = Action;
+    ShorterAction.Duration = 0.001f;
 
     const double MaxStartRealTime = SimulatedTime;
     Tracker.Execute(World, MaxTarget, HitResult, Action, 10.0f);
@@ -106,9 +124,15 @@ bool FGameFeedbackFlashTrackerLifecycleTest::RunTest([[maybe_unused]] const FStr
     TimerManager.Tick(1.0f);
     TestEqual(TEXT("临界多段打击到期后仍应还原为真正的原材质而非 Flash 材质"), RearmMesh->GetOverlayMaterial(), OriginalWeak.Get());
 
+    {
+        FGameFeedbackFlashTracker ScopedTracker;
+        ScopedTracker.Execute(World, RearmTarget, HitResult, Action, 10.0f);
+    }
+    ++GFrameCounter;
+    TimerManager.Tick(1.0f);
+    TestEqual(TEXT("Tracker 析构后自动兜底还原 Overlay 且定时器推进零 UAF"), RearmMesh->GetOverlayMaterial(), OriginalWeak.Get());
+
     Tracker.Shutdown(World);
-    World->DestroyWorld(false);
-    World->RemoveFromRoot();
     return true;
 }
 
@@ -119,12 +143,18 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证网格体异常销毁后，FlashTracker 能通过 PruneInvalid 自动清理失效弱引用并释放材质强引用
+ * @brief 验证网格体异常销毁后，FlashTracker 能通过 PruneInvalid 自动清理失效弱引用、定时器并释放材质强引用
  * @param Parameters 自动化测试参数
- * @return 测试是否通过
+ * @return 全部断言通过返回 true
  */
 bool FGameFeedbackFlashTrackerPruneDeadMeshesTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+    GameFeedbackTestHelpers::FScopedLightweightGameWorld WorldGuard;
+    UWorld* World = WorldGuard.GetWorld();
+    TestNotNull(TEXT("测试世界有效"), World);
+    if (!World) {
+        return false;
+    }
+
     FGameFeedbackFlashTracker Tracker;
 
     AActor* Target = World->SpawnActor<AActor>();
@@ -150,7 +180,7 @@ bool FGameFeedbackFlashTrackerPruneDeadMeshesTest::RunTest([[maybe_unused]] cons
     Target = nullptr;
     Mesh = nullptr;
 
-    Tracker.PruneInvalid();
+    Tracker.PruneInvalid(World);
     TestEqual(TEXT("网格销毁后调用 PruneInvalid 应成功修剪失效记录"), Tracker.GetTrackedCount(), 0);
 
     TArray<AActor*> DeadActors;
@@ -174,12 +204,10 @@ bool FGameFeedbackFlashTrackerPruneDeadMeshesTest::RunTest([[maybe_unused]] cons
     ++GFrameCounter;
     World->GetTimerManager().Tick(0.1f);
     TestEqual(TEXT("前半批失效网格到期回调仅移除自身 12 条，绝不误删后半批失效键"), Tracker.GetTrackedCount(), 12);
-    Tracker.PruneInvalid();
+    Tracker.PruneInvalid(World);
     TestEqual(TEXT("PruneInvalid 清理剩余全部 12 条失效记录"), Tracker.GetTrackedCount(), 0);
 
     Tracker.Shutdown(World);
-    World->DestroyWorld(false);
-    World->RemoveFromRoot();
     return true;
 }
 

@@ -2,25 +2,15 @@
 
 #include "CoreMinimal.h"
 #include "Misc/AutomationTest.h"
-#include "Engine/Engine.h"
-#include "GameFramework/Actor.h"
-#include "Time/FActorHitStopTable.h"
-#include "Time/FGlobalDilationMixer.h"
 
 #if WITH_AUTOMATION_TESTS
 
-namespace {
+#include "GameFramework/Actor.h"
+#include "Tests/GameFeedbackTestHelpers.h"
+#include "Time/FActorHitStopTable.h"
+#include "Time/FGlobalDilationMixer.h"
 
-UWorld* GetTimeStateTestWorld() {
-    for (const FWorldContext& Context : GEngine->GetWorldContexts()) {
-        if (Context.World()) {
-            return Context.World();
-        }
-    }
-    return nullptr;
-}
-
-}  // namespace
+#include <limits>
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameTimeHitStopTableTest,
@@ -29,12 +19,13 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief Actor 局部顿帧表核心功能测试（时长与缩放合并、到期还原与清除）
+ * @brief Actor 局部顿帧表核心功能与边界测试（时长/缩放合并、非正时长拦截、到期还原与销毁自愈）
  * @param Parameters 自动化框架参数（未使用）
  * @return 全部断言通过返回 true
  */
 bool FGameTimeHitStopTableTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UWorld* World = GetTimeStateTestWorld();
+    GameFeedbackTestHelpers::FScopedLightweightGameWorld WorldGuard;
+    UWorld* World = WorldGuard.GetWorld();
     TestNotNull(TEXT("测试世界有效"), World);
     if (!World) {
         return false;
@@ -54,17 +45,29 @@ bool FGameTimeHitStopTableTest::RunTest([[maybe_unused]] const FString& Paramete
     ActorB->CustomTimeDilation = 1.0f;
 
     FActorHitStopTable Table;
+    TestFalse(TEXT("初始无活跃顿帧记录"), Table.HasActive());
+
+    Table.Request(*ActorA, 0.0f, 0.05f);
+    Table.Request(*ActorA, -0.5f, 0.05f);
+    Table.Request(*ActorA, std::numeric_limits<float>::quiet_NaN(), 0.05f);
+    TestFalse(TEXT("非正或 NaN 时长请求必须忽略且不激活记录"), Table.IsActive(ActorA));
+    TestNearlyEqual(TEXT("非正或 NaN 时长请求不得修改目标缩放"), ActorA->CustomTimeDilation, 1.0f, 0.0001f);
+
     Table.Request(*ActorA, 0.2f, 0.05f);
+    TestTrue(TEXT("请求后 HasActive 返回 true"), Table.HasActive());
     TestNearlyEqual(TEXT("顿帧缩放已应用"), ActorA->CustomTimeDilation, 0.05f, 0.0001f);
     TestTrue(TEXT("顿帧记录已建立"), Table.IsActive(ActorA));
 
     Table.Request(*ActorA, 0.1f, 0.5f);
     TestNearlyEqual(TEXT("重复请求取较小缩放"), ActorA->CustomTimeDilation, 0.05f, 0.0001f);
-    TestNearlyEqual(TEXT("重复请求不改写原始缩放记录"), ActorA->CustomTimeDilation, 0.05f, 0.0001f);
+
+    Table.Advance(-0.5f);
+    TestTrue(TEXT("负数时间推进应安全忽略"), Table.IsActive(ActorA));
 
     Table.Advance(0.2f);
     TestNearlyEqual(TEXT("到期后还原原始缩放"), ActorA->CustomTimeDilation, 1.0f, 0.0001f);
     TestFalse(TEXT("到期后记录移除"), Table.IsActive(ActorA));
+    TestFalse(TEXT("全部到期后 HasActive 为 false"), Table.HasActive());
 
     Table.Request(*ActorB, 0.1f, 0.2f);
     TestNearlyEqual(TEXT("第二目标缩放已应用"), ActorB->CustomTimeDilation, 0.2f, 0.0001f);
@@ -111,8 +114,6 @@ bool FGameTimeHitStopTableTest::RunTest([[maybe_unused]] const FString& Paramete
         TestFalse(TEXT("PruneInvalid 后全部失效 Actor 记录均已清理"), Table.IsActive(DeadItem));
     }
 
-    ActorA->Destroy();
-    ActorB->Destroy();
     return true;
 }
 
@@ -123,7 +124,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 全局分层时间膨胀混音器测试（通道优先级覆盖与生效计算）
+ * @brief 全局分层时间膨胀混音器测试（静态零堆通道优先级覆盖、负数防御与平滑淡出）
  * @param Parameters 自动化框架参数（未使用）
  * @return 全部断言通过返回 true
  */
@@ -131,12 +132,17 @@ bool FGameTimeDilationMixerTest::RunTest([[maybe_unused]] const FString& Paramet
     FGlobalDilationMixer Mixer;
 
     TestNearlyEqual(TEXT("初始生效值为 1.0"), Mixer.GetEffectiveDilation(), 1.0f, 0.0001f);
+    TestFalse(TEXT("初始 HasActive 为 false"), Mixer.HasActive());
     TestFalse(TEXT("初始无激活通道"), Mixer.IsActive(ETimeDilationChannel::SlowMo));
 
     Mixer.Request(ETimeDilationChannel::SlowMo, 1.0f, 0.5f, 0.0f);
+    TestTrue(TEXT("请求后 HasActive 为 true"), Mixer.HasActive());
     TestTrue(TEXT("请求后通道激活"), Mixer.IsActive(ETimeDilationChannel::SlowMo));
     TestNearlyEqual(TEXT("生效值取激活通道缩放"), Mixer.GetEffectiveDilation(), 0.5f, 0.0001f);
     TestNearlyEqual(TEXT("未激活通道返回 1.0"), Mixer.GetChannelDilation(ETimeDilationChannel::HitStop), 1.0f, 0.0001f);
+
+    Mixer.Advance(-2.0f);
+    TestNearlyEqual(TEXT("负数步进应被忽略不得拉长持续时长"), Mixer.GetEffectiveDilation(), 0.5f, 0.0001f);
 
     Mixer.Request(ETimeDilationChannel::HitStop, 0.5f, 0.1f, 0.0f);
     TestNearlyEqual(TEXT("高优先级通道完全覆盖"), Mixer.GetEffectiveDilation(), 0.1f, 0.0001f);
@@ -148,6 +154,7 @@ bool FGameTimeDilationMixerTest::RunTest([[maybe_unused]] const FString& Paramet
     TestTrue(TEXT("第一次推进未到期"), Mixer.IsActive(ETimeDilationChannel::SlowMo));
     Mixer.Advance(0.5f);
     TestFalse(TEXT("时长耗尽自动清除"), Mixer.IsActive(ETimeDilationChannel::SlowMo));
+    TestFalse(TEXT("全部通道结束后 HasActive 为 false"), Mixer.HasActive());
     TestNearlyEqual(TEXT("到期后生效值恢复 1.0"), Mixer.GetEffectiveDilation(), 1.0f, 0.0001f);
 
     Mixer.Request(ETimeDilationChannel::WorldModifier, 0.2f, 0.25f, 0.3f);
@@ -165,6 +172,7 @@ bool FGameTimeDilationMixerTest::RunTest([[maybe_unused]] const FString& Paramet
 
     Mixer.ClearAll();
     TestNearlyEqual(TEXT("全部清除后恢复 1.0"), Mixer.GetEffectiveDilation(), 1.0f, 0.0001f);
+    TestFalse(TEXT("全部清除后 HasActive 为 false"), Mixer.HasActive());
     TestFalse(TEXT("全部清除后无激活通道"), Mixer.IsActive(ETimeDilationChannel::SystemPause));
 
     return true;

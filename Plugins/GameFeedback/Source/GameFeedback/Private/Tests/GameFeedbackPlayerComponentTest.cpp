@@ -1,6 +1,6 @@
 /**
  * @file GameFeedbackPlayerComponentTest.cpp
- * @brief 玩家反馈组件本地预测与网络抑制自动化测试
+ * @brief 玩家反馈组件本地预测、网络抑制与镜头震动追踪自动化测试
  */
 
 #include "CoreMinimal.h"
@@ -13,31 +13,14 @@
 #include "Bus/GameFeedbackChannels.h"
 #include "Bus/GameFeedbackMessages.h"
 #include "Camera/CameraShakeBase.h"
+#include "Camera/PlayerCameraManager.h"
 #include "Component/GameFeedbackPlayerComponent.h"
 #include "Config/GameFeedbackSettings.h"
-#include "Engine/Engine.h"
-#include "Engine/GameInstance.h"
 #include "Engine/LocalPlayer.h"
-#include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "GameplayTagsManager.h"
 #include "Message/GameplayMessageSubsystem.h"
-
-namespace {
-
-/**
- * @brief 创建具有稳定资产路径的测试 Definition
- * @param ObjectPath 完整对象路径（Package.Object）
- * @return 测试 Definition
- */
-UGameFeedbackDefinition* CreatePlayerDefinitionAtPath(const FString& ObjectPath) {
-    FString PackageName;
-    FString ObjectName;
-    ObjectPath.Split(TEXT("."), &PackageName, &ObjectName);
-    return NewObject<UGameFeedbackDefinition>(CreatePackage(*PackageName), *ObjectName);
-}
-
-}  // namespace
+#include "Tests/GameFeedbackTestHelpers.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameFeedbackPlayerComponentTest,
@@ -46,48 +29,48 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证 PlayerComponent 本地预测添加与消费、网络抑制及生命周期退订
+ * @brief 验证 PlayerComponent 本地预测添加与消费、网络抑制客观跳过震屏及生命周期退订
  * @param Parameters 自动化测试参数
- * @return 测试是否通过
+ * @return 全部断言通过返回 true
  */
 bool FGameFeedbackPlayerComponentTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UGameInstance* GameInstance = NewObject<UGameInstance>(GEngine);
-    GameInstance->InitializeStandalone(FName(TEXT("GameFeedbackPlayerComponentTestWorld")));
-    UWorld* World = GameInstance->GetWorld();
+    GameFeedbackTestHelpers::FScopedFeedbackSettingsGuard SettingsGuard;
+    UGameFeedbackSettings* Settings = SettingsGuard.Get();
+
+    UGameFeedbackDefinition* Definition = GameFeedbackTestHelpers::CreateDefinitionAtPath(TEXT("/Game/Feedback/PlayerTest/Def.Def"));
+    Definition->CameraShake.MinMagnitude = 1.0f;
+    Definition->CameraShake.AttackerShakeClass = UCameraShakeBase::StaticClass();
+    Definition->CameraShake.AttackerShakeScale = 1.0f;
+    Definition->CameraShake.VictimShakeClass = UCameraShakeBase::StaticClass();
+    Definition->CameraShake.VictimShakeScale = 1.5f;
+
+    UGameFeedbackRegistry* Registry = NewObject<UGameFeedbackRegistry>();
+    const FGameplayTag Channel = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Damage.Test.PlayerComp.Channel")));
+    Registry->ExactChannelMap.Add(Channel, Definition);
+    Registry->RebuildDefinitionIndex();
+    Settings->GlobalRegistry = Registry;
+
+    GameFeedbackTestHelpers::FScopedStandaloneFeedbackWorld TestEnv(FName(TEXT("GameFeedbackPlayerComponentTestWorld")));
+    UWorld* World = TestEnv.GetWorld();
     TestNotNull(TEXT("PlayerComponent 测试世界有效"), World);
     if (!World) {
-        GameInstance->Shutdown();
+        return false;
+    }
+
+    UGameplayMessageSubsystem* Bus = TestEnv.GetGameInstance()->GetSubsystem<UGameplayMessageSubsystem>();
+    TestNotNull(TEXT("消息总线有效"), Bus);
+    if (!Bus) {
         return false;
     }
 
     APlayerController* LocalPC = World->SpawnActor<APlayerController>();
     ULocalPlayer* LocalPlayer = NewObject<ULocalPlayer>(GEngine);
     LocalPC->SetPlayer(LocalPlayer);
+    LocalPC->PlayerCameraManager = World->SpawnActor<APlayerCameraManager>();
+
     UGameFeedbackPlayerComponent* PlayerComp = NewObject<UGameFeedbackPlayerComponent>(LocalPC);
     LocalPC->AddInstanceComponent(PlayerComp);
     PlayerComp->RegisterComponent();
-
-    UGameFeedbackDefinition* Definition = CreatePlayerDefinitionAtPath(TEXT("/Game/Feedback/PlayerTest/Def.Def"));
-    Definition->CameraShake.MinMagnitude = 1.0f;
-    Definition->CameraShake.AttackerShakeClass = UCameraShakeBase::StaticClass();
-    Definition->CameraShake.AttackerShakeScale = 1.0f;
-
-    UGameFeedbackRegistry* Registry = NewObject<UGameFeedbackRegistry>();
-    const FGameplayTag Channel = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Damage.Test.PlayerComp.Channel")));
-    Registry->ExactChannelMap.Add(Channel, Definition);
-    Registry->RebuildDefinitionIndex();
-
-    UGameFeedbackSettings* Settings = GetMutableDefault<UGameFeedbackSettings>();
-    const TSoftObjectPtr<UGameFeedbackRegistry> PrevRegistry = Settings->GlobalRegistry;
-    Settings->GlobalRegistry = Registry;
-
-    UGameplayMessageSubsystem* Bus = GameInstance->GetSubsystem<UGameplayMessageSubsystem>();
-    TestNotNull(TEXT("消息总线有效"), Bus);
-    if (!Bus) {
-        Settings->GlobalRegistry = PrevRegistry;
-        GameInstance->Shutdown();
-        return false;
-    }
 
     FGameFeedbackSignal TestSignal;
     TestSignal.PrimaryChannel = Channel;
@@ -109,20 +92,52 @@ bool FGameFeedbackPlayerComponentTest::RunTest([[maybe_unused]] const FString& P
 
     TestTrue(TEXT("本地 Client 模式下 Play 广播应将事件加入预测记录"), PlayerComp->ConsumePrediction(TestSignal));
     TestFalse(TEXT("预测指纹一次消费后不得二次消费"), PlayerComp->ConsumePrediction(TestSignal));
+    TestEqual(TEXT("Play 广播应触发一次镜头震动追踪"), PlayerComp->GetTrackedShakeCount(), 1);
 
+    PlayerComp->EndPlay(EEndPlayReason::Destroyed);
+    TestEqual(TEXT("EndPlay 后应停止并清空镜头震动追踪"), PlayerComp->GetTrackedShakeCount(), 0);
+
+    PlayerComp->BeginPlay();
     FGameFeedbackNetworkMessage NetMsg;
     NetMsg.Signal = TestSignal;
     NetMsg.ResolvedDefinition = Definition;
     NetMsg.bSuppressed = true;
     Bus->BroadcastMessage(TAG_Feedback_Channel_Network, NetMsg);
+    TestEqual(TEXT("受抑制的网络消息不得触发镜头震动"), PlayerComp->GetTrackedShakeCount(), 0);
 
     NetMsg.bSuppressed = false;
     Bus->BroadcastMessage(TAG_Feedback_Channel_Network, NetMsg);
+    TestEqual(TEXT("未抑制的网络消息应触发镜头震动追踪"), PlayerComp->GetTrackedShakeCount(), 1);
 
     PlayerComp->EndPlay(EEndPlayReason::Destroyed);
+    PlayerComp->BeginPlay();
 
-    Settings->GlobalRegistry = PrevRegistry;
-    GameInstance->Shutdown();
+    APlayerController* SecondLocalPC = World->SpawnActor<APlayerController>();
+    ULocalPlayer* SecondLocalPlayer = NewObject<ULocalPlayer>(GEngine);
+    SecondLocalPC->SetPlayer(SecondLocalPlayer);
+    SecondLocalPC->PlayerCameraManager = World->SpawnActor<APlayerCameraManager>();
+    UGameFeedbackPlayerComponent* SecondPlayerComp = NewObject<UGameFeedbackPlayerComponent>(SecondLocalPC);
+    SecondLocalPC->AddInstanceComponent(SecondPlayerComp);
+    SecondPlayerComp->RegisterComponent();
+    SecondPlayerComp->BeginPlay();
+
+    FGameFeedbackNetworkMessage TargetedNetMsg = NetMsg;
+    TargetedNetMsg.Signal.Instigator = LocalPC;
+    TargetedNetMsg.Signal.Target = SecondLocalPC;
+    TargetedNetMsg.ReceivingController = LocalPC;
+    Bus->BroadcastMessage(TAG_Feedback_Channel_Network, TargetedNetMsg);
+    TestEqual(TEXT("分屏定向至 LocalPC 的网络回执应仅触发 LocalPC 玩家组件"), PlayerComp->GetTrackedShakeCount(), 1);
+    TestEqual(TEXT("分屏定向至 LocalPC 的网络回执不得扇出触发 SecondLocalPC"), SecondPlayerComp->GetTrackedShakeCount(), 0);
+
+    TargetedNetMsg.ReceivingController = SecondLocalPC;
+    Bus->BroadcastMessage(TAG_Feedback_Channel_Network, TargetedNetMsg);
+    TestEqual(TEXT("分屏定向至 SecondLocalPC 的网络回执应触发 SecondLocalPC 玩家组件"), SecondPlayerComp->GetTrackedShakeCount(), 1);
+
+    SecondPlayerComp->EndPlay(EEndPlayReason::Destroyed);
+    SecondLocalPC->Player = nullptr;
+    LocalPC->Player = nullptr;
+    PlayerComp->EndPlay(EEndPlayReason::Destroyed);
+    TestEqual(TEXT("再次 EndPlay 后状态归零"), PlayerComp->GetTrackedShakeCount(), 0);
     return true;
 }
 

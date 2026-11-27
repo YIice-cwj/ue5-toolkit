@@ -23,14 +23,14 @@ public:
      * @brief 模块启动入口，输出加载信息
      */
     void StartupModule() override {
-        GAME_LOG(Log, TEXT("【GameFeedback】打击感表现解耦中枢模块初始化完成。"));
+        GAME_LOG(Log, TEXT("[Module] 打击感表现解耦中枢模块初始化完成。"));
     }
 
     /**
      * @brief 模块卸载入口，输出注销信息
      */
     void ShutdownModule() override {
-        GAME_LOG(Log, TEXT("【GameFeedback】打击感表现解耦中枢模块卸载完成。"));
+        GAME_LOG(Log, TEXT("[Module] 打击感表现解耦中枢模块卸载完成。"));
     }
 };
 

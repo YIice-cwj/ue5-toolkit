@@ -5,39 +5,19 @@
 #include "Component/GameFeedbackNetworkDispatcherComponent.h"
 #include "Component/GameFeedbackPlayerComponent.h"
 #include "Component/GameFeedbackWorldComponent.h"
-#include "Network/GameFeedbackReceiverComponent.h"
+#include "Engine/GameInstance.h"
+#include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
 #include "GameFramework/GameModeBase.h"
 #include "GameFramework/GameStateBase.h"
 #include "GameFramework/PlayerController.h"
 #include "Logging/GameLogCategories.h"
+#include "Network/GameFeedbackReceiverComponent.h"
+#include "System/GameFeedbackInternalHelpers.h"
 #include "TimerManager.h"
 
 namespace {
-
-/**
- * @brief 确保目标 Actor 上存在指定类型的组件（缺失时创建并注册）
- * @tparam TComponent 组件类型
- * @param Owner 组件宿主
- * @return 已存在或新建的组件指针；宿主为空时返回 nullptr
- */
-template <typename TComponent>
-TComponent* EnsureComponent(AActor* Owner)
-{
-    if (!Owner) {
-        return nullptr;
-    }
-
-    if (TComponent* Existing = Owner->FindComponentByClass<TComponent>()) {
-        return Existing;
-    }
-
-    TComponent* Component = NewObject<TComponent>(Owner);
-    Owner->AddInstanceComponent(Component);
-    Component->RegisterComponent();
-    return Component;
-}
-
+constexpr float EnsurePollIntervalSeconds = 0.25f;
 }
 
 /**
@@ -45,8 +25,7 @@ TComponent* EnsureComponent(AActor* Owner)
  * @param Outer 外层对象
  * @return 是否创建
  */
-bool UGameFeedbackRuntimeSubsystem::ShouldCreateSubsystem(UObject* Outer) const
-{
+bool UGameFeedbackRuntimeSubsystem::ShouldCreateSubsystem(UObject* Outer) const {
     if (!Super::ShouldCreateSubsystem(Outer)) {
         return false;
     }
@@ -55,11 +34,10 @@ bool UGameFeedbackRuntimeSubsystem::ShouldCreateSubsystem(UObject* Outer) const
 }
 
 /**
- * @brief 世界 BeginPlay：装配现有组件并注册服务端登录事件
+ * @brief 世界 BeginPlay：装配现有组件并注册服务端登录与本地分屏加入事件
  * @param InWorld 当前世界
  */
-void UGameFeedbackRuntimeSubsystem::OnWorldBeginPlay(UWorld& InWorld)
-{
+void UGameFeedbackRuntimeSubsystem::OnWorldBeginPlay(UWorld& InWorld) {
     Super::OnWorldBeginPlay(InWorld);
 
     const bool bAllReady = EnsureComponents(InWorld);
@@ -70,31 +48,30 @@ void UGameFeedbackRuntimeSubsystem::OnWorldBeginPlay(UWorld& InWorld)
             this, &UGameFeedbackRuntimeSubsystem::OnPostLogin);
     }
 
+    if (NetMode != NM_DedicatedServer) {
+        if (UGameInstance* GameInstance = InWorld.GetGameInstance()) {
+            LocalPlayerAddedDelegateHandle = GameInstance->OnLocalPlayerAddedEvent.AddUObject(
+                this, &UGameFeedbackRuntimeSubsystem::OnLocalPlayerAdded);
+        }
+    }
+
     if (!bAllReady) {
-        InWorld.GetTimerManager().SetTimer(
-            EnsureTimer,
-            FTimerDelegate::CreateWeakLambda(this, [this]() {
-                UWorld* World = GetWorld();
-                if (!World) {
-                    return;
-                }
-                const bool bReadyNow = EnsureComponents(*World);
-                if (bReadyNow) {
-                    World->GetTimerManager().ClearTimer(EnsureTimer);
-                }
-            }),
-            0.25f,
-            true);
+        StartEnsureTimer(InWorld);
     }
 }
 
 /**
- * @brief 注销：停止定时器并退订服务端登录事件
+ * @brief 注销：停止定时器并退订服务端登录与本地玩家加入事件
  */
-void UGameFeedbackRuntimeSubsystem::Deinitialize()
-{
+void UGameFeedbackRuntimeSubsystem::Deinitialize() {
     if (UWorld* World = GetWorld()) {
         World->GetTimerManager().ClearTimer(EnsureTimer);
+        if (LocalPlayerAddedDelegateHandle.IsValid()) {
+            if (UGameInstance* GameInstance = World->GetGameInstance()) {
+                GameInstance->OnLocalPlayerAddedEvent.Remove(LocalPlayerAddedDelegateHandle);
+            }
+            LocalPlayerAddedDelegateHandle.Reset();
+        }
     }
 
     if (PostLoginDelegateHandle.IsValid()) {
@@ -106,24 +83,11 @@ void UGameFeedbackRuntimeSubsystem::Deinitialize()
 }
 
 /**
- * @brief 服务端新玩家登录回调：立即装配网络接收组件
- * @param GameMode 当前游戏模式
- * @param NewPlayer 新登录的玩家控制器
- */
-void UGameFeedbackRuntimeSubsystem::OnPostLogin([[maybe_unused]] AGameModeBase* GameMode, APlayerController* NewPlayer)
-{
-    if (NewPlayer) {
-        UGameFeedbackReceiverComponent::EnsureOnPlayerController(NewPlayer);
-    }
-}
-
-/**
  * @brief 确保 GameState、PlayerController 及网络组件按 NetMode 正确装配
  * @param World 当前世界
  * @return 若当前所需组件均已就绪返回 true；若存在待装配对象返回 false
  */
-bool UGameFeedbackRuntimeSubsystem::EnsureComponents(UWorld& World)
-{
+bool UGameFeedbackRuntimeSubsystem::EnsureComponents(UWorld& World) {
     const ENetMode NetMode = World.GetNetMode();
     const bool bIsDedicatedServer = NetMode == NM_DedicatedServer;
     const bool bIsServer = NetMode == NM_ListenServer || NetMode == NM_DedicatedServer;
@@ -131,10 +95,10 @@ bool UGameFeedbackRuntimeSubsystem::EnsureComponents(UWorld& World)
     bool bGameStateReady = false;
     if (AGameStateBase* GameState = World.GetGameState()) {
         if (!bIsDedicatedServer) {
-            EnsureComponent<UGameFeedbackWorldComponent>(GameState);
+            GameFeedback::Internal::EnsureComponent<UGameFeedbackWorldComponent>(GameState);
         }
         if (bIsServer) {
-            EnsureComponent<UGameFeedbackNetworkDispatcherComponent>(GameState);
+            GameFeedback::Internal::EnsureComponent<UGameFeedbackNetworkDispatcherComponent>(GameState);
         }
         bGameStateReady = true;
     }
@@ -147,14 +111,73 @@ bool UGameFeedbackRuntimeSubsystem::EnsureComponents(UWorld& World)
         }
 
         ++FoundControllers;
-        if (bIsServer) {
+        if (bIsServer && !PC->IsLocalController()) {
             UGameFeedbackReceiverComponent::EnsureOnPlayerController(PC);
         }
 
         if (!bIsDedicatedServer && PC->IsLocalController()) {
-            EnsureComponent<UGameFeedbackPlayerComponent>(PC);
+            GameFeedback::Internal::EnsureComponent<UGameFeedbackPlayerComponent>(PC);
         }
     }
 
-    return bGameStateReady && (FoundControllers > 0 || bIsDedicatedServer);
+    const bool bAllReady = bGameStateReady && (FoundControllers > 0 || bIsDedicatedServer);
+    GAME_LOG(Verbose, TEXT("[Runtime] 组件拓扑检查完成: NetMode=%d, GameStateReady=%d, Controllers=%d, Ready=%d"),
+        static_cast<int32>(NetMode), bGameStateReady ? 1 : 0, FoundControllers, bAllReady ? 1 : 0);
+    return bAllReady;
+}
+
+/**
+ * @brief 启动延迟补齐定时器，直至全部必备组件装配就绪后自动停止
+ * @param World 当前世界
+ */
+void UGameFeedbackRuntimeSubsystem::StartEnsureTimer(UWorld& World) {
+    if (World.GetTimerManager().IsTimerActive(EnsureTimer)) {
+        return;
+    }
+
+    World.GetTimerManager().SetTimer(
+        EnsureTimer,
+        FTimerDelegate::CreateWeakLambda(this, [this]() {
+            UWorld* CurrentWorld = GetWorld();
+            if (!CurrentWorld) {
+                return;
+            }
+            if (EnsureComponents(*CurrentWorld)) {
+                CurrentWorld->GetTimerManager().ClearTimer(EnsureTimer);
+            }
+        }),
+        EnsurePollIntervalSeconds,
+        true);
+}
+
+/**
+ * @brief 服务端新玩家登录回调：过滤世界与本地控制器后立即装配网络接收组件
+ * @param GameMode 当前游戏模式
+ * @param NewPlayer 新登录的玩家控制器
+ */
+void UGameFeedbackRuntimeSubsystem::OnPostLogin([[maybe_unused]] AGameModeBase* GameMode, APlayerController* NewPlayer) {
+    if (!NewPlayer || NewPlayer->GetWorld() != GetWorld() || NewPlayer->IsLocalController()) {
+        return;
+    }
+    UGameFeedbackReceiverComponent::EnsureOnPlayerController(NewPlayer);
+}
+
+/**
+ * @brief 本地分屏玩家新增回调：触发该玩家的 PlayerComponent 装配或重启延迟补齐
+ * @param NewLocalPlayer 新加入的本地玩家
+ */
+void UGameFeedbackRuntimeSubsystem::OnLocalPlayerAdded(ULocalPlayer* NewLocalPlayer) {
+    UWorld* World = GetWorld();
+    if (!World || !NewLocalPlayer) {
+        return;
+    }
+
+    if (APlayerController* PC = NewLocalPlayer->GetPlayerController(World)) {
+        if (PC->IsLocalController()) {
+            GameFeedback::Internal::EnsureComponent<UGameFeedbackPlayerComponent>(PC);
+            return;
+        }
+    }
+
+    StartEnsureTimer(*World);
 }

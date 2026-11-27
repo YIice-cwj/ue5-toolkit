@@ -1,9 +1,9 @@
 {
     "FileVersion": 3,
-    "Version": 1,
-    "VersionName": "1.0.0",
+    "Version": 2,
+    "VersionName": "2.0.0",
     "FriendlyName": "Game Feedback",
-    "Description": "Generic combat hit feedback and presentation decoupling engine (camera shake, hitstop, hit flash, audio and particles). Zero GAS hard dependency.",
+    "Description": "Generic combat hit feedback and presentation decoupling engine (camera shake, hitstop, hit flash, audio, particles, layered time dilation and compact network dispatch). Zero gameplay/GAS hard dependency.",
     "Category": "Game",
     "CreatedBy": "Taoist Decree Team",
     "CanContainContent": false,
@@ -22,10 +22,6 @@
         },
         {
             "Name": "GameMessage",
-            "Enabled": true
-        },
-        {
-            "Name": "GameGameplayCore",
             "Enabled": true
         },
         {

@@ -1,19 +1,22 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
+/**
+ * @file TimeDilationSubsystem.h
+ * @brief 分层时间膨胀与 Actor 局部顿帧世界子系统（空闲零 Tick 休眠）
+ */
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
-#include "Time/TimeDilationTypes.h"
 #include "Time/FActorHitStopTable.h"
 #include "Time/FGlobalDilationMixer.h"
+#include "Time/TimeDilationTypes.h"
 
 #include "TimeDilationSubsystem.generated.h"
 
 /**
  * @brief 分层时间膨胀与 HitStop 顿帧管理器
  *
- * 管理 Actor 局部定格与全局分层时间缩放，支持通道优先级覆盖与平滑恢复。
+ * 管理 Actor 局部定格与全局分层时间缩放，支持通道优先级覆盖、平滑淡出恢复与空闲零 Tick 休眠。
  */
 UCLASS()
 class GAMEFEEDBACK_API UTimeDilationSubsystem : public UTickableWorldSubsystem {
@@ -37,10 +40,17 @@ public:
      * @param WorldContextObject 上下文对象
      * @return 子系统指针
      */
-    static UTimeDilationSubsystem* GetPtr(const UObject* WorldContextObject);
+    [[nodiscard]] static UTimeDilationSubsystem* GetPtr(const UObject* WorldContextObject);
 
     /**
-     * @brief 子系统初始化生命周期回调：初始化时间基准、通道状态数组与顿帧表
+     * @brief 仅在游戏世界创建（排除编辑器视口与预览世界）
+     * @param Outer 外层世界对象
+     * @return 允许创建返回 true
+     */
+    bool ShouldCreateSubsystem(UObject* Outer) const override;
+
+    /**
+     * @brief 子系统初始化生命周期回调：初始化真实时间基准与世界膨胀缓存
      * @param Collection 子系统管理器集合
      */
     void Initialize(FSubsystemCollectionBase& Collection) override;
@@ -52,6 +62,7 @@ public:
 
     /**
      * @brief 每帧推进时间层叠（暂停期间仍刷新 LastRealTime，避免解除暂停时时间突跳）
+     * @param DeltaTime 帧间隔时间（秒）
      */
     void Tick(float DeltaTime) override;
 
@@ -62,13 +73,19 @@ public:
     TStatId GetStatId() const override;
 
     /**
-     * @brief 暂停期间仍参与 Tick，仅刷新真实时间基准，不推进 HitStop 与通道膨胀
+     * @brief 仅当存在活跃顿帧或全局时间膨胀通道且非 CDO 时参与引擎 Tick，空闲期零开销休眠
+     * @return 需要 Tick 返回 true
+     */
+    bool IsTickable() const override;
+
+    /**
+     * @brief 活跃状态下暂停期间仍参与 Tick 以刷新真实时间基准，避免解除暂停后时间突跳
      * @return 恒为 true
      */
     bool IsTickableWhenPaused() const override;
 
     /**
-     * @brief 请求对单个 Actor 施加打击顿帧（Duration <= 0 或 Target 为空时不生效）
+     * @brief 请求对单个 Actor 施加打击顿帧（Duration 非正数/NaN 或 Target 无效时不生效）
      * @param Target 目标 Actor
      * @param Duration 顿帧持续真实时间（秒）
      * @param TimeDilation 顿帧期间局部时间缩放（钳制到 [0.0001, 20]，默认 0.001 即几乎定格）
@@ -100,9 +117,9 @@ public:
     /**
      * @brief 在指定通道请求全局时间膨胀（重复请求整体覆盖该通道既有状态）
      * @param Channel 目标通道
-     * @param Duration 持续时间（秒，<=0 表示持久有效直至手动清除）
-     * @param TimeDilation 目标时间缩放（钳制到 [0, 20]）
-     * @param BlendOutDuration 结束时的平滑淡出时间（秒，负数按 0 处理；默认 0 表示持续时长耗尽后直接结束、不淡出）
+     * @param Duration 持续时间（秒，<= 0 表示持久有效直至手动清除）
+     * @param TimeDilation 目标时间缩放（钳制到 [0.0001, 20]）
+     * @param BlendOutDuration 结束时的平滑淡出时间（秒，负数按 0 处理；默认 0 表示持续时长耗尽后直接结束）
      */
     UFUNCTION(BlueprintCallable, Category = "GameFeedback|Time")
     void RequestGlobalDilation(ETimeDilationChannel Channel, float Duration, float TimeDilation, float BlendOutDuration = 0.0f);
@@ -117,7 +134,7 @@ public:
     /**
      * @brief 清除指定通道的全局时间膨胀，并支持平滑淡出恢复
      * @param Channel 目标通道
-     * @param BlendOutDuration 淡出过渡时间（秒，<=0 时等价于立即清除；默认 0.2）
+     * @param BlendOutDuration 淡出过渡时间（秒，<= 0 时等价于立即清除；默认 0.2）
      */
     UFUNCTION(BlueprintCallable, Category = "GameFeedback|Time")
     void ClearGlobalDilationWithBlend(ETimeDilationChannel Channel, float BlendOutDuration = 0.2f);
@@ -159,11 +176,15 @@ public:
 
 private:
     /**
+     * @brief 若当前处于空闲休眠态，则在激活新任务前同步刷新真实时间基准
+     */
+    void RefreshClockIfIdle();
+
+    /**
      * @brief 将混音器生效时间缩放写回世界设置（生效值未变化时直接返回）
      */
     void SyncWorldDilation();
 
-private:
     FActorHitStopTable HitStopTable;
     FGlobalDilationMixer DilationMixer;
 

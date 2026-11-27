@@ -7,10 +7,18 @@
 
 #include "CoreMinimal.h"
 #include "Engine/NetSerialization.h"
-#include "Math/Float16.h"
 #include "Feedback/GameFeedbackSignal.h"
+#include "Math/Float16.h"
+#include "Types/TBitMask.h"
 
 #include "GameFeedbackEventNet.generated.h"
+
+/**
+ * @brief 网络紧凑载荷状态标记位索引（配合 GameCore::TBitMask 使用）
+ */
+enum class EGameFeedbackNetFlag : uint8 {
+    Lethal = 0
+};
 
 /**
  * @brief 网络紧凑打击表现载荷（典型 <= 64 字节，完整 <= 96 字节）
@@ -53,7 +61,7 @@ struct GAMEFEEDBACK_API FGameFeedbackEventNet {
      * @brief 主通道网络索引；未启用 GameplayTag FastReplication 时为 MAX_uint16 哨兵
      */
     UPROPERTY()
-    uint16 PrimaryChannelIndex = 0;
+    uint16 PrimaryChannelIndex = MAX_uint16;
 
     UPROPERTY()
     uint16 DamageHalf = 0;
@@ -68,7 +76,7 @@ struct GAMEFEEDBACK_API FGameFeedbackEventNet {
     uint16 BoneIndex = MAX_uint16;
 
     /**
-     * @brief 写入伤害数值（经过限幅后转为半精度浮点编码）
+     * @brief 写入伤害数值（经过 NaN 过滤与 [0, 65504] 限幅后转为半精度浮点编码）
      * @param InDamage 原始单精度伤害浮点数
      */
     FORCEINLINE void SetDamage(float InDamage) noexcept {
@@ -87,6 +95,22 @@ struct GAMEFEEDBACK_API FGameFeedbackEventNet {
     }
 
     /**
+     * @brief 以强类型位掩码视图读取当前状态标志位
+     * @return TBitMask<EGameFeedbackNetFlag> 位掩码实例
+     */
+    [[nodiscard]] FORCEINLINE TBitMask<EGameFeedbackNetFlag> GetFlags() const noexcept {
+        return TBitMask<EGameFeedbackNetFlag>::FromRawMask(StateFlags);
+    }
+
+    /**
+     * @brief 写入强类型位掩码至紧凑状态字节
+     * @param InFlags 目标状态位掩码
+     */
+    FORCEINLINE void SetFlags(TBitMask<EGameFeedbackNetFlag> InFlags) noexcept {
+        StateFlags = InFlags.GetRawMask();
+    }
+
+    /**
      * @brief 自定义网络序列化（对象映射、定义身份、方向与骨骼紧凑编码）
      * @param Ar 序列化归档
      * @param Map 网络对象包映射器
@@ -102,14 +126,17 @@ struct GAMEFEEDBACK_API FGameFeedbackEventNet {
      * @param DefinitionMappingVersion 服务端 Registry 映射版本
      * @return 网络紧凑载荷
      */
-    static FGameFeedbackEventNet FromSignal(const FGameFeedbackSignal& Signal, uint32 DefinitionId, uint32 DefinitionMappingVersion);
+    [[nodiscard]] static FGameFeedbackEventNet FromSignal(
+        const FGameFeedbackSignal& Signal,
+        uint32 DefinitionId,
+        uint32 DefinitionMappingVersion);
 
     /**
      * @brief 将网络紧凑载荷还原为表现信号
      * @param NetEvent 网络紧凑载荷
      * @return 还原后的表现信号
      */
-    static FGameFeedbackSignal ToSignal(const FGameFeedbackEventNet& NetEvent);
+    [[nodiscard]] static FGameFeedbackSignal ToSignal(const FGameFeedbackEventNet& NetEvent);
 };
 
 template <>
@@ -118,4 +145,3 @@ struct TStructOpsTypeTraits<FGameFeedbackEventNet> : public TStructOpsTypeTraits
         WithNetSerializer = true
     };
 };
-

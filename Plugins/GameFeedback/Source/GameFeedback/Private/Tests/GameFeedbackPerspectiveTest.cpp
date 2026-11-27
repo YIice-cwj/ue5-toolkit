@@ -1,6 +1,6 @@
 /**
  * @file GameFeedbackPerspectiveTest.cpp
- * @brief 本地观察视角判定与所有权链追溯自动化测试
+ * @brief 本地观察视角判定、自伤优先与所有权链追溯自动化测试
  */
 
 #include "CoreMinimal.h"
@@ -13,6 +13,7 @@
 #include "GameFramework/Actor.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
+#include "Tests/GameFeedbackTestHelpers.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameFeedbackPerspectiveTest,
@@ -21,12 +22,18 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证本地观察视角判定逻辑、所有权链追溯及深度防御边界
+ * @brief 验证本地观察视角判定、自伤优先判定受害者、所有权链追溯及深度截断保护
  * @param Parameters 自动化测试参数
- * @return 测试是否通过
+ * @return 全部断言通过返回 true
  */
 bool FGameFeedbackPerspectiveTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+    GameFeedbackTestHelpers::FScopedLightweightGameWorld WorldGuard;
+    UWorld* World = WorldGuard.GetWorld();
+    TestNotNull(TEXT("测试世界有效"), World);
+    if (!World) {
+        return false;
+    }
+
     APlayerController* LocalPC = World->SpawnActor<APlayerController>();
     APawn* LocalPawn = World->SpawnActor<APawn>();
     LocalPC->Possess(LocalPawn);
@@ -45,6 +52,11 @@ bool FGameFeedbackPerspectiveTest::RunTest([[maybe_unused]] const FString& Param
         TEXT("攻击者归属本地控制器必须判定为本地攻击者"),
         GameFeedback::ResolvePerspective(LocalPC, Attacker, DamageCauser, Target),
         EGameFeedbackPerspective::LocalAttacker);
+
+    TestEqual(
+        TEXT("自伤场景（攻击者与受击目标同时归属本地玩家）必须优先判定为本地受击者"),
+        GameFeedback::ResolvePerspective(LocalPC, LocalPawn, Attacker, LocalPawn),
+        EGameFeedbackPerspective::LocalVictim);
 
     Attacker->SetOwner(nullptr);
     DamageCauser->SetOwner(LocalPawn);
@@ -83,9 +95,6 @@ bool FGameFeedbackPerspectiveTest::RunTest([[maybe_unused]] const FString& Param
         GameFeedback::ResolvePerspective(LocalPC, DeepActor, nullptr, Target),
         EGameFeedbackPerspective::LocalAttacker);
 
-    Chain1->SetOwner(LocalPC);
-    Chain2->SetOwner(Chain1);
-    Chain3->SetOwner(Chain2);
     Chain4->SetOwner(Chain3);
     Chain5->SetOwner(Chain4);
     Chain6->SetOwner(Chain5);
@@ -96,8 +105,6 @@ bool FGameFeedbackPerspectiveTest::RunTest([[maybe_unused]] const FString& Param
         EGameFeedbackPerspective::Bystander);
 
     LocalPC->UnPossess();
-    World->DestroyWorld(false);
-    World->RemoveFromRoot();
     return true;
 }
 

@@ -59,8 +59,8 @@ graph TD
 
 ## 插件依赖
 
-- **公开依赖 (Public)**：`Core`, `CoreUObject`, `Engine`, `GameplayAbilities`, `GameplayTags`, `GameCore`, `GameMessage`, `GameGameplayCore`, `GamePool`
-- **私有依赖 (Private)**：`GameplayTasks`, `GameLogging`, `GameFeedback`
+- **公开依赖 (Public)**：`Core`, `CoreUObject`, `Engine`, `GameplayAbilities`, `GameplayTags`, `GameCore`, `GameMessage`, `GameGameplayCore`, `GamePool`, `GameFeedback`
+- **私有依赖 (Private)**：`GameplayTasks`, `GameLogging`
 - **禁止依赖**：`GameData`（杜绝配置数据与技能框架循环引用）
 - **C++ 标准**：C++20
 
@@ -135,6 +135,7 @@ Plugins/GameGameplay/
 │       │   │   ├── UGameBaseAttributeSet.h          # 属性集与元属性基类
 │       │   │   └── UGameplayAttributeValueMapping.h # UI 属性映射工具
 │       │   ├── Bridge/
+│       │   │   ├── UGameFeedbackAdapter.h           # 伤害契约到 GameFeedback 信号适配器
 │       │   │   ├── UGameGasBuffBridge.h             # GAS Buff 桥接
 │       │   │   └── UGameplayCueNotify_GameFeedback.h # GAS Cue 打击感桥接
 │       │   └── Damage/
@@ -153,6 +154,7 @@ Plugins/GameGameplay/
 │       │       ├── FBootstrapRetryGateTest.cpp      # 重试闸门单测
 │       │       ├── FGameDamageChannelRegistryTest.cpp # 通道注册表与修饰器单测
 │       │       ├── FGameGameplayEffectContextTest.cpp # 打击上下文与网络序列化单测
+│       │       ├── GameFeedbackAdapterTest.cpp      # 伤害契约到反馈信号适配器单测
 │       │       ├── GameFeedbackCueBridgeTest.cpp    # GameFeedback Cue 桥接单测
 │       │       ├── UGameAbilitySystemBootstrapTest.cpp # GAS 引导组件生命周期单测
 │       │       ├── UGameAbilitySystemComponentTest.cpp # 通用 ASC 基类单测

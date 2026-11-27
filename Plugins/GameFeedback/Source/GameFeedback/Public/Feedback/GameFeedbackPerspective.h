@@ -20,7 +20,7 @@ namespace GameFeedback {
  * @param Target 目标实体
  * @return 视角分类
  */
-EGameFeedbackPerspective ResolvePerspective(
+GAMEFEEDBACK_API EGameFeedbackPerspective ResolvePerspective(
     const APlayerController* LocalPC,
     const AActor* Instigator,
     const AActor* DamageCauser,

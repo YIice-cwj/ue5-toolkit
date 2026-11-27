@@ -56,9 +56,9 @@ public:
     bool bAllowAuthoritativeHitStop = false;
 
     /**
-     * @brief 默认网络视距裁剪距离（厘米）
+     * @brief 默认网络视距裁剪距离（厘米；<= 0 表示关闭视距裁剪）
      */
-    UPROPERTY(Config, EditAnywhere, Category = "Network")
+    UPROPERTY(Config, EditAnywhere, Category = "Network", meta = (ClampMin = "0.0"))
     float DefaultNetworkCullDistance = 5000.0f;
 
     /**

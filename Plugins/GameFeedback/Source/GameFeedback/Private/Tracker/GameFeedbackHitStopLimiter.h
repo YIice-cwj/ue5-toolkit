@@ -18,6 +18,7 @@ class FGameFeedbackHitStopLimiter {
 private:
     struct FTrackState {
         float CumulativeDuration = 0.0f;
+        float ResetWindow = 0.5f;
         double LastTriggerRealTime = 0.0;
     };
 
@@ -59,7 +60,19 @@ public:
      */
     void Prune(double RealTime);
 
+    /**
+     * @brief 按时间间隔或容量阈值节流执行清理，避免每次命中全表扫描
+     * @param RealTime 当前真实时间（秒）
+     */
+    void PruneIfNeeded(double RealTime);
+
+    /**
+     * @brief 重置全部累积状态与冷却记录
+     */
+    void Reset();
+
 private:
     TMap<TObjectKey<AActor>, FTrackState> Tracks;
     TMap<TPair<TObjectKey<AActor>, TObjectKey<AActor>>, double> CooldownMap;
+    double LastPruneRealTime = -1.0e9;
 };

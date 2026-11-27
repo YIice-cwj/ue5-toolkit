@@ -13,6 +13,38 @@
 #include "Network/GameFeedbackEventNet.h"
 #include "Network/GameFeedbackReceiverComponent.h"
 #include "System/GameFeedbackDefinitionProvider.h"
+#include "System/GameFeedbackInternalHelpers.h"
+
+namespace {
+
+/**
+ * @brief 尝试获取远端控制器的有效观察坐标（避免把世界原点误判为空视点）
+ * @param PC 目标玩家控制器
+ * @param OutViewLocation 输出观察点世界坐标
+ * @return 成功获取有效观察点返回 true
+ */
+bool TryGetControllerViewLocation(const APlayerController& PC, FVector& OutViewLocation) {
+    if (const APawn* Pawn = PC.GetPawn()) {
+        FRotator UnusedRotation;
+        PC.GetPlayerViewPoint(OutViewLocation, UnusedRotation);
+        if (OutViewLocation.IsNearlyZero() && !Pawn->GetActorLocation().IsNearlyZero()) {
+            OutViewLocation = Pawn->GetActorLocation();
+        }
+        return true;
+    }
+
+    const AActor* ViewTarget = PC.GetViewTarget();
+    if (ViewTarget && ViewTarget != &PC) {
+        OutViewLocation = ViewTarget->GetActorLocation();
+        return true;
+    }
+
+    FRotator UnusedRotation;
+    PC.GetPlayerViewPoint(OutViewLocation, UnusedRotation);
+    return !OutViewLocation.IsNearlyZero();
+}
+
+}  // namespace
 
 struct FGameFeedbackNetworkDispatcherComponentState {
     TArray<FGameplayMessageListenerHandle> Handles;
@@ -21,12 +53,13 @@ struct FGameFeedbackNetworkDispatcherComponentState {
 };
 
 /**
- * @brief 构造：装配派发限流状态
+ * @brief 构造：关闭 Tick 并按需装配内部状态（CDO 零堆分配）
  */
-UGameFeedbackNetworkDispatcherComponent::UGameFeedbackNetworkDispatcherComponent()
-    : State(MakePimpl<FGameFeedbackNetworkDispatcherComponentState>())
-{
+UGameFeedbackNetworkDispatcherComponent::UGameFeedbackNetworkDispatcherComponent() {
     PrimaryComponentTick.bCanEverTick = false;
+    if (!HasAnyFlags(RF_ClassDefaultObject)) {
+        State = MakePimpl<FGameFeedbackNetworkDispatcherComponentState>();
+    }
 }
 
 /**
@@ -37,22 +70,38 @@ UGameFeedbackNetworkDispatcherComponent::~UGameFeedbackNetworkDispatcherComponen
 /**
  * @brief 开始播放：订阅 Play 通道
  */
-void UGameFeedbackNetworkDispatcherComponent::BeginPlay()
-{
+void UGameFeedbackNetworkDispatcherComponent::BeginPlay() {
     Super::BeginPlay();
 
-    UGameplayMessageSubsystem& Bus = UGameplayMessageSubsystem::Get(this);
-    State->Handles.Add(Bus.RegisterListener<FGameFeedbackMessage>(TAG_Feedback_Channel_Play, this, &UGameFeedbackNetworkDispatcherComponent::OnPlay));
+    EnsureState();
+    State->Handles.Empty();
+
+    UGameplayMessageSubsystem* Bus = UGameplayMessageSubsystem::GetPtr(this);
+    if (!Bus) {
+        return;
+    }
+
+    State->Handles.Add(Bus->RegisterListener<FGameFeedbackMessage>(TAG_Feedback_Channel_Play, this, &UGameFeedbackNetworkDispatcherComponent::OnPlay));
 }
 
 /**
  * @brief 结束播放：退订通道
  * @param EndPlayReason 结束原因
  */
-void UGameFeedbackNetworkDispatcherComponent::EndPlay([[maybe_unused]] const EEndPlayReason::Type EndPlayReason)
-{
-    State->Handles.Empty();
+void UGameFeedbackNetworkDispatcherComponent::EndPlay([[maybe_unused]] const EEndPlayReason::Type EndPlayReason) {
+    if (State) {
+        State->Handles.Empty();
+    }
     Super::EndPlay(EndPlayReason);
+}
+
+/**
+ * @brief 确保非 CDO 实例已创建内部状态
+ */
+void UGameFeedbackNetworkDispatcherComponent::EnsureState() {
+    if (!State) {
+        State = MakePimpl<FGameFeedbackNetworkDispatcherComponentState>();
+    }
 }
 
 /**
@@ -60,8 +109,7 @@ void UGameFeedbackNetworkDispatcherComponent::EndPlay([[maybe_unused]] const EEn
  * @param Channel 广播通道
  * @param Message 表现载荷
  */
-void UGameFeedbackNetworkDispatcherComponent::OnPlay([[maybe_unused]] FGameplayTag Channel, const FGameFeedbackMessage& Message)
-{
+void UGameFeedbackNetworkDispatcherComponent::OnPlay([[maybe_unused]] FGameplayTag Channel, const FGameFeedbackMessage& Message) {
     Dispatch(Message);
 }
 
@@ -69,14 +117,14 @@ void UGameFeedbackNetworkDispatcherComponent::OnPlay([[maybe_unused]] FGameplayT
  * @brief 按服务端最终 Definition 身份向视距内远端客户端派发紧凑报文
  * @param Message 本地表现消息（含可选 OverrideDefinition）
  */
-void UGameFeedbackNetworkDispatcherComponent::Dispatch(const FGameFeedbackMessage& Message)
-{
+void UGameFeedbackNetworkDispatcherComponent::Dispatch(const FGameFeedbackMessage& Message) {
     UWorld* World = GetWorld();
-    if (!World) {
+    if (!State || !World) {
         return;
     }
 
-    if (!GetDefault<UGameFeedbackSettings>()->bEnableFeedback) {
+    const UGameFeedbackSettings* Settings = GetDefault<UGameFeedbackSettings>();
+    if (!Settings->bEnableFeedback) {
         return;
     }
 
@@ -91,24 +139,31 @@ void UGameFeedbackNetworkDispatcherComponent::Dispatch(const FGameFeedbackMessag
         return;
     }
 
-    const UGameFeedbackDefinition* Definition = Message.OverrideDefinition;
+    const UGameFeedbackDefinition* Definition = Message.OverrideDefinition
+        ? Message.OverrideDefinition.Get()
+        : Provider->Resolve(Signal);
     if (!Definition) {
-        Definition = Provider->Resolve(Signal);
-    }
-    if (!Definition) {
-        GAME_LOG_THROTTLE(1.0, Warning, TEXT("【GameFeedback】服务端未解析到最终 Definition，跳过网络派发。"));
+        GAME_LOG_THROTTLE(1.0, Warning, TEXT("[NetworkDispatcher] 服务端未解析到最终 Definition，跳过网络派发。"));
         return;
     }
 
     const uint32 DefinitionId = Provider->GetDefinitionId(Definition);
     const uint32 DefinitionMappingVersion = Provider->GetDefinitionMappingVersion();
     if (DefinitionId == 0 || DefinitionMappingVersion == 0) {
-        GAME_LOG_THROTTLE(1.0, Warning, TEXT("【GameFeedback】Definition 未登记、存在 CRC 冲突或映射版本无效，跳过网络派发：%s"),
+        GAME_LOG_THROTTLE(1.0, Warning, TEXT("[NetworkDispatcher] Definition 未登记、存在 CRC 冲突或映射版本无效，跳过网络派发：%s"),
             *Definition->GetPathName());
         return;
     }
 
-    const UGameFeedbackSettings* Settings = GetDefault<UGameFeedbackSettings>();
+    FVector BroadcastOrigin = FVector::ZeroVector;
+    const bool bHasBroadcastOrigin = GameFeedback::Internal::TryResolveImpactLocation(Signal, BroadcastOrigin);
+
+    TArray<APlayerController*, TInlineAllocator<8>> VisibleControllers;
+    CollectVisibleRemoteControllers(*World, BroadcastOrigin, bHasBroadcastOrigin, Settings->DefaultNetworkCullDistance, VisibleControllers);
+    if (VisibleControllers.IsEmpty()) {
+        return;
+    }
+
     const uint64 CurrentFrame = GFrameCounter;
     if (State->RateLimitFrame != CurrentFrame) {
         State->RateLimitFrame = CurrentFrame;
@@ -116,48 +171,49 @@ void UGameFeedbackNetworkDispatcherComponent::Dispatch(const FGameFeedbackMessag
     }
 
     if (Settings->MaxDispatchPerFrame > 0 && State->DispatchedThisFrame >= Settings->MaxDispatchPerFrame) {
-        GAME_LOG_THROTTLE(1.0, Warning, TEXT("【GameFeedback】单帧网络派发达到上限 %d，本帧后续报文被丢弃。"), Settings->MaxDispatchPerFrame);
+        GAME_LOG_THROTTLE(1.0, Warning, TEXT("[NetworkDispatcher] 单帧网络派发达到上限 %d，本帧后续报文被丢弃。"), Settings->MaxDispatchPerFrame);
         return;
     }
     ++State->DispatchedThisFrame;
 
-    const float CullDistance = Settings->DefaultNetworkCullDistance;
-    const bool bEnableCulling = CullDistance > 0.0f;
-    const float CullDistSq = FMath::Square(CullDistance);
-    FVector BroadcastOrigin = FVector::ZeroVector;
-    bool bHasBroadcastOrigin = false;
-    if (Signal.HitResult.bBlockingHit || !Signal.HitResult.ImpactPoint.IsNearlyZero()) {
-        BroadcastOrigin = Signal.HitResult.ImpactPoint;
-        bHasBroadcastOrigin = true;
-    } else if (Signal.Target.IsValid()) {
-        BroadcastOrigin = Signal.Target->GetActorLocation();
-        bHasBroadcastOrigin = true;
-    }
-
     const FGameFeedbackEventNet NetEvent = FGameFeedbackEventNet::FromSignal(Signal, DefinitionId, DefinitionMappingVersion);
+    for (APlayerController* PC : VisibleControllers) {
+        if (UGameFeedbackReceiverComponent* Receiver = UGameFeedbackReceiverComponent::EnsureOnPlayerController(PC)) {
+            Receiver->ClientReceiveFeedback(NetEvent);
+        }
+    }
+}
 
-    for (FConstPlayerControllerIterator Iterator = World->GetPlayerControllerIterator(); Iterator; ++Iterator) {
+/**
+ * @brief 筛选当前在视距裁剪范围内的所有远端玩家控制器
+ * @param World 当前世界
+ * @param BroadcastOrigin 表现源世界坐标
+ * @param bHasBroadcastOrigin 是否存在有效表现源坐标
+ * @param CullDistance 视距裁剪半径（<= 0 时不裁剪）
+ * @param OutControllers 输出满足条件的远端控制器列表
+ */
+void UGameFeedbackNetworkDispatcherComponent::CollectVisibleRemoteControllers(
+    const UWorld& World,
+    const FVector& BroadcastOrigin,
+    bool bHasBroadcastOrigin,
+    float CullDistance,
+    TArray<APlayerController*, TInlineAllocator<8>>& OutControllers) {
+    const bool bEnableCulling = CullDistance > 0.0f && bHasBroadcastOrigin;
+    const float CullDistSq = FMath::Square(CullDistance);
+
+    for (FConstPlayerControllerIterator Iterator = World.GetPlayerControllerIterator(); Iterator; ++Iterator) {
         APlayerController* PC = Iterator->Get();
         if (!PC || PC->IsLocalController()) {
             continue;
         }
 
-        if (bEnableCulling && bHasBroadcastOrigin) {
-            FVector ViewLocation = FVector::ZeroVector;
-            FRotator ViewRotation = FRotator::ZeroRotator;
-            PC->GetPlayerViewPoint(ViewLocation, ViewRotation);
-            if (ViewLocation.IsNearlyZero()) {
-                if (const APawn* Pawn = PC->GetPawn()) {
-                    ViewLocation = Pawn->GetActorLocation();
-                }
-            }
-            if (!ViewLocation.IsNearlyZero() && FVector::DistSquared(ViewLocation, BroadcastOrigin) > CullDistSq) {
+        FVector ViewLocation = FVector::ZeroVector;
+        if (bEnableCulling && TryGetControllerViewLocation(*PC, ViewLocation)) {
+            if (FVector::DistSquared(ViewLocation, BroadcastOrigin) > CullDistSq) {
                 continue;
             }
         }
 
-        if (UGameFeedbackReceiverComponent* Receiver = UGameFeedbackReceiverComponent::EnsureOnPlayerController(PC)) {
-            Receiver->ClientReceiveFeedback(NetEvent);
-        }
+        OutControllers.Add(PC);
     }
 }

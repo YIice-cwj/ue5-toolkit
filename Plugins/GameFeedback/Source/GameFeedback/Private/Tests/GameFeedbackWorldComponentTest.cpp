@@ -1,6 +1,6 @@
 /**
  * @file GameFeedbackWorldComponentTest.cpp
- * @brief 世界反馈组件本地广播、网络去重与清除自动化测试
+ * @brief 世界反馈组件本地广播、多闪白目标模式、分屏交错网络去重与清除自动化测试
  */
 
 #include "CoreMinimal.h"
@@ -13,32 +13,15 @@
 #include "Bus/GameFeedbackChannels.h"
 #include "Bus/GameFeedbackMessages.h"
 #include "Component/GameFeedbackWorldComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Config/GameFeedbackSettings.h"
-#include "Engine/Engine.h"
-#include "Engine/GameInstance.h"
-#include "Engine/World.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/GameStateBase.h"
 #include "GameplayTagsManager.h"
 #include "Materials/Material.h"
 #include "Message/GameplayMessageSubsystem.h"
-
-namespace {
-
-/**
- * @brief 创建具有稳定资产路径的测试 Definition
- * @param ObjectPath 完整对象路径（Package.Object）
- * @return 测试 Definition
- */
-UGameFeedbackDefinition* CreateWorldDefinitionAtPath(const FString& ObjectPath) {
-    FString PackageName;
-    FString ObjectName;
-    ObjectPath.Split(TEXT("."), &PackageName, &ObjectName);
-    return NewObject<UGameFeedbackDefinition>(CreatePackage(*PackageName), *ObjectName);
-}
-
-}  // namespace
+#include "Tests/GameFeedbackTestHelpers.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameFeedbackWorldComponentTest,
@@ -47,26 +30,15 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证 WorldComponent 本地广播响应、网络同帧去重与 Clear 消息传递
+ * @brief 验证 WorldComponent 三种闪白模式、分屏交错同帧网络去重与 Clear 还原
  * @param Parameters 自动化测试参数
- * @return 测试是否通过
+ * @return 全部断言通过返回 true
  */
 bool FGameFeedbackWorldComponentTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UGameInstance* GameInstance = NewObject<UGameInstance>(GEngine);
-    GameInstance->InitializeStandalone(FName(TEXT("GameFeedbackWorldComponentTestWorld")));
-    UWorld* World = GameInstance->GetWorld();
-    TestNotNull(TEXT("WorldComponent 测试世界有效"), World);
-    if (!World) {
-        GameInstance->Shutdown();
-        return false;
-    }
+    GameFeedbackTestHelpers::FScopedFeedbackSettingsGuard SettingsGuard;
+    UGameFeedbackSettings* Settings = SettingsGuard.Get();
 
-    AGameStateBase* GameState = World->SpawnActor<AGameStateBase>();
-    UGameFeedbackWorldComponent* WorldComp = NewObject<UGameFeedbackWorldComponent>(GameState);
-    GameState->AddInstanceComponent(WorldComp);
-    WorldComp->RegisterComponent();
-
-    UGameFeedbackDefinition* Definition = CreateWorldDefinitionAtPath(TEXT("/Game/Feedback/WorldTest/Def.Def"));
+    UGameFeedbackDefinition* Definition = GameFeedbackTestHelpers::CreateDefinitionAtPath(TEXT("/Game/Feedback/WorldTest/Def.Def"));
     Definition->HitFlash.bEnable = true;
     Definition->HitFlash.TargetMode = EGameFeedbackFlashTargetMode::HitComponentOnly;
     Definition->HitFlash.Duration = 0.2f;
@@ -76,71 +48,117 @@ bool FGameFeedbackWorldComponentTest::RunTest([[maybe_unused]] const FString& Pa
     const FGameplayTag Channel = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Damage.Test.WorldComp.Channel")));
     Registry->ExactChannelMap.Add(Channel, Definition);
     Registry->RebuildDefinitionIndex();
-
-    UGameFeedbackSettings* Settings = GetMutableDefault<UGameFeedbackSettings>();
-    const TSoftObjectPtr<UGameFeedbackRegistry> PrevRegistry = Settings->GlobalRegistry;
     Settings->GlobalRegistry = Registry;
 
-    UGameplayMessageSubsystem* Bus = GameInstance->GetSubsystem<UGameplayMessageSubsystem>();
-    TestNotNull(TEXT("消息总线有效"), Bus);
-    if (!Bus) {
-        Settings->GlobalRegistry = PrevRegistry;
-        GameInstance->Shutdown();
+    GameFeedbackTestHelpers::FScopedStandaloneFeedbackWorld TestEnv(FName(TEXT("GameFeedbackWorldComponentTestWorld")));
+    UWorld* World = TestEnv.GetWorld();
+    TestNotNull(TEXT("WorldComponent 测试世界有效"), World);
+    if (!World) {
         return false;
     }
 
-    AActor* Attacker = World->SpawnActor<AActor>();
-    AActor* Target = World->SpawnActor<AActor>();
-    UStaticMeshComponent* TargetMesh = NewObject<UStaticMeshComponent>(Target);
-    Target->SetRootComponent(TargetMesh);
-    TargetMesh->RegisterComponent();
+    UGameplayMessageSubsystem* Bus = TestEnv.GetGameInstance()->GetSubsystem<UGameplayMessageSubsystem>();
+    TestNotNull(TEXT("消息总线有效"), Bus);
+    if (!Bus) {
+        return false;
+    }
 
+    AGameStateBase* GameState = World->SpawnActor<AGameStateBase>();
+    UGameFeedbackWorldComponent* WorldComp = NewObject<UGameFeedbackWorldComponent>(GameState);
+    GameState->AddInstanceComponent(WorldComp);
+    WorldComp->RegisterComponent();
     WorldComp->BeginPlay();
 
-    FGameFeedbackSignal Signal;
-    Signal.PrimaryChannel = Channel;
-    Signal.Instigator = Attacker;
-    Signal.Target = Target;
-    Signal.HitResult.ImpactPoint = FVector(100.0f, 0.0f, 0.0f);
-    Signal.HitResult.Component = TargetMesh;
-    Signal.Magnitude = 10.0f;
+    AActor* Attacker = World->SpawnActor<AActor>();
+    AActor* TargetA = World->SpawnActor<AActor>();
+    UStaticMeshComponent* TargetMeshA = NewObject<UStaticMeshComponent>(TargetA);
+    TargetA->SetRootComponent(TargetMeshA);
+    TargetMeshA->RegisterComponent();
+
+    USkeletalMeshComponent* SkelMesh = NewObject<USkeletalMeshComponent>(TargetA);
+    SkelMesh->SetupAttachment(TargetMeshA);
+    SkelMesh->RegisterComponent();
+
+    UStaticMeshComponent* TaggedMesh = NewObject<UStaticMeshComponent>(TargetA);
+    TaggedMesh->ComponentTags.Add(FName(TEXT("Flashable")));
+    TaggedMesh->SetupAttachment(TargetMeshA);
+    TaggedMesh->RegisterComponent();
+
+    AActor* TargetB = World->SpawnActor<AActor>();
+    UStaticMeshComponent* TargetMeshB = NewObject<UStaticMeshComponent>(TargetB);
+    TargetB->SetRootComponent(TargetMeshB);
+    TargetMeshB->RegisterComponent();
+
+    FGameFeedbackSignal SignalA;
+    SignalA.PrimaryChannel = Channel;
+    SignalA.Instigator = Attacker;
+    SignalA.Target = TargetA;
+    SignalA.HitResult.ImpactPoint = FVector(100.0f, 0.0f, 0.0f);
+    SignalA.HitResult.Component = TargetMeshA;
+    SignalA.Magnitude = 10.0f;
 
     FGameFeedbackMessage PlayMsg;
-    PlayMsg.Signal = Signal;
+    PlayMsg.Signal = SignalA;
     PlayMsg.OverrideDefinition = Definition;
     Bus->BroadcastMessage(TAG_Feedback_Channel_Play, PlayMsg);
-    TestTrue(TEXT("Play 消息必须对目标应用闪白材质"), TargetMesh->GetOverlayMaterial() == Definition->HitFlash.OverlayMaterial.Get());
+    TestTrue(TEXT("HitComponentOnly 模式应对命中网格应用闪白材质"), TargetMeshA->GetOverlayMaterial() == Definition->HitFlash.OverlayMaterial.Get());
+    TestNull(TEXT("HitComponentOnly 模式不得影响未命中的其他骨骼网格"), SkelMesh->GetOverlayMaterial());
 
     FGameFeedbackClearMessage ClearMsg;
-    ClearMsg.Target = Target;
+    ClearMsg.Target = TargetA;
     Bus->BroadcastMessage(TAG_Feedback_Channel_Clear, ClearMsg);
-    TestNull(TEXT("Clear 消息必须清除目标闪白材质"), TargetMesh->GetOverlayMaterial());
+    TestNull(TEXT("Clear 消息必须清除目标闪白材质"), TargetMeshA->GetOverlayMaterial());
+
+    Definition->HitFlash.TargetMode = EGameFeedbackFlashTargetMode::AllSkeletalMeshes;
+    Bus->BroadcastMessage(TAG_Feedback_Channel_Play, PlayMsg);
+    TestTrue(TEXT("AllSkeletalMeshes 模式应对骨骼网格应用闪白"), SkelMesh->GetOverlayMaterial() == Definition->HitFlash.OverlayMaterial.Get());
+    TestNull(TEXT("AllSkeletalMeshes 模式不得影响静态网格"), TargetMeshA->GetOverlayMaterial());
+    Bus->BroadcastMessage(TAG_Feedback_Channel_Clear, ClearMsg);
+
+    Definition->HitFlash.TargetMode = EGameFeedbackFlashTargetMode::TaggedComponentsOnly;
+    Definition->HitFlash.ComponentFilterTag = FName(TEXT("Flashable"));
+    Bus->BroadcastMessage(TAG_Feedback_Channel_Play, PlayMsg);
+    TestTrue(TEXT("TaggedComponentsOnly 模式应对携带指定 Tag 的网格应用闪白"), TaggedMesh->GetOverlayMaterial() == Definition->HitFlash.OverlayMaterial.Get());
+    TestNull(TEXT("TaggedComponentsOnly 模式不得影响未带 Tag 的网格"), TargetMeshA->GetOverlayMaterial());
+    Bus->BroadcastMessage(TAG_Feedback_Channel_Clear, ClearMsg);
+
+    Definition->HitFlash.TargetMode = EGameFeedbackFlashTargetMode::HitComponentOnly;
+    ++GFrameCounter;
+    FGameFeedbackNetworkMessage NetMsgA;
+    NetMsgA.Signal = SignalA;
+    NetMsgA.ResolvedDefinition = Definition;
+    NetMsgA.bSuppressed = true;
+    Bus->BroadcastMessage(TAG_Feedback_Channel_Network, NetMsgA);
+    TestNull(TEXT("抑制的网络消息不得应用表现"), TargetMeshA->GetOverlayMaterial());
+
+    FGameFeedbackSignal SignalB = SignalA;
+    SignalB.Target = TargetB;
+    SignalB.HitResult.Component = TargetMeshB;
+    SignalB.HitResult.ImpactPoint = FVector(200.0f, 0.0f, 0.0f);
+    FGameFeedbackNetworkMessage NetMsgB;
+    NetMsgB.Signal = SignalB;
+    NetMsgB.ResolvedDefinition = Definition;
+    NetMsgB.bSuppressed = false;
+
+    NetMsgA.bSuppressed = false;
+    Bus->BroadcastMessage(TAG_Feedback_Channel_Network, NetMsgA);
+    Bus->BroadcastMessage(TAG_Feedback_Channel_Network, NetMsgB);
+    TestTrue(TEXT("合法网络消息 A 必须应用表现"), TargetMeshA->GetOverlayMaterial() == Definition->HitFlash.OverlayMaterial.Get());
+    TestTrue(TEXT("合法网络消息 B 必须应用表现"), TargetMeshB->GetOverlayMaterial() == Definition->HitFlash.OverlayMaterial.Get());
+
+    TargetMeshA->SetOverlayMaterial(nullptr);
+    TargetMeshB->SetOverlayMaterial(nullptr);
+    Bus->BroadcastMessage(TAG_Feedback_Channel_Network, NetMsgA);
+    Bus->BroadcastMessage(TAG_Feedback_Channel_Network, NetMsgB);
+    TestNull(TEXT("分屏交错到达（A-B-A-B）时同帧重复消息 A 必须被去重抑制"), TargetMeshA->GetOverlayMaterial());
+    TestNull(TEXT("分屏交错到达（A-B-A-B）时同帧重复消息 B 必须被去重抑制"), TargetMeshB->GetOverlayMaterial());
 
     ++GFrameCounter;
-    FGameFeedbackNetworkMessage NetMsg;
-    NetMsg.Signal = Signal;
-    NetMsg.ResolvedDefinition = Definition;
-    NetMsg.bSuppressed = true;
-    Bus->BroadcastMessage(TAG_Feedback_Channel_Network, NetMsg);
-    TestNull(TEXT("抑制的网络消息不得应用表现"), TargetMesh->GetOverlayMaterial());
-
-    NetMsg.bSuppressed = false;
-    Bus->BroadcastMessage(TAG_Feedback_Channel_Network, NetMsg);
-    TestTrue(TEXT("合法网络消息必须应用表现"), TargetMesh->GetOverlayMaterial() == Definition->HitFlash.OverlayMaterial.Get());
-
-    TargetMesh->SetOverlayMaterial(nullptr);
-    Bus->BroadcastMessage(TAG_Feedback_Channel_Network, NetMsg);
-    TestNull(TEXT("同帧完全相同的网络消息必须被去重抑制"), TargetMesh->GetOverlayMaterial());
-
-    ++GFrameCounter;
-    Bus->BroadcastMessage(TAG_Feedback_Channel_Network, NetMsg);
-    TestTrue(TEXT("新帧下相同网络消息重新放行"), TargetMesh->GetOverlayMaterial() == Definition->HitFlash.OverlayMaterial.Get());
+    Bus->BroadcastMessage(TAG_Feedback_Channel_Network, NetMsgA);
+    TestTrue(TEXT("新帧下相同网络消息重新放行"), TargetMeshA->GetOverlayMaterial() == Definition->HitFlash.OverlayMaterial.Get());
 
     WorldComp->EndPlay(EEndPlayReason::Destroyed);
-    TestNull(TEXT("EndPlay 后闪白被完全还原并注销"), TargetMesh->GetOverlayMaterial());
-
-    Settings->GlobalRegistry = PrevRegistry;
-    GameInstance->Shutdown();
+    TestNull(TEXT("EndPlay 后闪白被完全还原并注销"), TargetMeshA->GetOverlayMaterial());
     return true;
 }
 

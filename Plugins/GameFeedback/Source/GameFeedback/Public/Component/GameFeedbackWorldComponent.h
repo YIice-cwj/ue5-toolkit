@@ -6,14 +6,14 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Bus/GameFeedbackMessages.h"
 #include "Components/ActorComponent.h"
 #include "Templates/PimplPtr.h"
-#include "Bus/GameFeedbackMessages.h"
 
 #include "GameFeedbackWorldComponent.generated.h"
 
-struct FGameFeedbackWorldComponentState;
 class UGameFeedbackDefinition;
+struct FGameFeedbackWorldComponentState;
 
 /**
  * @brief 挂载于 GameState 的世界空间表现监听者
@@ -24,7 +24,7 @@ class GAMEFEEDBACK_API UGameFeedbackWorldComponent : public UActorComponent {
 
 public:
     /**
-     * @brief 构造：装配闪白追踪状态
+     * @brief 构造：关闭 Tick 并按需装配内部状态（CDO 零堆分配）
      */
     UGameFeedbackWorldComponent();
 
@@ -46,6 +46,11 @@ public:
 
 private:
     /**
+     * @brief 确保非 CDO 实例已创建内部状态
+     */
+    void EnsureState();
+
+    /**
      * @brief 本地表现广播回调
      * @param Channel 广播通道
      * @param Message 表现载荷
@@ -53,7 +58,7 @@ private:
     void OnPlay(FGameplayTag Channel, const FGameFeedbackMessage& Message);
 
     /**
-     * @brief 网络回执回调（抑制或同帧重复时跳过）
+     * @brief 网络回执回调（抑制或同帧重复时跳过，支持分屏交错到达去重）
      * @param Channel 广播通道
      * @param Message 网络载荷
      */

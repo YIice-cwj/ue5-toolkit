@@ -7,14 +7,15 @@
 
 #include "CoreMinimal.h"
 #include "Camera/CameraShakeBase.h"
-#include "Haptics/HapticFeedbackEffect_Base.h"
-#include "Materials/MaterialInterface.h"
-#include "NiagaraSystem.h"
-#include "Sound/SoundAttenuation.h"
-#include "Sound/SoundBase.h"
-#include "Sound/SoundConcurrency.h"
 
 #include "GameFeedbackActions.generated.h"
+
+class UHapticFeedbackEffect_Base;
+class UMaterialInterface;
+class UNiagaraSystem;
+class USoundAttenuation;
+class USoundBase;
+class USoundConcurrency;
 
 /**
  * @brief 粒子特效发射朝向模式
@@ -67,6 +68,15 @@ struct GAMEFEEDBACK_API FGameFeedbackHitStopAction {
 
     UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "HitStop")
     bool bGlobalFreezeOnLethal = false;
+
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "HitStop", meta = (EditCondition = "bGlobalFreezeOnLethal", ClampMin = "0.0"))
+    float LethalGlobalFreezeDuration = 0.05f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "HitStop", meta = (EditCondition = "bGlobalFreezeOnLethal", ClampMin = "0.0001", ClampMax = "1.0"))
+    float LethalGlobalFreezeDilation = 0.1f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "HitStop", meta = (EditCondition = "bGlobalFreezeOnLethal", ClampMin = "0.0"))
+    float LethalGlobalFreezeBlendOut = 0.02f;
 };
 
 /**
@@ -79,13 +89,13 @@ struct GAMEFEEDBACK_API FGameFeedbackCameraShakeAction {
     UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "CameraShake")
     TSubclassOf<UCameraShakeBase> AttackerShakeClass;
 
-    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "CameraShake")
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "CameraShake", meta = (ClampMin = "0.0"))
     float AttackerShakeScale = 1.0f;
 
     UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "CameraShake")
     TSubclassOf<UCameraShakeBase> VictimShakeClass;
 
-    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "CameraShake")
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "CameraShake", meta = (ClampMin = "0.0"))
     float VictimShakeScale = 1.5f;
 
     UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "CameraShake", meta = (ClampMin = "0.0"))

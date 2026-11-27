@@ -1,6 +1,6 @@
 /**
  * @file GameFeedbackPredictionHistory.h
- * @brief 本地预测表现指纹与网络回执去重（纯逻辑，无 World 依赖）
+ * @brief 本地预测表现指纹与网络回执去重（纯逻辑、有界栈内联缓冲、无 World 依赖）
  */
 
 #pragma once
@@ -22,13 +22,15 @@ private:
     };
 
 public:
+    static constexpr int32 MaxEntries = 128;
+
     /**
      * @brief 默认构造预测历史记录器
      */
     FGameFeedbackPredictionHistory() = default;
 
     /**
-     * @brief 记录一次具有非零跨端事件身份的本地预测表现
+     * @brief 记录一次具有非零跨端事件身份的本地预测表现（达到上限时自动淘汰最旧记录）
      * @param PredictionEventId 跨端预测事件 ID；0 不记录
      * @param Attacker 攻击者实体
      * @param Target 目标实体
@@ -47,11 +49,19 @@ public:
     bool ConsumeMatch(uint16 PredictionEventId, const TWeakObjectPtr<AActor>& Attacker, const TWeakObjectPtr<AActor>& Target, double RealTime);
 
     /**
-     * @brief 清理超出有效窗口的指纹
+     * @brief 清理超出有效窗口或实体已失效的指纹
      * @param RealTime 当前真实时间（秒）
      */
     void Prune(double RealTime);
 
+    /**
+     * @brief 获取当前缓存的预测条目数量（供测试与可观测性）
+     * @return 条目数量
+     */
+    [[nodiscard]] int32 GetEntryCount() const noexcept {
+        return Entries.Num();
+    }
+
 private:
-    TArray<FEntry> Entries;
+    TArray<FEntry, TInlineAllocator<16>> Entries;
 };

@@ -18,7 +18,7 @@ class FGameFeedbackShakeTracker {
 private:
     struct FState {
         TWeakObjectPtr<UCameraShakeBase> Instance = nullptr;
-        uint64 LastFrame = 0;
+        uint64 LastFrame = MAX_uint64;
         float MaxScale = 0.0f;
     };
 
@@ -44,7 +44,7 @@ public:
         bool bOrientToImpact);
 
     /**
-     * @brief 停止全部已启动震动并清理失效摄像机记录
+     * @brief 停止全部已启动震动并清理记录
      */
     void StopAll();
 
@@ -52,7 +52,7 @@ public:
      * @brief 获取当前追踪的有效摄像机管理器数量（供测试与可观测性）
      * @return 追踪状态数量
      */
-    [[nodiscard]] int32 GetTrackedCount() const {
+    [[nodiscard]] int32 GetTrackedCount() const noexcept {
         return States.Num();
     }
 

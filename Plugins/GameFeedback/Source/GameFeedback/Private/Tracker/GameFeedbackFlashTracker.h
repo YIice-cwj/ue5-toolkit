@@ -1,6 +1,6 @@
 /**
  * @file GameFeedbackFlashTracker.h
- * @brief 受击闪白 Overlay 生命周期追踪（绝对时间续期与安全还原）
+ * @brief 受击闪白 Overlay 生命周期追踪（绝对时间续期、弱存活令牌防 UAF 与安全还原）
  */
 
 #pragma once
@@ -17,6 +17,8 @@ class UWorld;
 
 /**
  * @brief 维护网格组件 Overlay 材质与到期定时器，保证续期与还原安全
+ *
+ * 到期定时器随 UWorld::GetTimerManager() 与游戏暂停态保持一致，同时以弱存活令牌与析构兜底彻底杜绝 UAF。
  */
 class FGameFeedbackFlashTracker {
 private:
@@ -28,9 +30,19 @@ private:
 
 public:
     /**
-     * @brief 默认构造闪白追踪器
+     * @brief 默认构造闪白追踪器并初始化存活令牌
      */
     FGameFeedbackFlashTracker() = default;
+
+    /**
+     * @brief 析构函数：自动兜底还原全部追踪网格并失效回调令牌，杜绝定时器 UAF
+     */
+    ~FGameFeedbackFlashTracker();
+
+    FGameFeedbackFlashTracker(const FGameFeedbackFlashTracker&) = delete;
+    FGameFeedbackFlashTracker& operator=(const FGameFeedbackFlashTracker&) = delete;
+    FGameFeedbackFlashTracker(FGameFeedbackFlashTracker&&) = delete;
+    FGameFeedbackFlashTracker& operator=(FGameFeedbackFlashTracker&&) = delete;
 
     /**
      * @brief 对目标应用受击闪白（同一网格多次命中按绝对到期时间平滑续期）
@@ -50,21 +62,22 @@ public:
     void ClearActor(UWorld* World, AActor* Target);
 
     /**
-     * @brief 还原全部网格 Overlay 并清空追踪（子系统注销时调用）
+     * @brief 还原全部网格 Overlay 并清空追踪（子系统注销或析构时调用）
      * @param World 当前世界
      */
     void Shutdown(UWorld* World);
 
     /**
-     * @brief 清理失效弱引用记录（释放已销毁网格所持有的强引用材质）
+     * @brief 清理失效网格记录并同步取消残留定时器（释放已销毁网格所持有的强引用材质）
+     * @param World 可选当前世界（非空时同步清除失效记录绑定的定时器）
      */
-    void PruneInvalid();
+    void PruneInvalid(UWorld* World = nullptr);
 
     /**
      * @brief 获取当前追踪的记录数量（供测试与可观测性）
      * @return 追踪记录数量
      */
-    [[nodiscard]] int32 GetTrackedCount() const {
+    [[nodiscard]] int32 GetTrackedCount() const noexcept {
         return Records.Num();
     }
 
@@ -79,7 +92,16 @@ private:
      * @brief 获取当前时间（秒），优先使用注入的时间提供者
      * @return 当前时间（秒）
      */
-    double GetCurrentTime() const;
+    [[nodiscard]] double GetCurrentTime() const;
+
+    /**
+     * @brief 挂载带弱存活令牌保护的到期定时器
+     * @param World 目标世界
+     * @param TimerHandle 输出定时器句柄
+     * @param MeshKey 目标网格不可变对象键
+     * @param DelaySeconds 延迟秒数
+     */
+    void ArmExpirationTimer(UWorld& World, FTimerHandle& TimerHandle, TObjectKey<UMeshComponent> MeshKey, float DelaySeconds);
 
     /**
      * @brief 到期回调按真实时间还原 Overlay；提前触发时按剩余时间重新 arm
@@ -87,6 +109,8 @@ private:
      */
     void OnExpiration(TObjectKey<UMeshComponent> MeshKey);
 
+    TSharedRef<bool> AliveToken = MakeShared<bool>(true);
+    TWeakObjectPtr<UWorld> BoundWorld;
     TFunction<double()> TimeProvider;
     TMap<TObjectKey<UMeshComponent>, FRecord> Records;
 };

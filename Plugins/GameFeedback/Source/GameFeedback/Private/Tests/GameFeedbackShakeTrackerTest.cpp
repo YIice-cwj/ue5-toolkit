@@ -11,7 +11,8 @@
 #include "Camera/CameraShakeBase.h"
 #include "Camera/PlayerCameraManager.h"
 #include "Engine/World.h"
-#include "System/GameFeedbackShakeTracker.h"
+#include "Tests/GameFeedbackTestHelpers.h"
+#include "Tracker/GameFeedbackShakeTracker.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameFeedbackShakeTrackerTest,
@@ -22,10 +23,16 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 /**
  * @brief 验证镜头震动同帧振幅择优、方向适配、失效管理与停止
  * @param Parameters 自动化测试参数
- * @return 测试是否通过
+ * @return 全部断言通过返回 true
  */
 bool FGameFeedbackShakeTrackerTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+    GameFeedbackTestHelpers::FScopedLightweightGameWorld WorldGuard;
+    UWorld* World = WorldGuard.GetWorld();
+    TestNotNull(TEXT("测试世界有效"), World);
+    if (!World) {
+        return false;
+    }
+
     APlayerCameraManager* CameraManager = World->SpawnActor<APlayerCameraManager>();
     FGameFeedbackShakeTracker Tracker;
 
@@ -61,8 +68,6 @@ bool FGameFeedbackShakeTrackerTest::RunTest([[maybe_unused]] const FString& Para
     Tracker.StopAll();
     TestEqual(TEXT("最终清理后状态清零"), Tracker.GetTrackedCount(), 0);
 
-    World->DestroyWorld(false);
-    World->RemoveFromRoot();
     return true;
 }
 

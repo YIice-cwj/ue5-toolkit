@@ -85,15 +85,15 @@ public:
 };
 ```
 
-- **稳定 CRC32 ID**：通过 `MakeDefinitionId` 为完整软对象路径生成确定性 ID（0 映射为 1）；
+- **稳定 CRC32 ID 与 O(1) 索引**：通过 `MakeDefinitionId` 为完整软对象路径生成确定性 ID（0 映射为 1），并在 `RebuildDefinitionIndex` 中同步缓存 `DefinitionIdByPath` 实现 O(1) 路径直查；编辑器修改属性时经 `PostEditChangeProperty` 自动重建索引；
 - **冲突检测**：`RebuildDefinitionIndex` 会自动检测不同路径的 CRC32 冲突，冲突资产加入黑名单，禁止网络传输；
-- **映射版本**：将所有映射规则归一化哈希后生成 `DefinitionMappingVersion`，客户端与服务端版本不一致时直接拒绝解析。
+- **TokenStream 映射版本**：将默认资产、通道表、标签表与复合规则（基于 `FGameplayTagQuery` 真实表达式 `TokenStream` 与 `TagDictionary`，且规则采用 `Algo::StableSort` 稳定排序）归一化哈希生成 `DefinitionMappingVersion`，客户端与服务端版本不一致时直接拒绝解析。
 
 ---
 
-## 3. 资产解析与流式预热服务 (`UGameFeedbackDefinitionProvider`)
+## 3. 资产解析与统一软引用预热服务 (`UGameFeedbackDefinitionProvider`)
 
-`UGameFeedbackDefinitionProvider` 是一个 `UWorldSubsystem`（仅在游戏世界创建，包含 Dedicated Server），是运行期访问资产的**唯一定义来源**：
+`UGameFeedbackDefinitionProvider` 是一个 `UWorldSubsystem`（仅在游戏世界创建，包含 Dedicated Server），是运行期访问表现资产与媒体软引用异步预热的**唯一托管来源**：
 
 ```cpp
 UCLASS()
@@ -104,18 +104,30 @@ public:
     /** 按信号主通道与反馈标签同步解析最优资产指针 */
     const UGameFeedbackDefinition* Resolve(const FGameFeedbackSignal& Signal);
 
+    /** O(1) 查询已登记 Definition 的稳定网络 ID（带版本校验的指针直查缓存） */
+    uint32 GetDefinitionId(const UGameFeedbackDefinition* Definition) const;
+
+    /** 获取当前 Registry 的确定性映射版本 */
+    uint32 GetDefinitionMappingVersion() const;
+
     /** 按网络 ID 与映射版本还原服务端资产 */
     const UGameFeedbackDefinition* ResolveById(uint32 DefinitionId, uint32 DefinitionMappingVersion);
 
-    /** 批量预热软引用资产集合（关卡加载或英雄入场时调用） */
+    /** 批量预热软引用定义资产集合（关卡加载或英雄入场时调用） */
     void PreloadFeedbackBundle(TConstArrayView<TSoftObjectPtr<UGameFeedbackDefinition>> Definitions);
+
+    /** 按路径去重异步预热视听软资产（VFX / Audio），随世界生命周期保活并在注销时释放 */
+    void PreloadSoftAsset(const FSoftObjectPath& AssetPath);
+
+    /** 查询当前在飞异步预热句柄总数（供观测与测试） */
+    int32 GetActivePreloadHandleCount() const;
 
     /** 安全获取当前世界的服务实例 */
     static UGameFeedbackDefinitionProvider* GetPtr(const UObject* WorldContextObject);
 };
 ```
 
-### 3.1 强缓存与句柄闭环管理
-- **同步返回保证**：已解析或已常驻内存的资产，存入 `LoadedDefinitions`（`TMap<FSoftObjectPath, TObjectPtr<UGameFeedbackDefinition>>`）强引用字典，杜绝 GC 误杀；
-- **去重异步预热**：尚未加载的软引用在后台通过 `UAssetManager::GetStreamableManager().RequestAsyncLoad` 发起异步加载，句柄由 `DefinitionLoads` 强引用持有；
-- **注销安全清理**：在子系统 `Deinitialize` 时，自动遍历 `DefinitionLoads` 调用 `CancelHandle()` 并重置所有内部缓存，杜绝野指针和悬挂任务。
+### 3.1 强缓存、同步完成竞态安全与句柄闭环管理
+- **同步返回与 O(1) 缓存**：已解析定义存入 `LoadedDefinitions`，媒体软资产存入 `PreloadedMediaAssets`，并提供带 `CachedMappingVersion` 自动失效刷新的 `TObjectKey` 指针直查 `DefinitionIdCache`；
+- **去重异步预热与同步完成处理**：Definition、Audio 与 VFX 软引用全部收口至本服务按 `FSoftObjectPath` 去重异步加载；若引擎在 `RequestAsyncLoad` 返回前即同步完成，立即直接入缓存返回而绝不残留已完成句柄；
+- **注销安全清理**：在子系统 `Deinitialize` 时，自动遍历 `DefinitionLoads` 与 `PendingMediaLoads` 调用 `CancelHandle()` 并清空全部缓存，彻底杜绝异步加载句柄泄漏。

@@ -1,6 +1,6 @@
 /**
  * @file GameFeedbackNetworkDispatcherTest.cpp
- * @brief 网络派发器组件频率限制与距离剔除自动化测试
+ * @brief 网络派发器组件频率限制、零受众免耗配额与距离剔除自动化测试
  */
 
 #include "CoreMinimal.h"
@@ -16,16 +16,16 @@
 #include "Config/GameFeedbackSettings.h"
 #include "Engine/DemoNetDriver.h"
 #include "Engine/Engine.h"
-#include "Engine/GameInstance.h"
 #include "Engine/NetConnection.h"
 #include "Engine/World.h"
 #include "GameFramework/GameStateBase.h"
+#include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 #include "GameplayTagsManager.h"
 #include "Message/GameplayMessageSubsystem.h"
 #include "Misc/ScopeExit.h"
 #include "Network/GameFeedbackReceiverComponent.h"
-#include "Tests/GameFeedbackNetworkTestHelpers.h"
+#include "Tests/GameFeedbackTestHelpers.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameFeedbackNetworkDispatcherRateAndCullTest,
@@ -34,34 +34,28 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证 Dispatcher 单帧派发上限截断与视距距离剔除
+ * @brief 验证 Dispatcher 单帧派发上限截断、零受众免消耗配额与视距距离剔除
  * @param Parameters 自动化测试参数
- * @return 测试是否通过
+ * @return 全部断言通过返回 true
  */
 bool FGameFeedbackNetworkDispatcherRateAndCullTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UGameFeedbackDefinition* Definition = GameFeedbackNetworkTestHelpers::CreateDefinitionAtPath(TEXT("/Game/Feedback/DispatchTest/Def.Def"));
+    GameFeedbackTestHelpers::FScopedFeedbackSettingsGuard SettingsGuard;
+    UGameFeedbackSettings* Settings = SettingsGuard.Get();
+
+    UGameFeedbackDefinition* Definition = GameFeedbackTestHelpers::CreateDefinitionAtPath(TEXT("/Game/Feedback/DispatchTest/Def.Def"));
     UGameFeedbackRegistry* Registry = NewObject<UGameFeedbackRegistry>();
     const FGameplayTag Channel = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Damage.Test.Dispatch.Channel")));
     Registry->ExactChannelMap.Add(Channel, Definition);
     Registry->RebuildDefinitionIndex();
 
-    UGameFeedbackSettings* Settings = GetMutableDefault<UGameFeedbackSettings>();
-    const TSoftObjectPtr<UGameFeedbackRegistry> PrevRegistry = Settings->GlobalRegistry;
-    const int32 PrevMaxDispatch = Settings->MaxDispatchPerFrame;
-    const float PrevCullDist = Settings->DefaultNetworkCullDistance;
     Settings->GlobalRegistry = Registry;
     Settings->MaxDispatchPerFrame = 1;
     Settings->DefaultNetworkCullDistance = 2000.0f;
 
-    UGameInstance* GameInstance = NewObject<UGameInstance>(GEngine);
-    GameInstance->InitializeStandalone(FName(TEXT("GameFeedbackDispatcherTestWorld")));
-    UWorld* World = GameInstance->GetWorld();
+    GameFeedbackTestHelpers::FScopedStandaloneFeedbackWorld TestEnv(FName(TEXT("GameFeedbackDispatcherTestWorld")));
+    UWorld* World = TestEnv.GetWorld();
     TestNotNull(TEXT("Dispatcher 测试世界有效"), World);
     if (!World) {
-        Settings->GlobalRegistry = PrevRegistry;
-        Settings->MaxDispatchPerFrame = PrevMaxDispatch;
-        Settings->DefaultNetworkCullDistance = PrevCullDist;
-        GameInstance->Shutdown();
         return false;
     }
 
@@ -74,11 +68,7 @@ bool FGameFeedbackNetworkDispatcherRateAndCullTest::RunTest([[maybe_unused]] con
     FWorldContext* WorldContext = GEngine->GetWorldContextFromWorld(World);
     TestNotNull(TEXT("WorldContext 有效"), WorldContext);
     if (!WorldContext) {
-        GameFeedbackNetworkTestHelpers::CleanupTestDemoNetDriver(Driver);
-        Settings->GlobalRegistry = PrevRegistry;
-        Settings->MaxDispatchPerFrame = PrevMaxDispatch;
-        Settings->DefaultNetworkCullDistance = PrevCullDist;
-        GameInstance->Shutdown();
+        GameFeedbackTestHelpers::CleanupTestDemoNetDriver(Driver);
         return false;
     }
     WorldContext->ActiveNetDrivers.Add(FNamedNetDriver(Driver, nullptr));
@@ -98,7 +88,7 @@ bool FGameFeedbackNetworkDispatcherRateAndCullTest::RunTest([[maybe_unused]] con
     USceneComponent* NearRoot = NewObject<USceneComponent>(NearPawn);
     NearPawn->SetRootComponent(NearRoot);
     NearRoot->RegisterComponent();
-    NearPawn->SetActorLocation(FVector(200.0f, 0.0f, 0.0f));
+    NearPawn->SetActorLocation(FVector::ZeroVector);
     NearPC->Possess(NearPawn);
     NearPC->SetViewTarget(NearPawn);
     World->AddController(NearPC);
@@ -152,35 +142,40 @@ bool FGameFeedbackNetworkDispatcherRateAndCullTest::RunTest([[maybe_unused]] con
         Dispatcher->EndPlay(EEndPlayReason::Destroyed);
         NearPC->Player = nullptr;
         FarPC->Player = nullptr;
-        GameFeedbackNetworkTestHelpers::CleanupSimulatedConnection(ConnectionNear);
-        GameFeedbackNetworkTestHelpers::CleanupSimulatedConnection(ConnectionFar);
-        GameFeedbackNetworkTestHelpers::CleanupTestDemoNetDriver(Driver, WorldContext);
-        Settings->GlobalRegistry = PrevRegistry;
-        Settings->MaxDispatchPerFrame = PrevMaxDispatch;
-        Settings->DefaultNetworkCullDistance = PrevCullDist;
-        GameInstance->Shutdown();
+        GameFeedbackTestHelpers::CleanupSimulatedConnection(ConnectionNear);
+        GameFeedbackTestHelpers::CleanupSimulatedConnection(ConnectionFar);
+        GameFeedbackTestHelpers::CleanupTestDemoNetDriver(Driver, WorldContext);
     };
 
-    UGameplayMessageSubsystem* Bus = GameInstance->GetSubsystem<UGameplayMessageSubsystem>();
+    UGameplayMessageSubsystem* Bus = TestEnv.GetGameInstance()->GetSubsystem<UGameplayMessageSubsystem>();
     TestNotNull(TEXT("消息总线有效"), Bus);
     if (!Bus) {
         return false;
     }
 
-    FGameFeedbackMessage Msg;
-    Msg.Signal.PrimaryChannel = Channel;
-    Msg.Signal.HitResult.ImpactPoint = FVector(100.0f, 0.0f, 0.0f);
-    Msg.OverrideDefinition = Definition;
+    FGameFeedbackMessage InvisibleMsg;
+    InvisibleMsg.Signal.PrimaryChannel = Channel;
+    InvisibleMsg.Signal.HitResult.ImpactPoint = FVector(900000.0f, 0.0f, 0.0f);
+    InvisibleMsg.OverrideDefinition = Definition;
 
-    Bus->BroadcastMessage(TAG_Feedback_Channel_Play, Msg);
-    TestEqual(TEXT("近处客户端应接收到派发 RPC"), NearDispatches, 1);
+    Bus->BroadcastMessage(TAG_Feedback_Channel_Play, InvisibleMsg);
+    TestEqual(TEXT("位于原点的近端 Pawn 超出裁剪距离时必须正确裁剪而非因原点跳过裁剪"), NearDispatches, 0);
+    TestEqual(TEXT("远端 Pawn 超出裁剪距离时必须被裁剪"), FarDispatches, 0);
+
+    FGameFeedbackMessage VisibleMsg;
+    VisibleMsg.Signal.PrimaryChannel = Channel;
+    VisibleMsg.Signal.HitResult.ImpactPoint = FVector(100.0f, 0.0f, 0.0f);
+    VisibleMsg.OverrideDefinition = Definition;
+
+    Bus->BroadcastMessage(TAG_Feedback_Channel_Play, VisibleMsg);
+    TestEqual(TEXT("零受众事件不消耗单帧配额，随后可见近端客户端应成功收到 RPC"), NearDispatches, 1);
     TestEqual(TEXT("超出剔除距离的远端客户端不应接收 RPC"), FarDispatches, 0);
 
-    Bus->BroadcastMessage(TAG_Feedback_Channel_Play, Msg);
+    Bus->BroadcastMessage(TAG_Feedback_Channel_Play, VisibleMsg);
     TestEqual(TEXT("单帧达到 MaxDispatchPerFrame 上限后后续报文被截断"), NearDispatches, 1);
 
     ++GFrameCounter;
-    Bus->BroadcastMessage(TAG_Feedback_Channel_Play, Msg);
+    Bus->BroadcastMessage(TAG_Feedback_Channel_Play, VisibleMsg);
     TestEqual(TEXT("跨帧后配额重置允许再次派发"), NearDispatches, 2);
 
     return true;

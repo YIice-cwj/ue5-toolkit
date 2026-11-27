@@ -8,22 +8,22 @@
 #include "Feedback/GameFeedbackPerspective.h"
 #include "GameFramework/PlayerController.h"
 #include "Message/GameplayMessageSubsystem.h"
-#include "System/GameFeedbackDefinitionProvider.h"
-#include "System/GameFeedbackHitStopLimiter.h"
+#include "System/GameFeedbackInternalHelpers.h"
 #include "Time/TimeDilationSubsystem.h"
+#include "Tracker/GameFeedbackHitStopLimiter.h"
 
 struct FGameFeedbackHitStopServiceState {
     TArray<FGameplayMessageListenerHandle> Handles;
-    TUniquePtr<FGameFeedbackHitStopLimiter> Limiter;
+    FGameFeedbackHitStopLimiter Limiter;
 };
 
 /**
- * @brief 构造：装配顿帧限流状态
+ * @brief 构造：仅在非 CDO 实例装配内部状态（CDO 零堆分配）
  */
-UGameFeedbackHitStopService::UGameFeedbackHitStopService()
-    : State(MakePimpl<FGameFeedbackHitStopServiceState>())
-{
-    State->Limiter = MakeUnique<FGameFeedbackHitStopLimiter>();
+UGameFeedbackHitStopService::UGameFeedbackHitStopService() {
+    if (!HasAnyFlags(RF_ClassDefaultObject)) {
+        State = MakePimpl<FGameFeedbackHitStopServiceState>();
+    }
 }
 
 /**
@@ -36,8 +36,7 @@ UGameFeedbackHitStopService::~UGameFeedbackHitStopService() = default;
  * @param Outer 外层对象
  * @return 是否创建
  */
-bool UGameFeedbackHitStopService::ShouldCreateSubsystem(UObject* Outer) const
-{
+bool UGameFeedbackHitStopService::ShouldCreateSubsystem(UObject* Outer) const {
     if (!Super::ShouldCreateSubsystem(Outer)) {
         return false;
     }
@@ -51,10 +50,12 @@ bool UGameFeedbackHitStopService::ShouldCreateSubsystem(UObject* Outer) const
  *
  * 无 GameInstance 的 Game 世界（引擎自动化测试、工具世界）不存在消息总线，此时跳过订阅。
  */
-void UGameFeedbackHitStopService::OnWorldBeginPlay(UWorld& InWorld)
-{
+void UGameFeedbackHitStopService::OnWorldBeginPlay(UWorld& InWorld) {
     Super::OnWorldBeginPlay(InWorld);
 
+    if (!State) {
+        State = MakePimpl<FGameFeedbackHitStopServiceState>();
+    }
     State->Handles.Empty();
 
     UGameplayMessageSubsystem* Bus = UGameplayMessageSubsystem::GetPtr(this);
@@ -68,11 +69,13 @@ void UGameFeedbackHitStopService::OnWorldBeginPlay(UWorld& InWorld)
 }
 
 /**
- * @brief 注销：退订全部通道并释放状态
+ * @brief 注销：退订全部通道并清空限流状态
  */
-void UGameFeedbackHitStopService::Deinitialize()
-{
-    State->Handles.Empty();
+void UGameFeedbackHitStopService::Deinitialize() {
+    if (State) {
+        State->Handles.Empty();
+        State->Limiter.Reset();
+    }
     Super::Deinitialize();
 }
 
@@ -81,8 +84,7 @@ void UGameFeedbackHitStopService::Deinitialize()
  * @param Channel 广播通道
  * @param Message 表现载荷
  */
-void UGameFeedbackHitStopService::OnPlay([[maybe_unused]] FGameplayTag Channel, const FGameFeedbackMessage& Message)
-{
+void UGameFeedbackHitStopService::OnPlay([[maybe_unused]] FGameplayTag Channel, const FGameFeedbackMessage& Message) {
     ApplyHitStop(Message.Signal, Message.OverrideDefinition);
 }
 
@@ -91,8 +93,7 @@ void UGameFeedbackHitStopService::OnPlay([[maybe_unused]] FGameplayTag Channel, 
  * @param Channel 广播通道
  * @param Message 网络载荷
  */
-void UGameFeedbackHitStopService::OnNetwork([[maybe_unused]] FGameplayTag Channel, const FGameFeedbackNetworkMessage& Message)
-{
+void UGameFeedbackHitStopService::OnNetwork([[maybe_unused]] FGameplayTag Channel, const FGameFeedbackNetworkMessage& Message) {
     if (Message.bSuppressed) {
         return;
     }
@@ -105,15 +106,18 @@ void UGameFeedbackHitStopService::OnNetwork([[maybe_unused]] FGameplayTag Channe
  * @param Channel 广播通道
  * @param Message 清除载荷
  */
-void UGameFeedbackHitStopService::OnClear([[maybe_unused]] FGameplayTag Channel, const FGameFeedbackClearMessage& Message)
-{
+void UGameFeedbackHitStopService::OnClear([[maybe_unused]] FGameplayTag Channel, const FGameFeedbackClearMessage& Message) {
     AActor* Target = Message.Target.Get();
     if (!Target) {
         return;
     }
 
-    UTimeDilationSubsystem::Get(this).ClearHitStop(Target);
-    State->Limiter->ClearActor(Target);
+    if (UTimeDilationSubsystem* TimeSubsystem = UTimeDilationSubsystem::GetPtr(this)) {
+        TimeSubsystem->ClearHitStop(Target);
+    }
+    if (State) {
+        State->Limiter.ClearActor(Target);
+    }
 }
 
 /**
@@ -121,10 +125,9 @@ void UGameFeedbackHitStopService::OnClear([[maybe_unused]] FGameplayTag Channel,
  * @param Signal 表现信号
  * @param OverrideDefinition 覆盖资产；为空时按注册表解析
  */
-void UGameFeedbackHitStopService::ApplyHitStop(const FGameFeedbackSignal& Signal, const UGameFeedbackDefinition* OverrideDefinition)
-{
+void UGameFeedbackHitStopService::ApplyHitStop(const FGameFeedbackSignal& Signal, const UGameFeedbackDefinition* OverrideDefinition) {
     UWorld* World = GetWorld();
-    if (!World) {
+    if (!World || !State) {
         return;
     }
 
@@ -133,70 +136,98 @@ void UGameFeedbackHitStopService::ApplyHitStop(const FGameFeedbackSignal& Signal
         return;
     }
 
-    if ((World->GetNetMode() == NM_ListenServer || World->GetNetMode() == NM_DedicatedServer) && !Settings->bAllowAuthoritativeHitStop) {
+    const ENetMode NetMode = World->GetNetMode();
+    if ((NetMode == NM_ListenServer || NetMode == NM_DedicatedServer) && !Settings->bAllowAuthoritativeHitStop) {
         return;
     }
 
-    const UGameFeedbackDefinition* Definition = OverrideDefinition;
-    if (!Definition) {
-        UGameFeedbackDefinitionProvider* Provider = UGameFeedbackDefinitionProvider::GetPtr(this);
-        if (!Provider) {
-            return;
-        }
-        Definition = Provider->Resolve(Signal);
-    }
-
-    if (!Definition) {
+    const UGameFeedbackDefinition* Definition = GameFeedback::Internal::ResolveDefinitionForSignal(this, Signal, OverrideDefinition);
+    if (!Definition || !Definition->HitStop.bEnable) {
         return;
     }
 
     const FGameFeedbackHitStopAction& Action = Definition->HitStop;
-    if (!Action.bEnable) {
-        return;
-    }
-
     const double CurrentRealTime = FPlatformTime::Seconds();
-    State->Limiter->Prune(CurrentRealTime);
+    State->Limiter.PruneIfNeeded(CurrentRealTime);
 
     AActor* TargetActor = Signal.Target.Get();
     AActor* AttackerActor = Signal.Instigator.Get();
-    if (!State->Limiter->PassCooldown(AttackerActor, TargetActor, Action, CurrentRealTime)) {
+    if (!State->Limiter.PassCooldown(AttackerActor, TargetActor, Action, CurrentRealTime)) {
         return;
     }
 
-    if (Signal.bLethal && Action.bGlobalFreezeOnLethal) {
-        UTimeDilationSubsystem::Get(this).RequestGlobalDilation(
-            ETimeDilationChannel::HitStop, 0.05f, 0.1f, 0.02f);
-    }
-
-    if (TargetActor) {
-        const float AppliedDuration = State->Limiter->AcquireDuration(TargetActor, Action.VictimDuration, Action, CurrentRealTime);
-        if (AppliedDuration > 0.0f) {
-            UTimeDilationSubsystem::Get(this).RequestHitStop(TargetActor, AppliedDuration, Action.TimeDilation);
+    if (Signal.bLethal && Action.bGlobalFreezeOnLethal && Action.LethalGlobalFreezeDuration > 0.0f) {
+        if (UTimeDilationSubsystem* TimeSubsystem = UTimeDilationSubsystem::GetPtr(this)) {
+            TimeSubsystem->RequestGlobalDilation(
+                ETimeDilationChannel::HitStop,
+                Action.LethalGlobalFreezeDuration,
+                Action.LethalGlobalFreezeDilation,
+                Action.LethalGlobalFreezeBlendOut);
         }
     }
 
-    if (!AttackerActor) {
-        return;
+    ApplyActorHitStop(TargetActor, Action.VictimDuration, Action, CurrentRealTime);
+
+    if (ShouldApplyAttackerHitStop(*World, Signal, AttackerActor, TargetActor)) {
+        ApplyActorHitStop(AttackerActor, Action.AttackerDuration, Action, CurrentRealTime);
+    }
+}
+
+/**
+ * @brief 判断本次命中是否应为攻击者应用卡肉顿帧（排除自伤双重顿帧，并对称支持分屏多玩家）
+ * @param World 当前世界
+ * @param Signal 表现信号
+ * @param AttackerActor 攻击者实体
+ * @param TargetActor 受击者实体
+ * @return 应应用攻击者顿帧返回 true
+ */
+bool UGameFeedbackHitStopService::ShouldApplyAttackerHitStop(
+    const UWorld& World,
+    const FGameFeedbackSignal& Signal,
+    const AActor* AttackerActor,
+    const AActor* TargetActor) const {
+    if (!AttackerActor || AttackerActor == TargetActor) {
+        return false;
     }
 
-    bool bIsLocalAttacker = false;
-    for (FConstPlayerControllerIterator Iterator = World->GetPlayerControllerIterator(); Iterator; ++Iterator) {
-        APlayerController* LocalPC = Iterator->Get();
+    bool bHasLocalController = false;
+    for (FConstPlayerControllerIterator Iterator = World.GetPlayerControllerIterator(); Iterator; ++Iterator) {
+        const APlayerController* LocalPC = Iterator->Get();
         if (!LocalPC || !LocalPC->IsLocalController()) {
             continue;
         }
+        bHasLocalController = true;
 
-        if (GameFeedback::ResolvePerspective(LocalPC, Signal.Instigator.Get(), Signal.DamageCauser.Get(), Signal.Target.Get()) == EGameFeedbackPerspective::LocalAttacker) {
-            bIsLocalAttacker = true;
-            break;
+        const EGameFeedbackPerspective Perspective = GameFeedback::ResolvePerspective(
+            LocalPC, AttackerActor, Signal.DamageCauser.Get(), TargetActor);
+        if (Perspective == EGameFeedbackPerspective::LocalAttacker) {
+            return true;
         }
     }
 
-    if (bIsLocalAttacker || World->GetNetMode() == NM_Standalone) {
-        const float AppliedDuration = State->Limiter->AcquireDuration(AttackerActor, Action.AttackerDuration, Action, CurrentRealTime);
-        if (AppliedDuration > 0.0f) {
-            UTimeDilationSubsystem::Get(this).RequestHitStop(AttackerActor, AppliedDuration, Action.TimeDilation);
+    return !bHasLocalController && World.GetNetMode() == NM_Standalone;
+}
+
+/**
+ * @brief 为单个实体申请累积预算内的顿帧并提交给时间膨胀子系统
+ * @param Actor 目标实体
+ * @param RequestedDuration 期望持续时长（秒）
+ * @param Action 顿帧参数
+ * @param CurrentRealTime 当前真实时间（秒）
+ */
+void UGameFeedbackHitStopService::ApplyActorHitStop(
+    AActor* Actor,
+    float RequestedDuration,
+    const FGameFeedbackHitStopAction& Action,
+    double CurrentRealTime) {
+    if (!Actor || RequestedDuration <= 0.0f) {
+        return;
+    }
+
+    const float AppliedDuration = State->Limiter.AcquireDuration(Actor, RequestedDuration, Action, CurrentRealTime);
+    if (AppliedDuration > 0.0f) {
+        if (UTimeDilationSubsystem* TimeSubsystem = UTimeDilationSubsystem::GetPtr(this)) {
+            TimeSubsystem->RequestHitStop(Actor, AppliedDuration, Action.TimeDilation);
         }
     }
 }

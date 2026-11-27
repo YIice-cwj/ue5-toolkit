@@ -18,12 +18,12 @@ public class GameGameplay : ModuleRules {
             "GameMessage",
             "GameGameplayCore",
             "GamePool",
+            "GameFeedback",
         });
 
         PrivateDependencyModuleNames.AddRange(new string[] {
             "GameplayTasks",
             "GameLogging",
-            "GameFeedback",
         });
 
         PublicIncludePaths.AddRange(new string[] {

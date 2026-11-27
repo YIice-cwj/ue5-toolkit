@@ -1,6 +1,6 @@
 /**
  * @file GameFeedbackRegistryTest.cpp
- * @brief 反馈注册表通道匹配、字典序仲裁与组合规则自动化测试
+ * @brief 反馈注册表通道匹配、字典序仲裁、复合规则与 TokenStream 版本校验自动化测试
  */
 
 #include "CoreMinimal.h"
@@ -11,22 +11,7 @@
 #include "Asset/GameFeedbackDefinition.h"
 #include "Asset/GameFeedbackRegistry.h"
 #include "GameplayTagsManager.h"
-
-namespace {
-
-/**
- * @brief 创建具有稳定资产路径的测试 Definition
- * @param ObjectPath 完整对象路径（Package.Object）
- * @return 测试 Definition
- */
-UGameFeedbackDefinition* CreateRegistryDefinitionAtPath(const FString& ObjectPath) {
-    FString PackageName;
-    FString ObjectName;
-    ObjectPath.Split(TEXT("."), &PackageName, &ObjectName);
-    return NewObject<UGameFeedbackDefinition>(CreatePackage(*PackageName), *ObjectName);
-}
-
-}  // namespace
+#include "Tests/GameFeedbackTestHelpers.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameFeedbackRegistryLookupTest,
@@ -37,7 +22,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 /**
  * @brief 验证 Registry 按真实 GameplayTag 层级择优并按同深度字典序稳定决策
  * @param Parameters 自动化测试参数
- * @return 测试是否通过
+ * @return 全部断言通过返回 true
  */
 bool FGameFeedbackRegistryLookupTest::RunTest([[maybe_unused]] const FString& Parameters) {
     UGameFeedbackRegistry* Registry = NewObject<UGameFeedbackRegistry>();
@@ -101,16 +86,16 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证 Registry 组合规则 TagQuery 匹配、优先级降序排序与通道优先裁决
+ * @brief 验证 Registry 组合规则 TagQuery 匹配、稳定排序及 TokenStream 版本敏感性
  * @param Parameters 自动化测试参数
- * @return 测试是否通过
+ * @return 全部断言通过返回 true
  */
 bool FGameFeedbackCompositeRulesTest::RunTest([[maybe_unused]] const FString& Parameters) {
     UGameFeedbackRegistry* Registry = NewObject<UGameFeedbackRegistry>();
-    UGameFeedbackDefinition* DefaultDef = CreateRegistryDefinitionAtPath(TEXT("/Game/Feedback/CompositeTest/Default.Default"));
-    UGameFeedbackDefinition* LowPriorityDef = CreateRegistryDefinitionAtPath(TEXT("/Game/Feedback/CompositeTest/Low.Low"));
-    UGameFeedbackDefinition* HighPriorityDef = CreateRegistryDefinitionAtPath(TEXT("/Game/Feedback/CompositeTest/High.High"));
-    UGameFeedbackDefinition* ExactChannelDef = CreateRegistryDefinitionAtPath(TEXT("/Game/Feedback/CompositeTest/Channel.Channel"));
+    UGameFeedbackDefinition* DefaultDef = GameFeedbackTestHelpers::CreateDefinitionAtPath(TEXT("/Game/Feedback/CompositeTest/Default.Default"));
+    UGameFeedbackDefinition* LowPriorityDef = GameFeedbackTestHelpers::CreateDefinitionAtPath(TEXT("/Game/Feedback/CompositeTest/Low.Low"));
+    UGameFeedbackDefinition* HighPriorityDef = GameFeedbackTestHelpers::CreateDefinitionAtPath(TEXT("/Game/Feedback/CompositeTest/High.High"));
+    UGameFeedbackDefinition* ExactChannelDef = GameFeedbackTestHelpers::CreateDefinitionAtPath(TEXT("/Game/Feedback/CompositeTest/Channel.Channel"));
 
     Registry->DefaultFallbackDefinition = DefaultDef;
 
@@ -123,6 +108,7 @@ bool FGameFeedbackCompositeRulesTest::RunTest([[maybe_unused]] const FString& Pa
     FGameFeedbackCompositeEntry LowEntry;
     LowEntry.Priority = 10;
     LowEntry.TagQuery = FGameplayTagQuery::MakeQuery_MatchAnyTags(FGameplayTagContainer(TagA));
+    LowEntry.TagQuery.SetUserDescription(TEXT("SharedUserDesc"));
     LowEntry.Definition = LowPriorityDef;
     Registry->CompositeRules.Add(LowEntry);
 
@@ -133,6 +119,7 @@ bool FGameFeedbackCompositeRulesTest::RunTest([[maybe_unused]] const FString& Pa
     Registry->CompositeRules.Add(HighEntry);
 
     Registry->RebuildDefinitionIndex();
+    const uint32 VersionBeforeQueryEdit = Registry->GetDefinitionMappingVersion();
 
     TestEqual(TEXT("组合规则必须按 Priority 降序排序"), Registry->CompositeRules[0].Priority, 50);
     TestEqual(TEXT("组合规则低优先级项排在第二位"), Registry->CompositeRules[1].Priority, 10);
@@ -154,6 +141,34 @@ bool FGameFeedbackCompositeRulesTest::RunTest([[maybe_unused]] const FString& Pa
     FGameplayTagContainer EmptyTags;
     MatchedDef = Registry->ResolveDefinitionPtr(UnmatchedChannel, EmptyTags);
     TestEqual(TEXT("未匹配任何组合规则时退回默认兜底资产"), MatchedDef.Get(), DefaultDef);
+
+    Registry->CompositeRules[1].TagQuery = FGameplayTagQuery::MakeQuery_MatchAnyTags(FGameplayTagContainer(TagB));
+    Registry->CompositeRules[1].TagQuery.SetUserDescription(TEXT("SharedUserDesc"));
+    Registry->RebuildDefinitionIndex();
+    TestNotEqual(
+        TEXT("即使 UserDescription 未变，修改 TagQuery 条件后映射版本必须变化"),
+        Registry->GetDefinitionMappingVersion(),
+        VersionBeforeQueryEdit);
+
+    UGameFeedbackRegistry* TieOrderA = NewObject<UGameFeedbackRegistry>();
+    UGameFeedbackRegistry* TieOrderB = NewObject<UGameFeedbackRegistry>();
+    FGameFeedbackCompositeEntry RuleFirst;
+    RuleFirst.Priority = 20;
+    RuleFirst.TagQuery = FGameplayTagQuery::MakeQuery_MatchAnyTags(FGameplayTagContainer(TagA));
+    RuleFirst.Definition = LowPriorityDef;
+    FGameFeedbackCompositeEntry RuleSecond;
+    RuleSecond.Priority = 20;
+    RuleSecond.TagQuery = FGameplayTagQuery::MakeQuery_MatchAnyTags(FGameplayTagContainer(TagA));
+    RuleSecond.Definition = HighPriorityDef;
+
+    TieOrderA->CompositeRules = {RuleFirst, RuleSecond};
+    TieOrderB->CompositeRules = {RuleSecond, RuleFirst};
+    TieOrderA->RebuildDefinitionIndex();
+    TieOrderB->RebuildDefinitionIndex();
+    TestNotEqual(
+        TEXT("同优先级复合规则求值顺序不同必须产出不同映射版本"),
+        TieOrderA->GetDefinitionMappingVersion(),
+        TieOrderB->GetDefinitionMappingVersion());
 
     return true;
 }

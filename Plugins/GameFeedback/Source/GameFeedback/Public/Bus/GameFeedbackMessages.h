@@ -10,6 +10,7 @@
 
 #include "GameFeedbackMessages.generated.h"
 
+class APlayerController;
 class UGameFeedbackDefinition;
 
 /**
@@ -27,7 +28,7 @@ struct GAMEFEEDBACK_API FGameFeedbackMessage {
 };
 
 /**
- * @brief 网络回执广播载荷（携带本地预测抑制标记）
+ * @brief 网络回执广播载荷（携带本地预测抑制标记与可选定向接收控制器）
  */
 USTRUCT(BlueprintType)
 struct GAMEFEEDBACK_API FGameFeedbackNetworkMessage {
@@ -41,6 +42,12 @@ struct GAMEFEEDBACK_API FGameFeedbackNetworkMessage {
 
     UPROPERTY(BlueprintReadWrite, Category = "GameFeedback")
     bool bSuppressed = false;
+
+    /**
+     * @brief 收到该网络 RPC 的本地玩家控制器（非空时仅对应玩家组件响应，杜绝分屏多端重复播放）
+     */
+    UPROPERTY(BlueprintReadWrite, Category = "GameFeedback")
+    TWeakObjectPtr<APlayerController> ReceivingController = nullptr;
 };
 
 /**
