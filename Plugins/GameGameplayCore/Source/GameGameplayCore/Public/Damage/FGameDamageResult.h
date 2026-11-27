@@ -68,17 +68,19 @@ public:
     }
 
     /**
+     * @brief 获取所有实际伤害通道分解数值之和
+     * @return 实际通道伤害总和
+     */
+    [[nodiscard]] float GetTotalActualChannelDamage() const noexcept {
+        return FGameDamageChannel::GetTotalMagnitude(ActualChannels);
+    }
+
+    /**
      * @brief 获取实际伤害数值最大的通道
      * @return 主实际伤害通道；无通道时返回无效标签
      */
     [[nodiscard]] FGameplayTag GetDominantActualChannel() const noexcept {
-        const FGameDamageChannel* DominantChannel = nullptr;
-        for (const FGameDamageChannel& Channel : ActualChannels) {
-            if (DominantChannel == nullptr || Channel.Magnitude > DominantChannel->Magnitude) {
-                DominantChannel = &Channel;
-            }
-        }
-        return DominantChannel != nullptr ? DominantChannel->ChannelTag : FGameplayTag();
+        return FGameDamageChannel::GetDominantChannel(ActualChannels);
     }
 
     /**
@@ -110,7 +112,7 @@ public:
      * @brief 添加反馈标签
      * @param InTag 待添加的反馈标签
      */
-    FORCEINLINE void AddFeedbackTag(const FGameplayTag& InTag) noexcept {
+    FORCEINLINE void AddFeedbackTag(const FGameplayTag& InTag) {
         FeedbackTags.AddTag(InTag);
     }
 
@@ -118,7 +120,7 @@ public:
      * @brief 移除反馈标签
      * @param InTag 待移除的反馈标签
      */
-    FORCEINLINE void RemoveFeedbackTag(const FGameplayTag& InTag) noexcept {
+    FORCEINLINE void RemoveFeedbackTag(const FGameplayTag& InTag) {
         FeedbackTags.RemoveTag(InTag);
     }
 

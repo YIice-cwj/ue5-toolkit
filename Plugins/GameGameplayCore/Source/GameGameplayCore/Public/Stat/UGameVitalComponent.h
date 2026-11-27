@@ -7,8 +7,8 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
-#include "GameplayTagContainer.h"
 #include "Core/IGamePoolable.h"
+#include "GameplayTagContainer.h"
 
 #include "UGameVitalComponent.generated.h"
 
@@ -44,10 +44,11 @@ class GAMEGAMEPLAYCORE_API UGameVitalComponent : public UActorComponent, public 
     GENERATED_BODY()
 
     friend class FGameVitalRepAliveForwardBroadcastTest;
+    friend class FGameVitalCdoTagSubscriptionTest;
 
 public:
     /**
-     * @brief 构造函数：开启组件网络复制
+     * @brief 构造函数：关闭组件 Tick、开启组件网络复制
      */
     UGameVitalComponent();
 
@@ -58,17 +59,17 @@ public:
     void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
     /**
-     * @brief 从对象池出库激活回调
+     * @brief 从对象池出库激活回调：补齐监听并重新对齐存活状态
      */
     void OnAcquireFromPool_Implementation() override;
 
     /**
-     * @brief 归还对象池休眠回调：重置存活状态并回满主生命
+     * @brief 归还对象池休眠回调：静默重置本组件存活状态（遵循 SRP，不越权改写数值组件）
      */
     void OnReleaseToPool_Implementation() override;
 
     /**
-     * @brief 组件初始化生命周期回调：若未显式绑定数值组件，尝试从 Owner 自动发现并挂接
+     * @brief 组件初始化生命周期回调：补齐未建立的主生命订阅（支持 CDO 预配置与自动发现 Owner 数值组件）
      */
     void BeginPlay() override;
 
@@ -92,8 +93,8 @@ public:
 
 public:
     /**
-     * @brief 显式绑定关联的数值组件
-     * @param InStatComponent 目标数值组件指针
+     * @brief 显式绑定关联的数值组件（传入 nullptr 时显式解绑且不再自动回绑 Owner 数值组件）
+     * @param InStatComponent 目标数值组件指针；为空时解绑
      */
     UFUNCTION(BlueprintCallable, Category = "Game|Vital")
     void BindStatComponent(UGameStatComponent* InStatComponent);
@@ -109,7 +110,7 @@ public:
      * @brief 读取主生命属性标签
      * @return 当前主生命属性标签
      */
-    UFUNCTION(BlueprintCallable, Category = "Game|Vital")
+    UFUNCTION(BlueprintPure, Category = "Game|Vital")
     [[nodiscard]] FORCEINLINE FGameplayTag GetPrimaryVitalTag() const noexcept {
         return PrimaryVitalTag;
     }
@@ -118,14 +119,14 @@ public:
      * @brief 查询主生命当前是否存活（未设置主生命标签时恒为 true）
      * @return 若存活返回 true，已阵亡返回 false
      */
-    UFUNCTION(BlueprintCallable, Category = "Game|Vital")
+    UFUNCTION(BlueprintPure, Category = "Game|Vital")
     [[nodiscard]] FORCEINLINE bool IsVitalAlive() const noexcept {
         return bVitalAlive;
     }
 
     /**
      * @brief 按百分比恢复主生命数值并复活（目标值 = Min + (Max - Min) * FillPercent）
-     * @param FillPercent 填充比例（0.0 ~ 1.0，默认 1.0f 即回满生命值）
+     * @param FillPercent 填充比例（0.0 ~ 1.0 有限浮点，默认 1.0f 即回满生命值）
      */
     UFUNCTION(BlueprintCallable, Category = "Game|Vital")
     void ReviveVital(float FillPercent = 1.0f);
@@ -145,6 +146,16 @@ protected:
 
 private:
     /**
+     * @brief 从当前绑定的数值组件注销已登记的属性监听并清理句柄
+     */
+    void UnsubscribeFromBoundStat();
+
+    /**
+     * @brief 在绑定组件与主生命标签均有效时建立属性监听并在必要时评估状态
+     */
+    void TrySubscribeAndEvaluate();
+
+    /**
      * @brief 主生命属性变更后重新评估存活状态
      * @param StatTag 触发回调的属性标签
      * @param OldValue 变化前的有效当前值
@@ -160,8 +171,8 @@ private:
     void BroadcastVitalStateChanged(bool bNewAlive);
 
     /**
-     * @brief 返回显式绑定的数值组件，未绑定时从宿主查找
-     * @return 可用的数值组件；无宿主或未发现时返回 nullptr
+     * @brief 返回显式绑定的数值组件；未显式解绑且未绑定时从宿主自动发现并缓存
+     * @return 可用的数值组件；显式解绑、无宿主或未发现时返回 nullptr
      */
     UGameStatComponent* ResolveStatComponent();
 
@@ -177,6 +188,12 @@ private:
      */
     bool bLastBroadcastedAlive = true;
 
+    /**
+     * @brief 是否曾显式传入 nullptr 解绑（阻止后续 ResolveStatComponent 静默重绑宿主数值组件）
+     */
+    bool bExplicitlyUnbound = false;
+
     TWeakObjectPtr<UGameStatComponent> BoundStatComponent;
     FDelegateHandle StatChangedSubscriptionHandle;
+    FGameplayTag SubscribedStatTag;
 };

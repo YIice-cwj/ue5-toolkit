@@ -4,13 +4,14 @@
  */
 
 #include "CoreMinimal.h"
-#include "Misc/AutomationTest.h"
-#include "GameplayTagContainer.h"
-#include "GameplayTagsManager.h"
 #include "Damage/FGameDamageContext.h"
 #include "Damage/FGameDamageResult.h"
 #include "Damage/IDamageable.h"
-#include "Tests/GameDamageTestTarget.h"
+#include "GameplayTagContainer.h"
+#include "GameplayTagsManager.h"
+#include "Misc/AutomationTest.h"
+#include "Tests/UGameDamageDefaultTestTarget.h"
+#include "Tests/UGameDamageTestTarget.h"
 
 #if WITH_AUTOMATION_TESTS
 

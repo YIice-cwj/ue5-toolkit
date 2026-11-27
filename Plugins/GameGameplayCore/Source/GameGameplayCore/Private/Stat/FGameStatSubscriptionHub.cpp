@@ -9,48 +9,57 @@
  * @brief 订阅指定属性的变化（底层委托版）
  * @param InStatTag 目标属性标签
  * @param InDelegate 变化回调委托
- * @return 订阅句柄，参数非法时返回无效句柄
+ * @return 订阅句柄；标签或委托无效时返回无效句柄
  */
-FDelegateHandle FGameStatSubscriptionHub::Subscribe(const FGameplayTag& InStatTag, FOnGameStatChangedNative::FDelegate InDelegate) {
-    if (!InStatTag.IsValid()) {
+FDelegateHandle FGameStatSubscriptionHub::Subscribe(
+    const FGameplayTag& InStatTag,
+    FOnGameStatChangedNative::FDelegate InDelegate
+) {
+    if (!InStatTag.IsValid() || !InDelegate.IsBound()) {
         return FDelegateHandle();
     }
-    return TaggedStatChanged.FindOrAdd(InStatTag).Add(InDelegate);
+
+    if (TSharedRef<FOnGameStatChangedNative>* Existing = TaggedStatChanged.Find(InStatTag)) {
+        return (*Existing)->Add(MoveTemp(InDelegate));
+    }
+
+    const TSharedRef<FOnGameStatChangedNative> Created = MakeShared<FOnGameStatChangedNative>();
+    const FDelegateHandle Handle = Created->Add(MoveTemp(InDelegate));
+    TaggedStatChanged.Add(InStatTag, Created);
+    return Handle;
 }
 
 /**
- * @brief 订阅指定属性的变化（绑定 Owner 生命周期版）
- * @param InOwner 归属对象（失效时自动停止回调并适时清理）
+ * @brief 订阅指定属性的变化（绑定 Owner 生命周期版，内部采用 CreateWeakLambda 自动失效）
+ * @param InOwner 归属对象（为空时按普通 Lambda 绑定；非空且失效时拒绝订阅并返回无效句柄）
  * @param InStatTag 目标属性标签
  * @param InCallback 变化回调闭包
- * @return 订阅句柄，参数非法或 Owner 已失效时返回无效句柄
+ * @return 订阅句柄；参数非法或 Owner 已失效时返回无效句柄
  */
 FDelegateHandle FGameStatSubscriptionHub::Subscribe(
     UObject* InOwner,
     const FGameplayTag& InStatTag,
     TFunction<void(const FGameplayTag&, float, float, float)> InCallback
 ) {
-    if (!InStatTag.IsValid() || InCallback == nullptr) {
-        return FDelegateHandle();
-    }
-    if (InOwner != nullptr && !IsValid(InOwner)) {
+    if (!InStatTag.IsValid() || !InCallback) {
         return FDelegateHandle();
     }
 
-    const FDelegateHandle Handle = Subscribe(InStatTag, FOnGameStatChangedNative::FDelegate::CreateLambda(
-        [InCallback](const FGameplayTag& Tag, float OldVal, float NewVal, float MaxVal) {
-            InCallback(Tag, OldVal, NewVal, MaxVal);
+    if (InOwner != nullptr) {
+        if (!IsValid(InOwner)) {
+            return FDelegateHandle();
         }
-    ));
-
-    if (Handle.IsValid() && InOwner != nullptr) {
-        OwnerStatSubscriptions.Add(FStatOwnerSubscription{InStatTag, InOwner, Handle});
+        return Subscribe(
+            InStatTag,
+            FOnGameStatChangedNative::FDelegate::CreateWeakLambda(InOwner, MoveTemp(InCallback))
+        );
     }
-    return Handle;
+
+    return Subscribe(InStatTag, FOnGameStatChangedNative::FDelegate::CreateLambda(MoveTemp(InCallback)));
 }
 
 /**
- * @brief 注销指定属性订阅
+ * @brief 注销指定属性订阅（回调重入期间调用绝对安全）
  * @param InStatTag 目标属性标签
  * @param InHandle 订阅句柄
  */
@@ -59,66 +68,48 @@ void FGameStatSubscriptionHub::Unsubscribe(const FGameplayTag& InStatTag, FDeleg
         return;
     }
 
-    if (FOnGameStatChangedNative* Multicast = TaggedStatChanged.Find(InStatTag)) {
-        Multicast->Remove(InHandle);
-        if (!Multicast->IsBound()) {
+    if (TSharedRef<FOnGameStatChangedNative>* Multicast = TaggedStatChanged.Find(InStatTag)) {
+        (*Multicast)->Remove(InHandle);
+        if (!(*Multicast)->IsBound()) {
             TaggedStatChanged.Remove(InStatTag);
         }
     }
-
-    OwnerStatSubscriptions.RemoveAll([InHandle](const FStatOwnerSubscription& Entry) {
-        return Entry.Handle == InHandle;
-    });
 }
 
 /**
- * @brief 向指定属性的订阅者广播变化事件
+ * @brief 向指定属性的订阅者广播变化事件（共享引用保活，免疫回调内退订/订阅/重置重入）
  * @param InStatTag 目标属性标签
  * @param OldValue 旧值
  * @param NewValue 新值
  * @param MaxValue 上限值
  */
 void FGameStatSubscriptionHub::Broadcast(const FGameplayTag& InStatTag, float OldValue, float NewValue, float MaxValue) {
-    PurgeExpiredOwnerSubscriptions(InStatTag);
-
-    if (const FOnGameStatChangedNative* Multicast = TaggedStatChanged.Find(InStatTag)) {
-        Multicast->Broadcast(InStatTag, OldValue, NewValue, MaxValue);
+    const TSharedRef<FOnGameStatChangedNative>* Found = TaggedStatChanged.Find(InStatTag);
+    if (Found == nullptr) {
+        return;
     }
-}
 
-/**
- * @brief 清理指定属性中已失效 Owner 的订阅条目
- * @param InStatTag 目标属性标签
- */
-void FGameStatSubscriptionHub::PurgeExpiredOwnerSubscriptions(const FGameplayTag& InStatTag) {
-    for (int32 Index = OwnerStatSubscriptions.Num() - 1; Index >= 0; --Index) {
-        const FStatOwnerSubscription& Sub = OwnerStatSubscriptions[Index];
-        if (Sub.Tag.MatchesTagExact(InStatTag) && !Sub.Owner.IsValid()) {
-            if (FOnGameStatChangedNative* Multicast = TaggedStatChanged.Find(InStatTag)) {
-                Multicast->Remove(Sub.Handle);
-                if (!Multicast->IsBound()) {
-                    TaggedStatChanged.Remove(InStatTag);
-                }
+    const TSharedRef<FOnGameStatChangedNative> LiveMulticast = *Found;
+    LiveMulticast->Broadcast(InStatTag, OldValue, NewValue, MaxValue);
+
+    if (!LiveMulticast->IsBound()) {
+        if (const TSharedRef<FOnGameStatChangedNative>* Current = TaggedStatChanged.Find(InStatTag)) {
+            if (&Current->Get() == &LiveMulticast.Get()) {
+                TaggedStatChanged.Remove(InStatTag);
             }
-            OwnerStatSubscriptions.RemoveAtSwap(Index);
         }
     }
 }
 
 /**
- * @brief 清除指定属性标签下的全部订阅者（含原生委托与生命周期绑定条目）
+ * @brief 清除指定属性标签下的全部订阅者
  * @param InStatTag 目标属性标签
  */
 void FGameStatSubscriptionHub::ClearTagSubscriptions(const FGameplayTag& InStatTag) {
     if (!InStatTag.IsValid()) {
         return;
     }
-
     TaggedStatChanged.Remove(InStatTag);
-
-    OwnerStatSubscriptions.RemoveAll([&InStatTag](const FStatOwnerSubscription& Entry) {
-        return Entry.Tag.MatchesTagExact(InStatTag);
-    });
 }
 
 /**
@@ -126,5 +117,4 @@ void FGameStatSubscriptionHub::ClearTagSubscriptions(const FGameplayTag& InStatT
  */
 void FGameStatSubscriptionHub::Reset() {
     TaggedStatChanged.Reset();
-    OwnerStatSubscriptions.Reset();
 }

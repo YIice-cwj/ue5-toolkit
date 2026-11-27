@@ -7,11 +7,13 @@
 
 #include "CoreMinimal.h"
 #include "Containers/TSortedVectorMap.h"
+#include "Core/FGameFastTagKey.h"
 #include "GameplayTagContainer.h"
 #include "Stat/FGameStatTypes.h"
+#include "Templates/Function.h"
 
 /**
- * @brief 已确认数值差分记录器
+ * @brief 已确认数值差分记录器（8 字节当前/上限值对 + TSortedVectorMap + FastLess 整型二分零堆分配）
  */
 struct GAMEGAMEPLAYCORE_API FGameStatAcknowledgedDiff {
     /**
@@ -46,10 +48,10 @@ struct GAMEGAMEPLAYCORE_API FGameStatAcknowledgedDiff {
     void Remove(const FGameplayTag& InStatTag);
 
     /**
-     * @brief 清理已不存在于属性索引中的已确认记录
-     * @param InStatIndex 当前属性标签到数组下标的映射
+     * @brief 清理未满足保留谓词的已确认记录
+     * @param IsKeyPresent 判定属性标签是否仍存在的谓词闭包
      */
-    void PruneMissing(const TMap<FGameplayTag, int32>& InStatIndex);
+    void PruneMissing(TFunctionRef<bool(const FGameplayTag&)> IsKeyPresent);
 
     /**
      * @brief 清空全部已确认记录
@@ -57,5 +59,5 @@ struct GAMEGAMEPLAYCORE_API FGameStatAcknowledgedDiff {
     void Reset();
 
 private:
-    TSortedVectorMap<FGameplayTag, FGameStatValue, 8> Acknowledged;
+    TSortedVectorMap<FGameFastTagKey, FGameStatEffectivePair, 8> Acknowledged;
 };

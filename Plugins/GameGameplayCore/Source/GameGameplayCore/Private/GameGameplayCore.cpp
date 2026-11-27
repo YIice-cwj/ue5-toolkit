@@ -2,16 +2,21 @@
 
 #include "GameGameplayCore.h"
 
+#include "GameGameplayCoreLog.h"
 #include "Modules/ModuleManager.h"
-#include "Logging/GameLogCategories.h"
 
 GAME_REGISTER_MODULE_LOG(LogGameGameplayCore);
+
+DEFINE_LOG_CATEGORY(LogGameStat);
+DEFINE_LOG_CATEGORY(LogGameVital);
+DEFINE_LOG_CATEGORY(LogGameBuff);
 
 /**
  * @brief 战斗框架核心主模块（零 GAS，游戏无关）
  *
- * 承载伤害分发契约（FGameDamageContext / FGameDamageResult / IDamageable）
- * 与通用数值状态机（UGameStatComponent 与 UGameVitalComponent）；表现层与 GAS 绑定层见 GameGameplay 插件。
+ * 承载伤害分发契约（FGameDamageContext / FGameDamageResult / IDamageable）、
+ * 通用数值与生死状态机（UGameStatComponent / UGameVitalComponent）
+ * 与通用 Buff 运行时（UGameBuffComponent）；表现层与 GAS 绑定层见 GameGameplay 插件。
  */
 class FGameGameplayCoreModule : public FDefaultModuleImpl {
 public:

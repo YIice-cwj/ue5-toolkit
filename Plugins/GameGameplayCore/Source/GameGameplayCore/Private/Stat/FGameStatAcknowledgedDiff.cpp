@@ -21,7 +21,7 @@ bool FGameStatAcknowledgedDiff::NeedsBroadcast(
     float& OutOldCurrent,
     float& OutOldMax
 ) const {
-    const FGameStatValue* Previous = Acknowledged.Find(InStatTag);
+    const FGameStatEffectivePair* Previous = Acknowledged.Find(FGameFastTagKey(InStatTag));
     if (Previous == nullptr) {
         OutOldCurrent = InEffectiveCurrent;
         OutOldMax = InEffectiveMax;
@@ -41,7 +41,7 @@ bool FGameStatAcknowledgedDiff::NeedsBroadcast(
  * @param InMax 已确认的上限
  */
 void FGameStatAcknowledgedDiff::Record(const FGameplayTag& InStatTag, float InCurrent, float InMax) {
-    FGameStatValue& Entry = Acknowledged.FindOrAdd(InStatTag);
+    FGameStatEffectivePair& Entry = Acknowledged.FindOrAdd(FGameFastTagKey(InStatTag));
     Entry.Current = InCurrent;
     Entry.Max = InMax;
 }
@@ -51,17 +51,17 @@ void FGameStatAcknowledgedDiff::Record(const FGameplayTag& InStatTag, float InCu
  * @param InStatTag 属性标签
  */
 void FGameStatAcknowledgedDiff::Remove(const FGameplayTag& InStatTag) {
-    Acknowledged.Remove(InStatTag);
+    Acknowledged.Remove(FGameFastTagKey(InStatTag));
 }
 
 /**
- * @brief 清理已不存在于属性索引中的已确认记录
- * @param InStatIndex 当前属性标签到数组下标的映射
+ * @brief 清理未满足保留谓词的已确认记录
+ * @param IsKeyPresent 判定属性标签是否仍存在的谓词闭包
  */
-void FGameStatAcknowledgedDiff::PruneMissing(const TMap<FGameplayTag, int32>& InStatIndex) {
+void FGameStatAcknowledgedDiff::PruneMissing(TFunctionRef<bool(const FGameplayTag&)> IsKeyPresent) {
     for (int32 Index = Acknowledged.Num() - 1; Index >= 0; --Index) {
-        const FGameplayTag Key = Acknowledged.GetEntries()[Index].Key;
-        if (!InStatIndex.Contains(Key)) {
+        const FGameFastTagKey Key = Acknowledged.GetEntries()[Index].Key;
+        if (!IsKeyPresent(Key.Tag)) {
             Acknowledged.Remove(Key);
         }
     }

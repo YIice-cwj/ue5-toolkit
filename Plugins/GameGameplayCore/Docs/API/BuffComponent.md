@@ -1,9 +1,11 @@
 # GameGameplayCore 通用 Buff 组件 API 参考
 
-`UGameBuffComponent` 是与 GAS 无关的通用 Buff / 状态运行时。框架不定义任何具体 Buff（中毒、加速、护盾、冷却等），只提供叠层、持续时长、状态标签聚合与属性修正器挂接。
+`UGameBuffComponent` 是与 GAS 无关的通用 Buff / 状态运行时。框架不定义任何具体 Buff（中毒、加速、护盾、冷却等），只提供叠层、持续时长、状态标签聚合、原子属性修正器挂接与对象池复用。
 
 - 头文件：`#include "Buff/UGameBuffComponent.h"`
-- 依赖组件：`UGameStatComponent`（可在 Owner 上自动查找，或显式 `BindStatComponent` 绑定）
+- 实例结构头：`#include "Buff/FGameBuffInstance.h"`
+- 错误码契约：`#include "Core/GameplayCoreErrorCodes.h"`（`Game::ModuleId::Gameplay` + `Game::GameplayCoreErrorCodes`）
+- 依赖组件：`UGameStatComponent`（可在 Owner 上自动查找，或显式 `BindStatComponent` 绑定；传入 `nullptr` 将显式解绑且不再自动回绑宿主数值组件）
 - 适用：非 GAS 项目直接使用；GAS 项目使用 `GameGameplay` 的 `UGameGasBuffBridge`
 
 ---
@@ -13,7 +15,7 @@
 ### 1.1 `FGameBuffSpec`
 ```cpp
 USTRUCT(BlueprintType)
-struct FGameBuffSpec {
+struct GAMEGAMEPLAYCORE_API FGameBuffSpec {
     GENERATED_BODY()
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Game|Buff")
@@ -38,7 +40,7 @@ struct FGameBuffSpec {
 
 - `BuffTag`：Buff 身份；同 Tag 视为同一种 Buff。
 - `GrantedTags`：激活期间对外聚合的状态标签（眩晕、无敌、冷却中）。
-- `Duration <= 0`：永久；`> 0`：按秒倒计时，到期自动移除。
+- `Duration <= 0`：永久；`> 0`：按秒倒计时，到期自动移除；非有限浮点（`NaN` / `±Inf`）将被写边界拦截。
 - `MaxStacks <= 0`：不限层。
 
 ### 1.2 `EGameBuffStackPolicy`
@@ -50,24 +52,10 @@ enum class EGameBuffStackPolicy : uint8 {
 };
 ```
 
-### 1.3 `FGameStatModifierSpec`
+### 1.3 `FGameBuffInstance`（`Buff/FGameBuffInstance.h`）
 ```cpp
 USTRUCT(BlueprintType)
-struct FGameStatModifierSpec {
-    GENERATED_BODY()
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Game|Buff")
-    FGameplayTag StatTag;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Game|Buff")
-    FGameStatModifier Modifier;
-};
-```
-
-### 1.4 `FGameBuffInstance`
-```cpp
-USTRUCT(BlueprintType)
-struct FGameBuffInstance : public FFastArraySerializerItem {
+struct GAMEGAMEPLAYCORE_API FGameBuffInstance : public FFastArraySerializerItem {
     GENERATED_BODY()
 
     UPROPERTY(BlueprintReadOnly, Category = "Game|Buff")
@@ -84,54 +72,52 @@ struct FGameBuffInstance : public FFastArraySerializerItem {
 };
 ```
 
-### 1.5 `FGameActiveBuffArray`
-```cpp
-USTRUCT()
-struct FGameActiveBuffArray : public FFastArraySerializer {
-    GENERATED_BODY()
-
-    UPROPERTY()
-    TArray<FGameBuffInstance> Items;
-
-    void PostReplicatedAdd(const TArrayView<int32>& AddedIndices, int32 FinalSize);
-    void PostReplicatedChange(const TArrayView<int32>& ChangedIndices, int32 FinalSize);
-    void PreReplicatedRemove(const TArrayView<int32>& RemovedIndices, int32 FinalSize);
-};
-```
-
 ---
 
 ## 2. 类接口
 
 ```cpp
 UCLASS(ClassGroup = (Game), meta = (BlueprintSpawnableComponent))
-class GAMEGAMEPLAYCORE_API UGameBuffComponent : public UActorComponent {
+class GAMEGAMEPLAYCORE_API UGameBuffComponent : public UActorComponent, public IGamePoolable {
     GENERATED_BODY()
 
 public:
     UFUNCTION(BlueprintCallable, Category = "Game|Buff")
     void BindStatComponent(UGameStatComponent* InStatComponent);
 
-    UFUNCTION(BlueprintCallable, Category = "Game|Buff")
-    int32 ApplyBuff(const FGameBuffSpec& InSpec);
+    // --- 写入接口（C++ 强类型 TGameStatusResult + 蓝图 K2_* 门面） ---
+    UFUNCTION(BlueprintCallable, Category = "Game|Buff", meta = (DisplayName = "Apply Buff"))
+    int32 K2_ApplyBuff(const FGameBuffSpec& InSpec);
+    TGameStatusResult<int32> ApplyBuff(const FGameBuffSpec& InSpec);
 
-    UFUNCTION(BlueprintCallable, Category = "Game|Buff")
-    bool RemoveBuff(FGameplayTag InBuffTag, bool bRemoveAllInstances = true);
+    UFUNCTION(BlueprintCallable, Category = "Game|Buff", meta = (DisplayName = "Remove Buff"))
+    bool K2_RemoveBuff(const FGameplayTag& InBuffTag, bool bRemoveAllInstances = true);
+    TGameStatusResult<void> RemoveBuff(const FGameplayTag& InBuffTag, bool bRemoveAllInstances = true);
 
-    UFUNCTION(BlueprintCallable, Category = "Game|Buff")
-    bool RemoveBuffStacks(FGameplayTag InBuffTag, int32 StacksToRemove = 1);
+    UFUNCTION(BlueprintCallable, Category = "Game|Buff", meta = (DisplayName = "Remove Buff Stacks"))
+    bool K2_RemoveBuffStacks(const FGameplayTag& InBuffTag, int32 StacksToRemove = 1);
+    TGameStatusResult<void> RemoveBuffStacks(const FGameplayTag& InBuffTag, int32 StacksToRemove = 1);
 
-    UFUNCTION(BlueprintCallable, Category = "Game|Buff")
-    bool RemoveBuffInstance(int32 InInstanceId);
+    UFUNCTION(BlueprintCallable, Category = "Game|Buff", meta = (DisplayName = "Remove Buff Instance"))
+    bool K2_RemoveBuffInstance(int32 InInstanceId);
+    TGameStatusResult<void> RemoveBuffInstance(int32 InInstanceId);
+
+    UFUNCTION(BlueprintCallable, Category = "Game|Buff", meta = (DisplayName = "Clear All Buffs"))
+    int32 K2_ClearAllBuffs();
+    TGameStatusResult<int32> ClearAllBuffs();
+
+    // --- 纯查询接口（全部 BlueprintPure） ---
+    UFUNCTION(BlueprintPure, Category = "Game|Buff")
+    [[nodiscard]] bool HasBuff(const FGameplayTag& InBuffTag) const;
 
     UFUNCTION(BlueprintPure, Category = "Game|Buff")
-    [[nodiscard]] bool HasBuff(FGameplayTag InBuffTag) const;
+    [[nodiscard]] bool HasGrantedTag(const FGameplayTag& InTag) const;
 
     UFUNCTION(BlueprintPure, Category = "Game|Buff")
-    [[nodiscard]] int32 GetBuffStacks(FGameplayTag InBuffTag) const;
+    [[nodiscard]] int32 GetBuffStacks(const FGameplayTag& InBuffTag) const;
 
     UFUNCTION(BlueprintPure, Category = "Game|Buff")
-    [[nodiscard]] float GetBuffRemainingTime(FGameplayTag InBuffTag) const;
+    [[nodiscard]] float GetBuffRemainingTime(const FGameplayTag& InBuffTag) const;
 
     UFUNCTION(BlueprintPure, Category = "Game|Buff")
     void GetActiveBuffTags(TArray<FGameplayTag>& OutTags) const;
@@ -140,8 +126,9 @@ public:
     void GetGrantedTags(FGameplayTagContainer& OutTags) const;
 
     UFUNCTION(BlueprintPure, Category = "Game|Buff")
-    [[nodiscard]] bool IsApplyAllowed() const;
+    [[nodiscard]] bool IsAuthoritativeWriteAllowed() const;
 
+    // --- 动静双轨多播委托 ---
     UPROPERTY(BlueprintAssignable, Category = "Game|Buff")
     FOnGameBuffChanged OnBuffChanged;
 
@@ -158,30 +145,27 @@ public:
 ## 3. 运行语义
 
 ### 3.1 施加与叠层
-- `RefreshDuration` / `AddDuration`：同 Tag 复用同一实例；每层叠加时先移除旧修正器，再按新层数重新挂接。
+- `RefreshDuration` / `AddDuration`：同 Tag 复用同一实例；广播始终采用该 Tag 的聚合总层数 `GetBuffStacks(Tag)`。
 - `AddDuration`：新 Spec 为正时长时累加剩余时间；非正时长时将实例转为永久，剩余时间归零。`RefreshDuration` 始终刷新为新时长。
-- `Independent`：每次施加创建独立实例（受 `MaxStacks` 限制：同 Tag 聚合总层数达到 `MaxStacks` 时拒绝施加并返回 0），按 `InstanceId` 精确移除。
-- 层数达到 `MaxStacks` 后不再增加，但仍刷新 / 累加时长并更新 Spec。
+- `Independent`：每次施加创建独立实例（受 `MaxStacks` 限制：达到上限时返回 `MaxBuffStacksReached`），按 `InstanceId` 精确移除。
+- `HasGrantedTag(Tag)` 直接短路遍历活跃 Buff 的 `GrantedTags`（支持父标签层级匹配），无需构造临时 `FGameplayTagContainer`。
 
-### 3.2 修正器与层数
-- `Add` 修正值乘以层数；`Multiply` 按 `1 + (Value - 1) * Stacks` 缩放；`Override` 不缩放。
-- 修正器挂接到 `UGameStatComponent::AddStatModifier`，移除 Buff 时按句柄精确回滚，不影响其他来源的修正。
-- 后绑定数值组件时会挂接全部既有 Buff；从 Stat A 重绑到 Stat B 时先完整回滚 A，再在 B 上重建；解绑与组件 `EndPlay` 同样回滚原组件上的全部修正器。
+### 3.2 原子修正器挂接（零刷新抖动、防瞬时误杀）
+- `Add` 修正值乘以层数；`Multiply` 按 `1 + (Value - 1) * Stacks` 缩放；`Override` 不缩放；规格中的无效 `StatTag` 或 `NaN` 修正器会被自动过滤。
+- 通过 `FGameBuffModifierBridge` 与 `UGameStatComponent::FScopedModifierBatch` / `UpdateStatModifier` 协同：
+  - **满层刷新（缩放后修正器完全不变）**：零操作直接跳过，不触发任何属性广播；
+  - **叠层/扣层（同属性标签布局）**：原地原子更新修正器，仅产生一次增量广播，绝不回落至基础值（防止靠生命 Buff 存活的角色在刷新或叠层瞬间误触发死亡）；
+  - **Spec 变更/重绑/批量清空**：在批处理作用域内完成替换与回滚，退出时按终态差分统一广播。
 
-### 3.3 持续时长
-- 仅当存在未到期的限时实例时组件才开启 Tick；全部永久 Buff 或复制删除最后一条实例后自动关闭 Tick。
-- 到期实例先回滚修正器，再移除并广播 `OnBuffRemoved`。
+### 3.3 持续时长与 Tick 自适应
+- 仅当存在未到期的限时实例时组件才开启 Tick；全部永久 Buff 或客户端 `PreReplicatedRemove` 移除最后一条限时实例时**当帧立即关闭 Tick**。
+- `RemoveBuffStacks` 仅在实际删除实例时标脏整表（`MarkArrayDirty`）；仅部分扣层时只标脏单条目（`MarkItemDirty`），维持 FastArray 增量带宽优势。
 
-### 3.4 权威与复制
-- `IsApplyAllowed()`：Owner 为 `nullptr`、Owner 具备权威、或关闭 `bRequireAuthority` 时允许操作。
-- 非权威端 `ApplyBuff` / `RemoveBuff` / `RemoveBuffInstance` 返回失败并记录 Warning。
-- `ActiveBuffs` 为 `FGameActiveBuffArray`（`FFastArraySerializer`），服务端仅标记脏条目，客户端按 `PostReplicatedAdd` / `PostReplicatedChange` / `PreReplicatedRemove` 回调重建修正器映射，并按 `AcknowledgedStacks` 差分广播变化 / 移除事件；Spec 变化即使叠层不变也会广播一次变更。
-- `GetBuffStacks` 对同 Tag 多实例求和；`GetBuffRemainingTime` 返回最大剩余时间。
-
-### 3.5 逐层削减 (`RemoveBuffStacks`)
-- 按 Buff 标签从后向前削减指定层数。
-- 若实例层数小于等于待削减层数，直接移除该实例；若大于待削减层数，则扣除层数并按剩余层数重新缩放修正器。
-- 削减后若该 Tag 仍有剩余层数，广播 `OnBuffChanged`；若全部层数归零，广播 `OnBuffRemoved`。
+### 3.4 权威校验、复制差分与对象池
+- `IsAuthoritativeWriteAllowed()` 与 `UGameStatComponent` 对齐：Owner 为 `nullptr`、Owner 具备权威或开启 `bAllowNonAuthoritativeWrites` 时允许写入。
+- 客户端 `AcknowledgedStacks` 与复制差分基于 `GameCore::TSortedVectorMap<FGameFastTagKey, int32, 8>`，8 槽内联零堆分配 + 整型快速二分。
+- `OnReleaseToPool` 静默清空 `ActiveBuffs`、关闭 Tick、通过静默回滚通道卸载已挂接修正器（无论与 `UGameStatComponent` 的入池顺序如何均零业务广播）并保持 `NextInstanceId` 单调递增（防联机延迟包 ID 碰撞）。
+- 专属子域日志分类为 `LogGameBuff`（正常流转记录 `Verbose`，非法输入或非权威写记录限频 `Warning`）。
 
 ---
 

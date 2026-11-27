@@ -3,6 +3,7 @@
 本文档介绍 `GameGameplayCore` 战斗管线中的核心数据结构。
 
 头文件：
+- `#include "Damage/FGameDamageChannel.h"`
 - `#include "Damage/FGameDamageContext.h"`
 - `#include "Damage/FGameDamageResult.h"`
 
@@ -10,7 +11,7 @@
 
 ## 1. `FGameDamageChannel` (伤害通道条目)
 
-表示单一类型的伤害或属性数值条目，并提供针对通道数组的高效静态算法函数：
+表示单一类型的伤害或属性数值条目，并提供针对通道切片（`TConstArrayView<FGameDamageChannel>`）与数组的静态辅助算法函数：
 
 ```cpp
 USTRUCT(BlueprintType)
@@ -21,19 +22,21 @@ public:
     FGameDamageChannel() = default;
     FGameDamageChannel(const FGameplayTag& InTag, float InMag) : ChannelTag(InTag), Magnitude(InMag) {}
 
-    /** 属性通道标签 (如 Damage.Channel.Physical, Damage.Channel.Fire, Damage.Feedback.HitStop) */
+    /** 伤害通道标签（如 Damage.Channel.Physical, Damage.Channel.Fire, Damage.Feedback.HitStop） */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Game|Damage")
     FGameplayTag ChannelTag;
 
-    /** 基础数值 */
+    /** 伤害通道数值大小 */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Game|Damage")
     float Magnitude = 0.0f;
 
-    // --- 针对 TArray<FGameDamageChannel> 的静态辅助函数 ---
-    [[nodiscard]] static const FGameDamageChannel* FindExact(const TArray<FGameDamageChannel>& InChannels, const FGameplayTag& InTag) noexcept;
+    // --- 针对通道视图与数组的静态辅助函数 ---
+    [[nodiscard]] static const FGameDamageChannel* FindExact(TConstArrayView<FGameDamageChannel> InChannels, const FGameplayTag& InTag) noexcept;
     [[nodiscard]] static FGameDamageChannel* FindExactMutable(TArray<FGameDamageChannel>& InChannels, const FGameplayTag& InTag) noexcept;
-    [[nodiscard]] static float GetExact(const TArray<FGameDamageChannel>& InChannels, const FGameplayTag& InTag, float DefaultValue = 0.0f) noexcept;
-    [[nodiscard]] static float GetSum(const TArray<FGameDamageChannel>& InChannels, const FGameplayTag& InTag) noexcept;
+    [[nodiscard]] static float GetExact(TConstArrayView<FGameDamageChannel> InChannels, const FGameplayTag& InTag, float DefaultValue = 0.0f) noexcept;
+    [[nodiscard]] static float GetSum(TConstArrayView<FGameDamageChannel> InChannels, const FGameplayTag& InTag) noexcept;
+    [[nodiscard]] static float GetTotalMagnitude(TConstArrayView<FGameDamageChannel> InChannels) noexcept;
+    [[nodiscard]] static FGameplayTag GetDominantChannel(TConstArrayView<FGameDamageChannel> InChannels) noexcept;
     static void SetExact(TArray<FGameDamageChannel>& InChannels, const FGameplayTag& InTag, float InMagnitude);
     static void AddExact(TArray<FGameDamageChannel>& InChannels, const FGameplayTag& InTag, float InDelta);
     static bool RemoveExact(TArray<FGameDamageChannel>& InChannels, const FGameplayTag& InTag);
@@ -70,35 +73,21 @@ public:
     UPROPERTY(BlueprintReadWrite, Category = "Game|Damage")
     TWeakObjectPtr<AActor> DamageCauser = nullptr;
 
-    /** 伤害特质标签（约定标签集，如 Damage.Trait.Fire, Damage.Trait.Holy，框架零题材假定） */
+    /** 伤害特质标签（约定标签集，如 Damage.Trait.Crit, Damage.Trait.Backstab，框架零题材假定） */
     UPROPERTY(BlueprintReadWrite, Category = "Game|Damage")
     FGameplayTagContainer TraitTags;
 
-    /** 附带上下文标签（如 Weapon.Type.Sword, Attack.Heavy） */
+    /** 附带上下文标签（如 Environment.Underwater, Attack.Heavy） */
     UPROPERTY(BlueprintReadWrite, Category = "Game|Damage")
     FGameplayTagContainer ContextTags;
 
     // --- 方法 ---
-
-    /** 获取指定通道伤害数值（支持 GameplayTag 层级继承，如父标签匹配子标签） */
     [[nodiscard]] float GetChannelDamage(const FGameplayTag& InChannelTag) const noexcept;
-
-    /** 获取指定通道伤害数值（严格精确标签匹配） */
     [[nodiscard]] float GetChannelDamageExact(const FGameplayTag& InChannelTag) const noexcept;
-
-    /** 设置或覆盖指定通道伤害数值 */
     void SetChannelDamage(const FGameplayTag& InChannelTag, float InMagnitude);
-
-    /** 累加指定通道伤害数值 */
     void AddChannelDamage(const FGameplayTag& InChannelTag, float InDelta);
-
-    /** 精确移除指定通道伤害数值 */
     bool RemoveChannel(const FGameplayTag& InChannelTag);
-
-    /** 获取所有通道基础伤害总和 */
     [[nodiscard]] float GetTotalBaseDamage() const noexcept;
-
-    /** 获取基础伤害数值最大的通道 */
     [[nodiscard]] FGameplayTag GetDominantChannel() const noexcept;
 };
 ```
@@ -134,17 +123,20 @@ public:
     TArray<FGameDamageChannel> DynamicValues;
 
     // --- 方法与便捷访问器 ---
-
     [[nodiscard]] float GetActualChannelDamage(const FGameplayTag& InChannelTag) const noexcept;
     [[nodiscard]] float GetActualChannelDamageExact(const FGameplayTag& InChannelTag) const noexcept;
+    void SetActualChannelDamage(const FGameplayTag& InChannelTag, float InMagnitude);
+    void AddActualChannelDamage(const FGameplayTag& InChannelTag, float InDelta);
     bool RemoveActualChannel(const FGameplayTag& InChannelTag);
+    [[nodiscard]] float GetTotalActualChannelDamage() const noexcept;
+    [[nodiscard]] FGameplayTag GetDominantActualChannel() const noexcept;
 
-    [[nodiscard]] FORCEINLINE float GetActualDamage() const noexcept { return TotalActualDamage; }
-    FORCEINLINE void SetActualDamage(float InActualDamage) noexcept { TotalActualDamage = InActualDamage; }
+    [[nodiscard]] FORCEINLINE float GetActualDamage() const noexcept;
+    FORCEINLINE void SetActualDamage(float InActualDamage) noexcept;
 
     [[nodiscard]] FORCEINLINE bool HasFeedbackTag(const FGameplayTag& InTag) const noexcept;
-    FORCEINLINE void AddFeedbackTag(const FGameplayTag& InTag) noexcept;
-    FORCEINLINE void RemoveFeedbackTag(const FGameplayTag& InTag) noexcept;
+    FORCEINLINE void AddFeedbackTag(const FGameplayTag& InTag);
+    FORCEINLINE void RemoveFeedbackTag(const FGameplayTag& InTag);
 
     [[nodiscard]] float GetDynamicValue(const FGameplayTag& InTag, float DefaultValue = 0.0f) const noexcept;
     void SetDynamicValue(const FGameplayTag& InTag, float InValue);

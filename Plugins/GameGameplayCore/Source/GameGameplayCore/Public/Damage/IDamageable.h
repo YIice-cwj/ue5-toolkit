@@ -32,7 +32,6 @@ class GAMEGAMEPLAYCORE_API IDamageable {
     GENERATED_BODY()
 
 public:
-
     /**
      * @brief 应用一次伤害分发并同步返回打击反馈
      * @param Context 伤害分发上下文
@@ -41,7 +40,13 @@ public:
     UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "Game|Damage")
     FGameDamageResult ApplyDamageContext(const FGameDamageContext& Context);
 
+    /**
+     * @brief 默认 C++ 受击实现（未覆写时返回空反馈结果）
+     * @param Context 伤害分发上下文
+     * @return 默认空打击反馈结果
+     */
     virtual FGameDamageResult ApplyDamageContext_Implementation(const FGameDamageContext& Context) {
+        (void)Context;
         return FGameDamageResult();
     }
 };

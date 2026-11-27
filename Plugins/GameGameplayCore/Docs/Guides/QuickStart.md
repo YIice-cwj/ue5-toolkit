@@ -40,10 +40,10 @@ class ADummyTarget : public AActor, public IDamageable {
 public:
     ADummyTarget();
 
-    virtual FGameDamageResult ApplyDamageContext_Implementation(const FGameDamageContext& Context) override;
+    FGameDamageResult ApplyDamageContext_Implementation(const FGameDamageContext& Context) override;
 
 protected:
-    virtual void BeginPlay() override;
+    void BeginPlay() override;
 
 private:
     UFUNCTION()
@@ -65,17 +65,17 @@ ADummyTarget::ADummyTarget()
 {
     StatComponent = CreateDefaultSubobject<UGameStatComponent>(TEXT("StatComponent"));
     VitalComponent = CreateDefaultSubobject<UGameVitalComponent>(TEXT("VitalComponent"));
-    VitalComponent->BindStatComponent(StatComponent);
-
-    // 开发者自由注册所需属性
-    const FGameplayTag HealthTag = FGameplayTag::RequestGameplayTag(TEXT("Attribute.Health"));
-    StatComponent->RegisterStat(HealthTag, 100.0f, 100.0f, 0.0f);
-    VitalComponent->SetPrimaryVitalTag(HealthTag);
 }
 
 void ADummyTarget::BeginPlay()
 {
     Super::BeginPlay();
+
+    // 在运行期 BeginPlay 注册属性并绑定生命状态机（避免 CDO 构造期触发 GameplayTag 未就绪警告）
+    const FGameplayTag HealthTag = FGameplayTag::RequestGameplayTag(TEXT("Attribute.Health"));
+    StatComponent->RegisterStat(HealthTag, 100.0f, 100.0f, 0.0f);
+    VitalComponent->BindStatComponent(StatComponent);
+    VitalComponent->SetPrimaryVitalTag(HealthTag);
     VitalComponent->OnVitalStateChanged.AddDynamic(this, &ADummyTarget::HandleVitalStateChanged);
 }
 

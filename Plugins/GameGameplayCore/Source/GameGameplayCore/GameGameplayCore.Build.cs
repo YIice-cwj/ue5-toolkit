@@ -23,7 +23,6 @@ public class GameGameplayCore : ModuleRules {
         });
 
         PublicIncludePaths.AddRange(new string[] {
-            ModuleDirectory,
             Path.Combine(ModuleDirectory, "Public"),
         });
     }

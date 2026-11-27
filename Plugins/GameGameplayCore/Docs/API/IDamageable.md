@@ -21,14 +21,20 @@ class GAMEGAMEPLAYCORE_API IDamageable {
 
 public:
     /**
-     * @brief 接收一次伤害分发并同步返回打击反馈
-     * @param Context 伤害上下文
-     * @return 实际伤害、致死标记与打击感建议
+     * @brief 应用一次伤害分发并同步返回打击反馈
+     * @param Context 伤害分发上下文
+     * @return 打击反馈（同步链路：属性结算在返回前完成）
      */
     UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "Game|Damage")
     FGameDamageResult ApplyDamageContext(const FGameDamageContext& Context);
 
+    /**
+     * @brief 默认 C++ 受击实现（未覆写时返回空反馈结果）
+     * @param Context 伤害分发上下文
+     * @return 默认空打击反馈结果
+     */
     virtual FGameDamageResult ApplyDamageContext_Implementation(const FGameDamageContext& Context) {
+        (void)Context;
         return FGameDamageResult();
     }
 };

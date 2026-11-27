@@ -4,10 +4,12 @@
  */
 
 #include "CoreMinimal.h"
-#include "Misc/AutomationTest.h"
+#include "Damage/FGameDamageChannel.h"
 #include "GameplayTagContainer.h"
 #include "GameplayTagsManager.h"
-#include "Damage/FGameDamageChannel.h"
+#include "Misc/AutomationTest.h"
+
+#include <limits>
 
 #if WITH_AUTOMATION_TESTS
 
@@ -18,7 +20,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证 FGameDamageChannel 稀疏通道的增删查改、精确匹配与 GameplayTag 层级继承汇总
+ * @brief 验证 FGameDamageChannel 稀疏通道的增删查改、精确匹配、层级汇总、总和与主导通道判定
  * @param Parameters 自动化测试参数
  * @return 测试是否通过
  */
@@ -33,6 +35,8 @@ bool FGameDamageChannelTest::RunTest([[maybe_unused]] const FString& Parameters)
     TestNull(TEXT("空数组查找返回 nullptr"), FGameDamageChannel::FindExact(Channels, SlashTag));
     TestEqual(TEXT("空数组获取数值返回默认值"), FGameDamageChannel::GetExact(Channels, SlashTag, 10.0f), 10.0f);
     TestEqual(TEXT("空数组求和返回 0"), FGameDamageChannel::GetSum(Channels, PhysTag), 0.0f);
+    TestEqual(TEXT("空数组总和返回 0"), FGameDamageChannel::GetTotalMagnitude(Channels), 0.0f);
+    TestFalse(TEXT("空数组主导通道无效"), FGameDamageChannel::GetDominantChannel(Channels).IsValid());
 
     FGameDamageChannel::SetExact(Channels, SlashTag, 50.0f);
     TestNotNull(TEXT("设置后能查找到对应通道"), FGameDamageChannel::FindExact(Channels, SlashTag));
@@ -52,6 +56,8 @@ bool FGameDamageChannelTest::RunTest([[maybe_unused]] const FString& Parameters)
     FGameDamageChannel::SetExact(Channels, FireTag, 30.0f);
     TestEqual(TEXT("父标签匹配子标签层级求和"), FGameDamageChannel::GetSum(Channels, PhysTag), 115.0f);
     TestEqual(TEXT("不同分支标签求和独立"), FGameDamageChannel::GetSum(Channels, FireTag), 30.0f);
+    TestEqual(TEXT("全部通道数值总和正确"), FGameDamageChannel::GetTotalMagnitude(Channels), 145.0f);
+    TestEqual(TEXT("主导通道命中数值最大者"), FGameDamageChannel::GetDominantChannel(Channels), SlashTag);
 
     FGameDamageChannel* MutableItem = FGameDamageChannel::FindExactMutable(Channels, SlashTag);
     TestNotNull(TEXT("可变查找返回有效指针"), MutableItem);
@@ -64,6 +70,7 @@ bool FGameDamageChannelTest::RunTest([[maybe_unused]] const FString& Parameters)
     TestNull(TEXT("移除后查找返回 nullptr"), FGameDamageChannel::FindExact(Channels, SlashTag));
     TestFalse(TEXT("重复移除不存在通道返回 false"), FGameDamageChannel::RemoveExact(Channels, SlashTag));
     TestEqual(TEXT("移除后剩余通道数正确"), Channels.Num(), 2);
+    TestEqual(TEXT("移除后主导通道更新为 Blunt"), FGameDamageChannel::GetDominantChannel(Channels), BluntTag);
 
     const FGameplayTag EmptyTag;
     TestNull(TEXT("无效 Tag 查找返回 nullptr"), FGameDamageChannel::FindExact(Channels, EmptyTag));
@@ -75,6 +82,13 @@ bool FGameDamageChannelTest::RunTest([[maybe_unused]] const FString& Parameters)
     FGameDamageChannel::AddExact(Channels, EmptyTag, 100.0f);
     TestEqual(TEXT("累加无效 Tag 不改变数组大小"), Channels.Num(), 2);
     TestFalse(TEXT("移除无效 Tag 返回 false"), FGameDamageChannel::RemoveExact(Channels, EmptyTag));
+
+    TArray<FGameDamageChannel> NaNLeadingChannels;
+    NaNLeadingChannels.Emplace(FireTag, std::numeric_limits<float>::quiet_NaN());
+    TestFalse(TEXT("全部为 NaN 时主导通道返回无效标签"), FGameDamageChannel::GetDominantChannel(NaNLeadingChannels).IsValid());
+    NaNLeadingChannels.Emplace(BluntTag, 25.0f);
+    NaNLeadingChannels.Emplace(SlashTag, 40.0f);
+    TestEqual(TEXT("首位 NaN 通道不掩盖后续有限主导通道"), FGameDamageChannel::GetDominantChannel(NaNLeadingChannels), SlashTag);
 
     return true;
 }

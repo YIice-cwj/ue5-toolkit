@@ -1,14 +1,25 @@
 /**
  * @file FGameStatTypes.h
- * @brief 通用数值数据契约、枚举与委托定义（纯数据与类型声明 · 零组件依赖）
+ * @brief 通用数值数据契约、强类型代际句柄、枚举与委托定义（纯数据与类型声明 · 零组件依赖）
  */
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "GameplayTagContainer.h"
+#include "Types/TGameHandle.h"
 
 #include "FGameStatTypes.generated.h"
+
+/**
+ * @brief 属性修正器代际句柄幻影标签
+ */
+struct FStatModifierHandleTag {};
+
+/**
+ * @brief 属性修正器 64 位强类型代际句柄（32 位序号 + 32 位代际号，防异构混用与对象池重置后 ABA 误删）
+ */
+using FGameStatModifierHandle = TGameHandle<FStatModifierHandleTag>;
 
 /**
  * @brief 通用数值配置与实时状态
@@ -27,12 +38,23 @@ struct GAMEGAMEPLAYCORE_API FGameStatValue {
     float Min = 0.0f;
 
     /**
+     * @brief 按给定当前值、上限与下限计算归一化百分比（钳制到 [0.0, 1.0]）
+     * @param InCurrent 当前值
+     * @param InMax 上限值
+     * @param InMin 下限值
+     * @return 钳制到 [0.0, 1.0] 的百分比，区间非法时返回 0.0f
+     */
+    [[nodiscard]] static FORCEINLINE float EvaluatePercent(float InCurrent, float InMax, float InMin) noexcept {
+        const float Range = InMax - InMin;
+        return (Range > 0.0f) ? FMath::Clamp((InCurrent - InMin) / Range, 0.0f, 1.0f) : 0.0f;
+    }
+
+    /**
      * @brief 获取归一化百分比（0~1）
      * @return 当前值在 [Min, Max] 区间的百分比，区间非法时返回 0.0f
      */
     [[nodiscard]] FORCEINLINE float GetPercent() const noexcept {
-        const float Range = Max - Min;
-        return (Range > 0.0f) ? FMath::Clamp((Current - Min) / Range, 0.0f, 1.0f) : 0.0f;
+        return EvaluatePercent(Current, Max, Min);
     }
 
     /**
@@ -45,6 +67,14 @@ struct GAMEGAMEPLAYCORE_API FGameStatValue {
             && FMath::IsNearlyEqual(Max, Other.Max)
             && FMath::IsNearlyEqual(Min, Other.Min);
     }
+};
+
+/**
+ * @brief 单趟演算产出的有效当前值与有效上限对
+ */
+struct FGameStatEffectivePair {
+    float Current = 0.0f;
+    float Max = 0.0f;
 };
 
 /**
@@ -118,6 +148,18 @@ struct GAMEGAMEPLAYCORE_API FGameStatModifier {
         : Op(InOp), Value(InValue), bApplyToCurrent(bInApplyToCurrent), bApplyToMax(bInApplyToMax) {}
 
     /**
+     * @brief 修正规则相等性比较（数值采用浮点近似比较）
+     * @param Other 待比较的属性修正器
+     * @return 操作类型、作用范围与修正数值均等价返回 true
+     */
+    [[nodiscard]] bool operator==(const FGameStatModifier& Other) const noexcept {
+        return Op == Other.Op
+            && bApplyToCurrent == Other.bApplyToCurrent
+            && bApplyToMax == Other.bApplyToMax
+            && FMath::IsNearlyEqual(Value, Other.Value);
+    }
+
+    /**
      * @brief 构造乘算修正器
      * @param InMultiplier 乘算倍率
      * @param bInApplyToCurrent 是否作用于当前值
@@ -130,10 +172,10 @@ struct GAMEGAMEPLAYCORE_API FGameStatModifier {
 };
 
 /**
- * @brief 单条已注册修正器（附带句柄供精确注销）
+ * @brief 单条已注册修正器（附带强类型代际句柄供精确更新与注销）
  */
 struct FGameStatModifierEntry {
-    uint32 Handle = 0;
+    FGameStatModifierHandle Handle;
     FGameStatModifier Modifier;
 };
 

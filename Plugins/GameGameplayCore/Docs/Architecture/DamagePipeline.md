@@ -20,7 +20,7 @@ sequenceDiagram
 
     Attacker->>Attacker: 构建 FGameDamageContext (通道伤害, 命中点)
     Attacker->>Target: ApplyDamageContext(Context)
-    Target->>Stat: ModifyStat(HealthTag, -Damage, &ActualDelta)
+    Target->>Stat: ModifyStat(HealthTag, -Damage, ActualDelta)
     Stat-->>Target: 同步返回实际变动值与当前状态
     Target->>Target: 构建 FGameDamageResult (注入 FeedbackTags, DynamicValues)
     Target-->>Attacker: 同步返回 FGameDamageResult

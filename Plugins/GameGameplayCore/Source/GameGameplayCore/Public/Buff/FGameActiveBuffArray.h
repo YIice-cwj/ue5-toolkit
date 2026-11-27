@@ -7,31 +7,11 @@
 
 #include "CoreMinimal.h"
 #include "Net/Serialization/FastArraySerializer.h"
-#include "Buff/FGameBuffTypes.h"
+#include "Buff/FGameBuffInstance.h"
 
 #include "FGameActiveBuffArray.generated.h"
 
 class UGameBuffComponent;
-
-/**
- * @brief 运行中的 Buff 实例（FastArray 复制条目）
- */
-USTRUCT(BlueprintType)
-struct GAMEGAMEPLAYCORE_API FGameBuffInstance : public FFastArraySerializerItem {
-    GENERATED_BODY()
-
-    UPROPERTY(BlueprintReadOnly, Category = "Game|Buff")
-    int32 InstanceId = 0;
-
-    UPROPERTY(BlueprintReadOnly, Category = "Game|Buff")
-    FGameBuffSpec Spec;
-
-    UPROPERTY(BlueprintReadOnly, Category = "Game|Buff")
-    int32 Stacks = 1;
-
-    UPROPERTY(BlueprintReadOnly, Category = "Game|Buff")
-    float RemainingSeconds = 0.0f;
-};
 
 /**
  * @brief 活动 Buff 的增量复制容器（仅同步变更条目与删除索引）
@@ -56,21 +36,21 @@ struct GAMEGAMEPLAYCORE_API FGameActiveBuffArray : public FFastArraySerializer {
     }
 
     /**
-     * @brief 客户端收到新增条目后：挂接修正器、刷新 Tick 状态并广播差异
+     * @brief 客户端收到新增条目后：批量挂接修正器、刷新 Tick 状态并广播差异
      * @param AddedIndices 新增条目下标
      * @param FinalSize 复制后的条目总数
      */
     void PostReplicatedAdd(const TArrayView<int32>& AddedIndices, int32 FinalSize);
 
     /**
-     * @brief 客户端收到条目变更后：按新 Spec 与叠层重建修正器、刷新 Tick 状态并广播差异
+     * @brief 客户端收到条目变更后：批量原子同步新 Spec 与叠层修正器、刷新 Tick 状态并广播差异
      * @param ChangedIndices 变更条目下标
      * @param FinalSize 复制后的条目总数
      */
     void PostReplicatedChange(const TArrayView<int32>& ChangedIndices, int32 FinalSize);
 
     /**
-     * @brief 客户端移除前：先回滚被删条目的属性修正器，再广播差异
+     * @brief 客户端移除前：批量回滚被删条目的属性修正器、当帧刷新 Tick 状态并广播差异
      * @param RemovedIndices 待移除条目下标
      * @param FinalSize 移除后的条目总数
      */
@@ -81,4 +61,3 @@ template<>
 struct TStructOpsTypeTraits<FGameActiveBuffArray> : public TStructOpsTypeTraitsBase2<FGameActiveBuffArray> {
     enum { WithNetDeltaSerializer = true };
 };
-

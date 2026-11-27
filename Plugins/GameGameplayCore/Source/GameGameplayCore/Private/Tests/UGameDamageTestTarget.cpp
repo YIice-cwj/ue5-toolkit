@@ -1,6 +1,10 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
+/**
+ * @file UGameDamageTestTarget.cpp
+ * @brief 私有自动化测试用 IDamageable 受击目标实现
+ */
 
-#include "Tests/GameDamageTestTarget.h"
+#include "Tests/UGameDamageTestTarget.h"
+
 #include "GameplayTagsManager.h"
 
 /**
@@ -9,20 +13,19 @@
  * @return 打击反馈结果
  */
 FGameDamageResult UGameDamageTestTarget::ApplyDamageContext_Implementation(const FGameDamageContext& Context) {
+    static const FGameplayTag HitTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Damage.Feedback.TestHit")));
+    static const FGameplayTag SlashTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Damage.Channel.Test.Physical.Slash")));
+    static const FGameplayTag HitStopTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Damage.Feedback.TestHitStop")));
+
     FGameDamageResult Result;
     Result.SetActualDamage(Context.GetTotalBaseDamage() * 0.8f);
-
-    const FGameplayTag HitTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Damage.Feedback.TestHit")));
     Result.AddFeedbackTag(HitTag);
 
-    const FGameplayTag SlashTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Damage.Channel.Test.Physical.Slash")));
     const float SlashDamage = Context.GetChannelDamageExact(SlashTag);
     if (SlashDamage > 0.0f) {
         Result.SetActualChannelDamage(SlashTag, SlashDamage * 0.8f);
     }
 
-    const FGameplayTag HitStopTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Damage.Feedback.TestHitStop")));
     Result.SetDynamicValue(HitStopTag, 0.06f);
-
     return Result;
 }

@@ -4,36 +4,17 @@
  */
 
 #include "CoreMinimal.h"
-#include "Misc/AutomationTest.h"
-#include "GameplayTagContainer.h"
-#include "GameplayTagsManager.h"
-#include "Engine/Engine.h"
-#include "Engine/World.h"
-#include "GameFramework/Actor.h"
 #include "Buff/FGameActiveBuffArray.h"
 #include "Buff/UGameBuffComponent.h"
+#include "GameplayTagContainer.h"
+#include "GameplayTagsManager.h"
+#include "Misc/AutomationTest.h"
 #include "Stat/UGameStatComponent.h"
+#include "Tests/GameGameplayCoreTestUtils.h"
 
 #if WITH_AUTOMATION_TESTS
 
-namespace {
-
-UWorld* GetActiveBuffArrayTestWorld() {
-    for (const FWorldContext& Context : GEngine->GetWorldContexts()) {
-        if (Context.World() != nullptr) {
-            return Context.World();
-        }
-    }
-    return nullptr;
-}
-
-AActor* SpawnActiveBuffArrayTestHost(UWorld* InWorld) {
-    FActorSpawnParameters SpawnParams;
-    SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-    return InWorld->SpawnActor<AActor>(AActor::StaticClass(), FTransform::Identity, SpawnParams);
-}
-
-}  // namespace
+using Game::GameplayCore::Test::FScopedTestHostActor;
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameBuffReplicationCallbacksTest,
@@ -42,13 +23,21 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证 FGameActiveBuffArray 在真实 BuffComponent 上的增/改/删复制回调与属性修正器无损重建
+ * @brief 验证 FGameActiveBuffArray 在真实 BuffComponent 上的增/改/删复制回调、原子修正器同步与当帧关停 Tick
  * @param Parameters 自动化测试参数
  * @return 测试是否通过
  */
 bool FGameBuffReplicationCallbacksTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UGameStatComponent* StatComponent = NewObject<UGameStatComponent>(GetTransientPackage());
-    UGameBuffComponent* BuffComponent = NewObject<UGameBuffComponent>(GetTransientPackage());
+    FScopedTestHostActor Host;
+    TestTrue(TEXT("宿主 Actor 有效"), Host.IsValidHost());
+    if (!Host.IsValidHost()) {
+        return false;
+    }
+
+    UGameStatComponent* StatComponent = NewObject<UGameStatComponent>(Host.Get());
+    UGameBuffComponent* BuffComponent = NewObject<UGameBuffComponent>(Host.Get());
+    StatComponent->RegisterComponent();
+    BuffComponent->RegisterComponent();
     BuffComponent->BindStatComponent(StatComponent);
 
     const FGameplayTag AttackTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Attribute.Buff.Replicated")));
@@ -56,16 +45,22 @@ bool FGameBuffReplicationCallbacksTest::RunTest([[maybe_unused]] const FString& 
 
     int32 ChangedStacks = INDEX_NONE;
     int32 RemovedCount = 0;
+    int32 StatChangeCount = 0;
     BuffComponent->OnBuffChangedNative.AddLambda([&ChangedStacks](const FGameplayTag&, int32 InStacks) {
         ChangedStacks = InStacks;
     });
     BuffComponent->OnBuffRemovedNative.AddLambda([&RemovedCount](const FGameplayTag&) {
         ++RemovedCount;
     });
+    StatComponent->OnStatChangedNative.AddLambda([&StatChangeCount](const FGameplayTag&, float, float, float) {
+        ++StatChangeCount;
+    });
 
     FGameBuffInstance& Instance = BuffComponent->ActiveBuffs.Items.AddDefaulted_GetRef();
     Instance.InstanceId = 1;
     Instance.Spec.BuffTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Buff.Replicated.Test")));
+    Instance.Spec.Duration = 5.0f;
+    Instance.RemainingSeconds = 5.0f;
     Instance.Stacks = 1;
 
     FGameStatModifierSpec ModifierSpec;
@@ -77,16 +72,58 @@ bool FGameBuffReplicationCallbacksTest::RunTest([[maybe_unused]] const FString& 
     BuffComponent->ActiveBuffs.PostReplicatedAdd(TArrayView<int32>(&Index, 1), 1);
     TestEqual(TEXT("新增条目挂接修正器"), StatComponent->GetStatEffectiveCurrent(AttackTag), 110.0f);
     TestEqual(TEXT("新增条目广播叠层"), ChangedStacks, 1);
+    TestTrue(TEXT("限时条目到达后开启 Tick"), BuffComponent->IsComponentTickEnabled());
 
+    FGameBuffInstance& PermInstance = BuffComponent->ActiveBuffs.Items.AddDefaulted_GetRef();
+    PermInstance.InstanceId = 2;
+    PermInstance.Spec.BuffTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Buff.Replicated.Permanent")));
+    PermInstance.Spec.Duration = 0.0f;
+    PermInstance.Stacks = 1;
+    int32 PermIndex = 1;
+    BuffComponent->ActiveBuffs.PostReplicatedAdd(TArrayView<int32>(&PermIndex, 1), 2);
+
+    StatChangeCount = 0;
     BuffComponent->ActiveBuffs.Items[0].Stacks = 2;
-    BuffComponent->ActiveBuffs.PostReplicatedChange(TArrayView<int32>(&Index, 1), 1);
-    TestEqual(TEXT("变更条目按新叠层重建修正器"), StatComponent->GetStatEffectiveCurrent(AttackTag), 120.0f);
+    BuffComponent->ActiveBuffs.PostReplicatedChange(TArrayView<int32>(&Index, 1), 2);
+    TestEqual(TEXT("变更条目按新叠层原子更新修正器"), StatComponent->GetStatEffectiveCurrent(AttackTag), 120.0f);
+    TestEqual(TEXT("原子更新仅产生单次属性变更广播"), StatChangeCount, 1);
     TestEqual(TEXT("变更条目广播新叠层"), ChangedStacks, 2);
 
-    BuffComponent->ActiveBuffs.PreReplicatedRemove(TArrayView<int32>(&Index, 1), 0);
+    BuffComponent->ActiveBuffs.PreReplicatedRemove(TArrayView<int32>(&Index, 1), 1);
+    TestFalse(TEXT("仅剩永久 Buff 时 PreReplicatedRemove 当帧立即关闭 Tick 零空转"), BuffComponent->IsComponentTickEnabled());
     BuffComponent->ActiveBuffs.Items.RemoveAt(0);
     TestEqual(TEXT("移除条目回滚修正器"), StatComponent->GetStatEffectiveCurrent(AttackTag), 100.0f);
     TestEqual(TEXT("移除条目广播移除事件"), RemovedCount, 1);
+
+    FGameBuffInstance& BatchA = BuffComponent->ActiveBuffs.Items.AddDefaulted_GetRef();
+    BatchA.InstanceId = 10;
+    BatchA.Spec.BuffTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Buff.Replicated.BatchA")));
+    BatchA.Stacks = 1;
+    BatchA.Spec.Modifiers.Add(ModifierSpec);
+
+    FGameBuffInstance& BatchB = BuffComponent->ActiveBuffs.Items.AddDefaulted_GetRef();
+    BatchB.InstanceId = 11;
+    BatchB.Spec.BuffTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Buff.Replicated.BatchB")));
+    BatchB.Stacks = 1;
+    BatchB.Spec.Modifiers.Add(ModifierSpec);
+
+    int32 BatchIndices[2] = {1, 2};
+    StatChangeCount = 0;
+    BuffComponent->ActiveBuffs.PostReplicatedAdd(TArrayView<int32>(BatchIndices, 2), 3);
+    TestEqual(TEXT("同包新增 2 个同属性 Buff 合并为单次 Stat 广播"), StatChangeCount, 1);
+    TestEqual(TEXT("同包新增后有效攻击力为 120"), StatComponent->GetStatEffectiveCurrent(AttackTag), 120.0f);
+
+    StatChangeCount = 0;
+    BuffComponent->ActiveBuffs.Items[1].Stacks = 2;
+    BuffComponent->ActiveBuffs.Items[2].Stacks = 2;
+    BuffComponent->ActiveBuffs.PostReplicatedChange(TArrayView<int32>(BatchIndices, 2), 3);
+    TestEqual(TEXT("同包变更 2 个同属性 Buff 合并为单次 Stat 广播"), StatChangeCount, 1);
+    TestEqual(TEXT("同包变更后有效攻击力为 140"), StatComponent->GetStatEffectiveCurrent(AttackTag), 140.0f);
+
+    StatChangeCount = 0;
+    BuffComponent->ActiveBuffs.PreReplicatedRemove(TArrayView<int32>(BatchIndices, 2), 1);
+    TestEqual(TEXT("同包移除 2 个同属性 Buff 合并为单次 Stat 广播"), StatChangeCount, 1);
+    TestEqual(TEXT("同包移除后有效攻击力回落 100"), StatComponent->GetStatEffectiveCurrent(AttackTag), 100.0f);
 
     return true;
 }
@@ -136,19 +173,18 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证网络复制移除最后一个 Buff 后，空容器防抖 Tick 能够自适应关闭
+ * @brief 验证网络复制移除最后一个 Buff 后，Tick 在 PreReplicatedRemove 当帧即关闭且空 Tick 具备自愈兜底
  * @param Parameters 自动化测试参数
  * @return 测试是否通过
  */
 bool FGameBuffReplicationEmptyTickTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UWorld* World = GetActiveBuffArrayTestWorld();
-    TestNotNull(TEXT("测试世界有效"), World);
-    if (World == nullptr) {
+    FScopedTestHostActor Host;
+    TestTrue(TEXT("测试宿主 Actor 有效"), Host.IsValidHost());
+    if (!Host.IsValidHost()) {
         return false;
     }
 
-    AActor* HostActor = SpawnActiveBuffArrayTestHost(World);
-    UGameBuffComponent* BuffComponent = NewObject<UGameBuffComponent>(HostActor);
+    UGameBuffComponent* BuffComponent = NewObject<UGameBuffComponent>(Host.Get());
     BuffComponent->RegisterComponent();
     FGameActiveBuffArray ReplicatedArray;
     ReplicatedArray.OwnerComponent = BuffComponent;
@@ -162,10 +198,12 @@ bool FGameBuffReplicationEmptyTickTest::RunTest([[maybe_unused]] const FString& 
     ReplicatedArray.PostReplicatedAdd(TArrayView<int32>(&Index, 1), 1);
     BuffComponent->SetComponentTickEnabled(true);
     ReplicatedArray.PreReplicatedRemove(TArrayView<int32>(&Index, 1), 0);
+    TestFalse(TEXT("复制删除最后 Buff 在 PreReplicatedRemove 当帧立即关闭 Tick"), BuffComponent->IsComponentTickEnabled());
+
     ReplicatedArray.Items.RemoveAt(Index);
+    BuffComponent->SetComponentTickEnabled(true);
     BuffComponent->TickComponent(0.1f, LEVELTICK_TimeOnly, nullptr);
-    TestFalse(TEXT("复制删除最后 Buff 后空 Tick 自动关闭"), BuffComponent->IsComponentTickEnabled());
-    HostActor->Destroy();
+    TestFalse(TEXT("空容器 Tick 自愈兜底关闭"), BuffComponent->IsComponentTickEnabled());
     return true;
 }
 

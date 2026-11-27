@@ -1,12 +1,12 @@
 /**
  * @file FGameStatSubscriptionHubTest.cpp
- * @brief FGameStatSubscriptionHub 属性按 Tag 订阅中心自动化测试
+ * @brief FGameStatSubscriptionHub 属性按 Tag 订阅中心、弱引用生命周期与重入安全自动化测试
  */
 
 #include "CoreMinimal.h"
-#include "Misc/AutomationTest.h"
 #include "GameplayTagContainer.h"
 #include "GameplayTagsManager.h"
+#include "Misc/AutomationTest.h"
 #include "Stat/FGameStatSubscriptionHub.h"
 #include "Stat/UGameStatComponent.h"
 
@@ -158,6 +158,10 @@ bool FGameStatOwnerBoundSubscriptionTest::RunTest([[maybe_unused]] const FString
     Comp->ModifyStat(ArmorTag, -10.0f);
     TestEqual(TEXT("Owner 销毁后不再回调"), CallbackCount, 2);
 
+    const FDelegateHandle InvalidOwnerHandle = Comp->SubscribeStatChanged(Owner, ArmorTag,
+        [](const FGameplayTag&, float, float, float) {});
+    TestFalse(TEXT("已失效 Owner 拒绝订阅"), InvalidOwnerHandle.IsValid());
+
     Comp->UnsubscribeStatChanged(ArmorTag, Handle);
     Comp->ModifyStat(ArmorTag, -10.0f);
     TestEqual(TEXT("显式退订后不再回调"), CallbackCount, 2);
@@ -239,6 +243,104 @@ bool FGameStatUnregisterSubscriptionCleanupTest::RunTest([[maybe_unused]] const 
 
     Comp->RegisterStat(TempTag, 100.0f, 100.0f, 0.0f);
     TestEqual(TEXT("重新注册后旧订阅已被清空，不应触发回调"), CallbackCount, 1);
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameStatSubscriptionReentrancyTest,
+    "Game.GameplayCore.Stat.SubscriptionReentrancy",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证广播期间重入：回调内自退订最后监听者、大规模订阅触发 TMap 扩容重排、清空当前标签与中途销毁同组 Owner
+ * @param Parameters 自动化测试参数
+ * @return 测试是否通过
+ */
+bool FGameStatSubscriptionReentrancyTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    FGameStatSubscriptionHub Hub;
+    const FGameplayTag PrimaryTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Attribute.Reentrancy.Primary")));
+
+    int32 RehashSecondCount = 0;
+    bool bSawRehashBeforeSecond = false;
+    bool bDidRehash = false;
+    Hub.Subscribe(
+        PrimaryTag,
+        FOnGameStatChangedNative::FDelegate::CreateLambda(
+            [&RehashSecondCount, &bDidRehash, &bSawRehashBeforeSecond](const FGameplayTag&, float, float, float) {
+                ++RehashSecondCount;
+                bSawRehashBeforeSecond = bDidRehash;
+            }
+        )
+    );
+    Hub.Subscribe(
+        PrimaryTag,
+        FOnGameStatChangedNative::FDelegate::CreateLambda(
+            [&Hub, &bDidRehash](const FGameplayTag&, float, float, float) {
+                if (!bDidRehash) {
+                    bDidRehash = true;
+                    for (int32 Index = 0; Index < 32; ++Index) {
+                        const FGameplayTag ExtraTag = UGameplayTagsManager::Get().AddNativeGameplayTag(
+                            FName(*FString::Printf(TEXT("Attribute.Reentrancy.Extra.%d"), Index)));
+                        Hub.Subscribe(ExtraTag, FOnGameStatChangedNative::FDelegate::CreateLambda(
+                            [](const FGameplayTag&, float, float, float) {}));
+                    }
+                }
+            }
+        )
+    );
+
+    Hub.Broadcast(PrimaryTag, 100.0f, 90.0f, 100.0f);
+    TestTrue(TEXT("回调内触发了 32 次跨标签订阅扩容"), bDidRehash);
+    TestEqual(TEXT("TMap 扩容重排后同轮后续订阅者安全完成回调"), RehashSecondCount, 1);
+    TestTrue(TEXT("确证后续订阅者是在 TMap 扩容重排之后安全执行的"), bSawRehashBeforeSecond);
+
+    const FGameplayTag ClearTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Attribute.Reentrancy.ClearDuringBroadcast")));
+    int32 ClearInvokerCount = 0;
+    int32 ResubscribedCount = 0;
+    Hub.Subscribe(
+        ClearTag,
+        FOnGameStatChangedNative::FDelegate::CreateLambda(
+            [&Hub, ClearTag, &ClearInvokerCount, &ResubscribedCount](const FGameplayTag&, float, float, float) {
+                ++ClearInvokerCount;
+                Hub.ClearTagSubscriptions(ClearTag);
+                Hub.Subscribe(ClearTag, FOnGameStatChangedNative::FDelegate::CreateLambda(
+                    [&ResubscribedCount](const FGameplayTag&, float, float, float) {
+                        ++ResubscribedCount;
+                    }));
+            }
+        )
+    );
+    Hub.Broadcast(ClearTag, 10.0f, 5.0f, 10.0f);
+    TestEqual(TEXT("广播中清空并重订阅当前标签安全完成"), ClearInvokerCount, 1);
+    Hub.Broadcast(ClearTag, 5.0f, 1.0f, 10.0f);
+    TestEqual(TEXT("重订阅的新监听者在下一轮广播保持存活且正常触发"), ResubscribedCount, 1);
+
+    const FGameplayTag MidKillTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Attribute.Reentrancy.MidBroadcastKill")));
+    UGameStatComponent* VictimOwner = NewObject<UGameStatComponent>();
+    int32 KillerCalled = 0;
+    int32 VictimCalled = 0;
+    Hub.Subscribe(
+        VictimOwner,
+        MidKillTag,
+        [&VictimCalled](const FGameplayTag&, float, float, float) {
+            ++VictimCalled;
+        }
+    );
+    Hub.Subscribe(
+        MidKillTag,
+        FOnGameStatChangedNative::FDelegate::CreateLambda(
+            [VictimOwner, &KillerCalled](const FGameplayTag&, float, float, float) {
+                ++KillerCalled;
+                VictimOwner->MarkAsGarbage();
+            }
+        )
+    );
+
+    Hub.Broadcast(MidKillTag, 50.0f, 40.0f, 50.0f);
+    TestEqual(TEXT("前置回调执行完成"), KillerCalled, 1);
+    TestEqual(TEXT("广播中途被 MarkAsGarbage 的后置 Owner 回调被 WeakLambda 实时拦截"), VictimCalled, 0);
 
     return true;
 }

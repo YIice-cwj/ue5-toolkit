@@ -73,11 +73,7 @@ public:
      * @return 基础伤害总和
      */
     [[nodiscard]] float GetTotalBaseDamage() const noexcept {
-        float Sum = 0.0f;
-        for (const FGameDamageChannel& Item : Channels) {
-            Sum += Item.Magnitude;
-        }
-        return Sum;
+        return FGameDamageChannel::GetTotalMagnitude(Channels);
     }
 
     /**
@@ -85,13 +81,7 @@ public:
      * @return 主基础伤害通道；无通道时返回无效标签
      */
     [[nodiscard]] FGameplayTag GetDominantChannel() const noexcept {
-        const FGameDamageChannel* DominantChannel = nullptr;
-        for (const FGameDamageChannel& Channel : Channels) {
-            if (DominantChannel == nullptr || Channel.Magnitude > DominantChannel->Magnitude) {
-                DominantChannel = &Channel;
-            }
-        }
-        return DominantChannel != nullptr ? DominantChannel->ChannelTag : FGameplayTag();
+        return FGameDamageChannel::GetDominantChannel(Channels);
     }
 
     /**

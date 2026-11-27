@@ -1,6 +1,6 @@
 /**
  * @file FGameBuffTypes.h
- * @brief Buff 核心数据契约、枚举与委托定义（纯数据类型 · 零组件依赖）
+ * @brief Buff 核心数据契约、枚举与委托定义（纯数据类型 · 零组件与网络头依赖）
  */
 
 #pragma once
@@ -97,7 +97,7 @@ struct GAMEGAMEPLAYCORE_API FGameBuffSpec {
 };
 
 /**
- * @brief 已挂接的属性修正器记录（保留标签以支持精确回滚）
+ * @brief 已挂接的属性修正器记录（保留标签、代际句柄与已应用快照以支持原地原子更新与精确回滚）
  */
 struct FGameBuffAppliedModifier {
     /**
@@ -106,9 +106,14 @@ struct FGameBuffAppliedModifier {
     FGameplayTag StatTag;
 
     /**
-     * @brief 挂接在属性组件中的修饰器句柄
+     * @brief 挂接在属性组件中的强类型代际修饰器句柄
      */
-    uint32 Handle = 0;
+    FGameStatModifierHandle Handle;
+
+    /**
+     * @brief 当前已写入属性组件的缩放后修正规则快照
+     */
+    FGameStatModifier AppliedModifier;
 };
 
 /**

@@ -16,8 +16,6 @@
 
 ## 2. 场景可破坏物件实战（木桶案例）
 
-### 蓝图/C++ 均适用的实现方式
-
 ```cpp
 #include "GameFramework/Actor.h"
 #include "Damage/IDamageable.h"
@@ -38,17 +36,16 @@ public:
 
         StatComp = CreateDefaultSubobject<UGameStatComponent>(TEXT("StatComp"));
         VitalComp = CreateDefaultSubobject<UGameVitalComponent>(TEXT("VitalComp"));
-        VitalComp->BindStatComponent(StatComp);
-
-        // 注册木桶血量，并设为主生命属性
-        const FGameplayTag HealthTag = FGameplayTag::RequestGameplayTag(TEXT("Attribute.Health"));
-        StatComp->RegisterStat(HealthTag, 50.0f, 50.0f, 0.0f);
-        VitalComp->SetPrimaryVitalTag(HealthTag);
     }
 
-    virtual void BeginPlay() override {
+    void BeginPlay() override {
         Super::BeginPlay();
-        // 绑定主生命状态变更，破碎表现
+
+        // 在 BeginPlay 注册木桶血量并绑定主生命状态机（避免 CDO 构造期查询 GameplayTag）
+        const FGameplayTag HealthTag = FGameplayTag::RequestGameplayTag(TEXT("Attribute.Health"));
+        StatComp->RegisterStat(HealthTag, 50.0f, 50.0f, 0.0f);
+        VitalComp->BindStatComponent(StatComp);
+        VitalComp->SetPrimaryVitalTag(HealthTag);
         VitalComp->OnVitalStateChangedNative.AddWeakLambda(this, [this](bool bIsAlive, const FGameplayTag&) {
             if (!bIsAlive) {
                 ExplodeAndDestroy();
@@ -56,7 +53,7 @@ public:
         });
     }
 
-    virtual FGameDamageResult ApplyDamageContext_Implementation(const FGameDamageContext& Context) override {
+    FGameDamageResult ApplyDamageContext_Implementation(const FGameDamageContext& Context) override {
         const FGameplayTag HealthTag = FGameplayTag::RequestGameplayTag(TEXT("Attribute.Health"));
         float ActualDelta = 0.0f;
         StatComp->ModifyStat(HealthTag, -Context.GetTotalBaseDamage(), ActualDelta);
@@ -71,7 +68,6 @@ public:
     }
 
     void ExplodeAndDestroy() {
-        // 生成破碎碎片粒子、播放音效、销毁自身
         Destroy();
     }
 
@@ -89,48 +85,44 @@ private:
 
 ---
 
-## 3. 修正器叠加与按 Tag 订阅
+## 3. 修正器叠加、原子更新与按 Tag 订阅
 
-Standalone 模式同样支持装备 / 天赋 / Buff 的临时属性修正，无需改动基础值：
+Standalone 模式支持装备 / 天赋 / Buff 的临时属性修正，无需改动基础值，并通过强类型代际句柄 `FGameStatModifierHandle` 精确管理：
 
 ```cpp
 const FGameplayTag CritTag = FGameplayTag::RequestGameplayTag(TEXT("Attribute.CritChance"));
 
-const uint32 CritHandle = StatComp->AddStatModifier(
+const TGameStatusResult<FGameStatModifierHandle> CritRes = StatComp->AddStatModifier(
     CritTag,
     FGameStatModifier(0.15f, EGameStatModifierOp::Add));
 
-const float EffectiveCrit = StatComp->GetStatEffectiveCurrent(CritTag);
+if (CritRes.IsSuccess()) {
+    const FGameStatModifierHandle CritHandle = CritRes.GetValue();
+    const float EffectiveCrit = StatComp->GetStatEffectiveCurrent(CritTag);
 
-StatComp->RemoveStatModifier(CritTag, CritHandle);
+    // 原地原子更新，零中间态回落
+    StatComp->UpdateStatModifier(CritTag, CritHandle, FGameStatModifier(0.25f, EGameStatModifierOp::Add));
+
+    // 按强类型代际句柄精确注销
+    StatComp->RemoveStatModifier(CritTag, CritHandle);
+}
 ```
 
-- 基础值读 `GetStatCurrent`，叠加修正后的值读 `GetStatEffectiveCurrent`。
-- UI 可按 Tag 精确订阅，并在订阅时立即拿到当前值：
+- 涉及多条修正器同时替换时，可使用 `UGameStatComponent::FScopedModifierBatch Batch(*StatComp);` 将整组变动合并为单次终态差分广播。
+- UI 可按 Tag 精确订阅，并在订阅时立即拿到当前有效值：
 
 ```cpp
 HealthSubscription = StatComp->SubscribeStatChanged(
+    this,
     HealthTag,
-    FOnGameStatChangedNative::FDelegate::CreateWeakLambda(this,
-        [this](const FGameplayTag&, float OldValue, float NewValue, float MaxValue) {
-            UpdateHealthBar(NewValue, MaxValue);
-        }));
+    [this](const FGameplayTag&, float OldValue, float NewValue, float MaxValue) {
+        UpdateHealthBar(NewValue, MaxValue);
+    });
 ```
 
 ---
 
-## 4. 复活与重置契约
+## 4. 复活与对象池重置契约
 
-对于可重用的怪物或需要重生的实体，通过关联的 `UGameVitalComponent` 调用 `ReviveVital()` 即可重置状态：
-
-```cpp
-void ARespawnableActor::Respawn()
-{
-    // 通过生命组件将主生命属性从 0 重置为满值，并恢复存活状态
-    VitalComp->ReviveVital(1.0f);
-    SetActorHiddenInGame(false);
-    SetActorEnableCollision(true);
-}
-```
-此时 `OnStatChanged`（数值重置为满值）与 `OnVitalStateChanged`（状态重置为 Alive）委托会被自动触发，UI 与状态指示器自动刷新。
-
+- **游戏内复活**：调用 `VitalComp->ReviveVital(1.0f)` 按 `[Min, Max]` 比例恢复生命并触发 `OnStatChanged` 与 `OnVitalStateChanged` 广播。
+- **对象池复用**：池化 Actor 归还对象池时分别触发 `IGamePoolable::Execute_OnReleaseToPool(BuffComp / StatComp / VitalComp)`，三大组件均执行静默内部状态重置（不误播游戏态复活事件），再次出库时触发 `OnAcquireFromPool` 即可恢复就绪态。

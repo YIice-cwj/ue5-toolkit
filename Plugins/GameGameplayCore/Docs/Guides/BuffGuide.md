@@ -18,7 +18,7 @@ ACombatCharacter::ACombatCharacter()
 ```
 
 - `UGameBuffComponent` 默认从 Owner 自动查找 `UGameStatComponent`；组件不在同一 Actor 时调用 `BindStatComponent` 显式绑定。
-- 组件默认开启复制且要求服务端权威。
+- 组件默认开启复制且要求服务端权威（`bAllowNonAuthoritativeWrites = false`）。
 
 ---
 
@@ -44,31 +44,35 @@ FGameBuffSpec MakePoisonSpec()
 ```
 
 - 框架不预置任何 Buff 类型，Tag、时长、层数、修正器全部由业务决定。
-- 激活期间 `GetGrantedTags` 会聚合出 `State.Poisoned`，供状态机、动画或技能条件查询。
+- 激活期间可用零拷贝 `HasGrantedTag(StateTag)` 快速判断状态（如眩晕、中毒、冷却中），或通过 `GetGrantedTags(OutTags)` 导出完整标签集。
 
 ---
 
 ## 3. 施加、叠层与移除
 
 ```cpp
-const int32 InstanceId = BuffComponent->ApplyBuff(MakePoisonSpec());
+const TGameStatusResult<int32> ApplyRes = BuffComponent->ApplyBuff(MakePoisonSpec());
+const int32 InstanceId = ApplyRes.IsSuccess() ? ApplyRes.GetValue() : 0;
 
 const bool bPoisoned = BuffComponent->HasBuff(PoisonTag);
+const bool bHasState = BuffComponent->HasGrantedTag(FGameplayTag::RequestGameplayTag(TEXT("State.Poisoned")));
 const int32 Stacks = BuffComponent->GetBuffStacks(PoisonTag);
 const float Remaining = BuffComponent->GetBuffRemainingTime(PoisonTag);
 
 // 按层削减 Buff（如驱散或掉层）
 BuffComponent->RemoveBuffStacks(PoisonTag, 2);
 
-// 整项移除 Buff
+// 整项移除或按实例精确移除
 BuffComponent->RemoveBuff(PoisonTag, true);
 BuffComponent->RemoveBuffInstance(InstanceId);
+
+// 角色死亡或大驱散时一键清空全部 Buff
+BuffComponent->ClearAllBuffs();
 ```
 
-- `RefreshDuration`：重复施加只刷新时长并加层。
+- `RefreshDuration`：重复施加只刷新时长并加层；满层刷新时若修正器未变则零重建、零属性广播抖动。
 - `AddDuration`：重复施加累加时长并加层。
-- `Independent`：每次施加独立实例，适合可并存的多段 DOT（受 `MaxStacks` 限制，聚合层数超限时拒绝施加）。
-- 层数达到 `MaxStacks` 后不再增加。
+- `Independent`：每次施加独立实例，适合可并存的多段 DOT（受 `MaxStacks` 限制，超限时返回 `Game::GameplayCoreErrorCodes::MaxBuffStacksReached`）。
 
 ---
 
@@ -89,11 +93,9 @@ FGameBuffSpec MakeCooldownSpec()
 }
 ```
 
-- `HasBuff(CooldownTag)` 即「冷却中」。
+- `HasBuff(CooldownTag)` 或 `HasGrantedTag(StateCooldownTag)` 即「冷却中」。
 - `GetBuffRemainingTime(CooldownTag)` 直接驱动 UI 倒计时。
 - 冷却结束由 Tick 自动移除并广播 `OnBuffRemoved`，无需业务侧计时器。
-
-> 不同技能需要彼此独立的冷却时，使用 `Independent` 策略并以 `InstanceId` 区分；或为每个技能使用独立的 `Cooldown.*` Tag。
 
 ---
 
@@ -111,7 +113,7 @@ BuffComponent->OnBuffRemovedNative.AddWeakLambda(this,
     });
 ```
 
-- 客户端由 FastArray 复制回调（`PostReplicatedAdd` / `PostReplicatedChange` / `PreReplicatedRemove`）差分触发同一组事件。
+- 客户端由 FastArray 复制回调（`PostReplicatedAdd` / `PostReplicatedChange` / `PreReplicatedRemove`）差分触发同一组事件，移除最后一条限时 Buff 时当帧关闭 Tick。
 - 监听者销毁时弱 Lambda 自动失效，无需手动解绑。
 
 ---

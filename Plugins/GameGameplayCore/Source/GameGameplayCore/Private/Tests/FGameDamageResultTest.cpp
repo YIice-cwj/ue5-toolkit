@@ -4,11 +4,11 @@
  */
 
 #include "CoreMinimal.h"
-#include "Misc/AutomationTest.h"
-#include "GameplayTagContainer.h"
-#include "GameplayTagsManager.h"
 #include "Damage/FGameDamageChannel.h"
 #include "Damage/FGameDamageResult.h"
+#include "GameplayTagContainer.h"
+#include "GameplayTagsManager.h"
+#include "Misc/AutomationTest.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -19,7 +19,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证 FGameDamageResult 反馈标签管理、动态数值参数注入及正负值通道下的主通道决策
+ * @brief 验证 FGameDamageResult 反馈标签管理、动态数值参数注入、实际通道总和及正负值通道下的主通道决策
  * @param Parameters 自动化测试参数
  * @return 测试是否通过
  */
@@ -61,12 +61,14 @@ bool FGameDamageResultTest::RunTest([[maybe_unused]] const FString& Parameters) 
     const FGameplayTag PhysTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Damage.Channel.Result")));
 
     TestFalse(TEXT("空通道容器返回无效主通道"), Result.GetDominantActualChannel().IsValid());
+    TestEqual(TEXT("空通道实际伤害总和为 0"), Result.GetTotalActualChannelDamage(), 0.0f);
 
     Result.SetActualChannelDamage(BluntTag, 50.0f);
     Result.SetActualChannelDamage(SlashTag, 100.0f);
     TestEqual(TEXT("主通道选择最大实际伤害通道"), Result.GetDominantActualChannel(), SlashTag);
     TestEqual(TEXT("精确读取实际通道伤害正确"), Result.GetActualChannelDamageExact(SlashTag), 100.0f);
     TestEqual(TEXT("层级求和读取实际通道伤害正确"), Result.GetActualChannelDamage(PhysTag), 150.0f);
+    TestEqual(TEXT("所有实际通道总和计算正确"), Result.GetTotalActualChannelDamage(), 150.0f);
 
     Result.AddActualChannelDamage(SlashTag, 20.0f);
     TestEqual(TEXT("累加实际通道伤害正确"), Result.GetActualChannelDamageExact(SlashTag), 120.0f);
@@ -75,6 +77,7 @@ bool FGameDamageResultTest::RunTest([[maybe_unused]] const FString& Parameters) 
     TestTrue(TEXT("精确移除实际伤害通道成功"), Result.RemoveActualChannel(SlashTag));
     TestEqual(TEXT("移除后实际通道数减少"), Result.ActualChannels.Num(), 1);
     TestEqual(TEXT("移除后主通道迁移至剩余通道"), Result.GetDominantActualChannel(), BluntTag);
+    TestEqual(TEXT("移除后总实际通道伤害同步减少"), Result.GetTotalActualChannelDamage(), 50.0f);
     TestFalse(TEXT("重复移除未存在通道返回 false"), Result.RemoveActualChannel(SlashTag));
 
     FGameDamageResult NegativeResult;

@@ -54,58 +54,39 @@ graph TD
 
 ## 3. 通用数值管理组件 (`UGameStatComponent`)
 
-`UGameStatComponent` 采用全 Tag 驱动的通用数值架构，把「数值存储 + 修正器演算 + 订阅通知」收敛为单一自洽模型：
+`UGameStatComponent` 采用全 Tag 驱动的通用数值架构，把「数值存储 + 修正器演算 + 重入安全订阅通知」收敛为单一自洽模型：
 
 ```mermaid
 graph LR
     subgraph StatComponent["UGameStatComponent 统一属性组件"]
-        StatsMap["动态属性表: TArray&lt;FGameStatEntry&gt; + 标签索引"]
-        Modifiers["修正器容器: FGameStatModifierContainer"]
-        Subscription["订阅中心: FGameStatSubscriptionHub"]
-        Delegates["双轨委托: OnStatChanged (动态+原生)"]
-        PublicAPI["查询与修改: GetStatCurrent / GetStatEffectiveCurrent / ModifyStat / AddStatModifier / SubscribeStatChanged"]
+        StatsMap["动态属性表: TArray&lt;FGameStatEntry&gt; + O(1) 标签索引"]
+        Modifiers["修正器容器: FGameStatModifierContainer (内联4槽 + 代际句柄)"]
+        Subscription["订阅中心: FGameStatSubscriptionHub (TSharedRef 保活 + WeakLambda)"]
+        Diff["复制差分: FGameStatAcknowledgedDiff (TSortedVectorMap + FastLess)"]
+        PublicAPI["查询与修改: BlueprintPure 查询 / 原子批处理修正 / 强类型错误码"]
     end
 
     PublicAPI --> StatsMap
     PublicAPI --> Modifiers
     PublicAPI --> Subscription
-    StatsMap --> Delegates
-    Subscription --> Delegates
+    StatsMap --> Diff
+    Subscription --> Diff
 ```
 
-- **统一数值契约**：`GetStatCurrent(Tag)`、`GetStatMax(Tag)` 与 `GetStatPercent(Tag)` 返回当前基础数值；`GetStatEffective*` 返回叠加修正器后的派生值。
-- **属性修正器**：Buff / 装备 / 天赋通过 `AddStatModifier` 叠加加算、乘算、覆写，句柄精确回滚，基础值不被改写。
-- **按 Tag 订阅**：`SubscribeStatChanged` 只订阅关心的属性，并在订阅时仅向本次新订阅者回放当前值，UI 无初始空白且既有订阅者不会收到重复初始广播。
-- **权威与写入**：非权威端默认拒绝写入；`ModifyStat` / `SetStatCurrent` / `SetStatMax` 在 `Min/Max` 钳制后统一广播派生值变化。
-- **原生与动态双轨委托**：同时暴露蓝图可分配动态委托与 C++ 原生多播委托（`OnStatChangedNative`；生命存活见 `UGameVitalComponent::OnVitalStateChangedNative`），支持 C++ Lambda 与零 UObject 开销监听。
+- **单趟高效演算**：`FGameStatModifierContainer` 采用 `TInlineAllocator<4>` 内联存储与单趟双轴演算（`EvaluateEffectivePair`），消除多趟重复哈希查找与常规小集合堆分配。
+- **代际句柄与原子批处理**：`FGameStatModifierHandle`（`GameCore::TGameHandle`）在 `Reset()` / 池化归还时递增代际彻底防 ABA；`UpdateStatModifier` 与 `FScopedModifierBatch` 保证修正器成组切换零中间态抖动。
+- **重入安全订阅**：`FGameStatSubscriptionHub` 以 `TSharedRef` 在广播期保活多播对象，Owner 感知订阅直走 `CreateWeakLambda`，彻底免疫回调中自退订、扩容重排与中途销毁 Owner。
+- **权威与数值安全**：默认拒绝非权威端写（`bAllowNonAuthoritativeWrites = false`），公开写入口统一拦截 `NaN/±Inf`，失败统一返回 `Game::ModuleId::Gameplay` + `Game::GameplayCoreErrorCodes`。
 
 ---
 
 ## 4. 实体生命与存活状态管理组件 (`UGameVitalComponent`)
 
-依据单一职责原则（SRP），实体的主生命属性绑定、存活状态判定、网络致死同步与复活逻辑从通用数值组件中彻底解耦，由 `UGameVitalComponent` 独立承载：
+依据单一职责原则（SRP），实体的主生命属性绑定、存活状态判定、网络致死同步与复活逻辑由 `UGameVitalComponent` 独立承载：
 
-```mermaid
-graph LR
-    subgraph VitalComp["UGameVitalComponent 生命与状态机"]
-        Bind["关联绑定: BindStatComponent / BeginPlay 自动发现"]
-        Evaluate["生死评估: EvaluateVitalState (EffectiveCurrent > Min)"]
-        State["存活状态: bVitalAlive (Replicated)"]
-        Dedupe["客户端去重: bLastBroadcastedAlive 防双重广播"]
-        Delegates["双轨广播: OnVitalStateChanged / Native"]
-        Revive["复活逻辑: ReviveVital (百分比恢复生命)"]
-    end
-
-    StatComp["UGameStatComponent 通用属性组件"] -->|属性变动监听| Evaluate
-    Evaluate --> State
-    State --> Dedupe
-    Dedupe --> Delegates
-    Revive -->|SetStatCurrent| StatComp
-```
-
-- **单一职责解耦**：`UGameStatComponent` 专心负责多属性存储、修正器与网络复制；`UGameVitalComponent` 专心负责生死状态机与复活。
-- **自动挂接与解绑**：`BeginPlay` 自动搜寻宿主上的 `UGameStatComponent`，并在注销或销毁时清理委托句柄，杜绝悬挂回调。
-- **网络去重机制**：解决属性复制到达与布尔存活标志复制到达同帧发生的双重广播问题，保证客户端表现层幂等。
+- **自动挂接与显式解绑隔离**：`BeginPlay` 自动补齐 CDO 预配置主生命标签或宿主 `UGameStatComponent` 的监听；`BindStatComponent(nullptr)` 置位显式解绑标记不再静默重绑。
+- **网络去重机制**：`bLastBroadcastedAlive` 解决属性复制到达与布尔存活标志复制到达同帧的双重广播问题。
+- **对象池静默契约**：`OnReleaseToPool` 遵循 SRP 仅静默重置自身存活状态，不越权改写 `UGameStatComponent`。
 
 ---
 
@@ -113,45 +94,16 @@ graph LR
 
 框架层不定义任何具体 Buff，只提供与 GAS 无关的通用运行时：
 
-- **由开发者描述**：`FGameBuffSpec` 包含身份 Tag、授予状态标签、持续时长、最大层数、叠层策略与属性修正器。
-- **叠层策略**：`RefreshDuration` 刷新时长、`AddDuration` 累加时长、`Independent` 独立实例。
-- **状态聚合**：`GetGrantedTags` 聚合全部激活 Buff 的状态标签，供状态机、动画与技能条件查询。
-- **修正器挂接**：按层数缩放后挂接到 `UGameStatComponent`，到期、移除、解绑或组件结束时按原绑定组件与句柄精确回滚；晚绑定与跨 Stat 重绑会迁移全部活跃 Buff。
-- **冷却即状态**：冷却不设独立类，用「限时 + 授予 `State.Cooldown`」的普通 Buff 表达。
-- **权威与复制**：服务端权威施加 / 移除；`ActiveBuffs` 以 FastArray 增量复制，客户端在复制回调中重建修正器，按层数差分广播，并对同叠层的 Spec 变化补发一次变更通知。
+- **由开发者描述**：`FGameBuffSpec` 包含身份 Tag、授予状态标签、持续时长、最大层数、叠层策略与属性修正器；运行条目 `FGameBuffInstance` 独立头文件存放以解耦网络序列化依赖。
+- **零抖动原子修正器挂接**：`FGameBuffModifierBridge` 与 `UGameStatComponent::FScopedModifierBatch` / `UpdateStatModifier` 联动，满层刷新免重建，叠层/扣层原地更新无瞬时掉血误杀。
+- **零拷贝状态查询与批量清理**：`HasGrantedTag` 短路直查、`ClearAllBuffs` 单次批量清理并关停 Tick。
+- **增量复制与零堆分配差分**：`ActiveBuffs` 以 FastArray 增量复制，`RemoveBuffStacks` 精准区分 `MarkItemDirty` 与 `MarkArrayDirty`，`PreReplicatedRemove` 当帧关停 Tick，客户端差分基于 `TSortedVectorMap<FGameFastTagKey, int32, 8>` 实现零堆分配与整型快速二分。
 
 ---
 
-## 6. 网络边界与分层解耦原则 (Networking & Decoupling Boundaries)
+## 6. 基础设施协同与日志治理
 
-### 6.1 绝对零应用层网络依赖原则
-`GameGameplayCore` 维持零应用层长连接网络依赖。其内部虽然实现了 `UGameStatComponent` 与 `UGameBuffComponent` 的属性复制（`GetLifetimeReplicatedProps` / `FastArray`），但完全基于虚幻引擎原生的 `Engine` / `NetCore` 底层网络机制，绝不依赖 `GameNetCore` 或 `GameNetService`。
-
-### 6.2 协同模式架构拓扑
-
-```mermaid
-flowchart TD
-    subgraph Layer1["Layer 1: 局内核心 (GameGameplayCore) - 零应用层网络污染"]
-        Stat["UGameStatComponent<br>(生命值 / 攻击力 / 护甲)"]
-        Vital["UGameVitalComponent<br>(存活 / 倒地 / 死亡状态机)"]
-        Damage["Damage 管线<br>(计算伤害、暴击、抗性)"]
-    end
-
-    subgraph NativeReplication["多人对战局内同步 (UE 原生 UDP)"]
-        Server["Dedicated Server<br>权威数值计算"] -- "原生 UPROPERTY(Replicated)<br>FastArray 增量复制" --> Client["Client 本地预测与表现"]
-    end
-
-    subgraph Layer2_3["外围服务与业务层 (GameNetService / GameMode)"]
-        Settlement["局后战绩结算 / 任务成就<br>(战斗结束触发)"]
-        NetRPC["UGameNetServiceSubsystem<br>SendStructRequest(MsgId=结算请求)"]
-    end
-
-    Stat -.-> NativeReplication
-    Vital -.-> NativeReplication
-    Vital -- "战斗结束触发 OnDeath" --> Settlement
-    Settlement --> NetRPC
-```
-
-1. **局内高频战斗同步**：组件内部自带引擎原生属性复制，走 Dedicated Server 的毫秒级原生 UDP 通道，具备原生客户端预测与丢包容忍能力；
-2. **局后战绩结算 / 掉落上传**：战斗结束或 BOSS 击杀时，由外围业务层（`AGameMode` 或 `APlayerController`）读取 `UGameVitalComponent` 存活状态与战果，调用 `UGameNetServiceSubsystem::SendStructRequest` 向大厅服务器上报；
-3. **关键战斗事件遥测 / 埋点**：通过 `UGameplayMessageSubsystem` 广播事件，由旁路收集器统一外发，`GameGameplayCore` 自身零感知、零依赖。
+- **统一错误码契约**：`Public/Core/GameplayCoreErrorCodes.h` 定义 `11001~11006` 强类型错误码，全部归属 `Game::ModuleId::Gameplay`。
+- **子域分级日志 (`GameLogging`)**：模块级 `LogGameGameplayCore` 负责模块启停里程碑，内部按子域拆分为 `LogGameStat`、`LogGameVital`、`LogGameBuff` 编译期直轨分类；高频正常路径一律降级为 `Verbose`（抑制态零格式化开销），高频非权威拒绝采用限频 `Warning`。
+- **对象池统一静默重置 (`GamePool`)**：`UGameStatComponent` / `UGameVitalComponent` / `UGameBuffComponent` 均实现 `IGamePoolable`，归还入池时一律静默重置内部状态而不误播游戏态业务事件。
+- **零应用层网络依赖红线**：严格维持 Layer 1 边界，不依赖 `GameplayAbilities`、`GameGameplay`、`GameNetCore`、`GameNetService`。
