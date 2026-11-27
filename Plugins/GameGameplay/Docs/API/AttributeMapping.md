@@ -1,24 +1,17 @@
 # GameGameplay 属性表现映射 API 参考
 
-`UGameplayAttributeValueMapping` 将 ASC 复杂的底层复制委托封装为轻量、弱引用保护且对 UMG 和原生 C++ 友好的双轨多播映射器。
+`UGameplayAttributeValueMapping` 将 ASC 底层属性变更委托收敛为弱引用保护、支持对象池复用（`IGamePoolable`）且对 UMG 蓝图和原生 C++ 友好的双轨多播映射器。
 
 头文件：`#include "Attribute/UGameplayAttributeValueMapping.h"`  
-基类：`UObject`
+基类：`UObject`, `IGamePoolable`
 
 ---
 
 ## 1. 委托声明
 
 ```cpp
-/**
- * @brief 属性值发生变更时的蓝图动态多播（新值 / 旧值）
- */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnMappedAttributeChanged, float, NewValue, float, OldValue);
-
-/**
- * @brief 属性值发生变更时的原生 C++ 多播（零反射开销，支持绑定 Lambda）
- */
-DECLARE_MULTICAST_DELEGATE_TwoParams(FOnMappedAttributeChangedNative, float /* NewValue */, float /* OldValue */);
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnMappedAttributeChangedNative, float, float);
 ```
 
 ---
@@ -27,49 +20,31 @@ DECLARE_MULTICAST_DELEGATE_TwoParams(FOnMappedAttributeChangedNative, float /* N
 
 ```cpp
 UCLASS(BlueprintType)
-class GAMEGAMEPLAY_API UGameplayAttributeValueMapping : public UObject {
+class GAMEGAMEPLAY_API UGameplayAttributeValueMapping : public UObject, public IGamePoolable {
     GENERATED_BODY()
 
 public:
-    /** 蓝图/动态多播委托，UI 蓝图可直接绑定 */
     UPROPERTY(BlueprintAssignable, Category = "Game|GAS")
     FOnMappedAttributeChanged OnValueChanged;
 
-    /** 原生 C++ 多播委托（零反射开销，支持 Lambda） */
     FOnMappedAttributeChangedNative OnValueChangedNative;
 
-    /**
-     * @brief 静态工厂：创建并绑定指定属性变更监听对象
-     * @param Outer 所属 Outer 对象（蓝图默认指向调用者 Self，如宿主 Widget 自身）
-     * @param InAbilitySystemComponent 目标 ASC
-     * @param InAttribute 目标属性（如 UMyHeroAttributeSet::GetHealthAttribute()）
-     * @param bBroadcastImmediately 是否在绑定成功后立即以当前值广播一次（默认 false，调用方配置完委托后调用 QueryAndBroadcast）
-     * @return 映射对象指针；InAbilitySystemComponent 为空时返回 nullptr
-     */
     UFUNCTION(BlueprintCallable, Category = "Game|GAS", meta = (DefaultToSelf = "Outer"))
     static UGameplayAttributeValueMapping* CreateAttributeValueMapping(
         UObject* Outer,
         UAbilitySystemComponent* InAbilitySystemComponent,
-        const FGameplayAttribute& InAttribute,
-        bool bBroadcastImmediately = false
+        const FGameplayAttribute& InAttribute
     );
 
-    /**
-     * @brief C++ 重载便利方法（以 InAbilitySystemComponent 为默认 Outer）
-     * @param InAbilitySystemComponent 目标 ASC
-     * @param InAttribute 目标属性
-     * @param bBroadcastImmediately 是否在绑定成功后立即以当前值广播一次（默认 false）
-     * @return 映射对象指针
-     */
     static UGameplayAttributeValueMapping* CreateAttributeValueMapping(
         UAbilitySystemComponent* InAbilitySystemComponent,
-        const FGameplayAttribute& InAttribute,
-        bool bBroadcastImmediately = false
+        const FGameplayAttribute& InAttribute
     );
 
-    /**
-     * @brief 主动绑定属性监听
-     */
+    void BeginDestroy() override;
+    void OnAcquireFromPool_Implementation() override;
+    void OnReleaseToPool_Implementation() override;
+
     UFUNCTION(BlueprintCallable, Category = "Game|GAS")
     void Bind(
         UAbilitySystemComponent* InAbilitySystemComponent,
@@ -77,23 +52,8 @@ public:
         bool bBroadcastImmediately = true
     );
 
-    /**
-     * @brief 显式解绑并注销委托
-     */
     UFUNCTION(BlueprintCallable, Category = "Game|GAS")
     void Unbind();
-
-    /**
-     * @brief 获取当前映射属性的数值（解绑或无效时返回 0.0f）
-     */
-    UFUNCTION(BlueprintPure, Category = "Game|GAS")
-    [[nodiscard]] float GetCurrentValue() const;
-
-    /**
-     * @brief 主动重新查询数值并广播给所有监听器（常用于 UI 重新唤起显示）
-     */
-    UFUNCTION(BlueprintCallable, Category = "Game|GAS")
-    void QueryAndBroadcast();
 
     UFUNCTION(BlueprintPure, Category = "Game|GAS")
     [[nodiscard]] const FGameplayAttribute& GetBoundAttribute() const noexcept;
@@ -103,17 +63,20 @@ public:
 
     UFUNCTION(BlueprintPure, Category = "Game|GAS")
     [[nodiscard]] bool IsBound() const noexcept;
+
+    UFUNCTION(BlueprintPure, Category = "Game|GAS")
+    [[nodiscard]] float GetCurrentValue() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Game|GAS")
+    void QueryAndBroadcast();
 };
 ```
 
 ---
 
-## 3. 生命周期与最佳实践
+## 3. 生命周期与契约说明
 
-- **即时广播机制（Immediate Broadcast）**：创建或手动 `Bind` 时默认 `bBroadcastImmediately = true`，绑定完成后瞬间自动读取 ASC 当前数值并通过 `OnValueChanged` 与 `OnValueChangedNative` 广播，彻底杜绝 UI 初次打开显示空白的顽疾。
-- **双轨委托支持**：
-  - 蓝图层可通过 `OnValueChanged` 拖拽节点直接响应；
-  - C++ 表现层或 UI Presenter 推荐使用 `OnValueChangedNative.AddLambda(...)`，消除 UFunction 反射调用与装箱开销。
-- **受控 Outer 生命周期**：工厂方法支持指定 `Outer`（蓝图调用端默认自动指向调用者 self Widget）。Mapping 随 Widget 存续，当玩家 Pawn 阵亡导致旧 ASC 销毁时，Mapping 不会作为其子对象连带被标记垃圾，重生后可继续复用。
-- **防悬垂与 GC 析构保护**：映射对象内部持有 ASC 的弱引用（`TWeakObjectPtr<UAbilitySystemComponent>`），并在 `Unbind` 时校验句柄有效性及 `!ASC->HasAnyFlags(RF_BeginDestroyed | RF_FinishDestroyed)`，杜绝垃圾回收阶段跨不可达对象调用的崩溃。
-
+- **工厂创建与初值广播分离**：`CreateAttributeValueMapping` 返回新建实例（`ASC` 为空或 `InAttribute` 无效时返回 `nullptr`）；此时对象尚未注册任何监听者，调用方应先订阅 `OnValueChanged` / `OnValueChangedNative`，随后调用 `QueryAndBroadcast()` 同步拉取初值。
+- **重绑语义**：对已有订阅者的映射对象调用 `Bind(NewASC, Attr, true)` 时，若参数有效则自动解绑旧源并即时广播新源当前值；若传入无效 `ASC` 或无效属性则安全忽略并保留原有绑定。
+- **GC 失效与防虚假广播**：`IsBound()` 同时校验委托句柄与 `BoundAbilitySystemComponent.IsValid()`；当宿主 Pawn 销毁导致旧 ASC 被回收后，`IsBound()` 返回 `false`，且 `QueryAndBroadcast()` 静默跳过，避免向 UI 误播虚假的 `0.0f`。
+- **对象池支持 (`IGamePoolable`)**：归还对象池（`OnReleaseToPool`）时自动解绑旧 ASC 并清空全部蓝图与原生多播订阅者，出库（`OnAcquireFromPool`）后可直接 `Bind` 复用。

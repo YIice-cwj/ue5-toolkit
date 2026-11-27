@@ -10,15 +10,15 @@
 /**
  * @brief 限次重试闸门
  */
-struct GAMEGAMEPLAY_API FBootstrapRetryGate {
+struct FBootstrapRetryGate {
     /**
-     * @brief 配置重试间隔与次数上限（不重置已累计次数 · 强制内联）
-     * @param InIntervalSeconds 重试间隔（秒）
-     * @param InMaxRetries 允许的最大重试次数
+     * @brief 配置重试间隔与次数上限（不重置已累计次数，自动钳制非负 · 强制内联）
+     * @param InIntervalSeconds 重试间隔（秒，小于 0 时钳制为 0）
+     * @param InMaxRetries 允许的最大重试次数（小于 0 时钳制为 0）
      */
     FORCEINLINE void Configure(float InIntervalSeconds, int32 InMaxRetries) noexcept {
-        IntervalSeconds = InIntervalSeconds;
-        MaxRetries = InMaxRetries;
+        IntervalSeconds = FMath::Max(0.0f, InIntervalSeconds);
+        MaxRetries = FMath::Max(0, InMaxRetries);
     }
 
     /**

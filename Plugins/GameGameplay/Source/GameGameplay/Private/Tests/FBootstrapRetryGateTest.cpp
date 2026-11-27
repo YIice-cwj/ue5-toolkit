@@ -16,7 +16,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证限次重试闸门累计、超限判定、重置与零上限边界条件
+ * @brief 验证限次重试闸门累计、超限判定、重置、零上限及负值钳制边界条件
  * @param Parameters 自动化测试参数
  * @return 测试是否通过
  */
@@ -43,6 +43,12 @@ bool FBootstrapRetryGateTest::RunTest([[maybe_unused]] const FString& Parameters
     FBootstrapRetryGate ZeroGate;
     ZeroGate.Configure(0.05f, 0);
     TestFalse(TEXT("上限为零时首次尝试即拒绝"), ZeroGate.Advance());
+
+    FBootstrapRetryGate NegativeGate;
+    NegativeGate.Configure(-0.5f, -3);
+    TestEqual(TEXT("负重试间隔钳制为 0"), NegativeGate.GetIntervalSeconds(), 0.0f);
+    TestEqual(TEXT("负重试次数上限钳制为 0"), NegativeGate.GetMaxRetries(), 0);
+    TestFalse(TEXT("负上限钳制后首次尝试即拒绝"), NegativeGate.Advance());
 
     return true;
 }

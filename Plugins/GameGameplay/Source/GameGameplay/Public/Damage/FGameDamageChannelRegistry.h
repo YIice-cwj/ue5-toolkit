@@ -1,11 +1,11 @@
 /**
  * @file FGameDamageChannelRegistry.h
- * @brief 运行时伤害通道绑定注册表（按 ExecCalc 类隔离 · 线程安全）
+ * @brief 运行时伤害通道绑定注册表（按 ExecCalc 类隔离 · 线程安全 · 锁外回调防死锁）
  *
  * 设计思路：
- * 取代“CDO 构造后永久冻结”的旧契约：通道绑定既可以继续在子类构造函数中声明，
+ * 取代“CDO 构造后永久冻结”的旧契约：通道绑定既可以在子类构造函数中声明，
  * 也可以在运行期由任意系统动态注册/注销；查询时按类继承链合并，派生类同名通道覆盖基类，
- * 避免基类与派生类重复绑定同一个通道导致数值双算。
+ * 并在短锁内将扁平化切片拷贝至栈内联数组后立即释锁执行回调，兼顾热路径零堆分配与绝对防重入死锁。
  */
 
 #pragma once
@@ -17,7 +17,7 @@
 #include "Damage/FDamageChannelBinding.h"
 
 /**
- * @brief 运行时通道注册表（进程级单例）
+ * @brief 运行时伤害通道绑定注册表（进程级单例）
  */
 class GAMEGAMEPLAY_API FGameDamageChannelRegistry {
 public:
@@ -27,17 +27,24 @@ public:
     FGameDamageChannelRegistry& operator=(FGameDamageChannelRegistry&&) = delete;
 
     /**
+     * @brief 获取全局注册表单例
+     * @return 注册表实例
+     */
+    [[nodiscard]] static FGameDamageChannelRegistry& Get();
+
+    /**
      * @brief 注册（或覆盖）一条通道绑定
      * @param InExecutionClass 归属的 ExecCalc 类
      * @param InBinding 通道绑定
+     * @return 参数合法且注册成功返回 true，否则返回 false
      */
-    void Register(const UClass* InExecutionClass, const FDamageChannelBinding& InBinding);
+    bool Register(const UClass* InExecutionClass, const FDamageChannelBinding& InBinding);
 
     /**
      * @brief 注销指定类的单条通道绑定
      * @param InExecutionClass 归属的 ExecCalc 类
      * @param InChannelTag 通道标签
-     * @return 是否注销成功
+     * @return 成功注销返回 true
      */
     bool Unregister(const UClass* InExecutionClass, const FGameplayTag& InChannelTag);
 
@@ -49,32 +56,36 @@ public:
     int32 UnregisterAll(const UClass* InExecutionClass);
 
     /**
-     * @brief 零分配遍历指定类的合并绑定（在读锁内以只读切片执行，避免高频堆拷贝）
+     * @brief 遍历指定类的继承合并绑定（锁内拷贝至栈内联快照、锁外执行闭包，常用通道数零堆分配且防重入死锁）
      * @param InExecutionClass 目标 ExecCalc 类
      * @param InAction 对合并绑定切片执行的只读闭包
      */
-    void ForEachBinding(const UClass* InExecutionClass, TFunctionRef<void(TConstArrayView<FDamageChannelBinding>)> InAction) const;
+    void ForEachBinding(
+        const UClass* InExecutionClass,
+        TFunctionRef<void(TConstArrayView<FDamageChannelBinding>)> InAction
+    ) const;
 
     /**
      * @brief 查询指定类直属的绑定数量（不含继承）
      * @param InExecutionClass 目标 ExecCalc 类
      * @return 绑定数量
      */
-    int32 Num(const UClass* InExecutionClass) const;
+    [[nodiscard]] int32 Num(const UClass* InExecutionClass) const;
 
     /**
      * @brief 清空注册表（测试与热重载使用）
      */
     void Reset();
 
-    /**
-     * @brief 获取全局注册表单例
-     * @return 注册表实例
-     */
-    static FGameDamageChannelRegistry& Get();
-
 private:
     FGameDamageChannelRegistry() = default;
+
+    /**
+     * @brief 在已持写锁状态下沿类继承链构建扁平化通道列表（派生类同名通道优先）
+     * @param InExecutionClass 目标 ExecCalc 类
+     * @param OutFlattened 输出的扁平化绑定数组
+     */
+    void BuildFlattenedBindingsLocked(const UClass* InExecutionClass, TArray<FDamageChannelBinding>& OutFlattened) const;
 
     mutable FRWLock RWLock;
     TMap<TObjectKey<const UClass>, TArray<FDamageChannelBinding>> BindingsByClass;

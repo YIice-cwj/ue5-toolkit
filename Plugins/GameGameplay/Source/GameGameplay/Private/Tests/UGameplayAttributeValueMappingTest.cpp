@@ -1,6 +1,6 @@
 /**
  * @file UGameplayAttributeValueMappingTest.cpp
- * @brief 属性表现契约映射工具自动化测试套件
+ * @brief 属性表现契约映射工具（双轨广播、跨 ASC 切换、GC 失效安全与对象池复用）自动化测试套件
  */
 
 #include "Attribute/UGameplayAttributeValueMapping.h"
@@ -9,9 +9,11 @@
 
 #include "Ability/UGameAbilitySystemComponent.h"
 #include "AbilitySystemTestAttributeSet.h"
-#include "Attribute/UGameBaseAttributeSet.h"
+#include "Core/IGamePoolable.h"
 #include "Misc/AutomationTest.h"
+#include "Tests/UGameAttributeMappingTestReceiver.h"
 #include "UObject/Package.h"
+#include "UObject/StrongObjectPtr.h"
 #include "UObject/UnrealType.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -21,81 +23,133 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证工厂函数元数据、属性变动通知、主动查询广播、空 ASC 安全短路及解绑清理
+ * @brief 验证工厂创建、蓝图/原生双轨通知、跨源重绑、ASC GC 失效后 IsBound/QueryAndBroadcast 安全性及对象池复用
  * @param Parameters 自动化测试参数
  * @return 测试是否通过
  */
 bool FGameAttributeValueMappingTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    const UFunction* FactoryFunction = UGameplayAttributeValueMapping::StaticClass()->FindFunctionByName(TEXT("CreateAttributeValueMapping"));
-    TestNotNull(TEXT("属性映射工厂反射信息可用"), FactoryFunction);
-    if (FactoryFunction == nullptr) {
-        return false;
-    }
-    TestEqual(
-        TEXT("工厂默认不在对象返回前广播"),
-        FactoryFunction->GetMetaData(TEXT("CPP_Default_bBroadcastImmediately")),
-        FString(TEXT("false"))
-    );
+    TStrongObjectPtr<UGameAbilitySystemComponent> ASC1(NewObject<UGameAbilitySystemComponent>(GetTransientPackage()));
+    UAbilitySystemTestAttributeSet* AttrSet1 = NewObject<UAbilitySystemTestAttributeSet>(ASC1.Get());
+    ASC1->AddAttributeSetSubobject(AttrSet1);
 
-    UGameAbilitySystemComponent* ASC = NewObject<UGameAbilitySystemComponent>(GetTransientPackage());
-    UAbilitySystemTestAttributeSet* AttrSet = NewObject<UAbilitySystemTestAttributeSet>(ASC);
-    ASC->AddAttributeSetSubobject(AttrSet);
+    TStrongObjectPtr<UGameAbilitySystemComponent> ASC2(NewObject<UGameAbilitySystemComponent>(GetTransientPackage()));
+    UAbilitySystemTestAttributeSet* AttrSet2 = NewObject<UAbilitySystemTestAttributeSet>(ASC2.Get());
+    ASC2->AddAttributeSetSubobject(AttrSet2);
 
-    const FGameplayAttribute HealthAttr(FindFieldChecked<FProperty>(UAbilitySystemTestAttributeSet::StaticClass(), GET_MEMBER_NAME_CHECKED(UAbilitySystemTestAttributeSet, Health)));
-    ASC->SetNumericAttributeBase(HealthAttr, 150.0f);
+    const FGameplayAttribute HealthAttr(FindFieldChecked<FProperty>(
+        UAbilitySystemTestAttributeSet::StaticClass(),
+        GET_MEMBER_NAME_CHECKED(UAbilitySystemTestAttributeSet, Health)
+    ));
+    ASC1->SetNumericAttributeBase(HealthAttr, 150.0f);
+    ASC2->SetNumericAttributeBase(HealthAttr, 320.0f);
 
     float ObservedNew = 0.0f;
     float ObservedOld = 0.0f;
-    int32 BroadcastCount = 0;
+    int32 NativeBroadcastCount = 0;
 
-    UGameplayAttributeValueMapping* Mapping = UGameplayAttributeValueMapping::CreateAttributeValueMapping(ASC, HealthAttr);
+    TStrongObjectPtr<UGameAttributeMappingTestReceiver> DynamicReceiver(NewObject<UGameAttributeMappingTestReceiver>(GetTransientPackage()));
+    TStrongObjectPtr<UGameplayAttributeValueMapping> Mapping(
+        UGameplayAttributeValueMapping::CreateAttributeValueMapping(GetTransientPackage(), ASC1.Get(), HealthAttr)
+    );
+    TestNotNull(TEXT("工厂创建映射成功"), Mapping.Get());
+    if (!Mapping.IsValid()) {
+        return false;
+    }
 
     Mapping->OnValueChangedNative.AddLambda([&](float NewVal, float OldVal) {
         ObservedNew = NewVal;
         ObservedOld = OldVal;
-        ++BroadcastCount;
+        ++NativeBroadcastCount;
     });
+    Mapping->OnValueChanged.AddDynamic(DynamicReceiver.Get(), &UGameAttributeMappingTestReceiver::HandleMappedValueChanged);
 
     Mapping->QueryAndBroadcast();
-    TestEqual(TEXT("立即广播获得正确初值"), ObservedNew, 150.0f);
+    TestEqual(TEXT("主动查询广播获得原生初值"), ObservedNew, 150.0f);
+    TestEqual(TEXT("主动查询广播同步送达蓝图动态多播"), DynamicReceiver->LastNewValue, 150.0f);
+    TestEqual(TEXT("动态多播接收次数为 1"), DynamicReceiver->CallCount, 1);
     TestEqual(TEXT("获取当前值正确"), Mapping->GetCurrentValue(), 150.0f);
-    TestEqual(TEXT("订阅后仅主动查询广播一次"), BroadcastCount, 1);
+    TestEqual(TEXT("订阅后仅主动查询广播一次"), NativeBroadcastCount, 1);
 
-    ASC->SetNumericAttributeBase(HealthAttr, 200.0f);
-    TestEqual(TEXT("属性变动触发映射广播"), ObservedNew, 200.0f);
+    ASC1->SetNumericAttributeBase(HealthAttr, 200.0f);
+    TestEqual(TEXT("属性变动触发原生映射广播新值"), ObservedNew, 200.0f);
+    TestEqual(TEXT("属性变动触发原生映射广播旧值"), ObservedOld, 150.0f);
+    TestEqual(TEXT("属性变动同步触发蓝图动态多播"), DynamicReceiver->LastNewValue, 200.0f);
 
-    UGameBaseAttributeSet::ApplyAttributeToLocal(ASC, HealthAttr, -50.0f);
-    TestEqual(TEXT("ApplyAttributeToLocal 落地增量正确"), ASC->GetNumericAttributeBase(HealthAttr), 150.0f);
+    Mapping->Bind(ASC2.Get(), HealthAttr, true);
+    TestEqual(TEXT("切换绑定到新 ASC 并即时广播新值"), ObservedNew, 320.0f);
+    TestEqual(TEXT("切换后绑定 ASC 指向 ASC2"), Mapping->GetBoundAbilitySystemComponent(), static_cast<UAbilitySystemComponent*>(ASC2.Get()));
+
+    const int32 CountBeforeOldChange = NativeBroadcastCount;
+    ASC1->SetNumericAttributeBase(HealthAttr, 99.0f);
+    TestEqual(TEXT("切换绑定后旧 ASC 属性变更不再触发回调"), NativeBroadcastCount, CountBeforeOldChange);
+
+    ASC2->SetNumericAttributeBase(HealthAttr, 280.0f);
+    TestEqual(TEXT("切换绑定后新 ASC 属性变更正常触发"), ObservedNew, 280.0f);
+
+    Mapping->Bind(nullptr, HealthAttr);
+    TestTrue(TEXT("空 ASC 重新绑定安全短路保持原绑定状态"), Mapping->IsBound());
+    TestEqual(TEXT("空 ASC 重新绑定数值保持"), Mapping->GetCurrentValue(), 280.0f);
+
+    Mapping->Bind(ASC2.Get(), FGameplayAttribute());
+    TestTrue(TEXT("空属性重新绑定安全短路保持原绑定状态"), Mapping->IsBound());
+    TestEqual(TEXT("空属性重新绑定数值保持"), Mapping->GetCurrentValue(), 280.0f);
 
     Mapping->Unbind();
     TestEqual(TEXT("解绑后数值查询返回 0"), Mapping->GetCurrentValue(), 0.0f);
     TestFalse(TEXT("解绑后 IsBound 返回 false"), Mapping->IsBound());
     TestFalse(TEXT("解绑后 BoundAttribute 无效"), Mapping->GetBoundAttribute().IsValid());
 
+    const int32 CountBeforeUnboundQuery = NativeBroadcastCount;
+    Mapping->QueryAndBroadcast();
+    TestEqual(TEXT("未绑定时 QueryAndBroadcast 静默跳过不广播虚假 0 值"), NativeBroadcastCount, CountBeforeUnboundQuery);
+
     TestNull(TEXT("空 ASC 创建映射返回 nullptr"), UGameplayAttributeValueMapping::CreateAttributeValueMapping(nullptr, nullptr, HealthAttr));
-    TestNull(TEXT("空属性创建映射返回 nullptr"), UGameplayAttributeValueMapping::CreateAttributeValueMapping(nullptr, ASC, FGameplayAttribute()));
+    TestNull(TEXT("空属性创建映射返回 nullptr"), UGameplayAttributeValueMapping::CreateAttributeValueMapping(nullptr, ASC1.Get(), FGameplayAttribute()));
 
-    UGameplayAttributeValueMapping* MappingWithoutOuter = UGameplayAttributeValueMapping::CreateAttributeValueMapping(nullptr, ASC, HealthAttr, false);
-    TestNotNull(TEXT("空 Outer 创建映射成功且 Outer 自动降级为 ASC"), MappingWithoutOuter);
-    TestTrue(TEXT("映射状态处于绑定中"), MappingWithoutOuter->IsBound());
-    TestEqual(TEXT("绑定的属性对齐"), MappingWithoutOuter->GetBoundAttribute(), HealthAttr);
-    TestEqual(TEXT("绑定的属性数值对齐"), MappingWithoutOuter->GetCurrentValue(), 150.0f);
+    UGameplayAttributeValueMapping* CppConvenienceMapping = UGameplayAttributeValueMapping::CreateAttributeValueMapping(ASC1.Get(), HealthAttr);
+    TestNotNull(TEXT("C++ 双参便利重载默认以 ASC 为 Outer 创建成功"), CppConvenienceMapping);
+    TestTrue(TEXT("映射状态处于绑定中"), CppConvenienceMapping->IsBound());
+    TestEqual(TEXT("绑定属性对齐"), CppConvenienceMapping->GetBoundAttribute(), HealthAttr);
+    CppConvenienceMapping->Unbind();
 
-    MappingWithoutOuter->Bind(nullptr, HealthAttr);
-    TestTrue(TEXT("空 ASC 重新绑定安全短路保持原绑定状态"), MappingWithoutOuter->IsBound());
-    TestEqual(TEXT("空 ASC 重新绑定数值保持"), MappingWithoutOuter->GetCurrentValue(), 150.0f);
+    UGameAbilitySystemComponent* DisposableASC = NewObject<UGameAbilitySystemComponent>(GetTransientPackage());
+    UAbilitySystemTestAttributeSet* DisposableAttrSet = NewObject<UAbilitySystemTestAttributeSet>(DisposableASC);
+    DisposableASC->AddAttributeSetSubobject(DisposableAttrSet);
+    DisposableASC->SetNumericAttributeBase(HealthAttr, 88.0f);
 
-    MappingWithoutOuter->Bind(ASC, FGameplayAttribute());
-    TestTrue(TEXT("空属性重新绑定安全短路保持原绑定状态"), MappingWithoutOuter->IsBound());
-    TestEqual(TEXT("空属性重新绑定数值保持"), MappingWithoutOuter->GetCurrentValue(), 150.0f);
+    Mapping->Bind(DisposableASC, HealthAttr, false);
+    TestTrue(TEXT("绑定临时 ASC 后 IsBound 为 true"), Mapping->IsBound());
 
-    UGameplayAttributeValueMapping* ImmediateMapping = UGameplayAttributeValueMapping::CreateAttributeValueMapping(GetTransientPackage(), ASC, HealthAttr, true);
-    TestNotNull(TEXT("开启即时广播创建映射成功"), ImmediateMapping);
-    TestEqual(TEXT("即时广播初始化获取当前值正确"), ImmediateMapping->GetCurrentValue(), 150.0f);
-    ImmediateMapping->Unbind();
+    DisposableASC->MarkAsGarbage();
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    TestFalse(TEXT("目标 ASC 被 GC 销毁后 IsBound 必须返回 false"), Mapping->IsBound());
+    TestNull(TEXT("目标 ASC 销毁后 GetBoundAbilitySystemComponent 返回 nullptr"), Mapping->GetBoundAbilitySystemComponent());
+    TestEqual(TEXT("目标 ASC 销毁后 GetCurrentValue 返回 0.0f"), Mapping->GetCurrentValue(), 0.0f);
+
+    const int32 CountBeforeExpiredQuery = NativeBroadcastCount;
+    Mapping->QueryAndBroadcast();
+    TestEqual(TEXT("目标 ASC 失效后 QueryAndBroadcast 不向 UI 误播 0.0f"), NativeBroadcastCount, CountBeforeExpiredQuery);
+    Mapping->Unbind();
+
+    IGamePoolable* Poolable = Cast<IGamePoolable>(Mapping.Get());
+    TestNotNull(TEXT("属性映射实现 IGamePoolable 接口"), Poolable);
+    Mapping->Bind(ASC2.Get(), HealthAttr, false);
+    TestTrue(TEXT("入池前处于绑定态"), Mapping->IsBound());
+    IGamePoolable::Execute_OnReleaseToPool(Mapping.Get());
+    TestFalse(TEXT("归还对象池后自动解绑"), Mapping->IsBound());
+    TestFalse(TEXT("归还对象池后蓝图多播订阅已清空"), Mapping->OnValueChanged.IsBound());
+    TestFalse(TEXT("归还对象池后原生多播订阅已清空"), Mapping->OnValueChangedNative.IsBound());
+
+    IGamePoolable::Execute_OnAcquireFromPool(Mapping.Get());
+    int32 ReusedCalls = 0;
+    Mapping->OnValueChangedNative.AddLambda([&ReusedCalls](float, float) {
+        ++ReusedCalls;
+    });
+    Mapping->Bind(ASC2.Get(), HealthAttr, true);
+    TestEqual(TEXT("出池复用重新绑定后即时广播生效"), ReusedCalls, 1);
+    Mapping->Unbind();
 
     return true;
 }
 
 #endif  // WITH_AUTOMATION_TESTS
-

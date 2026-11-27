@@ -14,8 +14,6 @@ public class GameGameplay : ModuleRules {
             "Engine",
             "GameplayAbilities",
             "GameplayTags",
-            "GameCore",
-            "GameMessage",
             "GameGameplayCore",
             "GamePool",
             "GameFeedback",
@@ -23,7 +21,9 @@ public class GameGameplay : ModuleRules {
 
         PrivateDependencyModuleNames.AddRange(new string[] {
             "GameplayTasks",
+            "GameCore",
             "GameLogging",
+            "GameMessage",
         });
 
         PublicIncludePaths.AddRange(new string[] {

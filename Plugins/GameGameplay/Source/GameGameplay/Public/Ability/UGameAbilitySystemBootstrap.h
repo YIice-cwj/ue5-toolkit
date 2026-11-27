@@ -47,12 +47,12 @@ class GAMEGAMEPLAY_API UGameAbilitySystemBootstrap : public UActorComponent, pub
 
 public:
     /**
-     * @brief 构造函数：关闭组件 Tick（引导全程由定时器与握手事件驱动）
+     * @brief 构造函数：关闭组件 Tick 并用默认配置初始化重试闸门
      */
     UGameAbilitySystemBootstrap();
 
     /**
-     * @brief 组件启动生命周期回调：尝试从拥有者兜底引导（正常路径由宿主握手钩子调 EnsureInitialized 驱动）
+     * @brief 组件启动生命周期回调：同步重试闸门配置并尝试从拥有者兜底引导
      */
     void BeginPlay() override;
 
@@ -63,7 +63,7 @@ public:
     void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
     /**
-     * @brief 从对象池激活时重置重试门状态
+     * @brief 从对象池激活时重置重试门累计次数并同步最新重试配置
      */
     void OnAcquireFromPool_Implementation() override;
 
@@ -91,6 +91,20 @@ public:
     void SetDataReadyQueryDelegate(const FQueryDataReady& InDelegate);
 
     /**
+     * @brief 配置引导完成后权威授予的默认能力类列表
+     * @param InDefaultAbilities 默认能力类数组
+     */
+    void SetDefaultAbilities(TArray<TSubclassOf<UGameplayAbility>> InDefaultAbilities);
+
+    /**
+     * @brief 配置重试间隔与初始化/复制最大重试次数（立即同步至内部闸门）
+     * @param InRetryIntervalSeconds 重试时间间隔（秒，下限 0.01）
+     * @param InMaxInitRetries 兜底初始化最大重试次数（下限 0）
+     * @param InMaxReplicationRetries 等待复制就绪最大重试次数（下限 0）
+     */
+    void ConfigureRetryPolicy(float InRetryIntervalSeconds, int32 InMaxInitRetries, int32 InMaxReplicationRetries);
+
+    /**
      * @brief 统一幂等初始化入口（服务器与本地客户端均可调用，宿主握手钩子驱动）
      * @param InAvatar 当前附身的 Avatar（作为 ASC 的 AvatarActor）
      */
@@ -108,6 +122,7 @@ public:
 
     /**
      * @brief 查询初值是否已写入
+     * @return 已写入返回 true
      */
     [[nodiscard]] bool IsInitialAttributesWritten() const noexcept {
         return bInitialAttributesWritten;
@@ -115,48 +130,11 @@ public:
 
     /**
      * @brief 查询默认能力是否已授予
+     * @return 已授予返回 true
      */
     [[nodiscard]] bool IsDefaultAbilitiesGranted() const noexcept {
         return bDefaultAbilitiesGranted;
     }
-
-private:
-    /**
-     * @brief 按组件配置设置初始化与 ASC 复制重试门的间隔和次数上限
-     */
-    void ConfigureRetryGates();
-
-    /**
-     * @brief 从组件拥有者解析兜底引导使用的 Pawn Avatar
-     * @return 拥有者自身或其 PlayerState 关联的 Pawn；无法解析时返回 nullptr
-     */
-    [[nodiscard]] APawn* ResolveOwnerAvatar() const;
-
-    /**
-     * @brief 在 ActorInfo 已初始化且数据就绪后写入初值并推进默认能力授予
-     */
-    void AdvanceAuthoritativeInitialization();
-
-    /**
-     * @brief 向当前已完成握手的 ASC 授予默认能力并跟踪句柄
-     */
-    void GrantDefaultAbilities();
-
-    TWeakObjectPtr<AActor> CurrentAvatar;
-    TWeakObjectPtr<UAbilitySystemComponent> CurrentASC;
-    TArray<FGameplayAbilitySpecHandle> GrantedAbilityHandles;
-
-    FResolveAbilitySystemComponent ResolveAbilitySystemComponent;
-    FWriteInitialAttributes WriteInitialAttributes;
-    FQueryDataReady DataReadyQuery;
-
-    FTimerHandle InitRetryTimerHandle;
-    FTimerHandle ReplicationRetryTimerHandle;
-    bool bInitialAttributesWritten = false;
-    bool bDefaultAbilitiesGranted = false;
-
-    FBootstrapRetryGate InitRetryGate;
-    FBootstrapRetryGate ReplicationRetryGate;
 
 protected:
     /**
@@ -182,4 +160,60 @@ protected:
      */
     UPROPERTY(EditDefaultsOnly, Category = "Game|GAS", meta = (ClampMin = "0.01"))
     float RetryIntervalSeconds = 0.05f;
+
+private:
+    /**
+     * @brief 按组件配置同步初始化与 ASC 复制重试门的间隔和次数上限
+     */
+    void ConfigureRetryGates();
+
+    /**
+     * @brief 撤销本组件已授予给当前 ASC 的默认能力并清空句柄列表
+     */
+    void ClearGrantedAbilities();
+
+    /**
+     * @brief 从组件拥有者解析兜底引导使用的 Pawn Avatar
+     * @return 拥有者自身或其 PlayerState 关联的 Pawn；无法解析时返回 nullptr
+     */
+    [[nodiscard]] APawn* ResolveOwnerAvatar() const;
+
+    /**
+     * @brief 对已解析的非空 ASC 与 Avatar 执行幂等 ActorInfo 握手与权威阶段推进
+     * @param InAbilitySystemComponent 已解析的非空 ASC
+     * @param InAvatar 已解析的非空 Avatar
+     */
+    void InitializeWithResolvedASC(UAbilitySystemComponent* InAbilitySystemComponent, AActor* InAvatar);
+
+    /**
+     * @brief 调度下一次兜底自愈定时器重试，超过次数上限则输出告警并中止
+     * @param InTimeoutReason 超时日志中说明缺失对象的文本
+     */
+    void ScheduleInitRetry(const TCHAR* InTimeoutReason);
+
+    /**
+     * @brief 在 ActorInfo 已初始化且数据就绪后写入初值并推进默认能力授予
+     */
+    void AdvanceAuthoritativeInitialization();
+
+    /**
+     * @brief 向当前已完成握手的 ASC 权威授予默认能力并跟踪句柄
+     */
+    void GrantDefaultAbilities();
+
+    TWeakObjectPtr<AActor> CurrentAvatar;
+    TWeakObjectPtr<UAbilitySystemComponent> CurrentASC;
+    TArray<FGameplayAbilitySpecHandle> GrantedAbilityHandles;
+
+    FResolveAbilitySystemComponent ResolveAbilitySystemComponent;
+    FWriteInitialAttributes WriteInitialAttributes;
+    FQueryDataReady DataReadyQuery;
+
+    FTimerHandle InitRetryTimerHandle;
+    FTimerHandle ReplicationRetryTimerHandle;
+    bool bInitialAttributesWritten = false;
+    bool bDefaultAbilitiesGranted = false;
+
+    FBootstrapRetryGate InitRetryGate;
+    FBootstrapRetryGate ReplicationRetryGate;
 };

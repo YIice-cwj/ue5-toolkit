@@ -2,9 +2,9 @@
  * @file UGameAbilitySystemGlobals.h
  * @brief 能力系统全局单例（本工程 GameplayEffectContext 供给方）
  *
- * 设计思路：UE 5.8 中 AllocGameplayEffectContext 是唯一官方扩展点，引擎默认返回原生
- * FGameplayEffectContext；本类改为返回框架层 FGameGameplayEffectContext，使 GE 施加链路
- * 自动携带打击反馈字段。生效方式为项目配置显式指向（Config/DefaultGame.ini 的
+ * 设计思路：AllocGameplayEffectContext 是引擎唯一官方扩展点，默认返回原生 FGameplayEffectContext；
+ * 本类改为返回框架层 FGameGameplayEffectContext，使 GE 施加链路自动携带打击反馈字段。
+ * 生效方式为项目配置显式指向（Config/DefaultGame.ini 的
  * GameplayAbilitiesDeveloperSettings.AbilitySystemGlobalsClassName）——仅启用插件不改变
  * 引擎默认行为，属显式 opt-in。
  */
@@ -26,7 +26,7 @@ class GAMEGAMEPLAY_API UGameAbilitySystemGlobals : public UAbilitySystemGlobals 
 public:
     /**
      * @brief 分配框架层打击反馈上下文（引擎 GE 施加链路唯一扩展点）
-     * @return 新建的 FGameGameplayEffectContext 实例（调用方负责删除）
+     * @return 新建的 FGameGameplayEffectContext 实例（由 FGameplayEffectContextHandle 接管释放）
      */
     FGameplayEffectContext* AllocGameplayEffectContext() const override;
 };

@@ -1,28 +1,17 @@
 # GameGameplay GAS 引导组件 API 参考
 
-`UGameAbilitySystemBootstrap` 作为一个 ActorComponent，将复杂的网络握手时序收敛在框架内部，使业务角色的初始化代码保持极致精简。
+`UGameAbilitySystemBootstrap` 作为 `UActorComponent`（并实现 `IGamePoolable`），将网络握手时序、数据就绪门与复制重试矩阵收敛在框架内部，使业务角色初始化代码保持极简。
 
 头文件：`#include "Ability/UGameAbilitySystemBootstrap.h"`  
-基类：`UActorComponent`
+基类：`UActorComponent`, `IGamePoolable`
 
 ---
 
 ## 1. 委托声明
 
 ```cpp
-/**
- * @brief 解析并返回宿主 ASC 指针的委托（游戏层注入）
- */
 DECLARE_DELEGATE_RetVal(UAbilitySystemComponent*, FResolveAbilitySystemComponent);
-
-/**
- * @brief 注册属性集并写入初始数值的委托（仅权威端执行）
- */
 DECLARE_DELEGATE_OneParam(FWriteInitialAttributes, UAbilitySystemComponent*);
-
-/**
- * @brief 查询静态配置数据是否已就绪的委托（未注入默认视为恒就绪）
- */
 DECLARE_DELEGATE_RetVal(bool, FQueryDataReady);
 ```
 
@@ -32,26 +21,15 @@ DECLARE_DELEGATE_RetVal(bool, FQueryDataReady);
 
 头文件：`#include "Ability/FBootstrapRetryGate.h"`
 
-专为 GAS 引导时序设计的纯 C++ 轻量控制闸门，所有成员方法均在头文件 `FORCEINLINE` 内联，零函数调用开销与堆分配：
+纯 C++ 头文件全内联值类型控制闸门（`Configure` 自动钳制非负间隔与非负重试次数上限）：
 
 ```cpp
-struct GAMEGAMEPLAY_API FBootstrapRetryGate {
-    /** 配置重试间隔与次数上限（不重置已累计次数 · 强制内联） */
+struct FBootstrapRetryGate {
     FORCEINLINE void Configure(float InIntervalSeconds, int32 InMaxRetries) noexcept;
-
-    /** 累计一次尝试并判定是否仍允许重试（强制内联） */
     [[nodiscard]] FORCEINLINE bool Advance() noexcept;
-
-    /** 重置已累计次数（配置保持不变 · 强制内联） */
     FORCEINLINE void Reset() noexcept;
-
-    /** 获取已累计的尝试次数（强制内联） */
     [[nodiscard]] FORCEINLINE int32 GetAttempt() const noexcept;
-
-    /** 获取允许的最大重试次数（强制内联） */
     [[nodiscard]] FORCEINLINE int32 GetMaxRetries() const noexcept;
-
-    /** 获取重试间隔（强制内联） */
     [[nodiscard]] FORCEINLINE float GetIntervalSeconds() const noexcept;
 };
 ```
@@ -62,56 +40,40 @@ struct GAMEGAMEPLAY_API FBootstrapRetryGate {
 
 ```cpp
 UCLASS(ClassGroup = (Game), meta = (BlueprintSpawnableComponent))
-class GAMEGAMEPLAY_API UGameAbilitySystemBootstrap : public UActorComponent {
+class GAMEGAMEPLAY_API UGameAbilitySystemBootstrap : public UActorComponent, public IGamePoolable {
     GENERATED_BODY()
 
 public:
     UGameAbilitySystemBootstrap();
 
-    virtual void BeginPlay() override;
-    virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+    void BeginPlay() override;
+    void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+    void OnAcquireFromPool_Implementation() override;
+    void OnReleaseToPool_Implementation() override;
 
-    // --- 委托注入方法 ---
     void SetResolveAbilitySystemComponentDelegate(const FResolveAbilitySystemComponent& InDelegate);
     void SetWriteInitialAttributesDelegate(const FWriteInitialAttributes& InDelegate);
     void SetDataReadyQueryDelegate(const FQueryDataReady& InDelegate);
+    void SetDefaultAbilities(TArray<TSubclassOf<UGameplayAbility>> InDefaultAbilities);
+    void ConfigureRetryPolicy(float InRetryIntervalSeconds, int32 InMaxInitRetries, int32 InMaxReplicationRetries);
 
-    /**
-     * @brief 统一幂等初始化入口（服务器与本地客户端均可调用，宿主握手钩子驱动）
-     * @param InAvatar 当前附身的 Avatar（作为 ASC 的 AvatarActor）
-     */
     void EnsureInitialized(AActor* InAvatar);
-
-    /**
-     * @brief 数据就绪通知（游戏层订阅静态数据版本后回调，唤醒数据未就绪时挂起的引导）
-     */
     void NotifyDataReady();
-
-    /**
-     * @brief 兜底自愈入口（仅极端离线 / 重连脱节时触发，宿主 BeginPlay 自动调用）
-     */
     void TryInitializeFromOwner();
 
-    /**
-     * @brief 查询状态接口
-     */
     [[nodiscard]] bool IsInitialAttributesWritten() const noexcept;
     [[nodiscard]] bool IsDefaultAbilitiesGranted() const noexcept;
 
 protected:
-    /** 初始默认授予的能力类列表（权威端自动授予） */
     UPROPERTY(EditDefaultsOnly, Category = "Game|GAS")
     TArray<TSubclassOf<UGameplayAbility>> DefaultAbilities;
 
-    /** 复制就绪重试上限（默认 8 次） */
     UPROPERTY(EditDefaultsOnly, Category = "Game|GAS", meta = (ClampMin = "0"))
     int32 MaxReplicationRetries = 8;
 
-    /** 兜底握手重试上限（默认 60 次） */
     UPROPERTY(EditDefaultsOnly, Category = "Game|GAS", meta = (ClampMin = "0"))
     int32 MaxInitRetries = 60;
 
-    /** 重试定时器间隔（秒，默认 0.05，下限 0.01） */
     UPROPERTY(EditDefaultsOnly, Category = "Game|GAS", meta = (ClampMin = "0.01"))
     float RetryIntervalSeconds = 0.05f;
 };
@@ -121,15 +83,7 @@ protected:
 
 ## 4. 核心机制
 
-1. **时序与幂等门**：
-   - 内部缓存弱指针 `CurrentAvatar` 与 `CurrentASC`。
-   - 当同一 Avatar 重复调用 `EnsureInitialized` 时，自动短路忽略。
-   - 维护已授予技能句柄表 `GrantedAbilityHandles`；在 Pawn 阵亡触发 `EndPlay` 或 ASC 变更（`bAscChanged`）时，自动调用 `ClearAbility` 清除已授予能力，杜绝旧技能残留在 PlayerState ASC 中。
-   - 当 PlayerController 或 Pawn 重新生成导致 ASC 发生变更（如重生、重新附身）时，自动触发重入自愈，清空初值置位并重新执行初始化。
-2. **权威端分流与技能去重**：
-   - `InitAbilityActorInfo` 在双端执行。
-   - `WriteInitialAttributes` 与 `DefaultAbilities` 仅在权威端（`HasAuthority()`）执行，严格杜绝客户端虚假初值和网络复制冲突。
-   - 在授予默认技能前先通过 `FindAbilitySpecFromClass` 检查，若已存在相同技能 Spec 则不重复赋予，彻底杜绝多次重生导致的技能实例堆积。
-3. **复制就绪重试**：
-   - 若权威端授予能力时组件尚未进入网络就绪态（`IsReadyForReplication()` 返回 false），则以 `RetryIntervalSeconds`（默认 0.05 秒，下限 0.01 秒）为间隔的定时器重试，并在达到 `MaxReplicationRetries`（默认 8 次）阈值后强制赋予，确保高延迟与复杂加载时能力百分之百可用。
-
+1. **时序幂等门与未绑写初值委托短路**：记录 `CurrentAvatar` 与 `CurrentASC` 弱引用，重复握手短路；即使未注入 `WriteInitialAttributes`，在默认能力授予完毕后 `NotifyDataReady()` 亦直接短路不再重复求值 `DataReadyQuery`。
+2. **早于 `BeginPlay` 调用安全**：构造函数与 `TryInitializeFromOwner()` 均自动同步 `ConfigureRetryGates()`，宿主在自身 `BeginPlay` 中早于组件 `BeginPlay` 调用亦能正确按上限重试。
+3. **复制就绪重试与无 World 直授**：存在有效 `UWorld` 且 ASC 复制未就绪时，按 `RetryIntervalSeconds` 定时重试直至 `MaxReplicationRetries` 超限强制授予；无 `World` 离线/单测环境下不等待定时器，直接完成能力授予。
+4. **对象池 (`IGamePoolable`) 完整闭环**：入池清理定时器、撤销已授予能力句柄并重置所有状态与闸门计数；出池复位重试计数并同步最新重试配置。

@@ -15,17 +15,17 @@
 FGameFeedbackSignal UGameFeedbackAdapter::MakeSignalFromDamage(
     AActor* InTarget,
     const FGameDamageContext& Context,
-    const FGameDamageResult& Result)
-{
+    const FGameDamageResult& Result
+) {
     FGameFeedbackSignal Signal;
     Signal.Instigator = Context.Instigator;
     Signal.DamageCauser = Context.DamageCauser;
-    Signal.Target = InTarget ? InTarget : Context.HitResult.GetActor();
+    Signal.Target = InTarget != nullptr ? InTarget : Context.HitResult.GetActor();
     Signal.HitResult = Context.HitResult;
 
-    if (AActor* Causer = Context.DamageCauser.Get()) {
-        const FVector Vel = Causer->GetVelocity();
-        Signal.ImpactDirection = Vel.IsNearlyZero() ? FVector(Context.HitResult.ImpactNormal) : Vel.GetSafeNormal();
+    if (const AActor* Causer = Context.DamageCauser.Get()) {
+        const FVector Velocity = Causer->GetVelocity();
+        Signal.ImpactDirection = Velocity.IsNearlyZero() ? FVector(Context.HitResult.ImpactNormal) : Velocity.GetSafeNormal();
     } else {
         Signal.ImpactDirection = FVector(Context.HitResult.ImpactNormal);
     }
@@ -35,6 +35,5 @@ FGameFeedbackSignal UGameFeedbackAdapter::MakeSignalFromDamage(
     Signal.PrimaryChannel = Result.GetDominantActualChannel();
     Signal.Magnitude = Result.TotalActualDamage;
     Signal.bLethal = Result.FeedbackTags.HasTag(TAG_Feedback_State_Lethal);
-
     return Signal;
 }

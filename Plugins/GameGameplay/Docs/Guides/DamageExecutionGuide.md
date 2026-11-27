@@ -1,12 +1,10 @@
 # GameGameplay 伤害通道与 ExecCalc 实战指南
 
-本指南展示如何继承 `UGameDamageExecution` 实现包含护甲减免、元素克制和暴击计算的自定义结算类。
+本指南展示如何继承 `UGameDamageExecution` 实现包含元素克制、防御减免与暴击反馈的自定义结算类。
 
 ---
 
 ## 1. 声明并注册通道映射
-
-创建子类 `UMyCombatDamageExecution`并在构造函数中绑定通道：
 
 ```cpp
 #include "Damage/UGameDamageExecution.h"
@@ -19,14 +17,12 @@ class UMyCombatDamageExecution : public UGameDamageExecution {
 
 public:
     UMyCombatDamageExecution() {
-        // 1. 物理伤害映射到 PhysicalDamage 元属性
         RegisterChannelBinding(
             FGameplayTag::RequestGameplayTag(TEXT("Damage.Physical")),
             UMyHeroAttributeSet::GetPhysicalDamageAttribute(),
             EGameplayModOp::Additive
         );
 
-        // 2. 元素火焰伤害映射到 SpellDamage 元属性
         RegisterChannelBinding(
             FGameplayTag::RequestGameplayTag(TEXT("Damage.Fire")),
             UMyHeroAttributeSet::GetSpellDamageAttribute(),
@@ -35,7 +31,7 @@ public:
     }
 
 protected:
-    virtual FDamageModifier ComputeChannelModifier(
+    FDamageModifier ComputeChannelModifier(
         const FGameplayTag& ChannelTag,
         float BaseDamage,
         const FGameplayTagContainer& SourceTags,
@@ -43,21 +39,17 @@ protected:
         const FGameplayEffectCustomExecutionParameters& ExecutionParams
     ) const override {
         FDamageModifier Modifier;
-
-        // 根据受击者标签判断是否有虚弱/易伤
         if (TargetTags.HasTag(FGameplayTag::RequestGameplayTag(TEXT("State.Vulnerable")))) {
-            Modifier.Multiplier *= 1.3f; // 易伤增伤 30%
+            Modifier.Multiplier *= 1.3f;
         }
-
         return Modifier;
     }
 
-    virtual void OnPostExecuteChannels(
+    void OnPostExecuteChannels(
         const FGameplayEffectCustomExecutionParameters& ExecutionParams,
         float TotalCalculatedDamage,
         FGameGameplayEffectContext* OutEffectContext
     ) const override {
-        // 自定义打击反馈：例如高额伤害触发重击与卡肉
         if (OutEffectContext != nullptr && TotalCalculatedDamage >= 100.0f) {
             OutEffectContext->AddFeedbackTag(FGameplayTag::RequestGameplayTag(TEXT("Damage.Feedback.HeavyHit")));
             OutEffectContext->SetDynamicValue(FGameplayTag::RequestGameplayTag(TEXT("Damage.Feedback.HitStop")), 0.15f);
@@ -66,20 +58,25 @@ protected:
 };
 ```
 
-构造函数注册与运行期注册等价：绑定统一写入 `FGameDamageChannelRegistry`。需要在启动流程、模组加载或技能配置变更时动态增删通道，可直接调用静态接口：
+运行期动态增删通道统一通过权威注册表 `FGameDamageChannelRegistry::Get()` 操作（线程安全，且允许在回调中安全重入）：
 
 ```cpp
-UGameDamageExecution::RegisterRuntimeChannelBinding(
-    UMyCombatDamageExecution::StaticClass(),
-    FGameplayTag::RequestGameplayTag(TEXT("Damage.Ice")),
-    UMyHeroAttributeSet::GetSpellDamageAttribute());
+#include "Damage/FGameDamageChannelRegistry.h"
 
-UGameDamageExecution::UnregisterRuntimeChannelBinding(
+auto& Registry = FGameDamageChannelRegistry::Get();
+Registry.Register(
     UMyCombatDamageExecution::StaticClass(),
-    FGameplayTag::RequestGameplayTag(TEXT("Damage.Ice")));
+    FDamageChannelBinding(
+        FGameplayTag::RequestGameplayTag(TEXT("Damage.Ice")),
+        UMyHeroAttributeSet::GetSpellDamageAttribute()
+    )
+);
+
+Registry.Unregister(
+    UMyCombatDamageExecution::StaticClass(),
+    FGameplayTag::RequestGameplayTag(TEXT("Damage.Ice"))
+);
 ```
-
-注册表按 ExecCalc 类隔离、线程安全；查询时沿继承链合并，派生类同名通道优先，避免重复结算。
 
 ---
 
@@ -87,6 +84,5 @@ UGameDamageExecution::UnregisterRuntimeChannelBinding(
 
 1. 打开或创建 `GE_Damage`；
 2. 在 `Executions` 数组中添加一项，将 `Calculation Class` 设为 `UMyCombatDamageExecution`；
-3. 将该 GE 的 Context 指向 `FGameGameplayEffectContext`；
-4. 当技能施加该 GE 时，物理和元素通道将分别计算修饰并自动累加至角色属性集中。
-
+3. 确保项目 `Config/DefaultGame.ini` 已将 `AbilitySystemGlobalsClassName` 指向 `/Script/GameGameplay.GameAbilitySystemGlobals`；
+4. 当技能施加携带 SetByCaller 通道数值的 GE 时，各通道将自动修饰结算并回写打击反馈上下文。

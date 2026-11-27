@@ -10,19 +10,25 @@
 #include "Engine/World.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerState.h"
+#include "GameGameplayLog.h"
 #include "TimerManager.h"
 
-#include "Logging/GameLogCategories.h"
+namespace {
+
+constexpr float MinRetryIntervalSeconds = 0.01f;
+
+}  // namespace
 
 /**
- * @brief 构造函数：关闭组件 Tick（引导全程由定时器与握手事件驱动）
+ * @brief 构造函数：关闭组件 Tick 并用默认配置初始化重试闸门
  */
 UGameAbilitySystemBootstrap::UGameAbilitySystemBootstrap() {
     PrimaryComponentTick.bCanEverTick = false;
+    ConfigureRetryGates();
 }
 
 /**
- * @brief 组件启动生命周期回调：配置重试闸门并尝试兜底引导
+ * @brief 组件启动生命周期回调：同步重试闸门配置并尝试兜底引导
  */
 void UGameAbilitySystemBootstrap::BeginPlay() {
     Super::BeginPlay();
@@ -42,9 +48,11 @@ void UGameAbilitySystemBootstrap::EndPlay(const EEndPlayReason::Type EndPlayReas
 }
 
 /**
- * @brief 从对象池激活时重置重试门状态
+ * @brief 从对象池激活时重置重试门累计次数并同步最新重试配置
  */
 void UGameAbilitySystemBootstrap::OnAcquireFromPool_Implementation() {
+    InitRetryGate.Reset();
+    ReplicationRetryGate.Reset();
     ConfigureRetryGates();
 }
 
@@ -56,12 +64,7 @@ void UGameAbilitySystemBootstrap::OnReleaseToPool_Implementation() {
         World->GetTimerManager().ClearTimer(InitRetryTimerHandle);
         World->GetTimerManager().ClearTimer(ReplicationRetryTimerHandle);
     }
-    if (UAbilitySystemComponent* AbilitySystemComponent = CurrentASC.Get()) {
-        for (const FGameplayAbilitySpecHandle& Handle : GrantedAbilityHandles) {
-            AbilitySystemComponent->ClearAbility(Handle);
-        }
-    }
-    GrantedAbilityHandles.Empty();
+    ClearGrantedAbilities();
     CurrentAvatar.Reset();
     CurrentASC.Reset();
     bInitialAttributesWritten = false;
@@ -95,6 +98,31 @@ void UGameAbilitySystemBootstrap::SetDataReadyQueryDelegate(const FQueryDataRead
 }
 
 /**
+ * @brief 配置引导完成后权威授予的默认能力类列表
+ * @param InDefaultAbilities 默认能力类数组
+ */
+void UGameAbilitySystemBootstrap::SetDefaultAbilities(TArray<TSubclassOf<UGameplayAbility>> InDefaultAbilities) {
+    DefaultAbilities = MoveTemp(InDefaultAbilities);
+}
+
+/**
+ * @brief 配置重试间隔与初始化/复制最大重试次数（立即同步至内部闸门）
+ * @param InRetryIntervalSeconds 重试时间间隔（秒，下限 0.01）
+ * @param InMaxInitRetries 兜底初始化最大重试次数（下限 0）
+ * @param InMaxReplicationRetries 等待复制就绪最大重试次数（下限 0）
+ */
+void UGameAbilitySystemBootstrap::ConfigureRetryPolicy(
+    float InRetryIntervalSeconds,
+    int32 InMaxInitRetries,
+    int32 InMaxReplicationRetries
+) {
+    RetryIntervalSeconds = FMath::Max(MinRetryIntervalSeconds, InRetryIntervalSeconds);
+    MaxInitRetries = FMath::Max(0, InMaxInitRetries);
+    MaxReplicationRetries = FMath::Max(0, InMaxReplicationRetries);
+    ConfigureRetryGates();
+}
+
+/**
  * @brief 统一幂等初始化入口（服务器与本地客户端均可调用，宿主握手钩子驱动）
  * @param InAvatar 当前附身的 Avatar
  */
@@ -110,42 +138,7 @@ void UGameAbilitySystemBootstrap::EnsureInitialized(AActor* InAvatar) {
         return;
     }
 
-    const bool bAscChanged = (CurrentASC.Get() != AbilitySystemComponent);
-    if (!bAscChanged && CurrentAvatar.Get() == InAvatar) {
-        return;
-    }
-
-    if (bAscChanged) {
-        if (UAbilitySystemComponent* OldASC = CurrentASC.Get()) {
-            for (const FGameplayAbilitySpecHandle& Handle : GrantedAbilityHandles) {
-                OldASC->ClearAbility(Handle);
-            }
-        }
-        GrantedAbilityHandles.Empty();
-        CurrentASC = AbilitySystemComponent;
-        bInitialAttributesWritten = false;
-        bDefaultAbilitiesGranted = false;
-        ReplicationRetryGate.Reset();
-        if (UWorld* World = GetWorld()) {
-            World->GetTimerManager().ClearTimer(ReplicationRetryTimerHandle);
-        }
-    }
-
-    AActor* EffectiveOwner = AbilitySystemComponent->GetOwner();
-    if (EffectiveOwner == nullptr) {
-        EffectiveOwner = GetOwner();
-    }
-    if (EffectiveOwner == nullptr) {
-        EffectiveOwner = InAvatar;
-    }
-    AbilitySystemComponent->InitAbilityActorInfo(EffectiveOwner, InAvatar);
-    CurrentAvatar = InAvatar;
-    InitRetryGate.Reset();
-    if (UWorld* World = GetWorld()) {
-        World->GetTimerManager().ClearTimer(InitRetryTimerHandle);
-    }
-
-    AdvanceAuthoritativeInitialization();
+    InitializeWithResolvedASC(AbilitySystemComponent, InAvatar);
 }
 
 /**
@@ -156,28 +149,18 @@ void UGameAbilitySystemBootstrap::NotifyDataReady() {
 }
 
 /**
- * @brief 兜底自愈入口（仅极端离线 / 重连脱节时触发）
+ * @brief 兜底自愈入口（仅极端离线 / 重连脱节时触发，Avatar 或 ASC 暂未就绪均按限次重试）
  */
 void UGameAbilitySystemBootstrap::TryInitializeFromOwner() {
     if (!ResolveAbilitySystemComponent.IsBound()) {
         return;
     }
 
-    APawn* Avatar = ResolveOwnerAvatar();
-    UAbilitySystemComponent* AbilitySystemComponent = ResolveAbilitySystemComponent.Execute();
-    if (AbilitySystemComponent != nullptr && CurrentASC.Get() == AbilitySystemComponent && Avatar != nullptr && CurrentAvatar.Get() == Avatar) {
-        return;
-    }
+    ConfigureRetryGates();
 
+    APawn* Avatar = ResolveOwnerAvatar();
     if (Avatar == nullptr) {
-        UWorld* World = GetWorld();
-        if (World != nullptr) {
-            if (InitRetryGate.Advance()) {
-                World->GetTimerManager().SetTimer(InitRetryTimerHandle, this, &UGameAbilitySystemBootstrap::TryInitializeFromOwner, InitRetryGate.GetIntervalSeconds(), false);
-            } else {
-                GAME_LOG(Warning, TEXT("【GAS 引导】自愈重试超时（超过 %d 次），宿主尚未生成或附身有效 Avatar，自愈中止。"), InitRetryGate.GetMaxRetries());
-            }
-        }
+        ScheduleInitRetry(TEXT("宿主尚未生成或附身有效 Avatar"));
         return;
     }
 
@@ -186,15 +169,38 @@ void UGameAbilitySystemBootstrap::TryInitializeFromOwner() {
         return;
     }
 
-    EnsureInitialized(Avatar);
+    UAbilitySystemComponent* AbilitySystemComponent = ResolveAbilitySystemComponent.Execute();
+    if (AbilitySystemComponent == nullptr) {
+        ScheduleInitRetry(TEXT("宿主关联的 ASC 尚未就绪或未复制到达"));
+        return;
+    }
+
+    InitializeWithResolvedASC(AbilitySystemComponent, Avatar);
 }
 
 /**
- * @brief 按组件配置设置初始化与 ASC 复制重试门的间隔和次数上限
+ * @brief 按组件配置同步初始化与 ASC 复制重试门的间隔和次数上限
  */
 void UGameAbilitySystemBootstrap::ConfigureRetryGates() {
     ReplicationRetryGate.Configure(RetryIntervalSeconds, MaxReplicationRetries);
     InitRetryGate.Configure(RetryIntervalSeconds, MaxInitRetries);
+}
+
+/**
+ * @brief 撤销本组件已授予给当前 ASC 的默认能力并清空句柄列表
+ */
+void UGameAbilitySystemBootstrap::ClearGrantedAbilities() {
+    if (GrantedAbilityHandles.IsEmpty()) {
+        return;
+    }
+    if (UAbilitySystemComponent* AbilitySystemComponent = CurrentASC.Get()) {
+        if (AbilitySystemComponent->IsOwnerActorAuthoritative()) {
+            for (const FGameplayAbilitySpecHandle& Handle : GrantedAbilityHandles) {
+                AbilitySystemComponent->ClearAbility(Handle);
+            }
+        }
+    }
+    GrantedAbilityHandles.Empty();
 }
 
 /**
@@ -210,6 +216,73 @@ APawn* UGameAbilitySystemBootstrap::ResolveOwnerAvatar() const {
         return OwnerAsPlayerState->GetPawn();
     }
     return nullptr;
+}
+
+/**
+ * @brief 对已解析的非空 ASC 与 Avatar 执行幂等 ActorInfo 握手与权威阶段推进
+ * @param InAbilitySystemComponent 已解析的非空 ASC
+ * @param InAvatar 已解析的非空 Avatar
+ */
+void UGameAbilitySystemBootstrap::InitializeWithResolvedASC(UAbilitySystemComponent* InAbilitySystemComponent, AActor* InAvatar) {
+    const bool bAscChanged = (CurrentASC.Get() != InAbilitySystemComponent);
+    if (!bAscChanged && CurrentAvatar.Get() == InAvatar) {
+        return;
+    }
+
+    if (bAscChanged) {
+        ClearGrantedAbilities();
+        CurrentASC = InAbilitySystemComponent;
+        bInitialAttributesWritten = false;
+        bDefaultAbilitiesGranted = false;
+        ReplicationRetryGate.Reset();
+        if (UWorld* World = GetWorld()) {
+            World->GetTimerManager().ClearTimer(ReplicationRetryTimerHandle);
+        }
+    }
+
+    AActor* EffectiveOwner = InAbilitySystemComponent->GetOwner();
+    if (EffectiveOwner == nullptr) {
+        EffectiveOwner = GetOwner();
+    }
+    if (EffectiveOwner == nullptr) {
+        EffectiveOwner = InAvatar;
+    }
+    InAbilitySystemComponent->InitAbilityActorInfo(EffectiveOwner, InAvatar);
+    CurrentAvatar = InAvatar;
+    InitRetryGate.Reset();
+    if (UWorld* World = GetWorld()) {
+        World->GetTimerManager().ClearTimer(InitRetryTimerHandle);
+    }
+
+    AdvanceAuthoritativeInitialization();
+}
+
+/**
+ * @brief 调度下一次兜底自愈定时器重试，超过次数上限则输出告警并中止
+ * @param InTimeoutReason 超时日志中说明缺失对象的文本
+ */
+void UGameAbilitySystemBootstrap::ScheduleInitRetry(const TCHAR* InTimeoutReason) {
+    UWorld* World = GetWorld();
+    if (World == nullptr) {
+        return;
+    }
+    if (InitRetryGate.Advance()) {
+        World->GetTimerManager().SetTimer(
+            InitRetryTimerHandle,
+            this,
+            &UGameAbilitySystemBootstrap::TryInitializeFromOwner,
+            InitRetryGate.GetIntervalSeconds(),
+            false
+        );
+    } else {
+        GAME_GAS_LOG(
+            LogGameAbility,
+            Warning,
+            TEXT("【GAS 引导】自愈重试超时（超过 %d 次），%s，自愈中止。"),
+            InitRetryGate.GetMaxRetries(),
+            InTimeoutReason
+        );
+    }
 }
 
 /**
@@ -229,7 +302,8 @@ void UGameAbilitySystemBootstrap::AdvanceAuthoritativeInitialization() {
         return;
     }
 
-    if (bInitialAttributesWritten && bDefaultAbilitiesGranted) {
+    const bool bAttributesComplete = bInitialAttributesWritten || !WriteInitialAttributes.IsBound();
+    if (bAttributesComplete && bDefaultAbilitiesGranted) {
         return;
     }
 
@@ -258,25 +332,34 @@ void UGameAbilitySystemBootstrap::GrantDefaultAbilities() {
         return;
     }
 
+    UWorld* World = GetWorld();
     if (DefaultAbilities.IsEmpty()) {
-        if (UWorld* World = GetWorld()) {
+        if (World != nullptr) {
             World->GetTimerManager().ClearTimer(ReplicationRetryTimerHandle);
         }
         bDefaultAbilitiesGranted = true;
         return;
     }
 
-    UWorld* World = GetWorld();
-    if (!AbilitySystemComponent->IsReadyForReplication() && ReplicationRetryGate.Advance()) {
-        if (World != nullptr) {
-            World->GetTimerManager().SetTimer(ReplicationRetryTimerHandle, this, &UGameAbilitySystemBootstrap::GrantDefaultAbilities, ReplicationRetryGate.GetIntervalSeconds(), false);
-        }
+    if (World != nullptr && !AbilitySystemComponent->IsReadyForReplication() && ReplicationRetryGate.Advance()) {
+        World->GetTimerManager().SetTimer(
+            ReplicationRetryTimerHandle,
+            this,
+            &UGameAbilitySystemBootstrap::GrantDefaultAbilities,
+            ReplicationRetryGate.GetIntervalSeconds(),
+            false
+        );
         return;
     }
     if (World != nullptr) {
         World->GetTimerManager().ClearTimer(ReplicationRetryTimerHandle);
     }
-    GAME_CLOG(!AbilitySystemComponent->IsReadyForReplication(), Warning, TEXT("【GAS 引导】复制未在限次内就绪，已超限强制授予默认能力以保证初始化成功率。"));
+    GAME_GAS_CLOG(
+        LogGameAbility,
+        World != nullptr && !AbilitySystemComponent->IsReadyForReplication(),
+        Warning,
+        TEXT("【GAS 引导】复制未在限次内就绪，已超限强制授予默认能力以保证初始化成功率。")
+    );
 
     AActor* SourceActor = GetOwner() != nullptr ? GetOwner() : AbilitySystemComponent->GetOwner();
     for (const TSubclassOf<UGameplayAbility>& AbilityClass : DefaultAbilities) {

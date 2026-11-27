@@ -36,8 +36,23 @@ struct FDamageChannelBinding {
      * @param InAttr 目标输出元属性
      * @param InModOp 修饰操作类型（默认加算）
      */
-    FDamageChannelBinding(const FGameplayTag& InTag, const FGameplayAttribute& InAttr, EGameplayModOp::Type InModOp = EGameplayModOp::Additive)
-        : ChannelTag(InTag), TargetAttribute(InAttr), ModOp(InModOp) {}
+    FDamageChannelBinding(
+        const FGameplayTag& InTag,
+        const FGameplayAttribute& InAttr,
+        EGameplayModOp::Type InModOp = EGameplayModOp::Additive
+    )
+        : ChannelTag(InTag)
+        , TargetAttribute(InAttr)
+        , ModOp(InModOp) {
+    }
+
+    /**
+     * @brief 校验绑定规则是否有效（通道标签与目标属性均有效）
+     * @return 有效返回 true
+     */
+    [[nodiscard]] FORCEINLINE bool IsValid() const noexcept {
+        return ChannelTag.IsValid() && TargetAttribute.IsValid();
+    }
 
     /**
      * @brief 值相等比较
@@ -45,9 +60,8 @@ struct FDamageChannelBinding {
      * @return 标签、属性与修饰操作均一致返回 true
      */
     [[nodiscard]] bool operator==(const FDamageChannelBinding& Other) const noexcept {
-        return ChannelTag.MatchesTagExact(Other.ChannelTag)
+        return ChannelTag == Other.ChannelTag
             && TargetAttribute == Other.TargetAttribute
             && ModOp == Other.ModOp;
     }
 };
-

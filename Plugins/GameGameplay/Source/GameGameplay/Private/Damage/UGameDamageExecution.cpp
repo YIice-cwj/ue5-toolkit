@@ -5,43 +5,72 @@
 
 #include "Damage/UGameDamageExecution.h"
 
+#include "AbilitySystemComponent.h"
 #include "Damage/FGameDamageChannelRegistry.h"
 #include "Damage/FGameGameplayEffectContext.h"
-#include "AbilitySystemComponent.h"
-#include "Logging/GameLogCategories.h"
+#include "GameGameplayLog.h"
+
+namespace {
 
 /**
- * @brief 按已注册通道执行属性捕获、伤害修饰与输出结算（零拷贝切片遍历通道）
+ * @brief 解析聚合标签集（已捕获流程零拷贝直返 AggregatedTags；未捕获手工 Spec 回退合并 ASC 与 Spec 标签）
+ * @param CapturedTags Spec 捕获的标签聚合器
+ * @param AbilitySystemComponent 对应端 ASC（可为空）
+ * @param OutScratchTags 回退合并使用的局部临时容器
+ * @return 完整聚合标签只读引用
+ */
+const FGameplayTagContainer& ResolveAggregatedTags(
+    const FTagContainerAggregator& CapturedTags,
+    const UAbilitySystemComponent* AbilitySystemComponent,
+    FGameplayTagContainer& OutScratchTags
+) {
+    const FGameplayTagContainer* Aggregated = CapturedTags.GetAggregatedTags();
+    if (AbilitySystemComponent == nullptr || !CapturedTags.GetActorTags().IsEmpty()) {
+        return Aggregated != nullptr ? *Aggregated : OutScratchTags;
+    }
+
+    AbilitySystemComponent->GetOwnedGameplayTags(OutScratchTags);
+    const FGameplayTagContainer& SpecTags = CapturedTags.GetSpecTags();
+    if (!SpecTags.IsEmpty()) {
+        OutScratchTags.AppendTags(SpecTags);
+    }
+    return OutScratchTags;
+}
+
+}  // namespace
+
+/**
+ * @brief 按已注册通道执行属性捕获、伤害修饰与输出结算（锁外切片遍历通道，防重入死锁）
  * @param ExecutionParams 当前 GameplayEffect 执行参数
  * @param OutExecutionOutput 接收各通道修饰结果的执行输出
  */
-void UGameDamageExecution::Execute_Implementation(const FGameplayEffectCustomExecutionParameters& ExecutionParams, FGameplayEffectCustomExecutionOutput& OutExecutionOutput) const {
+void UGameDamageExecution::Execute_Implementation(
+    const FGameplayEffectCustomExecutionParameters& ExecutionParams,
+    FGameplayEffectCustomExecutionOutput& OutExecutionOutput
+) const {
     FGameDamageChannelRegistry::Get().ForEachBinding(GetClass(), [this, &ExecutionParams, &OutExecutionOutput](TConstArrayView<FDamageChannelBinding> ChannelBindings) {
         if (ChannelBindings.IsEmpty()) {
             return;
         }
 
-        const UAbilitySystemComponent* SourceAbilitySystemComponent = ExecutionParams.GetSourceAbilitySystemComponent();
-        const UAbilitySystemComponent* TargetAbilitySystemComponent = ExecutionParams.GetTargetAbilitySystemComponent();
-        FGameplayTagContainer SourceTags;
-        if (SourceAbilitySystemComponent != nullptr) {
-            SourceAbilitySystemComponent->GetOwnedGameplayTags(SourceTags);
-        } else {
-            SourceTags = ExecutionParams.GetOwningSpec().CapturedSourceTags.GetActorTags();
-        }
-        FGameplayTagContainer TargetTags;
-        if (TargetAbilitySystemComponent != nullptr) {
-            TargetAbilitySystemComponent->GetOwnedGameplayTags(TargetTags);
-        } else {
-            TargetTags = ExecutionParams.GetOwningSpec().CapturedTargetTags.GetActorTags();
-        }
+        const FGameplayEffectSpec& OwningSpec = ExecutionParams.GetOwningSpec();
+        const UAbilitySystemComponent* SourceASC = ExecutionParams.GetSourceAbilitySystemComponent();
+        const UAbilitySystemComponent* TargetASC = ExecutionParams.GetTargetAbilitySystemComponent();
 
-        FGameGameplayEffectContext* EffectContext = FGameGameplayEffectContext::ExtractEffectContext(ExecutionParams.GetOwningSpec().GetContext());
+        FGameplayTagContainer SourceScratchTags;
+        FGameplayTagContainer TargetScratchTags;
+        const FGameplayTagContainer& SourceTags = ResolveAggregatedTags(OwningSpec.CapturedSourceTags, SourceASC, SourceScratchTags);
+        const FGameplayTagContainer& TargetTags = ResolveAggregatedTags(OwningSpec.CapturedTargetTags, TargetASC, TargetScratchTags);
+
+        FGameGameplayEffectContext* EffectContext = FGameGameplayEffectContext::ExtractEffectContext(OwningSpec.GetContext());
         if (EffectContext != nullptr) {
-            EffectContext->SetFeedbackEventId(static_cast<uint16>(ExecutionParams.GetPredictionKey().Current));
+            const FPredictionKey& PredictionKey = ExecutionParams.GetPredictionKey();
+            if (PredictionKey.IsValidKey()) {
+                EffectContext->SetFeedbackEventId(static_cast<uint16>(PredictionKey.Current));
+            }
         }
-        float TotalCalculatedDamage = 0.0f;
 
+        float TotalCalculatedDamage = 0.0f;
         for (const FDamageChannelBinding& Binding : ChannelBindings) {
             if (!ShouldExecuteChannel(Binding.ChannelTag, ExecutionParams)) {
                 continue;
@@ -55,12 +84,13 @@ void UGameDamageExecution::Execute_Implementation(const FGameplayEffectCustomExe
                 EffectContext->SetActualChannelDamage(Binding.ChannelTag, FinalDamage);
             }
 
-            if (!FMath::IsNearlyZero(FinalDamage)) {
+            const bool bShouldEmitOutput = (Binding.ModOp == EGameplayModOp::Override) || !FMath::IsNearlyZero(FinalDamage);
+            if (bShouldEmitOutput) {
                 OutExecutionOutput.AddOutputModifier(FGameplayModifierEvaluatedData(Binding.TargetAttribute, Binding.ModOp, FinalDamage));
                 TotalCalculatedDamage += FinalDamage;
             }
 
-            GAME_LOG(Verbose, TEXT("【伤害计算】通道 [%s]: 基础伤害=%.2f, 计算后最终伤害=%.2f, 目标属性=[%s]。"),
+            GAME_GAS_LOG(LogGameDamage, Verbose, TEXT("【伤害计算】通道 [%s]: 基础伤害=%.2f, 计算后最终伤害=%.2f, 目标属性=[%s]。"),
                 *Binding.ChannelTag.ToString(), BaseDamage, FinalDamage, *Binding.TargetAttribute.GetName());
         }
 
@@ -69,66 +99,39 @@ void UGameDamageExecution::Execute_Implementation(const FGameplayEffectCustomExe
             OnPostExecuteChannels(ExecutionParams, TotalCalculatedDamage, EffectContext);
         }
 
-        GAME_LOG(Verbose, TEXT("【伤害计算】伤害计算执行完毕: 来源=[%s], 目标=[%s], 通道总计实际伤害=%.2f。"),
-            *GetNameSafe(SourceAbilitySystemComponent ? SourceAbilitySystemComponent->GetOwner() : nullptr),
-            *GetNameSafe(TargetAbilitySystemComponent ? TargetAbilitySystemComponent->GetOwner() : nullptr),
+        GAME_GAS_LOG(LogGameDamage, Verbose, TEXT("【伤害计算】伤害计算执行完毕: 来源=[%s], 目标=[%s], 通道总计实际伤害=%.2f。"),
+            *GetNameSafe(SourceASC != nullptr ? SourceASC->GetOwner() : nullptr),
+            *GetNameSafe(TargetASC != nullptr ? TargetASC->GetOwner() : nullptr),
             TotalCalculatedDamage);
     });
 }
 
 /**
- * @brief 运行期注册通道绑定（任意系统可调用，线程安全）
- * @param InExecutionClass 归属的 ExecCalc 类
- * @param InChannelTag 伤害通道标签
- * @param InTargetAttribute 目标输出元属性
- * @param InModOp 修饰操作
- * @return 注册成功返回 true
- */
-bool UGameDamageExecution::RegisterRuntimeChannelBinding(
-    UClass* InExecutionClass,
-    const FGameplayTag& InChannelTag,
-    const FGameplayAttribute& InTargetAttribute,
-    EGameplayModOp::Type InModOp
-) {
-    if (InExecutionClass == nullptr || !InChannelTag.IsValid() || !InTargetAttribute.IsValid()) {
-        GAME_LOG(Warning, TEXT("【伤害通道】运行期注册被拒：ExecCalc 类、通道标签或目标属性无效。"));
-        return false;
-    }
-
-    FGameDamageChannelRegistry::Get().Register(InExecutionClass, FDamageChannelBinding(InChannelTag, InTargetAttribute, InModOp));
-    GAME_LOG(Log, TEXT("【伤害通道】成功注册运行期绑定: 类=[%s], 通道=[%s], 目标属性=[%s]。"),
-        *InExecutionClass->GetName(), *InChannelTag.ToString(), *InTargetAttribute.GetName());
-    return true;
-}
-
-/**
- * @brief 运行期注销通道绑定
- * @param InExecutionClass 归属的 ExecCalc 类
- * @param InChannelTag 伤害通道标签
- * @return 注销成功返回 true
- */
-bool UGameDamageExecution::UnregisterRuntimeChannelBinding(UClass* InExecutionClass, const FGameplayTag& InChannelTag) {
-    return FGameDamageChannelRegistry::Get().Unregister(InExecutionClass, InChannelTag);
-}
-
-/**
- * @brief 注册具体捕获属性（受击端属性）
+ * @brief 注册受击端捕获属性
  * @param InAttribute 目标属性
  * @param OutDefinition 子类成员捕获定义
  * @param bSnapshot 是否在 GE 施加前快照
  */
-void UGameDamageExecution::RegisterTargetAttribute(const FGameplayAttribute& InAttribute, FGameplayEffectAttributeCaptureDefinition& OutDefinition, bool bSnapshot) {
+void UGameDamageExecution::RegisterTargetAttribute(
+    const FGameplayAttribute& InAttribute,
+    FGameplayEffectAttributeCaptureDefinition& OutDefinition,
+    bool bSnapshot
+) {
     OutDefinition = FGameplayEffectAttributeCaptureDefinition(InAttribute, EGameplayEffectAttributeCaptureSource::Target, bSnapshot);
     RelevantAttributesToCapture.AddUnique(OutDefinition);
 }
 
 /**
- * @brief 注册攻击端具体捕获属性
- * @param InAttribute 目标属性
+ * @brief 注册攻击端捕获属性
+ * @param InAttribute 来源属性
  * @param OutDefinition 子类成员捕获定义
  * @param bSnapshot 是否在 GE 施加前快照
  */
-void UGameDamageExecution::RegisterSourceAttribute(const FGameplayAttribute& InAttribute, FGameplayEffectAttributeCaptureDefinition& OutDefinition, bool bSnapshot) {
+void UGameDamageExecution::RegisterSourceAttribute(
+    const FGameplayAttribute& InAttribute,
+    FGameplayEffectAttributeCaptureDefinition& OutDefinition,
+    bool bSnapshot
+) {
     OutDefinition = FGameplayEffectAttributeCaptureDefinition(InAttribute, EGameplayEffectAttributeCaptureSource::Source, bSnapshot);
     RelevantAttributesToCapture.AddUnique(OutDefinition);
 }
@@ -139,11 +142,15 @@ void UGameDamageExecution::RegisterSourceAttribute(const FGameplayAttribute& InA
  * @param TargetAttribute 目标输出元属性
  * @param ModOp 修饰操作
  */
-void UGameDamageExecution::RegisterChannelBinding(const FGameplayTag& ChannelTag, const FGameplayAttribute& TargetAttribute, EGameplayModOp::Type ModOp) {
+void UGameDamageExecution::RegisterChannelBinding(
+    const FGameplayTag& ChannelTag,
+    const FGameplayAttribute& TargetAttribute,
+    EGameplayModOp::Type ModOp
+) {
     if (!ChannelTag.IsValid() || !TargetAttribute.IsValid()) {
         return;
     }
-    FGameDamageChannelRegistry::Get().Register(GetClass(), FDamageChannelBinding(ChannelTag, TargetAttribute, ModOp));
+    (void)FGameDamageChannelRegistry::Get().Register(GetClass(), FDamageChannelBinding(ChannelTag, TargetAttribute, ModOp));
 }
 
 /**
@@ -152,7 +159,10 @@ void UGameDamageExecution::RegisterChannelBinding(const FGameplayTag& ChannelTag
  * @param InExecutionParams 结算参数
  * @return 若应执行演算返回 true
  */
-bool UGameDamageExecution::ShouldExecuteChannel(const FGameplayTag& ChannelTag, const FGameplayEffectCustomExecutionParameters& InExecutionParams) const {
+bool UGameDamageExecution::ShouldExecuteChannel(
+    const FGameplayTag& ChannelTag,
+    const FGameplayEffectCustomExecutionParameters& InExecutionParams
+) const {
     return InExecutionParams.GetOwningSpec().SetByCallerTagMagnitudes.Contains(ChannelTag);
 }
 
@@ -162,7 +172,10 @@ bool UGameDamageExecution::ShouldExecuteChannel(const FGameplayTag& ChannelTag, 
  * @param InExecutionParams 结算参数
  * @return 基础伤害
  */
-float UGameDamageExecution::GetChannelBaseDamage(const FGameplayTag& ChannelTag, const FGameplayEffectCustomExecutionParameters& InExecutionParams) const {
+float UGameDamageExecution::GetChannelBaseDamage(
+    const FGameplayTag& ChannelTag,
+    const FGameplayEffectCustomExecutionParameters& InExecutionParams
+) const {
     return InExecutionParams.GetOwningSpec().GetSetByCallerMagnitude(ChannelTag, false, 0.0f);
 }
 
@@ -170,8 +183,8 @@ float UGameDamageExecution::GetChannelBaseDamage(const FGameplayTag& ChannelTag,
  * @brief 全功能通道修饰演算钩子（倍率 + 固定加减 + 覆写）
  * @param ChannelTag 当前通道
  * @param BaseDamage 基础伤害
- * @param SourceTags 攻击端标签集
- * @param TargetTags 受击端标签集
+ * @param SourceTags 攻击端聚合标签集
+ * @param TargetTags 受击端聚合标签集
  * @param ExecutionParams 原始结算上下文
  * @return 伤害修饰结果
  */

@@ -16,6 +16,8 @@
 #include "Feedback/GameFeedbackSignal.h"
 #include "GameFramework/Actor.h"
 #include "GameplayTagsManager.h"
+#include "Misc/ScopeExit.h"
+#include "Tests/AGameFeedbackTestActor.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameGameplayFeedbackAdapterTest,
@@ -24,19 +26,22 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证伤害上下文与结算结果到表现信号的字段适配、主通道选取、致死状态与目标回退逻辑
+ * @brief 验证伤害上下文与结算结果到表现信号的字段适配、主通道选取、致死状态、非零速度冲击方向与目标回退逻辑
  * @param Parameters 自动化测试参数
  * @return 全部断言通过返回 true
  */
 bool FGameGameplayFeedbackAdapterTest::RunTest([[maybe_unused]] const FString& Parameters) {
     UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
     TestNotNull(TEXT("测试世界有效"), World);
-    if (!World) {
+    if (World == nullptr) {
         return false;
     }
+    ON_SCOPE_EXIT {
+        World->DestroyWorld(false);
+    };
 
     AActor* Instigator = World->SpawnActor<AActor>();
-    AActor* DamageCauser = World->SpawnActor<AActor>();
+    AGameFeedbackTestActor* DamageCauser = World->SpawnActor<AGameFeedbackTestActor>();
     AActor* Target = World->SpawnActor<AActor>();
 
     const FGameplayTag SlashTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Damage.Test.Adapter.Slash")));
@@ -52,30 +57,32 @@ bool FGameGameplayFeedbackAdapterTest::RunTest([[maybe_unused]] const FString& P
 
     FGameDamageResult Result;
     Result.SetActualDamage(150.0f);
-    FGameDamageChannel::SetExact(Result.ActualChannels, SlashTag, 100.0f);
-    FGameDamageChannel::SetExact(Result.ActualChannels, BluntTag, 50.0f);
+    Result.SetActualChannelDamage(SlashTag, 100.0f);
+    Result.SetActualChannelDamage(BluntTag, 50.0f);
     Result.AddFeedbackTag(TAG_Feedback_State_Lethal);
 
     FGameFeedbackSignal Signal = UGameFeedbackAdapter::MakeSignalFromDamage(Target, Context, Result);
     TestEqual(TEXT("显式传入 Target 必须准确绑定"), Signal.Target.Get(), Target);
     TestEqual(TEXT("Instigator 必须准确绑定"), Signal.Instigator.Get(), Instigator);
-    TestEqual(TEXT("DamageCauser 必须准确绑定"), Signal.DamageCauser.Get(), DamageCauser);
+    TestEqual(TEXT("DamageCauser 必须准确绑定"), Signal.DamageCauser.Get(), static_cast<AActor*>(DamageCauser));
     TestEqual(TEXT("主导通道应选择实际伤害最大的通道 (Slash)"), Signal.PrimaryChannel, SlashTag);
     TestEqual(TEXT("伤害总值应当精确传递"), Signal.Magnitude, 150.0f);
     TestTrue(TEXT("包含致死标签时 bLethal 必须为 true"), Signal.bLethal);
     TestEqual(TEXT("无速度 DamageCauser 回落至碰撞法线作为冲击方向"), Signal.ImpactDirection, FVector::UpVector);
     TestEqual(TEXT("轨迹方向应按 TraceEnd - TraceStart 归一化保留"), Signal.TraceDirection, FVector::ForwardVector);
 
+    DamageCauser->SimulatedVelocity = FVector(0.0f, 300.0f, 0.0f);
+    Signal = UGameFeedbackAdapter::MakeSignalFromDamage(Target, Context, Result);
+    TestEqual(TEXT("非零速度 DamageCauser 优先取速度归一化向量作为冲击方向"), Signal.ImpactDirection, FVector::RightVector);
+
     Context.DamageCauser = nullptr;
     Context.HitResult = FHitResult(Target, nullptr, FVector::ZeroVector, FVector::RightVector);
-    Result.FeedbackTags.RemoveTag(TAG_Feedback_State_Lethal);
+    Result.RemoveFeedbackTag(TAG_Feedback_State_Lethal);
     Signal = UGameFeedbackAdapter::MakeSignalFromDamage(nullptr, Context, Result);
     TestEqual(TEXT("缺省 Target 时应从 HitResult 提取目标"), Signal.Target.Get(), Target);
     TestEqual(TEXT("空 DamageCauser 应使用 ImpactNormal"), Signal.ImpactDirection, FVector::RightVector);
     TestFalse(TEXT("无致死标签时 bLethal 必须为 false"), Signal.bLethal);
 
-    World->DestroyWorld(false);
-    World->RemoveFromRoot();
     return true;
 }
 

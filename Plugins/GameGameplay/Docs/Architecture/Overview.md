@@ -16,7 +16,7 @@ graph TD
     subgraph FrameworkLayer["GameGameplay 框架层 (机制无关业务数据)"]
         Bootstrap["UGameAbilitySystemBootstrap<br>(全时序自动握手 / 幂等重试门)"]
         ExecCalc["UGameDamageExecution<br>(动态通道化伤害结算)"]
-        AttrSet["UGameBaseAttributeSet<br>(通用属性集基类 / 钳制 / 阈值闩 / 增量搬运)"]
+        AttrSet["UGameBaseAttributeSet<br>(通用属性集基类 / 元属性归位 / 阈值闩 / 安全增量)"]
         Mapping["UGameplayAttributeValueMapping<br>(UI 属性解耦映射)"]
         BuffBridge["UGameGasBuffBridge<br>(GAS Buff 统一入口)"]
         ChannelRegistry["FGameDamageChannelRegistry<br>(运行时通道绑定)"]

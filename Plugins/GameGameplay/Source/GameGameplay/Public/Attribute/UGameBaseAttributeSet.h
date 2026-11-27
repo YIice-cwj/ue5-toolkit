@@ -2,10 +2,10 @@
  * @file UGameBaseAttributeSet.h
  * @brief 属性集通用基类（纯机制支撑 · 零具体业务属性假设）
  *
- * 设计思路：框架层只承载"无业务字面"的纯通用机制——属性上下限钳制、阈值标签幂等闩、
+ * 设计思路：框架层只承载"无业务字面"的纯通用机制——阈值标签幂等闩（BroadcastThresholdOnce / ResetThreshold）、
  * 元属性数值提取归零（MoveMetaAttribute）、以及增量落地搬运（ApplyAttributeToLocal）；
- * 彻底剥离任何具体游戏属性（如生命值、护盾、物理伤害、法术伤害等）；
- * 所有业务属性与元属性 100% 由游戏项目派生子类（如 UHeroAttributeSet）自由声明与编排。
+ * 彻底剥离任何具体游戏属性与冗余数值钳制包装（数值钳制统一使用引擎原生 FMath::Clamp）；
+ * 所有业务属性与元属性 100% 由游戏项目派生子类自由声明与编排。
  */
 
 #pragma once
@@ -27,33 +27,25 @@ class GAMEGAMEPLAY_API UGameBaseAttributeSet : public UAttributeSet {
 
 public:
     /**
-     * @brief 属性上下限钳制（框架层唯一钳制入口 · 强制内联）
-     * @param InValue 待钳制数值
-     * @param InMin 下限
-     * @param InMax 上限
-     * @return 钳制后的数值
-     */
-    [[nodiscard]] FORCEINLINE static float ClampAttribute(float InValue, float InMin, float InMax) noexcept {
-        return FMath::Clamp(InValue, InMin, InMax);
-    }
-
-    /**
-     * @brief 阈值幂等闩：标签未授予则授予并返回 true（本轮首次达阈，调用方据此广播一次）
+     * @brief 阈值幂等闩：标签有效且未授予则授予松标签并返回 true（本轮首次达阈，调用方据此广播一次）
      * @param InAbilitySystemComponent 目标 ASC
-     * @param InThresholdTag 临界状态标签
+     * @param InThresholdTag 临界状态标签（无效时直接返回 false）
      * @return 是否为本轮首次达阈
-     *
-     * 实现思路：ASC 缺失或已持有该标签时返回 false，未持有则授予松标签并返回 true；
-     * 松标签不参与复制，故本闩为服务端幂等语义，客户端表现随状态复制在表现层落地
      */
-    [[nodiscard]] static bool BroadcastThresholdOnce(UAbilitySystemComponent* InAbilitySystemComponent, const FGameplayTag& InThresholdTag);
+    [[nodiscard]] static bool BroadcastThresholdOnce(
+        UAbilitySystemComponent* InAbilitySystemComponent,
+        const FGameplayTag& InThresholdTag
+    );
 
     /**
-     * @brief 重置阈值幂等闩：若 ASC 持有该阈值标签则移除，使后续可再次触发
+     * @brief 重置阈值幂等闩：若 ASC 持有该有效阈值标签则移除，使后续可再次触发
      * @param InAbilitySystemComponent 目标 ASC
      * @param InThresholdTag 临界状态标签
      */
-    static void ResetThreshold(UAbilitySystemComponent* InAbilitySystemComponent, const FGameplayTag& InThresholdTag);
+    static void ResetThreshold(
+        UAbilitySystemComponent* InAbilitySystemComponent,
+        const FGameplayTag& InThresholdTag
+    );
 
     /**
      * @brief 提取元属性当前数值并立即清零归位（避免元属性在下一结算帧残留 · 强制内联）
@@ -68,10 +60,14 @@ public:
     }
 
     /**
-     * @brief 将增量搬运落地至目标属性（框架层唯一属性增量写入入口）
+     * @brief 将有限浮点增量搬运落地至目标属性基础值（无效属性或 NaN/Inf 自动拦截）
      * @param InAbilitySystemComponent 目标 ASC
      * @param InTargetAttribute 落地目标属性
-     * @param InDelta 增量（伤害轨传负值表示扣减）
+     * @param InDelta 有限浮点增量（伤害轨传负值表示扣减）
      */
-    static void ApplyAttributeToLocal(UAbilitySystemComponent* InAbilitySystemComponent, const FGameplayAttribute& InTargetAttribute, float InDelta);
+    static void ApplyAttributeToLocal(
+        UAbilitySystemComponent* InAbilitySystemComponent,
+        const FGameplayAttribute& InTargetAttribute,
+        float InDelta
+    );
 };

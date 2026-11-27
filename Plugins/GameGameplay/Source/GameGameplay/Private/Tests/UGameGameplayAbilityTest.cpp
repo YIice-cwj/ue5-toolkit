@@ -1,6 +1,6 @@
 /**
  * @file UGameGameplayAbilityTest.cpp
- * @brief GAS 能力基类（实例化策略、阻断状态标签否决、触发来源解析与复制）自动化测试套件
+ * @brief GAS 能力基类（实例化/复制策略、阻断状态标签零分配收集、触发来源解析与结束复位）自动化测试套件
  */
 
 #include "Ability/UGameGameplayAbility.h"
@@ -8,8 +8,10 @@
 #if WITH_AUTOMATION_TESTS
 
 #include "Ability/UGameAbilitySystemComponent.h"
+#include "Engine/World.h"
 #include "GameplayTagsManager.h"
 #include "Misc/AutomationTest.h"
+#include "Misc/ScopeExit.h"
 #include "UObject/Package.h"
 #include "UObject/UnrealType.h"
 
@@ -20,7 +22,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证 CDO 默认实例化策略（InstancedPerActor）与网络复制策略（ReplicateYes）
+ * @brief 验证 CDO 默认实例化策略（InstancedPerActor）与复制策略（ReplicateNo，零多余 Subobject 复制开销）
  * @param Parameters 自动化测试参数
  * @return 测试是否通过
  */
@@ -31,10 +33,14 @@ bool FGameGameplayAbilityPolicyTest::RunTest([[maybe_unused]] const FString& Par
         return false;
     }
 
-    TestTrue(TEXT("默认实例化策略为 InstancedPerActor 以支持网络复制"),
-        CDO->GetInstancingPolicy() == EGameplayAbilityInstancingPolicy::InstancedPerActor);
-    TestTrue(TEXT("默认网络复制策略为 ReplicateYes"),
-        CDO->GetReplicationPolicy() == EGameplayAbilityReplicationPolicy::ReplicateYes);
+    TestTrue(
+        TEXT("默认实例化策略为 InstancedPerActor"),
+        CDO->GetInstancingPolicy() == EGameplayAbilityInstancingPolicy::InstancedPerActor
+    );
+    TestTrue(
+        TEXT("默认网络复制策略为 ReplicateNo（消除全项目 Subobject 复制开销）"),
+        CDO->GetReplicationPolicy() == EGameplayAbilityReplicationPolicy::ReplicateNo
+    );
     return true;
 }
 
@@ -45,18 +51,30 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证致死等状态标签阻断、相关标签收集、触发事件来源解析及属性网络复制注册
+ * @brief 验证多状态阻断标签精准收集、边界空指针安全、触发来源解析与 EndAbility 触发源复位
  * @param Parameters 自动化测试参数
  * @return 测试是否通过
  */
 bool FGameGameplayAbilityActivationTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    AActor* DummyActor = NewObject<AActor>(GetTransientPackage());
+    UWorld* TestWorld = UWorld::CreateWorld(EWorldType::Game, false);
+    TestNotNull(TEXT("能力测试世界有效"), TestWorld);
+    if (TestWorld == nullptr) {
+        return false;
+    }
+    ON_SCOPE_EXIT {
+        TestWorld->DestroyWorld(false);
+    };
+
+    AActor* DummyActor = TestWorld->SpawnActor<AActor>();
     UGameAbilitySystemComponent* ASC = NewObject<UGameAbilitySystemComponent>(DummyActor);
+    DummyActor->AddInstanceComponent(ASC);
+    ASC->RegisterComponent();
     ASC->InitAbilityActorInfo(DummyActor, DummyActor);
 
     struct FScopedClearAbstract {
         UClass* ClassToModify;
-        explicit FScopedClearAbstract(UClass* InClass) : ClassToModify(InClass) {
+        explicit FScopedClearAbstract(UClass* InClass)
+            : ClassToModify(InClass) {
             ClassToModify->ClassFlags &= ~CLASS_Abstract;
         }
         ~FScopedClearAbstract() {
@@ -90,6 +108,7 @@ bool FGameGameplayAbilityActivationTest::RunTest([[maybe_unused]] const FString&
     }
 
     TestTrue(TEXT("无阻断标签时激活允许"), AbilityInstance->CanActivateAbility(AbilityHandle, ActorInfo));
+    TestFalse(TEXT("ActorInfo 为空时基类判定拒绝激活"), AbilityInstance->CanActivateAbility(AbilityHandle, nullptr));
 
     FStructProperty* BlockingTagsProp = FindFProperty<FStructProperty>(
         UGameGameplayAbility::StaticClass(),
@@ -113,44 +132,84 @@ bool FGameGameplayAbilityActivationTest::RunTest([[maybe_unused]] const FString&
     );
 
     const FGameplayTag DeathTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("State.Test.AbilityDead")));
+    const FGameplayTag StunTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("State.Test.AbilityStun")));
+    const FGameplayTag SilenceTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("State.Test.AbilitySilence")));
     const FGameplayTag AITag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Event.Test.AbilityAI")));
     const FGameplayTag OtherTag = UGameplayTagsManager::Get().AddNativeGameplayTag(FName(TEXT("Event.Test.AbilityOther")));
 
     BlockingTags.AddTag(DeathTag);
+    BlockingTags.AddTag(StunTag);
+    BlockingTags.AddTag(SilenceTag);
     TriggerTagMap.Add(AITag, EGameAbilityTriggerSource::AI);
 
-    TestTrue(TEXT("宿主未持有致死标签时激活允许"), AbilityInstance->CanActivateAbility(AbilityHandle, ActorInfo));
+    TestTrue(TEXT("宿主未持有阻断标签时激活允许"), AbilityInstance->CanActivateAbility(AbilityHandle, ActorInfo));
 
     ASC->AddLooseGameplayTag(DeathTag);
+    ASC->AddLooseGameplayTag(StunTag);
     FGameplayTagContainer RelevantTags;
-    TestFalse(TEXT("宿主持有致死标签时否决激活"), AbilityInstance->CanActivateAbility(AbilityHandle, ActorInfo, nullptr, nullptr, &RelevantTags));
-    TestTrue(TEXT("相关标签中收集到致死标签"), RelevantTags.HasTag(DeathTag));
-    TestFalse(TEXT("无相关标签输出参数时同样正确否决"), AbilityInstance->CanActivateAbility(AbilityHandle, ActorInfo, nullptr, nullptr, nullptr));
+    TestFalse(
+        TEXT("宿主持有阻断标签时否决激活"),
+        AbilityInstance->CanActivateAbility(AbilityHandle, ActorInfo, nullptr, nullptr, &RelevantTags)
+    );
+    TestTrue(TEXT("精准收集到命中的致死标签"), RelevantTags.HasTag(DeathTag));
+    TestTrue(TEXT("精准收集到命中的眩晕标签"), RelevantTags.HasTag(StunTag));
+    TestFalse(TEXT("未持有的沉默标签不误入 RelevantTags"), RelevantTags.HasTag(SilenceTag));
+    TestFalse(
+        TEXT("无相关标签输出参数时同样正确否决"),
+        AbilityInstance->CanActivateAbility(AbilityHandle, ActorInfo, nullptr, nullptr, nullptr)
+    );
 
     ASC->RemoveLooseGameplayTag(DeathTag);
-    TestTrue(TEXT("移除致死标签后恢复激活允许"), AbilityInstance->CanActivateAbility(AbilityHandle, ActorInfo));
-
-    TArray<FLifetimeProperty> LifetimeProps;
-    AbilityInstance->GetLifetimeReplicatedProps(LifetimeProps);
-    TestTrue(TEXT("能力注册网络复制属性列表非空"), LifetimeProps.Num() > 0);
+    ASC->RemoveLooseGameplayTag(StunTag);
+    TestTrue(TEXT("移除阻断标签后恢复激活允许"), AbilityInstance->CanActivateAbility(AbilityHandle, ActorInfo));
 
     FGameplayAbilityActivationInfo ActivationInfo;
-
     AbilityInstance->ActivateAbility(AbilityHandle, ActorInfo, ActivationInfo, nullptr);
     TestTrue(TEXT("空事件数据解析为 Input"), AbilityInstance->GetTriggerSource() == EGameAbilityTriggerSource::Input);
 
     FGameplayEventData AIEvent;
     AIEvent.EventTag = AITag;
-    AbilityInstance->ActivateAbility(AbilityHandle, ActorInfo, ActivationInfo, &AIEvent);
+    EGameAbilityTriggerSource SourceObservedDuringEndCallback = EGameAbilityTriggerSource::Input;
+    int32 EndCallbackCount = 0;
+    const FDelegateHandle EndDelegateHandle = AbilityInstance->OnGameplayAbilityEnded.AddLambda(
+        [&SourceObservedDuringEndCallback, &EndCallbackCount](UGameplayAbility* EndedAbility) {
+            if (const UGameGameplayAbility* GameAbility = Cast<UGameGameplayAbility>(EndedAbility)) {
+                SourceObservedDuringEndCallback = GameAbility->GetTriggerSource();
+            }
+            ++EndCallbackCount;
+        }
+    );
+
+    const bool bTriggeredByEvent = ASC->TriggerAbilityFromGameplayEvent(
+        AbilityHandle,
+        ASC->AbilityActorInfo.Get(),
+        AITag,
+        &AIEvent,
+        *ASC
+    );
+    TestTrue(TEXT("通过 GameplayEvent 真实激活能力成功"), bTriggeredByEvent);
     TestTrue(TEXT("命中映射表解析为 AI"), AbilityInstance->GetTriggerSource() == EGameAbilityTriggerSource::AI);
+    TestTrue(TEXT("事件激活后能力处于活跃状态"), AbilityInstance->IsActive());
+
+    AbilityInstance->EndAbility(AbilityHandle, ActorInfo, AbilityInstance->GetCurrentActivationInfo(), false, false);
+    AbilityInstance->OnGameplayAbilityEnded.Remove(EndDelegateHandle);
+    TestEqual(TEXT("EndAbility 回调触发 1 次"), EndCallbackCount, 1);
+    TestTrue(
+        TEXT("EndAbility 回调期间仍可观测到本次真实触发来源 AI（绝不提前清零）"),
+        SourceObservedDuringEndCallback == EGameAbilityTriggerSource::AI
+    );
+    TestFalse(TEXT("EndAbility 后能力不再活跃"), AbilityInstance->IsActive());
+    TestTrue(TEXT("EndAbility 全部结束后触发来源复位为 Input"), AbilityInstance->GetTriggerSource() == EGameAbilityTriggerSource::Input);
 
     FGameplayEventData OtherEvent;
     OtherEvent.EventTag = OtherTag;
     AbilityInstance->ActivateAbility(AbilityHandle, ActorInfo, ActivationInfo, &OtherEvent);
     TestTrue(TEXT("未在映射表中回落为 Effect"), AbilityInstance->GetTriggerSource() == EGameAbilityTriggerSource::Effect);
 
+    AbilityInstance->EndAbility(AbilityHandle, ActorInfo, ActivationInfo, false, true);
+    TestTrue(TEXT("非活跃结束调用后触发来源同样复位为 Input"), AbilityInstance->GetTriggerSource() == EGameAbilityTriggerSource::Input);
+
     return true;
 }
 
 #endif  // WITH_AUTOMATION_TESTS
-

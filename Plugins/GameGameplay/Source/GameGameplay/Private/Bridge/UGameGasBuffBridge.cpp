@@ -7,43 +7,67 @@
 
 #include "AbilitySystemComponent.h"
 #include "Engine/World.h"
+#include "GameGameplayLog.h"
 #include "GameplayEffect.h"
-#include "Logging/GameLogCategories.h"
 
 /**
- * @brief 以 GameplayEffect 为载体施加 Buff
+ * @brief 以 GameplayEffect 为载体施加 Buff（支持异体 SourceASC -> TargetASC 施加）
  * @param InAbilitySystemComponent 目标 ASC
  * @param InBuffEffectClass Buff 使用的 GameplayEffect 类
  * @param InLevel 效果等级
  * @param InSourceObject 施加来源对象
+ * @param InSourceASC 施法者 ASC（为空时回退至目标 ASC 自施加）
  * @return 激活效果句柄，失败返回无效句柄
  */
 FActiveGameplayEffectHandle UGameGasBuffBridge::ApplyBuffEffect(
     UAbilitySystemComponent* InAbilitySystemComponent,
     TSubclassOf<UGameplayEffect> InBuffEffectClass,
     int32 InLevel,
-    UObject* InSourceObject
+    UObject* InSourceObject,
+    UAbilitySystemComponent* InSourceASC
 ) {
     if (!IsValid(InAbilitySystemComponent) || InBuffEffectClass == nullptr) {
-        GAME_LOG(Warning, TEXT("【Buff 桥接】ASC 或 GameplayEffect 类无效，拒绝施加。"));
+        GAME_GAS_LOG(LogGameGasBridge, Warning, TEXT("【Buff 桥接】ASC 或 GameplayEffect 类无效，拒绝施加。"));
+        return FActiveGameplayEffectHandle();
+    }
+    if (InSourceASC != nullptr && !IsValid(InSourceASC)) {
+        GAME_GAS_LOG(LogGameGasBridge, Warning, TEXT("【Buff 桥接】显式传入的施法者 ASC 已失效，拒绝回退自施加。"));
         return FActiveGameplayEffectHandle();
     }
 
-    FGameplayEffectContextHandle EffectContext = InAbilitySystemComponent->MakeEffectContext();
+    UAbilitySystemComponent* EffectiveSourceASC = InSourceASC != nullptr ? InSourceASC : InAbilitySystemComponent;
+    if (!InAbilitySystemComponent->AbilityActorInfo.IsValid()
+        || !EffectiveSourceASC->AbilityActorInfo.IsValid()
+        || InAbilitySystemComponent->GetWorld() == nullptr) {
+        GAME_GAS_LOG(LogGameGasBridge, Warning, TEXT("【Buff 桥接】ASC 尚未初始化 AbilityActorInfo 或缺少有效 World，拒绝施加。"));
+        return FActiveGameplayEffectHandle();
+    }
+
+    FGameplayEffectContextHandle EffectContext = EffectiveSourceASC->MakeEffectContext();
     if (InSourceObject != nullptr) {
         EffectContext.AddSourceObject(InSourceObject);
     }
 
-    const FGameplayEffectSpecHandle SpecHandle = InAbilitySystemComponent->MakeOutgoingSpec(InBuffEffectClass, InLevel, EffectContext);
+    const FGameplayEffectSpecHandle SpecHandle = EffectiveSourceASC->MakeOutgoingSpec(InBuffEffectClass, static_cast<float>(InLevel), EffectContext);
     if (!SpecHandle.IsValid()) {
-        GAME_LOG(Warning, TEXT("【Buff 桥接】GameplayEffectSpec 构建失败: %s"), *InBuffEffectClass->GetName());
+        GAME_GAS_LOG(LogGameGasBridge, Warning, TEXT("【Buff 桥接】GameplayEffectSpec 构建失败: %s"), *InBuffEffectClass->GetName());
         return FActiveGameplayEffectHandle();
     }
 
-    const FActiveGameplayEffectHandle AppliedHandle = InAbilitySystemComponent->ApplyGameplayEffectSpecToSelf(*SpecHandle.Data.Get());
+    const FActiveGameplayEffectHandle AppliedHandle = EffectiveSourceASC == InAbilitySystemComponent
+        ? InAbilitySystemComponent->ApplyGameplayEffectSpecToSelf(*SpecHandle.Data.Get())
+        : EffectiveSourceASC->ApplyGameplayEffectSpecToTarget(*SpecHandle.Data.Get(), InAbilitySystemComponent);
+
     if (AppliedHandle.IsValid()) {
-        GAME_LOG(Verbose, TEXT("【Buff 桥接】成功桥接施加 GameplayEffect: 类=[%s], 等级=%d, 目标=[%s]。"),
-            *InBuffEffectClass->GetName(), InLevel, *GetNameSafe(InAbilitySystemComponent->GetOwner()));
+        GAME_GAS_LOG(
+            LogGameGasBridge,
+            Verbose,
+            TEXT("【Buff 桥接】成功桥接施加 GameplayEffect: 类=[%s], 等级=%d, 来源=[%s], 目标=[%s]。"),
+            *InBuffEffectClass->GetName(),
+            InLevel,
+            *GetNameSafe(EffectiveSourceASC->GetOwner()),
+            *GetNameSafe(InAbilitySystemComponent->GetOwner())
+        );
     }
     return AppliedHandle;
 }
@@ -55,15 +79,24 @@ FActiveGameplayEffectHandle UGameGasBuffBridge::ApplyBuffEffect(
  * @param StacksToRemove 移除层数（-1 表示移除全部层数）
  * @return 是否移除成功
  */
-bool UGameGasBuffBridge::RemoveBuffEffect(UAbilitySystemComponent* InAbilitySystemComponent, FActiveGameplayEffectHandle InHandle, int32 StacksToRemove) {
+bool UGameGasBuffBridge::RemoveBuffEffect(
+    UAbilitySystemComponent* InAbilitySystemComponent,
+    FActiveGameplayEffectHandle InHandle,
+    int32 StacksToRemove
+) {
     if (!IsValid(InAbilitySystemComponent) || !InHandle.IsValid()) {
         return false;
     }
 
     const bool bSuccess = InAbilitySystemComponent->RemoveActiveGameplayEffect(InHandle, StacksToRemove);
     if (bSuccess) {
-        GAME_LOG(Verbose, TEXT("【Buff 桥接】成功移除 GameplayEffect: 目标=[%s], 扣减层数=%d。"),
-            *GetNameSafe(InAbilitySystemComponent->GetOwner()), StacksToRemove);
+        GAME_GAS_LOG(
+            LogGameGasBridge,
+            Verbose,
+            TEXT("【Buff 桥接】成功移除 GameplayEffect: 目标=[%s], 扣减层数=%d。"),
+            *GetNameSafe(InAbilitySystemComponent->GetOwner()),
+            StacksToRemove
+        );
     }
     return bSuccess;
 }
@@ -74,7 +107,10 @@ bool UGameGasBuffBridge::RemoveBuffEffect(UAbilitySystemComponent* InAbilitySyst
  * @param InHandle 激活效果句柄
  * @return 仍激活返回 true
  */
-bool UGameGasBuffBridge::IsBuffEffectActive(UAbilitySystemComponent* InAbilitySystemComponent, FActiveGameplayEffectHandle InHandle) {
+bool UGameGasBuffBridge::IsBuffEffectActive(
+    const UAbilitySystemComponent* InAbilitySystemComponent,
+    FActiveGameplayEffectHandle InHandle
+) {
     if (!IsValid(InAbilitySystemComponent) || !InHandle.IsValid()) {
         return false;
     }
@@ -88,7 +124,10 @@ bool UGameGasBuffBridge::IsBuffEffectActive(UAbilitySystemComponent* InAbilitySy
  * @param InHandle 激活效果句柄
  * @return 当前叠层数，未激活返回 0
  */
-int32 UGameGasBuffBridge::GetBuffStackCount(UAbilitySystemComponent* InAbilitySystemComponent, FActiveGameplayEffectHandle InHandle) {
+int32 UGameGasBuffBridge::GetBuffStackCount(
+    const UAbilitySystemComponent* InAbilitySystemComponent,
+    FActiveGameplayEffectHandle InHandle
+) {
     if (!IsValid(InAbilitySystemComponent) || !InHandle.IsValid()) {
         return 0;
     }
@@ -101,9 +140,12 @@ int32 UGameGasBuffBridge::GetBuffStackCount(UAbilitySystemComponent* InAbilitySy
  * @brief 获取指定 Buff 效果的剩余持续时长（秒）
  * @param InAbilitySystemComponent 目标 ASC
  * @param InHandle 激活效果句柄
- * @return 剩余持续时长，未激活返回 0.0f
+ * @return 剩余持续时长（秒）；无限时长恒返回 -1.0f，未激活或有限时长且无 World 返回 0.0f
  */
-float UGameGasBuffBridge::GetBuffRemainingTime(UAbilitySystemComponent* InAbilitySystemComponent, FActiveGameplayEffectHandle InHandle) {
+float UGameGasBuffBridge::GetBuffRemainingTime(
+    const UAbilitySystemComponent* InAbilitySystemComponent,
+    FActiveGameplayEffectHandle InHandle
+) {
     if (!IsValid(InAbilitySystemComponent) || !InHandle.IsValid()) {
         return 0.0f;
     }
@@ -111,6 +153,9 @@ float UGameGasBuffBridge::GetBuffRemainingTime(UAbilitySystemComponent* InAbilit
     const FActiveGameplayEffect* ActiveGE = InAbilitySystemComponent->GetActiveGameplayEffect(InHandle);
     if (ActiveGE == nullptr) {
         return 0.0f;
+    }
+    if (ActiveGE->GetDuration() == FGameplayEffectConstants::INFINITE_DURATION) {
+        return FGameplayEffectConstants::INFINITE_DURATION;
     }
 
     const UWorld* World = InAbilitySystemComponent->GetWorld();
@@ -123,7 +168,10 @@ float UGameGasBuffBridge::GetBuffRemainingTime(UAbilitySystemComponent* InAbilit
  * @param InHandle 激活效果句柄
  * @return 总持续时长，无限时长返回 -1.0f，未激活返回 0.0f
  */
-float UGameGasBuffBridge::GetBuffDuration(UAbilitySystemComponent* InAbilitySystemComponent, FActiveGameplayEffectHandle InHandle) {
+float UGameGasBuffBridge::GetBuffDuration(
+    const UAbilitySystemComponent* InAbilitySystemComponent,
+    FActiveGameplayEffectHandle InHandle
+) {
     if (!IsValid(InAbilitySystemComponent) || !InHandle.IsValid()) {
         return 0.0f;
     }
