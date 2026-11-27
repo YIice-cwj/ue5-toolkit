@@ -1,6 +1,6 @@
 /**
  * @file FSpatialThrottleDriver.h
- * @brief 空间视锥与实体重要度心跳节流驱动器声明（O(1) 句柄索引、零热路径拷贝与双向迟滞带保护）
+ * @brief 空间视锥与实体重要度心跳节流驱动器声明（零热路径拷贝与双向迟滞带保护）
  */
 
 #pragma once
@@ -11,6 +11,20 @@
 #include "Throttle/FSpatialViewContext.h"
 
 class UThrottledTickerSubsystem;
+
+namespace Game::Spatial::Detail {
+
+    /**
+     * @brief 节流驱动器内部空间距离档位枚举
+     */
+    enum class ESpatialDistanceTier : uint8 {
+        Near = 0,
+        Mid = 1,
+        Far = 2,
+        OutOfRange = 3
+    };
+
+}  // namespace Game::Spatial::Detail
 
 /**
  * @brief 空间视锥与实体重要度节流驱动器
@@ -26,12 +40,7 @@ public:
     using FPositionGetter = TFunction<FVector()>;
 
 private:
-    enum class ESpatialDistanceTier : uint8 {
-        Near = 0,
-        Mid = 1,
-        Far = 2,
-        OutOfRange = 3
-    };
+    using ESpatialDistanceTier = Game::Spatial::Detail::ESpatialDistanceTier;
 
     struct FSpatialEntity {
         uint64 DriverHandle = 0ULL;
@@ -44,25 +53,9 @@ private:
         bool bPendingRemoval = false;
     };
 
-    struct FPrecomputedViewParams {
-        FVector ViewLocation = FVector::ZeroVector;
-        FVector SafeViewForward = FVector::ForwardVector;
-        double CosEnterFov = 0.0;
-        double CosEnterFovSq = 0.0;
-        double CosKeepFov = 0.0;
-        double CosKeepFovSq = 0.0;
-        double EffectiveMaxDistance = 0.0;
-        double DistMargin = 0.0;
-        bool bHasValidForward = false;
-        bool bHasValidRange = false;
-        bool bHasValidFov = false;
-        bool bFullEnterFov = false;
-        bool bFullKeepFov = false;
-    };
-
 public:
     /**
-     * @brief 构造函数：绑定纯 C++ 节流调度器实例
+     * @brief 构造函数：绑定纯 C++ 节流调度器实例（调用方须保证 InScheduler 生命周期长于本驱动器）
      * @param InScheduler 调度器引用
      */
     explicit FSpatialThrottleDriver(FThrottledTickScheduler& InScheduler);
@@ -99,7 +92,7 @@ public:
     );
 
     /**
-     * @brief O(1) 注销指定空间实体（支持在 UpdateSpatialThrottle 回调中安全重入注销）
+     * @brief 注销指定空间实体（驱动器侧 O(1) 句柄索引移除并同步注销底层调度器心跳，支持更新期安全重入）
      * @param InEntityHandle 实体句柄
      * @return 成功注销返回 true，句柄无效或未注册返回 false
      */
@@ -151,19 +144,8 @@ public:
 
 private:
     [[nodiscard]] FThrottledTickScheduler* GetActiveScheduler() const noexcept;
-    [[nodiscard]] FPrecomputedViewParams BuildViewParams(const FSpatialViewContext& ViewContext) const noexcept;
-    [[nodiscard]] float EvaluateEntityTier(
-        const FSpatialEntity& Entry,
-        const FVector& EntityLocation,
-        const FPrecomputedViewParams& ViewParams,
-        ESpatialDistanceTier& OutTargetTier
-    ) const noexcept;
-    [[nodiscard]] double ComputeNearThreshold(ESpatialDistanceTier CurrentTier, double DistMargin) const noexcept;
-    [[nodiscard]] double ComputeMidThreshold(
-        ESpatialDistanceTier CurrentTier,
-        double NearThreshold,
-        double DistMargin
-    ) const noexcept;
+    [[nodiscard]] int32 FindPendingAdditionIndex(uint64 InEntityHandle) const noexcept;
+    void MarkInvalidEntityRemoved(FSpatialEntity& Entry, FThrottledTickScheduler& ActiveScheduler);
     void RemoveEntityAtImmediate(int32 Index);
     void CompactRemovedEntities();
     void FlushPendingAdditions();

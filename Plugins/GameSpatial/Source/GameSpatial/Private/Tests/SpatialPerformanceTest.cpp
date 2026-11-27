@@ -1,6 +1,6 @@
 /**
  * @file SpatialPerformanceTest.cpp
- * @brief GameSpatial 全组件热路径微基准性能测试套件（真实分布式数据、7 轮采样、防 DCE Sink 与 GameLogging 输出）
+ * @brief GameSpatial 全组件热路径与扩展性微基准性能测试套件（7 轮采样、防 DCE Sink 与 GameLogging 输出）
  */
 
 #include "Grid/TSpatialHashGrid2D.h"
@@ -10,21 +10,18 @@
 
 #if WITH_AUTOMATION_TESTS
 
-#include "Components/SceneComponent.h"
-#include "Engine/Engine.h"
-#include "Engine/World.h"
-#include "GameFramework/Actor.h"
 #include "HAL/PlatformTime.h"
 #include "Logging/GameLogCategories.h"
 #include "Math/UnrealMathUtility.h"
 #include "Misc/AutomationTest.h"
+#include "Tests/SpatialTestHelpers.h"
 
 namespace {
 
 constexpr int32 DefaultWarmupRounds = 2;
 constexpr int32 DefaultSampleRounds = 7;
 
-constexpr int32 GridUpdateIterations = 10000;
+constexpr int32 GridUpdateIterations = 50000;
 constexpr double GridSameCellUpdateBudgetNs = 500.0;
 constexpr double GridCrossCellUpdateBudgetNs = 1000.0;
 constexpr double GridChurnBudgetNs = 1200.0;
@@ -33,7 +30,9 @@ constexpr int32 GridQueryIterations = 10000;
 constexpr double GridQuery2DBudgetNs = 2500.0;
 constexpr double GridQuery3DBudgetNs = 3500.0;
 constexpr double GridNearestBudgetNs = 2500.0;
+constexpr double GridK32BudgetNs = 6000.0;
 constexpr double GridSparseHugeBudgetNs = 2500.0;
+constexpr double GridLargeScaleBudgetNs = 4000.0;
 
 constexpr int32 ThrottleEntityCount = 500;
 constexpr int32 ThrottleUpdateIterations = 1000;
@@ -42,35 +41,11 @@ constexpr double ThrottleDynamicBudgetNs = 30000.0;
 constexpr double ThrottleChurnBudgetNs = 1500.0;
 
 constexpr int32 SubsystemActorCount = 1000;
-constexpr int32 SubsystemUpdateIterations = 2000;
+constexpr int32 SubsystemUpdateIterations = 20000;
 constexpr double SubsystemUpdateBudgetNs = 2000.0;
 constexpr int32 SubsystemQueryIterations = 1000;
 constexpr double SubsystemQueryBudgetNs = 5000.0;
-
-UWorld* GetSubsystemBenchmarkWorld() {
-    if (GEngine == nullptr) {
-        return nullptr;
-    }
-    for (const FWorldContext& Context : GEngine->GetWorldContexts()) {
-        if (Context.World() != nullptr) {
-            return Context.World();
-        }
-    }
-    return nullptr;
-}
-
-AActor* SpawnSubsystemBenchmarkActor(UWorld* World, const FVector& Location) {
-    FActorSpawnParameters SpawnParams;
-    SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-    AActor* Actor = World->SpawnActor<AActor>(AActor::StaticClass(), FTransform(Location), SpawnParams);
-    if (Actor != nullptr) {
-        USceneComponent* RootComp = NewObject<USceneComponent>(Actor);
-        Actor->SetRootComponent(RootComp);
-        RootComp->RegisterComponent();
-        Actor->SetActorLocation(Location);
-    }
-    return Actor;
-}
+constexpr double SubsystemPruneBudgetNs = 150000.0;
 
 struct FBenchmarkMetrics {
     double MedianNs = 0.0;
@@ -155,7 +130,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 微基准：2D 空间网格真实同格/跨格更新、增删抖动及分布式千实体全几何查询
+ * @brief 微基准：2D 空间网格同格/跨格/高密度桶更新、增删抖动、千实体与五千实体全几何及 K=5/16/32 近邻
  * @param Parameters 自动化测试参数
  * @return 全部预算断言通过返回 true
  */
@@ -219,6 +194,25 @@ bool FSpatialHashGrid2DBenchmarkTest::RunTest([[maybe_unused]] const FString& Pa
         }
     );
     RecordBenchmarkResult(this, TEXT("2D Remove+Insert 往返"), ChurnMetrics, GridChurnBudgetNs);
+
+    TSpatialHashGrid2D<int32> DenseBucketGrid(500.0f);
+    constexpr int32 DenseCount = 64;
+    for (int32 Idx = 0; Idx < DenseCount; ++Idx) {
+        DenseBucketGrid.Insert(Idx, FVector2D(static_cast<double>(Idx) * 2.0, 10.0));
+    }
+    const FBenchmarkMetrics DenseBucketMetrics = RunBenchmarkRounds(
+        DefaultWarmupRounds,
+        DefaultSampleRounds,
+        GridUpdateIterations,
+        [&](int32 Iterations) {
+            for (int32 Step = 0; Step < Iterations; ++Step) {
+                const int32 Id = Step % DenseCount;
+                const double Offset = static_cast<double>(Step % 17) * 0.5 + 0.1;
+                DenseBucketGrid.Update(Id, FVector2D(static_cast<double>(Id) * 2.0 + Offset, 10.0));
+            }
+        }
+    );
+    RecordBenchmarkResult(this, TEXT("2D 高密度单桶 (64实体) O(1) 更新"), DenseBucketMetrics, GridSameCellUpdateBudgetNs);
 
     TSpatialHashGrid2D<int32> QueryGrid(500.0f);
     QueryGrid.Reserve(EntityCount);
@@ -304,6 +298,24 @@ bool FSpatialHashGrid2DBenchmarkTest::RunTest([[maybe_unused]] const FString& Pa
     );
     RecordBenchmarkResult(this, TEXT("2D 分布式千实体最近邻查询"), NearestMetrics, GridNearestBudgetNs);
 
+    const FBenchmarkMetrics EmptyCenterNearestMetrics = RunBenchmarkRounds(
+        DefaultWarmupRounds,
+        DefaultSampleRounds,
+        GridQueryIterations,
+        [&](int32 Iterations) {
+            int64 LocalSum = 0;
+            for (int32 Step = 0; Step < Iterations; ++Step) {
+                const double Y = static_cast<double>((Step % 20) * 150 - 1500);
+                int32 BestId = 0;
+                if (QueryGrid.QueryNearest(FVector2D(-3700.0, Y), 3000.0f, BestId)) {
+                    LocalSum += BestId;
+                }
+            }
+            Sink = Sink + LocalSum;
+        }
+    );
+    RecordBenchmarkResult(this, TEXT("2D 空中心格大半径最近邻查询 (向外壳层)"), EmptyCenterNearestMetrics, GridNearestBudgetNs);
+
     const FBenchmarkMetrics KNearestMetrics = RunBenchmarkRounds(
         DefaultWarmupRounds,
         DefaultSampleRounds,
@@ -318,6 +330,55 @@ bool FSpatialHashGrid2DBenchmarkTest::RunTest([[maybe_unused]] const FString& Pa
     );
     RecordBenchmarkResult(this, TEXT("2D 分布式千实体 K=5 内联近邻查询"), KNearestMetrics, GridNearestBudgetNs);
 
+    const FBenchmarkMetrics K16Metrics = RunBenchmarkRounds(
+        DefaultWarmupRounds,
+        DefaultSampleRounds,
+        GridQueryIterations,
+        [&](int32 Iterations) {
+            for (int32 Step = 0; Step < Iterations; ++Step) {
+                const double C = static_cast<double>((Step % 20) * 150 - 1500);
+                QueryGrid.QueryKNearest(FVector2D(C, C), 3000.0f, 16, QueryBuffer);
+                Sink = Sink + QueryBuffer.Num();
+            }
+        }
+    );
+    RecordBenchmarkResult(this, TEXT("2D 分布式千实体 K=16 内联满载近邻查询"), K16Metrics, GridNearestBudgetNs);
+
+    const FBenchmarkMetrics K32Metrics = RunBenchmarkRounds(
+        DefaultWarmupRounds,
+        DefaultSampleRounds,
+        GridQueryIterations,
+        [&](int32 Iterations) {
+            for (int32 Step = 0; Step < Iterations; ++Step) {
+                const double C = static_cast<double>((Step % 20) * 150 - 1500);
+                QueryGrid.QueryKNearest(FVector2D(C, C), 3000.0f, 32, QueryBuffer);
+                Sink = Sink + QueryBuffer.Num();
+            }
+        }
+    );
+    RecordBenchmarkResult(this, TEXT("2D 分布式千实体 K=32 堆扩展近邻查询"), K32Metrics, GridK32BudgetNs);
+
+    TSpatialHashGrid2D<int32> LargeGrid(500.0f);
+    constexpr int32 LargeCount = 5000;
+    LargeGrid.Reserve(LargeCount);
+    for (int32 Idx = 0; Idx < LargeCount; ++Idx) {
+        LargeGrid.Insert(Idx, FVector2D(static_cast<double>((Idx % 70) * 200 - 7000), static_cast<double>((Idx / 70) * 200 - 7000)));
+    }
+    const FBenchmarkMetrics LargeScaleMetrics = RunBenchmarkRounds(
+        DefaultWarmupRounds,
+        DefaultSampleRounds,
+        GridQueryIterations,
+        [&](int32 Iterations) {
+            int64 LocalSum = 0;
+            for (int32 Step = 0; Step < Iterations; ++Step) {
+                const double C = static_cast<double>((Step % 30) * 200 - 3000);
+                LargeGrid.QueryRadiusMatching(FVector2D(C, C), 600.0f, [&LocalSum](int32 Id) { LocalSum += Id; });
+            }
+            Sink = Sink + LocalSum;
+        }
+    );
+    RecordBenchmarkResult(this, TEXT("2D 大规模 (5000实体) 流式半径查询"), LargeScaleMetrics, GridLargeScaleBudgetNs);
+
     return true;
 }
 
@@ -328,7 +389,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 微基准：3D 空间网格真实更新、立体分布式查询、平面地图抗碰撞查询及稀疏大半径快路径
+ * @brief 微基准：3D 空间网格更新、立体分布式查询、空中心格与 K=5/16/32 向外壳层近邻、高密度桶及大规模扩展性
  * @param Parameters 自动化测试参数
  * @return 全部预算断言通过返回 true
  */
@@ -382,6 +443,25 @@ bool FSpatialHashGrid3DBenchmarkTest::RunTest([[maybe_unused]] const FString& Pa
         }
     );
     RecordBenchmarkResult(this, TEXT("3D 跨格 O(1) 迁移更新"), CrossCellMetrics, GridCrossCellUpdateBudgetNs);
+
+    TSpatialHashGrid3D<int32> DenseBucketGrid(500.0f);
+    constexpr int32 DenseCount = 64;
+    for (int32 Idx = 0; Idx < DenseCount; ++Idx) {
+        DenseBucketGrid.Insert(Idx, FVector(static_cast<double>(Idx) * 2.0, 10.0, 10.0));
+    }
+    const FBenchmarkMetrics DenseBucketMetrics = RunBenchmarkRounds(
+        DefaultWarmupRounds,
+        DefaultSampleRounds,
+        GridUpdateIterations,
+        [&](int32 Iterations) {
+            for (int32 Step = 0; Step < Iterations; ++Step) {
+                const int32 Id = Step % DenseCount;
+                const double Offset = static_cast<double>(Step % 17) * 0.5 + 0.1;
+                DenseBucketGrid.Update(Id, FVector(static_cast<double>(Id) * 2.0 + Offset, 10.0, 10.0));
+            }
+        }
+    );
+    RecordBenchmarkResult(this, TEXT("3D 高密度单桶 (64实体) O(1) 更新"), DenseBucketMetrics, GridSameCellUpdateBudgetNs);
 
     TSpatialHashGrid3D<int32> QueryGrid(500.0f);
     QueryGrid.Reserve(EntityCount);
@@ -464,6 +544,24 @@ bool FSpatialHashGrid3DBenchmarkTest::RunTest([[maybe_unused]] const FString& Pa
     );
     RecordBenchmarkResult(this, TEXT("3D 分布式千实体最近邻查询"), NearestMetrics, GridNearestBudgetNs);
 
+    const FBenchmarkMetrics EmptyCenterNearestMetrics = RunBenchmarkRounds(
+        DefaultWarmupRounds,
+        DefaultSampleRounds,
+        GridQueryIterations,
+        [&](int32 Iterations) {
+            int64 LocalSum = 0;
+            for (int32 Step = 0; Step < Iterations; ++Step) {
+                const double Y = static_cast<double>((Step % 15) * 100 - 750);
+                int32 BestId = 0;
+                if (QueryGrid.QueryNearest(FVector(-2100.0, Y, 0.0), 4000.0f, BestId)) {
+                    LocalSum += BestId;
+                }
+            }
+            Sink = Sink + LocalSum;
+        }
+    );
+    RecordBenchmarkResult(this, TEXT("3D 空中心格大半径最近邻查询 (向外壳层)"), EmptyCenterNearestMetrics, GridNearestBudgetNs);
+
     const FBenchmarkMetrics KNearestMetrics = RunBenchmarkRounds(
         DefaultWarmupRounds,
         DefaultSampleRounds,
@@ -477,6 +575,34 @@ bool FSpatialHashGrid3DBenchmarkTest::RunTest([[maybe_unused]] const FString& Pa
         }
     );
     RecordBenchmarkResult(this, TEXT("3D 分布式千实体 K=5 内联近邻查询"), KNearestMetrics, GridNearestBudgetNs);
+
+    const FBenchmarkMetrics K16Metrics = RunBenchmarkRounds(
+        DefaultWarmupRounds,
+        DefaultSampleRounds,
+        GridQueryIterations,
+        [&](int32 Iterations) {
+            for (int32 Step = 0; Step < Iterations; ++Step) {
+                const double C = static_cast<double>((Step % 15) * 80 - 600);
+                QueryGrid.QueryKNearest(FVector(C, C, 0.0), 4000.0f, 16, QueryBuffer);
+                Sink = Sink + QueryBuffer.Num();
+            }
+        }
+    );
+    RecordBenchmarkResult(this, TEXT("3D 分布式千实体 K=16 内联满载近邻查询"), K16Metrics, GridQuery3DBudgetNs);
+
+    const FBenchmarkMetrics K32Metrics = RunBenchmarkRounds(
+        DefaultWarmupRounds,
+        DefaultSampleRounds,
+        GridQueryIterations,
+        [&](int32 Iterations) {
+            for (int32 Step = 0; Step < Iterations; ++Step) {
+                const double C = static_cast<double>((Step % 15) * 80 - 600);
+                QueryGrid.QueryKNearest(FVector(C, C, 0.0), 4000.0f, 32, QueryBuffer);
+                Sink = Sink + QueryBuffer.Num();
+            }
+        }
+    );
+    RecordBenchmarkResult(this, TEXT("3D 分布式千实体 K=32 堆扩展近邻查询"), K32Metrics, GridK32BudgetNs);
 
     TSpatialHashGrid3D<int32> FlatMapGrid(500.0f);
     FlatMapGrid.Reserve(EntityCount);
@@ -521,6 +647,34 @@ bool FSpatialHashGrid3DBenchmarkTest::RunTest([[maybe_unused]] const FString& Pa
         }
     );
     RecordBenchmarkResult(this, TEXT("3D 稀疏图超大半径 (500m / 100 实体) 快路径近邻查询"), SparseHugeMetrics, GridSparseHugeBudgetNs);
+
+    TSpatialHashGrid3D<int32> LargeGrid(500.0f);
+    constexpr int32 LargeCount = 5000;
+    LargeGrid.Reserve(LargeCount);
+    for (int32 Idx = 0; Idx < LargeCount; ++Idx) {
+        LargeGrid.Insert(
+            Idx,
+            FVector(
+                static_cast<double>((Idx % 25) * 300 - 3750),
+                static_cast<double>(((Idx / 25) % 25) * 300 - 3750),
+                static_cast<double>((Idx / 625) * 300 - 1200)
+            )
+        );
+    }
+    const FBenchmarkMetrics LargeScaleMetrics = RunBenchmarkRounds(
+        DefaultWarmupRounds,
+        DefaultSampleRounds,
+        GridQueryIterations,
+        [&](int32 Iterations) {
+            int64 LocalSum = 0;
+            for (int32 Step = 0; Step < Iterations; ++Step) {
+                const double C = static_cast<double>((Step % 20) * 150 - 1500);
+                LargeGrid.QueryRadiusMatching(FVector(C, C, 0.0), 700.0f, [&LocalSum](int32 Id) { LocalSum += Id; });
+            }
+            Sink = Sink + LocalSum;
+        }
+    );
+    RecordBenchmarkResult(this, TEXT("3D 大规模 (5000实体) 流式球形查询"), LargeScaleMetrics, GridLargeScaleBudgetNs);
 
     return true;
 }
@@ -619,12 +773,12 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 微基准：空间索引子系统千级 Actor 真实位移更新、零分配流式查询与 K 近邻检索
+ * @brief 微基准：空间索引子系统千级 Actor 位移更新、静止早退、全几何流式查询、K 近邻与失效扫描
  * @param Parameters 自动化测试参数
  * @return 全部预算断言通过返回 true
  */
 bool FGameSpatialSubsystemBenchmarkTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UWorld* World = GetSubsystemBenchmarkWorld();
+    UWorld* World = Game::Spatial::TestHelpers::GetTestWorld();
     TestNotNull(TEXT("世界上下文必须有效"), World);
     if (World == nullptr) {
         return false;
@@ -650,7 +804,7 @@ bool FGameSpatialSubsystemBenchmarkTest::RunTest([[maybe_unused]] const FString&
             static_cast<double>(((Idx / 25) % 25) * 200 - 2500),
             static_cast<double>((Idx / 625) * 200)
         );
-        if (AActor* Actor = SpawnSubsystemBenchmarkActor(World, Loc)) {
+        if (AActor* Actor = Game::Spatial::TestHelpers::SpawnTestActor(World, Loc)) {
             SpawnedActors.Add(Actor);
             BaseLocations.Add(Loc);
             Subsystem->RegisterActor(Actor);
@@ -658,6 +812,19 @@ bool FGameSpatialSubsystemBenchmarkTest::RunTest([[maybe_unused]] const FString&
     }
 
     TestEqual(TEXT("成功注册 1000 个测试 Actor"), Subsystem->GetTotalActorCount(), SubsystemActorCount);
+
+    const FBenchmarkMetrics StationaryMetrics = RunBenchmarkRounds(
+        DefaultWarmupRounds,
+        DefaultSampleRounds,
+        SubsystemUpdateIterations,
+        [&](int32 Iterations) {
+            for (int32 Step = 0; Step < Iterations; ++Step) {
+                const int32 Idx = Step % SubsystemActorCount;
+                Subsystem->UpdateActorLocation(SpawnedActors[Idx], BaseLocations[Idx]);
+            }
+        }
+    );
+    RecordBenchmarkResult(this, TEXT("子系统千级 Actor 静止坐标早退更新"), StationaryMetrics, SubsystemUpdateBudgetNs);
 
     int32 UpdateEpoch = 1;
     const FBenchmarkMetrics UpdateMetrics = RunBenchmarkRounds(
@@ -693,6 +860,58 @@ bool FGameSpatialSubsystemBenchmarkTest::RunTest([[maybe_unused]] const FString&
     );
     RecordBenchmarkResult(this, TEXT("子系统千级 Actor 零分配流式球形查询"), StreamingMetrics, SubsystemQueryBudgetNs);
 
+    const FBenchmarkMetrics ConeStreamingMetrics = RunBenchmarkRounds(
+        DefaultWarmupRounds,
+        DefaultSampleRounds,
+        SubsystemQueryIterations,
+        [&](int32 Iterations) {
+            int64 HitCount = 0;
+            for (int32 Step = 0; Step < Iterations; ++Step) {
+                const double Offset = static_cast<double>((Step % 10) * 150 - 750);
+                Subsystem->ForEachActorInCone(FVector(Offset, Offset, 0.0), FVector(1.0, 0.0, 0.0), 900.0f, 30.0f, [&HitCount](AActor*) {
+                    ++HitCount;
+                });
+            }
+            Sink = Sink + HitCount;
+        }
+    );
+    RecordBenchmarkResult(this, TEXT("子系统千级 Actor 流式 30° 锥体查询"), ConeStreamingMetrics, SubsystemQueryBudgetNs);
+
+    const FBenchmarkMetrics CylStreamingMetrics = RunBenchmarkRounds(
+        DefaultWarmupRounds,
+        DefaultSampleRounds,
+        SubsystemQueryIterations,
+        [&](int32 Iterations) {
+            int64 HitCount = 0;
+            for (int32 Step = 0; Step < Iterations; ++Step) {
+                const double Offset = static_cast<double>((Step % 10) * 150 - 750);
+                Subsystem->ForEachActorInCylinder(FVector(Offset, Offset, 0.0), 600.0f, 300.0f, [&HitCount](AActor*) {
+                    ++HitCount;
+                });
+            }
+            Sink = Sink + HitCount;
+        }
+    );
+    RecordBenchmarkResult(this, TEXT("子系统千级 Actor 流式圆柱体查询"), CylStreamingMetrics, SubsystemQueryBudgetNs);
+
+    const FBenchmarkMetrics AabbStreamingMetrics = RunBenchmarkRounds(
+        DefaultWarmupRounds,
+        DefaultSampleRounds,
+        SubsystemQueryIterations,
+        [&](int32 Iterations) {
+            int64 HitCount = 0;
+            for (int32 Step = 0; Step < Iterations; ++Step) {
+                const double Offset = static_cast<double>((Step % 10) * 150 - 750);
+                Subsystem->ForEachActorInAABB(
+                    FBox(FVector(Offset - 500.0, Offset - 500.0, -200.0), FVector(Offset + 500.0, Offset + 500.0, 200.0)),
+                    [&HitCount](AActor*) { ++HitCount; }
+                );
+            }
+            Sink = Sink + HitCount;
+        }
+    );
+    RecordBenchmarkResult(this, TEXT("子系统千级 Actor 流式 AABB 查询"), AabbStreamingMetrics, SubsystemQueryBudgetNs);
+
     TArray<AActor*> QueryResults;
     const FBenchmarkMetrics KNearestMetrics = RunBenchmarkRounds(
         DefaultWarmupRounds,
@@ -707,6 +926,20 @@ bool FGameSpatialSubsystemBenchmarkTest::RunTest([[maybe_unused]] const FString&
         }
     );
     RecordBenchmarkResult(this, TEXT("子系统千级 Actor K=5 近邻检索"), KNearestMetrics, SubsystemQueryBudgetNs);
+
+    const FBenchmarkMetrics PruneScanMetrics = RunBenchmarkRounds(
+        DefaultWarmupRounds,
+        DefaultSampleRounds,
+        100,
+        [&](int32 Iterations) {
+            int64 TotalPruned = 0;
+            for (int32 Step = 0; Step < Iterations; ++Step) {
+                TotalPruned += Subsystem->PruneAllStaleActors();
+            }
+            Sink = Sink + TotalPruned;
+        }
+    );
+    RecordBenchmarkResult(this, TEXT("子系统千级 Actor 全局失效巡检 (PruneAll)"), PruneScanMetrics, SubsystemPruneBudgetNs);
 
     for (AActor* Actor : SpawnedActors) {
         if (Actor != nullptr) {

@@ -1,22 +1,24 @@
 /**
  * @file TSpatialHashGrid3D.h
- * @brief 3D 均匀空间哈希网格门面模板（组合封装底层容器 TSpatialHashContainer3D 与查询算法 FSpatialQuery3D）
+ * @brief 3D 纯逻辑均匀空间哈希网格唯一公开门面模板（收敛底层容器与查询实现细节）
  */
 
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Grid/FSpatialQuery3D.h"
-#include "Grid/TSpatialHashContainer3D.h"
+#include "Grid/Internal/FSpatialNearestQuery3D.h"
+#include "Grid/Internal/FSpatialQuery3D.h"
 
 /**
- * @brief 3D 纯逻辑均匀空间哈希网格门面模板（收敛内部细节，提供统一增删改查、流式零分配与立体几何查询契约）
+ * @brief 3D 纯逻辑均匀空间哈希网格门面模板（提供统一增删改查、流式零分配与立体几何查询契约）
  * @tparam TElement 空间对象键或句柄类型（须支持 GetTypeHash 与 operator==）
  */
 template <typename TElement>
 class TSpatialHashGrid3D {
-public:
-    using FContainerType = TSpatialHashContainer3D<TElement>;
+private:
+    using FContainerType = Game::Spatial::Detail::TSpatialHashContainer3D<TElement>;
+    using FRangeQueryType = Game::Spatial::Detail::FSpatialQuery3D;
+    using FNearestQueryType = Game::Spatial::Detail::FSpatialNearestQuery3D;
 
 public:
     static constexpr float DEFAULT_CELL_SIZE = FContainerType::DEFAULT_CELL_SIZE;
@@ -24,7 +26,7 @@ public:
 public:
     /**
      * @brief 构造 3D 空间哈希网格并指定单元格跨度
-     * @param InCellSize 单元格边长（必须为有限正值且大于 1.0f）
+     * @param InCellSize 单元格边长（必须为有限正值且大于 1.0f，非法时安全回退至 DEFAULT_CELL_SIZE）
      */
     explicit TSpatialHashGrid3D(float InCellSize = DEFAULT_CELL_SIZE) noexcept
         : Container(InCellSize) {
@@ -107,6 +109,14 @@ public:
     }
 
     /**
+     * @brief 检查网格当前是否为空
+     * @return 无已注册元素返回 true
+     */
+    [[nodiscard]] bool IsEmpty() const noexcept {
+        return Container.IsEmpty();
+    }
+
+    /**
      * @brief 查询当前活跃单元格桶数量
      * @return 活跃桶数量
      */
@@ -156,7 +166,7 @@ public:
         TConsumer&& Consumer,
         TPredicate&& Predicate = {}
     ) const {
-        FSpatialQuery3D::QueryRadiusMatching(Container, Center, Radius, Forward<TConsumer>(Consumer), Forward<TPredicate>(Predicate));
+        FRangeQueryType::QueryRadiusMatching(Container, Center, Radius, Forward<TConsumer>(Consumer), Forward<TPredicate>(Predicate));
     }
 
     /**
@@ -174,7 +184,7 @@ public:
         TArray<TElement>& OutResults,
         TPredicate&& Predicate = {}
     ) const {
-        FSpatialQuery3D::QueryRadius(Container, Center, Radius, OutResults, Forward<TPredicate>(Predicate));
+        FRangeQueryType::QueryRadius(Container, Center, Radius, OutResults, Forward<TPredicate>(Predicate));
     }
 
     /**
@@ -191,7 +201,7 @@ public:
         TConsumer&& Consumer,
         TPredicate&& Predicate = {}
     ) const {
-        FSpatialQuery3D::QueryAABBMatching(Container, Box, Forward<TConsumer>(Consumer), Forward<TPredicate>(Predicate));
+        FRangeQueryType::QueryAABBMatching(Container, Box, Forward<TConsumer>(Consumer), Forward<TPredicate>(Predicate));
     }
 
     /**
@@ -207,7 +217,7 @@ public:
         TArray<TElement>& OutResults,
         TPredicate&& Predicate = {}
     ) const {
-        FSpatialQuery3D::QueryAABB(Container, Box, OutResults, Forward<TPredicate>(Predicate));
+        FRangeQueryType::QueryAABB(Container, Box, OutResults, Forward<TPredicate>(Predicate));
     }
 
     /**
@@ -228,7 +238,7 @@ public:
         TConsumer&& Consumer,
         TPredicate&& Predicate = {}
     ) const {
-        FSpatialQuery3D::QueryCylinderMatching(
+        FRangeQueryType::QueryCylinderMatching(
             Container,
             Center,
             Radius,
@@ -255,7 +265,7 @@ public:
         TArray<TElement>& OutResults,
         TPredicate&& Predicate = {}
     ) const {
-        FSpatialQuery3D::QueryCylinder(Container, Center, Radius, HalfHeight, OutResults, Forward<TPredicate>(Predicate));
+        FRangeQueryType::QueryCylinder(Container, Center, Radius, HalfHeight, OutResults, Forward<TPredicate>(Predicate));
     }
 
     /**
@@ -278,7 +288,7 @@ public:
         TConsumer&& Consumer,
         TPredicate&& Predicate = {}
     ) const {
-        FSpatialQuery3D::QueryConeMatching(
+        FRangeQueryType::QueryConeMatching(
             Container,
             Apex,
             Direction,
@@ -308,7 +318,7 @@ public:
         TArray<TElement>& OutResults,
         TPredicate&& Predicate = {}
     ) const {
-        FSpatialQuery3D::QueryCone(
+        FRangeQueryType::QueryCone(
             Container,
             Apex,
             Direction,
@@ -329,13 +339,13 @@ public:
      * @return 存在有效元素返回 true，指定半径内无元素返回 false
      */
     template <typename TPredicate = Game::Spatial::FAcceptAllPredicate>
-    bool QueryNearest(
+    [[nodiscard]] bool QueryNearest(
         const FVector& Center,
         float MaxSearchRadius,
         TElement& OutNearest,
         TPredicate&& Predicate = {}
     ) const {
-        return FSpatialQuery3D::QueryNearest(Container, Center, MaxSearchRadius, OutNearest, Forward<TPredicate>(Predicate));
+        return FNearestQueryType::QueryNearest(Container, Center, MaxSearchRadius, OutNearest, Forward<TPredicate>(Predicate));
     }
 
     /**
@@ -356,7 +366,7 @@ public:
         TConsumer&& Consumer,
         TPredicate&& Predicate = {}
     ) const {
-        FSpatialQuery3D::QueryKNearestMatching(
+        FNearestQueryType::QueryKNearestMatching(
             Container,
             Center,
             MaxSearchRadius,
@@ -383,7 +393,7 @@ public:
         TArray<TElement>& OutNearestList,
         TPredicate&& Predicate = {}
     ) const {
-        FSpatialQuery3D::QueryKNearest(Container, Center, MaxSearchRadius, K, OutNearestList, Forward<TPredicate>(Predicate));
+        FNearestQueryType::QueryKNearest(Container, Center, MaxSearchRadius, K, OutNearestList, Forward<TPredicate>(Predicate));
     }
 
 private:

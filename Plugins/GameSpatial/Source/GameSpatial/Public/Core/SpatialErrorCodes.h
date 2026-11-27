@@ -1,6 +1,6 @@
 /**
  * @file SpatialErrorCodes.h
- * @brief GameSpatial 空间模块强类型错误码契约定义
+ * @brief GameSpatial 空间模块强类型错误码契约定义（配合 Game::ModuleId::Spatial 使用）
  */
 
 #pragma once

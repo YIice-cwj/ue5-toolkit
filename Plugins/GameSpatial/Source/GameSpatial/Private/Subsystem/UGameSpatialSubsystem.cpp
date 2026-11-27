@@ -6,7 +6,6 @@
 #include "Subsystem/UGameSpatialSubsystem.h"
 
 #include "Core/SpatialGameplayTags.h"
-#include "GameFramework/Actor.h"
 #include "Logging/GameLogCategories.h"
 
 /**
@@ -29,7 +28,7 @@ void UGameSpatialSubsystem::Deinitialize() {
 }
 
 /**
- * @brief 注册 Actor 到指定空间层（同层原地更新，跨层无缝迁移）
+ * @brief 注册 Actor 到指定空间层（同层静止早退/原地更新，跨层无缝迁移）
  * @param Actor 待注册的目标 Actor
  * @param LayerTag 空间所属层级标签
  * @return 注册成功返回 true
@@ -42,34 +41,39 @@ bool UGameSpatialSubsystem::RegisterActor(AActor* Actor, FGameplayTag LayerTag) 
 
     const FVector Location = Actor->GetActorLocation();
     if (!Game::Spatial::Private::IsFiniteVector(Location)) {
-        GAME_LOG(Warning, TEXT("[SpatialSubsystem] 拒绝注册携带非有限坐标的 Actor: %s"), *Actor->GetName());
+        GAME_LOG_THROTTLE(1.0, Warning, TEXT("[SpatialSubsystem] 拒绝注册携带非有限坐标的 Actor: %s"), *Actor->GetName());
         return false;
     }
 
     const FGameplayTag ResolvedTag = ResolveLayerTag(LayerTag);
     const TObjectKey<AActor> ActorKey(Actor);
+    FActorSpatialEntry& Entry = TrackedActors.FindOrAdd(ActorKey);
 
-    if (FActorSpatialEntry* ExistingEntry = TrackedActors.Find(ActorKey)) {
-        if (ExistingEntry->LayerTag == ResolvedTag) {
-            LayeredGrids.FindChecked(ResolvedTag).Update(ActorKey, Location);
-            ExistingEntry->LastLocation = Location;
-            return true;
-        }
-
-        TSpatialHashGrid3D<TObjectKey<AActor>>& OldGrid = LayeredGrids.FindChecked(ExistingEntry->LayerTag);
-        OldGrid.Remove(ActorKey);
-        if (OldGrid.Num() == 0) {
-            LayeredGrids.Remove(ExistingEntry->LayerTag);
-        }
-
+    if (!Entry.LayerTag.IsValid()) {
         LayeredGrids.FindOrAdd(ResolvedTag).Insert(ActorKey, Location);
-        ExistingEntry->LayerTag = ResolvedTag;
-        ExistingEntry->LastLocation = Location;
+        Entry.LayerTag = ResolvedTag;
+        Entry.LastLocation = Location;
         return true;
     }
 
+    if (Entry.LayerTag == ResolvedTag) {
+        if (Entry.LastLocation == Location) {
+            return true;
+        }
+        LayeredGrids.FindChecked(ResolvedTag).Update(ActorKey, Location);
+        Entry.LastLocation = Location;
+        return true;
+    }
+
+    TSpatialHashGrid3D<TObjectKey<AActor>>& OldGrid = LayeredGrids.FindChecked(Entry.LayerTag);
+    OldGrid.Remove(ActorKey);
+    if (OldGrid.IsEmpty()) {
+        LayeredGrids.Remove(Entry.LayerTag);
+    }
+
     LayeredGrids.FindOrAdd(ResolvedTag).Insert(ActorKey, Location);
-    TrackedActors.Add(ActorKey, FActorSpatialEntry{ResolvedTag, Location});
+    Entry.LayerTag = ResolvedTag;
+    Entry.LastLocation = Location;
     return true;
 }
 
@@ -107,7 +111,7 @@ bool UGameSpatialSubsystem::UnregisterActor(AActor* Actor) {
 
     TSpatialHashGrid3D<TObjectKey<AActor>>& Grid = LayeredGrids.FindChecked(Entry.LayerTag);
     Grid.Remove(ActorKey);
-    if (Grid.Num() == 0) {
+    if (Grid.IsEmpty()) {
         LayeredGrids.Remove(Entry.LayerTag);
     }
     return true;
@@ -129,7 +133,7 @@ int32 UGameSpatialSubsystem::UnregisterActors(const TArray<AActor*>& Actors) {
 }
 
 /**
- * @brief 手动更新 Actor 的空间索引坐标
+ * @brief 手动更新 Actor 的空间索引坐标（静止坐标直接早退，省去图层与网格双重哈希查找）
  * @param Actor 目标 Actor
  * @param NewLocation 最新的三维世界坐标
  * @return 更新成功返回 true
@@ -143,6 +147,10 @@ bool UGameSpatialSubsystem::UpdateActorLocation(AActor* Actor, const FVector& Ne
     FActorSpatialEntry* Entry = TrackedActors.Find(ActorKey);
     if (Entry == nullptr) {
         return false;
+    }
+
+    if (Entry->LastLocation == NewLocation) {
+        return true;
     }
 
     LayeredGrids.FindChecked(Entry->LayerTag).Update(ActorKey, NewLocation);
@@ -246,7 +254,7 @@ void UGameSpatialSubsystem::QueryActorsInAABB(
  * @brief 检索距离中心点最近的单一存活 Actor
  * @param Center 中心世界坐标
  * @param MaxSearchRadius 最大检索截断半径
- * @param OutNearestActor 输出检索到的最近有效存活 Actor
+ * @param OutNearestActor 输出检索到的最近有效存活 Actor（未找到时置为 nullptr）
  * @param LayerTag 目标空间层级
  * @return 存在有效 Actor 返回 true，否则返回 false
  */
@@ -257,7 +265,7 @@ bool UGameSpatialSubsystem::QueryNearestActor(
     FGameplayTag LayerTag
 ) const {
     OutNearestActor = nullptr;
-    const TSpatialHashGrid3D<TObjectKey<AActor>>* Grid = LayeredGrids.Find(ResolveLayerTag(LayerTag));
+    const TSpatialHashGrid3D<TObjectKey<AActor>>* Grid = FindLayerGrid(LayerTag);
     if (Grid == nullptr) {
         return false;
     }
@@ -275,7 +283,7 @@ bool UGameSpatialSubsystem::QueryNearestActor(
 }
 
 /**
- * @brief 检索距离中心点最近的 K 个存活 Actor（按距离升序排列，零中间弱指针数组分配）
+ * @brief 检索距离中心点最近的 K 个存活 Actor（按距离升序排列，K <= 16 零中间堆分配）
  * @param Center 中心世界坐标
  * @param MaxSearchRadius 最大检索截断半径
  * @param K 期望获取的最大近邻数量
@@ -290,16 +298,17 @@ void UGameSpatialSubsystem::QueryKNearestActors(
     FGameplayTag LayerTag
 ) const {
     OutActors.Reset();
-    if (K <= 0) {
+    if (K <= 0 || !Game::Spatial::Private::IsFiniteCoord(MaxSearchRadius) || MaxSearchRadius <= 0.0f) {
         return;
     }
 
-    const TSpatialHashGrid3D<TObjectKey<AActor>>* Grid = LayeredGrids.Find(ResolveLayerTag(LayerTag));
+    const TSpatialHashGrid3D<TObjectKey<AActor>>* Grid = FindLayerGrid(LayerTag);
     if (Grid == nullptr) {
         return;
     }
 
-    OutActors.Reserve(FMath::Min(K, Grid->Num()));
+    constexpr int32 InlineReserveCap = 16;
+    OutActors.Reserve(FMath::Min3(K, Grid->Num(), InlineReserveCap));
     Grid->QueryKNearestMatching(
         Center,
         MaxSearchRadius,
@@ -339,7 +348,7 @@ void UGameSpatialSubsystem::ClearAll() {
 }
 
 /**
- * @brief O(LayerSize) 清理指定空间层中已被垃圾回收或销毁的弱引用条目
+ * @brief O(LayerSize) 清理指定空间层中已被垃圾回收或销毁的失效条目
  * @param LayerTag 目标空间层级
  * @return 清理的失效 Actor 数量
  */
@@ -362,18 +371,18 @@ int32 UGameSpatialSubsystem::PruneStaleActors(FGameplayTag LayerTag) {
         TrackedActors.Remove(StaleActor);
     }
 
-    if (Grid->Num() == 0) {
+    if (Grid->IsEmpty()) {
         LayeredGrids.Remove(ResolvedTag);
     }
 
     if (!StaleActors.IsEmpty()) {
-        GAME_LOG(Verbose, TEXT("[SpatialSubsystem] 图层 [%s] 清理失效弱引用 Actor 数量: %d。"), *ResolvedTag.ToString(), StaleActors.Num());
+        GAME_LOG(Verbose, TEXT("[SpatialSubsystem] 图层 [%s] 清理失效条目 Actor 数量: %d。"), *ResolvedTag.ToString(), StaleActors.Num());
     }
     return StaleActors.Num();
 }
 
 /**
- * @brief 一键清理所有空间层中已被垃圾回收或销毁的弱引用条目
+ * @brief 一键清理所有空间层中已被垃圾回收或销毁的失效条目
  * @return 清理的失效 Actor 总数量
  */
 int32 UGameSpatialSubsystem::PruneAllStaleActors() {
@@ -385,7 +394,7 @@ int32 UGameSpatialSubsystem::PruneAllStaleActors() {
         const FGameplayTag& EntryLayer = It.Value().LayerTag;
         TSpatialHashGrid3D<TObjectKey<AActor>>& Grid = LayeredGrids.FindChecked(EntryLayer);
         Grid.Remove(It.Key());
-        if (Grid.Num() == 0) {
+        if (Grid.IsEmpty()) {
             LayeredGrids.Remove(EntryLayer);
         }
         It.RemoveCurrent();
@@ -393,7 +402,7 @@ int32 UGameSpatialSubsystem::PruneAllStaleActors() {
     }
 
     if (PrunedCount > 0) {
-        GAME_LOG(Verbose, TEXT("[SpatialSubsystem] 全局清理跨图层失效弱引用 Actor 总数: %d。"), PrunedCount);
+        GAME_LOG(Verbose, TEXT("[SpatialSubsystem] 全局清理跨图层失效条目 Actor 总数: %d。"), PrunedCount);
     }
     return PrunedCount;
 }
@@ -404,7 +413,7 @@ int32 UGameSpatialSubsystem::PruneAllStaleActors() {
  * @return 索引元素数量
  */
 int32 UGameSpatialSubsystem::GetActorCount(FGameplayTag LayerTag) const {
-    const TSpatialHashGrid3D<TObjectKey<AActor>>* Grid = LayeredGrids.Find(ResolveLayerTag(LayerTag));
+    const TSpatialHashGrid3D<TObjectKey<AActor>>* Grid = FindLayerGrid(LayerTag);
     return Grid != nullptr ? Grid->Num() : 0;
 }
 
@@ -467,7 +476,7 @@ bool UGameSpatialSubsystem::GetActorLocation(const AActor* Actor, FVector& OutLo
  */
 void UGameSpatialSubsystem::GetActorsInLayer(TArray<AActor*>& OutActors, FGameplayTag LayerTag) const {
     OutActors.Reset();
-    const TSpatialHashGrid3D<TObjectKey<AActor>>* Grid = LayeredGrids.Find(ResolveLayerTag(LayerTag));
+    const TSpatialHashGrid3D<TObjectKey<AActor>>* Grid = FindLayerGrid(LayerTag);
     if (Grid == nullptr) {
         return;
     }
@@ -481,23 +490,34 @@ void UGameSpatialSubsystem::GetActorsInLayer(TArray<AActor*>& OutActors, FGamepl
 }
 
 /**
- * @brief 解析目标图层标签（传入空标签时回退至默认原生图层标签）
- * @param InTag 输入图层标签
- * @return 解析后的图层标签
- */
-FGameplayTag UGameSpatialSubsystem::ResolveLayerTag(const FGameplayTag& InTag) const noexcept {
-    if (InTag.IsValid()) {
-        return InTag;
-    }
-    return GetDefaultLayerTag();
-}
-
-/**
  * @brief 获取默认空间图层原生标签（Spatial.Layer.Default）
  * @return 默认空间图层标签
  */
 FGameplayTag UGameSpatialSubsystem::GetDefaultLayerTag() noexcept {
     return TAG_Spatial_Layer_Default.GetTag();
+}
+
+/**
+ * @brief 按图层标签查找对应的只读空间网格指针（空标签自动解析至默认图层）
+ * @param LayerTag 目标图层标签
+ * @return 对应网格只读指针，未创建返回 nullptr
+ */
+const TSpatialHashGrid3D<TObjectKey<AActor>>* UGameSpatialSubsystem::FindLayerGrid(
+    const FGameplayTag& LayerTag
+) const noexcept {
+    return LayeredGrids.Find(ResolveLayerTag(LayerTag));
+}
+
+/**
+ * @brief 解析目标图层标签（传入空标签时回退至默认原生图层标签）
+ * @param InTag 输入图层标签
+ * @return 解析后的图层标签
+ */
+FGameplayTag UGameSpatialSubsystem::ResolveLayerTag(const FGameplayTag& InTag) noexcept {
+    if (InTag.IsValid()) {
+        return InTag;
+    }
+    return GetDefaultLayerTag();
 }
 
 /**

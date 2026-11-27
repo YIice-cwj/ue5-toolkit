@@ -9,6 +9,157 @@
 #include "Core/SpatialQueryCommon.h"
 #include "Logging/GameLogCategories.h"
 
+namespace {
+
+    using ESpatialDistanceTier = Game::Spatial::Detail::ESpatialDistanceTier;
+
+    struct FPrecomputedViewParams {
+        FVector ViewLocation = FVector::ZeroVector;
+        FVector SafeViewForward = FVector::ForwardVector;
+        double CosEnterFov = 0.0;
+        double CosEnterFovSq = 0.0;
+        double CosKeepFov = 0.0;
+        double CosKeepFovSq = 0.0;
+        double MaxDistEnterSq = 0.0;
+        double MaxDistKeepSq = 0.0;
+        double NearThresholdSq[4] = {0.0, 0.0, 0.0, 0.0};
+        double MidThresholdSq[4] = {0.0, 0.0, 0.0, 0.0};
+        bool bHasValidForward = false;
+        bool bHasValidRange = false;
+        bool bHasValidFov = false;
+        bool bFullEnterFov = false;
+        bool bFullKeepFov = false;
+    };
+
+    /**
+     * @brief 将观察者上下文与全部四档双向迟滞距离阈值平方预计算为单帧只读查表参数包
+     * @param Config 当前空间节流梯级配置
+     * @param ViewContext 空间观察者上下文
+     * @return 单帧只读预计算视图参数包
+     */
+    [[nodiscard]] FPrecomputedViewParams BuildViewParams(
+        const FSpatialThrottleTierConfig& Config,
+        const FSpatialViewContext& ViewContext
+    ) noexcept {
+        FPrecomputedViewParams Params;
+        Params.ViewLocation = ViewContext.ViewLocation;
+        Params.bHasValidForward = !ViewContext.ViewForward.IsNearlyZero();
+        Params.SafeViewForward = Params.bHasValidForward ? ViewContext.ViewForward.GetSafeNormal() : FVector::ZeroVector;
+
+        const double RawFov = FMath::IsFinite(ViewContext.FOVDegrees) ? static_cast<double>(ViewContext.FOVDegrees) : 0.0;
+        Params.bHasValidFov = (RawFov > 0.0);
+        const double BaseHalfFovDeg = FMath::Clamp(RawFov * 0.5, 0.0, 180.0);
+        const double ExpandedHalfFovDeg = FMath::Clamp(BaseHalfFovDeg + static_cast<double>(Config.HysteresisDegrees), 0.0, 180.0);
+        Params.bFullEnterFov = (BaseHalfFovDeg >= 180.0);
+        Params.bFullKeepFov = (ExpandedHalfFovDeg >= 180.0);
+        Params.CosEnterFov = FMath::Cos(FMath::DegreesToRadians(BaseHalfFovDeg));
+        Params.CosEnterFovSq = Params.CosEnterFov * Params.CosEnterFov;
+        Params.CosKeepFov = FMath::Cos(FMath::DegreesToRadians(ExpandedHalfFovDeg));
+        Params.CosKeepFovSq = Params.CosKeepFov * Params.CosKeepFov;
+
+        const double RawViewMax = FMath::IsFinite(ViewContext.MaxDistance) ? static_cast<double>(ViewContext.MaxDistance) : 0.0;
+        const double EffectiveMax = FMath::Min(static_cast<double>(Config.DistanceFar), RawViewMax);
+        const double DistMargin = static_cast<double>(Config.DistanceHysteresis);
+        Params.bHasValidRange = EffectiveMax > 0.0;
+        Params.MaxDistEnterSq = EffectiveMax * EffectiveMax;
+        const double KeepMax = EffectiveMax + DistMargin;
+        Params.MaxDistKeepSq = KeepMax * KeepMax;
+
+        const double BaseNear = static_cast<double>(Config.DistanceNear);
+        const double BaseMid = static_cast<double>(Config.DistanceMid);
+        const double NearStay = BaseNear + DistMargin;
+        const double NearEnterFromMid = FMath::Max(0.0, BaseNear - DistMargin);
+        const double MidStay = BaseMid + DistMargin;
+        const double MidEnterFromFar = FMath::Max(BaseNear, BaseMid - DistMargin);
+
+        Params.NearThresholdSq[static_cast<uint8>(ESpatialDistanceTier::Near)] = NearStay * NearStay;
+        Params.NearThresholdSq[static_cast<uint8>(ESpatialDistanceTier::Mid)] = NearEnterFromMid * NearEnterFromMid;
+        Params.NearThresholdSq[static_cast<uint8>(ESpatialDistanceTier::Far)] = BaseNear * BaseNear;
+        Params.NearThresholdSq[static_cast<uint8>(ESpatialDistanceTier::OutOfRange)] = BaseNear * BaseNear;
+
+        Params.MidThresholdSq[static_cast<uint8>(ESpatialDistanceTier::Near)] = BaseMid * BaseMid;
+        Params.MidThresholdSq[static_cast<uint8>(ESpatialDistanceTier::Mid)] = MidStay * MidStay;
+        Params.MidThresholdSq[static_cast<uint8>(ESpatialDistanceTier::Far)] = MidEnterFromFar * MidEnterFromFar;
+        Params.MidThresholdSq[static_cast<uint8>(ESpatialDistanceTier::OutOfRange)] = BaseMid * BaseMid;
+
+        return Params;
+    }
+
+    /**
+     * @brief 评估单个空间实体的目标距离档位与对应节流周期（零开方、零除法、零分支查表早退）
+     * @param Config 当前空间节流梯级配置
+     * @param bHighSignificance 是否为高重要度实体
+     * @param CurrentTier 实体上一帧所处距离档位
+     * @param EntityLocation 实体当前世界坐标
+     * @param ViewParams 单帧预计算视图参数包
+     * @param OutTargetTier 输出本帧评估后的目标距离档位
+     * @return 应下发至底层调度器的目标更新周期（秒）
+     */
+    [[nodiscard]] FORCEINLINE float EvaluateEntityTier(
+        const FSpatialThrottleTierConfig& Config,
+        bool bHighSignificance,
+        ESpatialDistanceTier CurrentTier,
+        const FVector& EntityLocation,
+        const FPrecomputedViewParams& ViewParams,
+        ESpatialDistanceTier& OutTargetTier
+    ) noexcept {
+        if (bHighSignificance) {
+            OutTargetTier = ESpatialDistanceTier::Near;
+            return Config.NearInterval;
+        }
+
+        if (!Game::Spatial::Private::IsFiniteVector(EntityLocation)) {
+            OutTargetTier = ESpatialDistanceTier::OutOfRange;
+            return Config.OutOfRangeOrBehindInterval;
+        }
+
+        const FVector ToEntity = EntityLocation - ViewParams.ViewLocation;
+        const double DistSq = ToEntity.SizeSquared();
+        if (DistSq <= UE_DOUBLE_KINDA_SMALL_NUMBER) {
+            OutTargetTier = ESpatialDistanceTier::Near;
+            return Config.NearInterval;
+        }
+
+        if (!ViewParams.bHasValidRange || !ViewParams.bHasValidForward || !ViewParams.bHasValidFov) {
+            OutTargetTier = ESpatialDistanceTier::OutOfRange;
+            return Config.OutOfRangeOrBehindInterval;
+        }
+
+        const bool bIsOutOfRange = (CurrentTier == ESpatialDistanceTier::OutOfRange);
+        const double MaxDistSqLimit = bIsOutOfRange ? ViewParams.MaxDistEnterSq : ViewParams.MaxDistKeepSq;
+        if (DistSq > MaxDistSqLimit) {
+            OutTargetTier = ESpatialDistanceTier::OutOfRange;
+            return Config.OutOfRangeOrBehindInterval;
+        }
+
+        const bool bFullFov = bIsOutOfRange ? ViewParams.bFullEnterFov : ViewParams.bFullKeepFov;
+        if (!bFullFov) {
+            const double Proj = FVector::DotProduct(ToEntity, ViewParams.SafeViewForward);
+            const double CosThreshold = bIsOutOfRange ? ViewParams.CosEnterFov : ViewParams.CosKeepFov;
+            const double CosThresholdSq = bIsOutOfRange ? ViewParams.CosEnterFovSq : ViewParams.CosKeepFovSq;
+            if (!Game::Spatial::Private::IsWithinConeAngle(Proj, DistSq, CosThreshold, CosThresholdSq)) {
+                OutTargetTier = ESpatialDistanceTier::OutOfRange;
+                return Config.OutOfRangeOrBehindInterval;
+            }
+        }
+
+        const uint8 TierIdx = static_cast<uint8>(CurrentTier);
+        if (DistSq <= ViewParams.NearThresholdSq[TierIdx]) {
+            OutTargetTier = ESpatialDistanceTier::Near;
+            return Config.NearInterval;
+        }
+
+        if (DistSq <= ViewParams.MidThresholdSq[TierIdx]) {
+            OutTargetTier = ESpatialDistanceTier::Mid;
+            return Config.MidInterval;
+        }
+
+        OutTargetTier = ESpatialDistanceTier::Far;
+        return Config.FarInterval;
+    }
+
+}  // namespace
+
 /**
  * @brief 构造函数：绑定纯 C++ 节流调度器实例
  * @param InScheduler 调度器引用
@@ -84,7 +235,7 @@ uint64 FSpatialThrottleDriver::RegisterSpatialEntity(
 }
 
 /**
- * @brief O(1) 注销指定空间实体（支持在 UpdateSpatialThrottle 回调中安全重入注销）
+ * @brief 注销指定空间实体（驱动器侧 O(1) 句柄索引移除并同步注销底层调度器心跳）
  * @param InEntityHandle 实体句柄
  * @return 成功注销返回 true
  */
@@ -111,22 +262,17 @@ bool FSpatialThrottleDriver::UnregisterSpatialEntity(uint64 InEntityHandle) {
         return true;
     }
 
-    if (!bIsUpdating) {
+    const int32 PendingIndex = FindPendingAdditionIndex(InEntityHandle);
+    if (PendingIndex == INDEX_NONE) {
         return false;
     }
 
-    for (int32 PendingIndex = 0; PendingIndex < PendingAdditions.Num(); ++PendingIndex) {
-        if (PendingAdditions[PendingIndex].DriverHandle == InEntityHandle) {
-            if (ActiveScheduler != nullptr) {
-                ActiveScheduler->UnregisterTick(PendingAdditions[PendingIndex].SchedulerHandle);
-            }
-            PendingAdditions.RemoveAtSwap(PendingIndex, EAllowShrinking::No);
-            --ActiveEntityCount;
-            return true;
-        }
+    if (ActiveScheduler != nullptr) {
+        ActiveScheduler->UnregisterTick(PendingAdditions[PendingIndex].SchedulerHandle);
     }
-
-    return false;
+    PendingAdditions.RemoveAtSwap(PendingIndex, EAllowShrinking::No);
+    --ActiveEntityCount;
+    return true;
 }
 
 /**
@@ -145,18 +291,13 @@ bool FSpatialThrottleDriver::SetEntitySignificance(uint64 InEntityHandle, bool b
         return true;
     }
 
-    if (!bIsUpdating) {
+    const int32 PendingIndex = FindPendingAdditionIndex(InEntityHandle);
+    if (PendingIndex == INDEX_NONE) {
         return false;
     }
 
-    for (FSpatialEntity& Entry : PendingAdditions) {
-        if (Entry.DriverHandle == InEntityHandle) {
-            Entry.bHighSignificance = bInHighSignificance;
-            return true;
-        }
-    }
-
-    return false;
+    PendingAdditions[PendingIndex].bHighSignificance = bInHighSignificance;
+    return true;
 }
 
 /**
@@ -168,22 +309,7 @@ bool FSpatialThrottleDriver::IsEntityRegistered(uint64 InEntityHandle) const noe
     if (InEntityHandle == 0ULL) {
         return false;
     }
-
-    if (HandleToIndex.Contains(InEntityHandle)) {
-        return true;
-    }
-
-    if (!bIsUpdating) {
-        return false;
-    }
-
-    for (const FSpatialEntity& Entry : PendingAdditions) {
-        if (Entry.DriverHandle == InEntityHandle) {
-            return true;
-        }
-    }
-
-    return false;
+    return HandleToIndex.Contains(InEntityHandle) || FindPendingAdditionIndex(InEntityHandle) != INDEX_NONE;
 }
 
 /**
@@ -216,9 +342,8 @@ void FSpatialThrottleDriver::UpdateSpatialThrottle(const FSpatialViewContext& Vi
 
     bIsUpdating = true;
 
-    const FPrecomputedViewParams ViewParams = BuildViewParams(ViewContext);
+    const FPrecomputedViewParams ViewParams = BuildViewParams(Config, ViewContext);
     const int32 InitialCount = Entities.Num();
-
     for (int32 Index = 0; Index < InitialCount; ++Index) {
         FSpatialEntity& Entry = Entities[Index];
         if (Entry.bPendingRemoval) {
@@ -226,12 +351,7 @@ void FSpatialThrottleDriver::UpdateSpatialThrottle(const FSpatialViewContext& Vi
         }
 
         if (Entry.Validator && !Entry.Validator()) {
-            if (!Entry.bPendingRemoval) {
-                ActiveScheduler->UnregisterTick(Entry.SchedulerHandle);
-                Entry.bPendingRemoval = true;
-                HandleToIndex.Remove(Entry.DriverHandle);
-                --ActiveEntityCount;
-            }
+            MarkInvalidEntityRemoved(Entry, *ActiveScheduler);
             continue;
         }
 
@@ -245,7 +365,14 @@ void FSpatialThrottleDriver::UpdateSpatialThrottle(const FSpatialViewContext& Vi
         }
 
         ESpatialDistanceTier TargetTier = ESpatialDistanceTier::OutOfRange;
-        const float TargetInterval = EvaluateEntityTier(Entry, EntityLocation, ViewParams, TargetTier);
+        const float TargetInterval = EvaluateEntityTier(
+            Config,
+            Entry.bHighSignificance,
+            Entry.CurrentTier,
+            EntityLocation,
+            ViewParams,
+            TargetTier
+        );
         Entry.CurrentTier = TargetTier;
 
         if (FMath::Abs(TargetInterval - Entry.CurrentInterval) > KINDA_SMALL_NUMBER) {
@@ -307,12 +434,13 @@ void FSpatialThrottleDriver::Clear() {
     FThrottledTickScheduler* ActiveScheduler = GetActiveScheduler();
 
     for (FSpatialEntity& Entry : Entities) {
-        if (!Entry.bPendingRemoval) {
-            if (ActiveScheduler != nullptr) {
-                ActiveScheduler->UnregisterTick(Entry.SchedulerHandle);
-            }
-            Entry.bPendingRemoval = true;
+        if (Entry.bPendingRemoval) {
+            continue;
         }
+        if (ActiveScheduler != nullptr) {
+            ActiveScheduler->UnregisterTick(Entry.SchedulerHandle);
+        }
+        Entry.bPendingRemoval = true;
     }
 
     for (const FSpatialEntity& Entry : PendingAdditions) {
@@ -345,148 +473,38 @@ FThrottledTickScheduler* FSpatialThrottleDriver::GetActiveScheduler() const noex
 }
 
 /**
- * @brief 将观察者上下文与配置预计算为单帧只读评估参数包
- * @param ViewContext 空间观察上下文
- * @return 预计算视图参数包
+ * @brief 在更新期重入暂存队列中查找指定句柄索引（非更新态直接 O(1) 返回 INDEX_NONE）
+ * @param InEntityHandle 目标实体句柄
+ * @return 命中索引，不存在返回 INDEX_NONE
  */
-FSpatialThrottleDriver::FPrecomputedViewParams FSpatialThrottleDriver::BuildViewParams(
-    const FSpatialViewContext& ViewContext
-) const noexcept {
-    FPrecomputedViewParams Params;
-    Params.ViewLocation = ViewContext.ViewLocation;
-    Params.bHasValidForward = !ViewContext.ViewForward.IsNearlyZero();
-    Params.SafeViewForward = Params.bHasValidForward ? ViewContext.ViewForward.GetSafeNormal() : FVector::ZeroVector;
-
-    const double RawFov = FMath::IsFinite(ViewContext.FOVDegrees) ? static_cast<double>(ViewContext.FOVDegrees) : 0.0;
-    Params.bHasValidFov = (RawFov > 0.0);
-    const double BaseHalfFovDeg = FMath::Clamp(RawFov * 0.5, 0.0, 180.0);
-    const double ExpandedHalfFovDeg = FMath::Clamp(BaseHalfFovDeg + static_cast<double>(Config.HysteresisDegrees), 0.0, 180.0);
-    Params.bFullEnterFov = (BaseHalfFovDeg >= 180.0);
-    Params.bFullKeepFov = (ExpandedHalfFovDeg >= 180.0);
-    Params.CosEnterFov = FMath::Cos(FMath::DegreesToRadians(BaseHalfFovDeg));
-    Params.CosEnterFovSq = Params.CosEnterFov * Params.CosEnterFov;
-    Params.CosKeepFov = FMath::Cos(FMath::DegreesToRadians(ExpandedHalfFovDeg));
-    Params.CosKeepFovSq = Params.CosKeepFov * Params.CosKeepFov;
-
-    const double RawViewMax = FMath::IsFinite(ViewContext.MaxDistance) ? static_cast<double>(ViewContext.MaxDistance) : 0.0;
-    Params.EffectiveMaxDistance = FMath::Min(static_cast<double>(Config.DistanceFar), RawViewMax);
-    Params.bHasValidRange = Params.EffectiveMaxDistance > 0.0;
-    Params.DistMargin = static_cast<double>(Config.DistanceHysteresis);
-
-    return Params;
-}
-
-/**
- * @brief 评估单个空间实体的目标距离档位与对应节流周期（零开方、零除法、线性早退）
- * @param Entry 空间实体记录
- * @param EntityLocation 实体当前世界坐标
- * @param ViewParams 预计算视图参数
- * @param OutTargetTier 输出目标距离档位
- * @return 应下发至调度器的目标周期（秒）
- */
-float FSpatialThrottleDriver::EvaluateEntityTier(
-    const FSpatialEntity& Entry,
-    const FVector& EntityLocation,
-    const FPrecomputedViewParams& ViewParams,
-    ESpatialDistanceTier& OutTargetTier
-) const noexcept {
-    if (Entry.bHighSignificance) {
-        OutTargetTier = ESpatialDistanceTier::Near;
-        return Config.NearInterval;
+int32 FSpatialThrottleDriver::FindPendingAdditionIndex(uint64 InEntityHandle) const noexcept {
+    if (!bIsUpdating) {
+        return INDEX_NONE;
     }
-
-    if (!Game::Spatial::Private::IsFiniteVector(EntityLocation)) {
-        OutTargetTier = ESpatialDistanceTier::OutOfRange;
-        return Config.OutOfRangeOrBehindInterval;
-    }
-
-    const FVector ToEntity = EntityLocation - ViewParams.ViewLocation;
-    const double DistSq = ToEntity.SizeSquared();
-    if (DistSq <= UE_DOUBLE_KINDA_SMALL_NUMBER) {
-        OutTargetTier = ESpatialDistanceTier::Near;
-        return Config.NearInterval;
-    }
-
-    if (!ViewParams.bHasValidRange || !ViewParams.bHasValidForward || !ViewParams.bHasValidFov) {
-        OutTargetTier = ESpatialDistanceTier::OutOfRange;
-        return Config.OutOfRangeOrBehindInterval;
-    }
-
-    const bool bIsOutOfRange = (Entry.CurrentTier == ESpatialDistanceTier::OutOfRange);
-    const double MaxDistThreshold = bIsOutOfRange
-        ? ViewParams.EffectiveMaxDistance
-        : (ViewParams.EffectiveMaxDistance + ViewParams.DistMargin);
-    if (DistSq > MaxDistThreshold * MaxDistThreshold) {
-        OutTargetTier = ESpatialDistanceTier::OutOfRange;
-        return Config.OutOfRangeOrBehindInterval;
-    }
-
-    const bool bFullFov = bIsOutOfRange ? ViewParams.bFullEnterFov : ViewParams.bFullKeepFov;
-    if (!bFullFov) {
-        const double Proj = FVector::DotProduct(ToEntity, ViewParams.SafeViewForward);
-        const double CosThreshold = bIsOutOfRange ? ViewParams.CosEnterFov : ViewParams.CosKeepFov;
-        const double CosThresholdSq = bIsOutOfRange ? ViewParams.CosEnterFovSq : ViewParams.CosKeepFovSq;
-        if (!Game::Spatial::Private::IsWithinConeAngle(Proj, DistSq, CosThreshold, CosThresholdSq)) {
-            OutTargetTier = ESpatialDistanceTier::OutOfRange;
-            return Config.OutOfRangeOrBehindInterval;
+    for (int32 Index = 0; Index < PendingAdditions.Num(); ++Index) {
+        if (PendingAdditions[Index].DriverHandle == InEntityHandle) {
+            return Index;
         }
     }
-
-    const double NearThreshold = ComputeNearThreshold(Entry.CurrentTier, ViewParams.DistMargin);
-    if (DistSq <= NearThreshold * NearThreshold) {
-        OutTargetTier = ESpatialDistanceTier::Near;
-        return Config.NearInterval;
-    }
-
-    const double MidThreshold = ComputeMidThreshold(Entry.CurrentTier, NearThreshold, ViewParams.DistMargin);
-    if (DistSq <= MidThreshold * MidThreshold) {
-        OutTargetTier = ESpatialDistanceTier::Mid;
-        return Config.MidInterval;
-    }
-
-    OutTargetTier = ESpatialDistanceTier::Far;
-    return Config.FarInterval;
+    return INDEX_NONE;
 }
 
 /**
- * @brief 计算 Near/Mid 边界带迟滞保护的距离阈值
- * @param CurrentTier 实体当前档位
- * @param DistMargin 距离迟滞带宽度
- * @return 近距判定阈值
+ * @brief 将校验失败且尚未自注销的实体标记移除并同步注销底层调度器心跳
+ * @param Entry 失效实体记录
+ * @param ActiveScheduler 活跃底层节流调度器
  */
-double FSpatialThrottleDriver::ComputeNearThreshold(ESpatialDistanceTier CurrentTier, double DistMargin) const noexcept {
-    const double BaseNear = static_cast<double>(Config.DistanceNear);
-    switch (CurrentTier) {
-        case ESpatialDistanceTier::Near:
-            return BaseNear + DistMargin;
-        case ESpatialDistanceTier::Mid:
-            return FMath::Max(0.0, BaseNear - DistMargin);
-        default:
-            return BaseNear;
+void FSpatialThrottleDriver::MarkInvalidEntityRemoved(
+    FSpatialEntity& Entry,
+    FThrottledTickScheduler& ActiveScheduler
+) {
+    if (Entry.bPendingRemoval) {
+        return;
     }
-}
-
-/**
- * @brief 计算 Mid/Far 边界带迟滞保护的距离阈值
- * @param CurrentTier 实体当前档位
- * @param NearThreshold 已计算的近距阈值下界
- * @param DistMargin 距离迟滞带宽度
- * @return 中距判定阈值
- */
-double FSpatialThrottleDriver::ComputeMidThreshold(
-    ESpatialDistanceTier CurrentTier,
-    double NearThreshold,
-    double DistMargin
-) const noexcept {
-    const double BaseMid = static_cast<double>(Config.DistanceMid);
-    switch (CurrentTier) {
-        case ESpatialDistanceTier::Mid:
-            return BaseMid + DistMargin;
-        case ESpatialDistanceTier::Far:
-            return FMath::Max(NearThreshold, BaseMid - DistMargin);
-        default:
-            return BaseMid;
-    }
+    ActiveScheduler.UnregisterTick(Entry.SchedulerHandle);
+    Entry.bPendingRemoval = true;
+    HandleToIndex.Remove(Entry.DriverHandle);
+    --ActiveEntityCount;
 }
 
 /**

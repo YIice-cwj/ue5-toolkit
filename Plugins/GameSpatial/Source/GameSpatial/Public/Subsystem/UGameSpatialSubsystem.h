@@ -19,17 +19,14 @@
  *
  * 基于无物理引擎依赖的三维空间哈希网格，提供轻量高效的 Actor 分层空间索引、
  * 蓝图/C++ 统一几何查询接口与 C++ 零堆分配流式查询原语。
- * 内部统一采用弱引用持有 Actor，绝对避免阻碍垃圾回收或产生悬垂指针。
+ * 内部统一采用不可变弱身份键 TObjectKey<AActor> 持有引用，绝不阻碍垃圾回收且免疫失效键哈希碰撞。
  * 非线程安全，所有方法必须在 GameThread 调用。
  */
 UCLASS()
 class GAMESPATIAL_API UGameSpatialSubsystem : public UWorldSubsystem {
     GENERATED_BODY()
 
-public:
-    /**
-     * @brief 已追踪 Actor 的图层归属与最后同步坐标快照
-     */
+private:
     struct FActorSpatialEntry {
         FGameplayTag LayerTag;
         FVector LastLocation = FVector::ZeroVector;
@@ -87,7 +84,7 @@ public:
     int32 UnregisterActors(const TArray<AActor*>& Actors);
 
     /**
-     * @brief 手动更新 Actor 的空间索引坐标
+     * @brief 手动更新 Actor 的空间索引坐标（静止未变化时跳过图层网格查找直接早退）
      * @param Actor 目标 Actor
      * @param NewLocation 最新的三维世界坐标
      * @return 更新成功返回 true；未注册、正在销毁或坐标非有限返回 false
@@ -171,9 +168,9 @@ public:
      * @brief 检索距离中心点最近的单一存活 Actor
      * @param Center 中心世界坐标
      * @param MaxSearchRadius 最大检索截断半径
-     * @param OutNearestActor 输出检索到的最近有效存活 Actor
+     * @param OutNearestActor 输出检索到的最近有效存活 Actor（未找到时重置为 nullptr）
      * @param LayerTag 目标空间层级（为空时查询 Spatial.Layer.Default）
-     * @return 存在有效 Actor 返回 true，否则返回 false
+     * @return 存在有效 Actor 返回 true，否则将 OutNearestActor 置空并返回 false
      */
     UFUNCTION(BlueprintCallable, Category = "GameSpatial|Subsystem")
     bool QueryNearestActor(
@@ -201,7 +198,7 @@ public:
     ) const;
 
     /**
-     * @brief C++ 零堆分配流式球形范围遍历存活 Actor（自动过滤已销毁或销毁中弱引用）
+     * @brief C++ 零堆分配流式球形范围遍历存活 Actor（自动过滤已销毁或销毁中条目）
      * @tparam TConsumer 消费回调类型 (AActor*) 或 (AActor*, const FVector&)
      * @param Center 球心世界坐标
      * @param Radius 查询半径
@@ -215,19 +212,13 @@ public:
         TConsumer&& Consumer,
         FGameplayTag LayerTag = FGameplayTag()
     ) const {
-        const TSpatialHashGrid3D<TObjectKey<AActor>>* Grid = LayeredGrids.Find(ResolveLayerTag(LayerTag));
-        if (Grid == nullptr) {
-            return;
+        if (const TSpatialHashGrid3D<TObjectKey<AActor>>* Grid = FindLayerGrid(LayerTag)) {
+            Grid->QueryRadiusMatching(Center, Radius, MakeOperationalActorConsumer(Consumer));
         }
-        Grid->QueryRadiusMatching(Center, Radius, [&Consumer](const TObjectKey<AActor>& ActorKey, const FVector& Loc) {
-            if (AActor* Actor = ResolveOperationalActor(ActorKey)) {
-                Game::Spatial::Private::InvokeConsumer(Consumer, Actor, Loc);
-            }
-        });
     }
 
     /**
-     * @brief C++ 零堆分配流式锥体范围遍历存活 Actor（自动过滤已销毁或销毁中弱引用）
+     * @brief C++ 零堆分配流式锥体范围遍历存活 Actor（自动过滤已销毁或销毁中条目）
      * @tparam TConsumer 消费回调类型 (AActor*) 或 (AActor*, const FVector&)
      * @param Apex 锥体顶点世界坐标
      * @param Direction 锥体对称中轴朝向
@@ -245,19 +236,13 @@ public:
         TConsumer&& Consumer,
         FGameplayTag LayerTag = FGameplayTag()
     ) const {
-        const TSpatialHashGrid3D<TObjectKey<AActor>>* Grid = LayeredGrids.Find(ResolveLayerTag(LayerTag));
-        if (Grid == nullptr) {
-            return;
+        if (const TSpatialHashGrid3D<TObjectKey<AActor>>* Grid = FindLayerGrid(LayerTag)) {
+            Grid->QueryConeMatching(Apex, Direction, Radius, HalfAngleDegrees, MakeOperationalActorConsumer(Consumer));
         }
-        Grid->QueryConeMatching(Apex, Direction, Radius, HalfAngleDegrees, [&Consumer](const TObjectKey<AActor>& ActorKey, const FVector& Loc) {
-            if (AActor* Actor = ResolveOperationalActor(ActorKey)) {
-                Game::Spatial::Private::InvokeConsumer(Consumer, Actor, Loc);
-            }
-        });
     }
 
     /**
-     * @brief C++ 零堆分配流式直立圆柱体范围遍历存活 Actor（自动过滤已销毁或销毁中弱引用）
+     * @brief C++ 零堆分配流式直立圆柱体范围遍历存活 Actor（自动过滤已销毁或销毁中条目）
      * @tparam TConsumer 消费回调类型 (AActor*) 或 (AActor*, const FVector&)
      * @param Center 圆柱中心世界坐标
      * @param Radius 水平截面半径
@@ -273,19 +258,13 @@ public:
         TConsumer&& Consumer,
         FGameplayTag LayerTag = FGameplayTag()
     ) const {
-        const TSpatialHashGrid3D<TObjectKey<AActor>>* Grid = LayeredGrids.Find(ResolveLayerTag(LayerTag));
-        if (Grid == nullptr) {
-            return;
+        if (const TSpatialHashGrid3D<TObjectKey<AActor>>* Grid = FindLayerGrid(LayerTag)) {
+            Grid->QueryCylinderMatching(Center, Radius, HalfHeight, MakeOperationalActorConsumer(Consumer));
         }
-        Grid->QueryCylinderMatching(Center, Radius, HalfHeight, [&Consumer](const TObjectKey<AActor>& ActorKey, const FVector& Loc) {
-            if (AActor* Actor = ResolveOperationalActor(ActorKey)) {
-                Game::Spatial::Private::InvokeConsumer(Consumer, Actor, Loc);
-            }
-        });
     }
 
     /**
-     * @brief C++ 零堆分配流式 AABB 包围盒遍历存活 Actor（自动过滤已销毁或销毁中弱引用）
+     * @brief C++ 零堆分配流式 AABB 包围盒遍历存活 Actor（自动过滤已销毁或销毁中条目）
      * @tparam TConsumer 消费回调类型 (AActor*) 或 (AActor*, const FVector&)
      * @param Box 查询轴对齐包围盒
      * @param Consumer 就地消费者回调
@@ -297,15 +276,9 @@ public:
         TConsumer&& Consumer,
         FGameplayTag LayerTag = FGameplayTag()
     ) const {
-        const TSpatialHashGrid3D<TObjectKey<AActor>>* Grid = LayeredGrids.Find(ResolveLayerTag(LayerTag));
-        if (Grid == nullptr) {
-            return;
+        if (const TSpatialHashGrid3D<TObjectKey<AActor>>* Grid = FindLayerGrid(LayerTag)) {
+            Grid->QueryAABBMatching(Box, MakeOperationalActorConsumer(Consumer));
         }
-        Grid->QueryAABBMatching(Box, [&Consumer](const TObjectKey<AActor>& ActorKey, const FVector& Loc) {
-            if (AActor* Actor = ResolveOperationalActor(ActorKey)) {
-                Game::Spatial::Private::InvokeConsumer(Consumer, Actor, Loc);
-            }
-        });
     }
 
     /**
@@ -322,7 +295,7 @@ public:
     void ClearAll();
 
     /**
-     * @brief O(LayerSize) 清理指定空间层中已被垃圾回收或销毁的弱引用条目
+     * @brief O(LayerSize) 清理指定空间层中已被垃圾回收或销毁的失效条目
      * @param LayerTag 目标空间层级（为空时清理默认层）
      * @return 清理的失效 Actor 数量
      */
@@ -330,14 +303,14 @@ public:
     int32 PruneStaleActors(FGameplayTag LayerTag = FGameplayTag());
 
     /**
-     * @brief 一键清理所有空间层中已被垃圾回收或销毁的弱引用条目
+     * @brief 一键清理所有空间层中已被垃圾回收或销毁的失效条目
      * @return 清理的失效 Actor 总数量
      */
     UFUNCTION(BlueprintCallable, Category = "GameSpatial|Subsystem")
     int32 PruneAllStaleActors();
 
     /**
-     * @brief 获取指定空间层中当前索引的条目数量（含待惰性清理的已销毁弱引用）
+     * @brief 获取指定空间层中当前索引的条目数量（含待惰性清理的已销毁条目）
      * @param LayerTag 目标空间层级（为空时查询默认层）
      * @return 索引元素数量
      */
@@ -345,7 +318,7 @@ public:
     int32 GetActorCount(FGameplayTag LayerTag = FGameplayTag()) const;
 
     /**
-     * @brief 获取所有空间层中当前索引的条目总数量（含待惰性清理的已销毁弱引用）
+     * @brief 获取所有空间层中当前索引的条目总数量（含待惰性清理的已销毁条目）
      * @return 索引元素总数量
      */
     UFUNCTION(BlueprintPure, Category = "GameSpatial|Subsystem")
@@ -384,10 +357,6 @@ public:
     UFUNCTION(BlueprintCallable, Category = "GameSpatial|Subsystem")
     void GetActorsInLayer(TArray<AActor*>& OutActors, FGameplayTag LayerTag = FGameplayTag()) const;
 
-private:
-    [[nodiscard]] FGameplayTag ResolveLayerTag(const FGameplayTag& InTag) const noexcept;
-
-public:
     /**
      * @brief 获取默认空间图层原生标签（Spatial.Layer.Default）
      * @return 默认空间图层标签
@@ -395,10 +364,23 @@ public:
     [[nodiscard]] static FGameplayTag GetDefaultLayerTag() noexcept;
 
 private:
+    [[nodiscard]] const TSpatialHashGrid3D<TObjectKey<AActor>>* FindLayerGrid(const FGameplayTag& LayerTag) const noexcept;
+
+private:
+    [[nodiscard]] static FGameplayTag ResolveLayerTag(const FGameplayTag& InTag) noexcept;
     [[nodiscard]] static bool IsActorOperational(const AActor* Actor) noexcept;
     [[nodiscard]] static FORCEINLINE AActor* ResolveOperationalActor(const TObjectKey<AActor>& ActorKey) noexcept {
         AActor* Actor = ActorKey.ResolveObjectPtr();
         return (Actor != nullptr && !Actor->IsActorBeingDestroyed()) ? Actor : nullptr;
+    }
+
+    template <typename TConsumer>
+    [[nodiscard]] static FORCEINLINE auto MakeOperationalActorConsumer(TConsumer& Consumer) noexcept {
+        return [&Consumer](const TObjectKey<AActor>& ActorKey, const FVector& Loc) {
+            if (AActor* Actor = ResolveOperationalActor(ActorKey)) {
+                Game::Spatial::Private::InvokeConsumer(Consumer, Actor, Loc);
+            }
+        };
     }
 
 private:

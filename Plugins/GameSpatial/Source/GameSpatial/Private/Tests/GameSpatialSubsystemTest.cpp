@@ -1,6 +1,6 @@
 /**
  * @file GameSpatialSubsystemTest.cpp
- * @brief UGameSpatialSubsystem 世界空间索引子系统全路径、分层迁移、流式原语与弱引用清理单元测试
+ * @brief UGameSpatialSubsystem 世界空间索引子系统全路径、分层迁移、静止早退、流式原语与失效清理单元测试
  */
 
 #include "Subsystem/UGameSpatialSubsystem.h"
@@ -8,42 +8,10 @@
 #if WITH_AUTOMATION_TESTS
 
 #include <limits>
-#include "Components/SceneComponent.h"
-#include "Engine/Engine.h"
-#include "Engine/World.h"
-#include "GameFramework/Actor.h"
 #include "GameplayTagsManager.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/EngineVersionComparison.h"
-
-namespace {
-
-UWorld* GetSubsystemTestWorld() {
-    if (GEngine == nullptr) {
-        return nullptr;
-    }
-    for (const FWorldContext& Context : GEngine->GetWorldContexts()) {
-        if (Context.World() != nullptr) {
-            return Context.World();
-        }
-    }
-    return nullptr;
-}
-
-AActor* SpawnSpatialTestActor(UWorld* World, const FVector& Location) {
-    FActorSpawnParameters SpawnParams;
-    SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-    AActor* Actor = World->SpawnActor<AActor>(AActor::StaticClass(), FTransform(Location), SpawnParams);
-    if (Actor != nullptr) {
-        USceneComponent* RootComp = NewObject<USceneComponent>(Actor);
-        Actor->SetRootComponent(RootComp);
-        RootComp->RegisterComponent();
-        Actor->SetActorLocation(Location);
-    }
-    return Actor;
-}
-
-}  // namespace
+#include "Tests/SpatialTestHelpers.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FGameSpatialSubsystemLifecycleAndLayerTest,
@@ -52,12 +20,12 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证空间子系统注册、同层更新、跨层迁移、批量操作、非法参数防御与图层清空隔离
+ * @brief 验证空间子系统注册、同层静止早退、跨层迁移、批量操作、未注册探查与图层清空隔离
  * @param Parameters 自动化测试参数
  * @return 全部断言通过返回 true
  */
 bool FGameSpatialSubsystemLifecycleAndLayerTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UWorld* World = GetSubsystemTestWorld();
+    UWorld* World = Game::Spatial::TestHelpers::GetTestWorld();
     TestNotNull(TEXT("世界上下文必须有效"), World);
     if (World == nullptr) {
         return false;
@@ -84,8 +52,8 @@ bool FGameSpatialSubsystemLifecycleAndLayerTest::RunTest([[maybe_unused]] const 
     TestFalse(TEXT("空指针 GetActorLocation 返回 false"), Subsystem->GetActorLocation(nullptr, OutLoc));
     TestEqual(TEXT("空指针 GetActorLocation 重置输出为零向量"), OutLoc, FVector::ZeroVector);
 
-    AActor* ActorA = SpawnSpatialTestActor(World, FVector(100.0, 0.0, 0.0));
-    AActor* ActorB = SpawnSpatialTestActor(World, FVector(0.0, 100.0, 0.0));
+    AActor* ActorA = Game::Spatial::TestHelpers::SpawnTestActor(World, FVector(100.0, 0.0, 0.0));
+    AActor* ActorB = Game::Spatial::TestHelpers::SpawnTestActor(World, FVector(0.0, 100.0, 0.0));
     TestNotNull(TEXT("ActorA 创建成功"), ActorA);
     TestNotNull(TEXT("ActorB 创建成功"), ActorB);
     if (ActorA == nullptr || ActorB == nullptr) {
@@ -95,17 +63,22 @@ bool FGameSpatialSubsystemLifecycleAndLayerTest::RunTest([[maybe_unused]] const 
     const FGameplayTag EnemyLayer = UGameplayTagsManager::Get().AddNativeGameplayTag(FName("Spatial.Layer.Enemy"), TEXT("测试敌对图层"));
     const FGameplayTag AllyLayer = UGameplayTagsManager::Get().AddNativeGameplayTag(FName("Spatial.Layer.Ally"), TEXT("测试友军图层"));
 
+    TestFalse(TEXT("未注册存活 Actor IsActorRegistered 返回 false"), Subsystem->IsActorRegistered(ActorA));
     TestFalse(TEXT("未注册 Actor 注销返回 false"), Subsystem->UnregisterActor(ActorA));
     TestFalse(TEXT("未注册 Actor 更新返回 false"), Subsystem->UpdateActor(ActorA));
     TestFalse(TEXT("未注册 Actor 反查图层返回无效标签"), Subsystem->GetActorLayer(ActorA).IsValid());
+    OutLoc = FVector(77.0, 77.0, 77.0);
+    TestFalse(TEXT("未注册存活 Actor GetActorLocation 返回 false"), Subsystem->GetActorLocation(ActorA, OutLoc));
+    TestEqual(TEXT("未注册存活 Actor GetActorLocation 重置输出为零向量"), OutLoc, FVector::ZeroVector);
 
     TestTrue(TEXT("注册 ActorA 至默认层"), Subsystem->RegisterActor(ActorA));
+    TestTrue(TEXT("同层未移动重复注册命中静止早退"), Subsystem->RegisterActor(ActorA));
     TestTrue(TEXT("注册 ActorB 至敌对层"), Subsystem->RegisterActor(ActorB, EnemyLayer));
     TestEqual(TEXT("ActorA 归属默认层"), Subsystem->GetActorLayer(ActorA), UGameSpatialSubsystem::GetDefaultLayerTag());
     TestEqual(TEXT("ActorB 归属敌对层"), Subsystem->GetActorLayer(ActorB), EnemyLayer);
 
     ActorA->SetActorLocation(FVector(250.0, 0.0, 0.0));
-    TestTrue(TEXT("同层重复注册自动原地更新位置"), Subsystem->RegisterActor(ActorA));
+    TestTrue(TEXT("同层移动后重注册原地更新位置"), Subsystem->RegisterActor(ActorA));
     TestTrue(TEXT("获取同层重注册后坐标"), Subsystem->GetActorLocation(ActorA, OutLoc));
     TestEqual(TEXT("同层重注册后 X=250"), OutLoc.X, 250.0);
     TestEqual(TEXT("同层重注册总数不变"), Subsystem->GetTotalActorCount(), 2);
@@ -121,6 +94,7 @@ bool FGameSpatialSubsystemLifecycleAndLayerTest::RunTest([[maybe_unused]] const 
     TestTrue(TEXT("NaN 拒绝后保留旧坐标"), Subsystem->GetActorLocation(ActorA, OutLoc));
     TestEqual(TEXT("旧坐标 X 未被污染"), OutLoc.X, 250.0);
 
+    TestTrue(TEXT("静止坐标 UpdateActorLocation 早退成功"), Subsystem->UpdateActorLocation(ActorA, FVector(250.0, 0.0, 0.0)));
     TestTrue(TEXT("手动更新 ActorA 坐标"), Subsystem->UpdateActorLocation(ActorA, FVector(300.0, 0.0, 0.0)));
     TestTrue(TEXT("自动同步 ActorB 坐标"), Subsystem->UpdateActor(ActorB));
 
@@ -147,12 +121,12 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证子系统全部六类几何检索、默认层缺省参数、C++ 零分配流式原语及图层隔离
+ * @brief 验证子系统全部六类几何检索、超距无命中返回、C++ 零分配流式原语及空图层隔离
  * @param Parameters 自动化测试参数
  * @return 全部断言通过返回 true
  */
 bool FGameSpatialSubsystemQueriesAndStreamingTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UWorld* World = GetSubsystemTestWorld();
+    UWorld* World = Game::Spatial::TestHelpers::GetTestWorld();
     if (World == nullptr) {
         return false;
     }
@@ -164,10 +138,10 @@ bool FGameSpatialSubsystemQueriesAndStreamingTest::RunTest([[maybe_unused]] cons
 
     Subsystem->ClearAll();
 
-    AActor* Actor1 = SpawnSpatialTestActor(World, FVector(100.0, 0.0, 0.0));
-    AActor* Actor2 = SpawnSpatialTestActor(World, FVector(70.0, 70.0, 0.0));
-    AActor* Actor3 = SpawnSpatialTestActor(World, FVector(0.0, 200.0, 0.0));
-    AActor* Actor4 = SpawnSpatialTestActor(World, FVector(0.0, 0.0, 300.0));
+    AActor* Actor1 = Game::Spatial::TestHelpers::SpawnTestActor(World, FVector(100.0, 0.0, 0.0));
+    AActor* Actor2 = Game::Spatial::TestHelpers::SpawnTestActor(World, FVector(70.0, 70.0, 0.0));
+    AActor* Actor3 = Game::Spatial::TestHelpers::SpawnTestActor(World, FVector(0.0, 200.0, 0.0));
+    AActor* Actor4 = Game::Spatial::TestHelpers::SpawnTestActor(World, FVector(0.0, 0.0, 300.0));
 
     Subsystem->RegisterActors({Actor1, Actor2, Actor3, Actor4});
 
@@ -195,6 +169,10 @@ bool FGameSpatialSubsystemQueriesAndStreamingTest::RunTest([[maybe_unused]] cons
     TestTrue(TEXT("默认层最近邻成功"), Subsystem->QueryNearestActor(FVector::ZeroVector, 500.0f, NearestActor));
     TestEqual(TEXT("最近为 Actor2 (距离 ~98.99)"), NearestActor, Actor2);
 
+    NearestActor = Actor1;
+    TestFalse(TEXT("非空图层超距 QueryNearestActor 返回 false"), Subsystem->QueryNearestActor(FVector(5000.0, 5000.0, 0.0), 100.0f, NearestActor));
+    TestNull(TEXT("非空图层超距 QueryNearestActor 将输出置空"), NearestActor);
+
     Subsystem->QueryKNearestActors(FVector::ZeroVector, 500.0f, 3, Results);
     TestEqual(TEXT("默认层 K=3 返回 3 个"), Results.Num(), 3);
     if (Results.Num() == 3) {
@@ -205,6 +183,12 @@ bool FGameSpatialSubsystemQueriesAndStreamingTest::RunTest([[maybe_unused]] cons
 
     Subsystem->QueryKNearestActors(FVector::ZeroVector, 500.0f, 0, Results);
     TestTrue(TEXT("K<=0 安全返回空"), Results.IsEmpty());
+
+    Subsystem->QueryKNearestActors(FVector::ZeroVector, -50.0f, 100, Results);
+    TestTrue(TEXT("负半径 QueryKNearestActors 安全返回空"), Results.IsEmpty());
+
+    Subsystem->QueryKNearestActors(FVector::ZeroVector, 500.0f, 100, Results);
+    TestEqual(TEXT("大 K(100) 仅返回实际命中的 4 个 Actor"), Results.Num(), 4);
 
     int32 StreamRadiusCount = 0;
     Subsystem->ForEachActorInRadius(FVector::ZeroVector, 150.0f, [&StreamRadiusCount](AActor*, const FVector&) { ++StreamRadiusCount; });
@@ -234,6 +218,13 @@ bool FGameSpatialSubsystemQueriesAndStreamingTest::RunTest([[maybe_unused]] cons
     Subsystem->GetActorsInLayer(Results, EmptyLayer);
     TestTrue(TEXT("未注册图层 GetActorsInLayer 返回空"), Results.IsEmpty());
 
+    int32 EmptyStreamCalls = 0;
+    Subsystem->ForEachActorInRadius(FVector::ZeroVector, 1000.0f, [&EmptyStreamCalls](AActor*) { ++EmptyStreamCalls; }, EmptyLayer);
+    Subsystem->ForEachActorInCone(FVector::ZeroVector, FVector(1.0, 0.0, 0.0), 1000.0f, 45.0f, [&EmptyStreamCalls](AActor*) { ++EmptyStreamCalls; }, EmptyLayer);
+    Subsystem->ForEachActorInCylinder(FVector::ZeroVector, 1000.0f, 500.0f, [&EmptyStreamCalls](AActor*) { ++EmptyStreamCalls; }, EmptyLayer);
+    Subsystem->ForEachActorInAABB(FBox(FVector(-500.0), FVector(500.0)), [&EmptyStreamCalls](AActor*) { ++EmptyStreamCalls; }, EmptyLayer);
+    TestEqual(TEXT("未注册图层全部四类 ForEach 流式查询零回调安全早退"), EmptyStreamCalls, 0);
+
     Subsystem->ClearAll();
     Actor1->Destroy();
     Actor2->Destroy();
@@ -249,12 +240,12 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证已销毁 Actor 的只读状态一致性、EndPlay 反注册放行与 O(Layer)/全局弱引用惰性清理
+ * @brief 验证已销毁/销毁窗口期 Actor 的全几何排除一致性、EndPlay 反注册放行与 O(Layer)/全局失效清理
  * @param Parameters 自动化测试参数
  * @return 全部断言通过返回 true
  */
 bool FGameSpatialSubsystemWeakPtrAndPruningTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    UWorld* World = GetSubsystemTestWorld();
+    UWorld* World = Game::Spatial::TestHelpers::GetTestWorld();
     if (World == nullptr) {
         return false;
     }
@@ -268,15 +259,18 @@ bool FGameSpatialSubsystemWeakPtrAndPruningTest::RunTest([[maybe_unused]] const 
 
     const FGameplayTag PruneLayer = UGameplayTagsManager::Get().AddNativeGameplayTag(FName("Spatial.Layer.PruneTest"), TEXT("清理测试层"));
 
-    AActor* LiveActor = SpawnSpatialTestActor(World, FVector(100.0, 0.0, 0.0));
-    AActor* DeadDefault = SpawnSpatialTestActor(World, FVector(50.0, 0.0, 0.0));
-    AActor* DeadOtherLayer = SpawnSpatialTestActor(World, FVector(30.0, 0.0, 0.0));
-    AActor* DeadUnregisterTest = SpawnSpatialTestActor(World, FVector(20.0, 0.0, 0.0));
+    AActor* LiveActor = Game::Spatial::TestHelpers::SpawnTestActor(World, FVector(100.0, 0.0, 0.0));
+    AActor* DeadDefault = Game::Spatial::TestHelpers::SpawnTestActor(World, FVector(50.0, 0.0, 0.0));
+    AActor* DeadOtherLayer = Game::Spatial::TestHelpers::SpawnTestActor(World, FVector(30.0, 0.0, 0.0));
+    AActor* DeadUnregisterTest = Game::Spatial::TestHelpers::SpawnTestActor(World, FVector(20.0, 0.0, 0.0));
 
     Subsystem->RegisterActor(LiveActor);
     Subsystem->RegisterActor(DeadDefault);
     Subsystem->RegisterActor(DeadUnregisterTest);
     Subsystem->RegisterActor(DeadOtherLayer, PruneLayer);
+
+    TestEqual(TEXT("全员存活时单层清理返回 0"), Subsystem->PruneStaleActors(), 0);
+    TestEqual(TEXT("全员存活时全局清理返回 0"), Subsystem->PruneAllStaleActors(), 0);
 
     DeadDefault->Destroy();
     DeadOtherLayer->Destroy();
@@ -298,6 +292,15 @@ bool FGameSpatialSubsystemWeakPtrAndPruningTest::RunTest([[maybe_unused]] const 
     if (!QueryResults.IsEmpty()) {
         TestEqual(TEXT("返回项为 LiveActor"), QueryResults[0], LiveActor);
     }
+
+    Subsystem->QueryActorsInCone(FVector::ZeroVector, FVector(1.0, 0.0, 0.0), 200.0f, 45.0f, QueryResults);
+    TestEqual(TEXT("锥体查询自动排除已销毁 Actor，仅返回 LiveActor"), QueryResults.Num(), 1);
+
+    Subsystem->QueryActorsInCylinder(FVector::ZeroVector, 200.0f, 100.0f, QueryResults);
+    TestEqual(TEXT("圆柱查询自动排除已销毁 Actor，仅返回 LiveActor"), QueryResults.Num(), 1);
+
+    Subsystem->QueryActorsInAABB(FBox(FVector(-10.0, -10.0, -10.0), FVector(150.0, 10.0, 10.0)), QueryResults);
+    TestEqual(TEXT("AABB 查询自动排除已销毁 Actor，仅返回 LiveActor"), QueryResults.Num(), 1);
 
     AActor* Nearest = nullptr;
     TestTrue(TEXT("近邻查询跳过更近的已销毁 Actor，命中 LiveActor"), Subsystem->QueryNearestActor(FVector::ZeroVector, 200.0f, Nearest));
@@ -321,72 +324,73 @@ bool FGameSpatialSubsystemWeakPtrAndPruningTest::RunTest([[maybe_unused]] const 
 
     TestEqual(TEXT("清理不存在图层返回 0"), Subsystem->PruneStaleActors(PruneLayer), 0);
 
-    AActor* DyingActor = SpawnSpatialTestActor(World, FVector(40.0, 0.0, 0.0));
+    AActor* DyingActor = Game::Spatial::TestHelpers::SpawnTestActor(World, FVector(40.0, 0.0, 0.0));
     TestNotNull(TEXT("DyingActor 创建成功"), DyingActor);
-    if (DyingActor != nullptr) {
-        TestTrue(TEXT("注册 DyingActor 到默认层"), Subsystem->RegisterActor(DyingActor));
+    if (DyingActor == nullptr) {
+        Subsystem->ClearAll();
+        LiveActor->Destroy();
+        return false;
+    }
 
-        bool bObservedDestroyWindow = false;
-        bool bWeakStillValidInWindow = false;
-        bool bRadiusExcludedDying = false;
-        bool bStreamExcludedDying = false;
-        bool bNearestExcludedDying = false;
-        bool bKNearestExcludedDying = false;
-        bool bLayerListExcludedDying = false;
-        int32 PrunedInWindow = 0;
+    TestTrue(TEXT("注册 DyingActor 到默认层"), Subsystem->RegisterActor(DyingActor));
+    bool bObservedDestroyWindow = false;
+    bool bWeakStillValidInWindow = false;
+    bool bRadiusExcludedDying = false;
+    bool bStreamExcludedDying = false;
+    bool bNearestExcludedDying = false;
+    bool bKNearestExcludedDying = false;
+    bool bLayerListExcludedDying = false;
+    int32 PrunedInWindow = 0;
 
-        const FDelegateHandle DestroyedHandle = World->AddOnActorDestroyedHandler(
-            FOnActorDestroyed::FDelegate::CreateLambda([&](AActor* DestroyedActor) {
-                if (DestroyedActor != DyingActor) {
-                    return;
-                }
-                bObservedDestroyWindow = DestroyedActor->IsActorBeingDestroyed();
-                bWeakStillValidInWindow = TWeakObjectPtr<AActor>(DestroyedActor).IsValid();
+    const FDelegateHandle DestroyedHandle = World->AddOnActorDestroyedHandler(
+        FOnActorDestroyed::FDelegate::CreateLambda([&](AActor* DestroyedActor) {
+            if (DestroyedActor != DyingActor) {
+                return;
+            }
+            bObservedDestroyWindow = DestroyedActor->IsActorBeingDestroyed();
+            bWeakStillValidInWindow = TWeakObjectPtr<AActor>(DestroyedActor).IsValid();
 
-                TArray<AActor*> WindowResults;
-                Subsystem->QueryActorsInRadius(FVector::ZeroVector, 200.0f, WindowResults);
-                bRadiusExcludedDying = (WindowResults.Num() == 1 && WindowResults[0] == LiveActor);
+            TArray<AActor*> WindowResults;
+            Subsystem->QueryActorsInRadius(FVector::ZeroVector, 200.0f, WindowResults);
+            bRadiusExcludedDying = (WindowResults.Num() == 1 && WindowResults[0] == LiveActor);
 
-                int32 StreamHits = 0;
-                bool bStreamHitDying = false;
-                Subsystem->ForEachActorInRadius(FVector::ZeroVector, 200.0f, [&](AActor* HitActor) {
-                    ++StreamHits;
-                    if (HitActor == DyingActor) {
-                        bStreamHitDying = true;
-                    }
-                });
-                bStreamExcludedDying = (StreamHits == 1 && !bStreamHitDying);
+            int32 StreamHits = 0;
+            bool bStreamHitDying = false;
+            Subsystem->ForEachActorInRadius(FVector::ZeroVector, 200.0f, [&](AActor* HitActor) {
+                ++StreamHits;
+                bStreamHitDying = bStreamHitDying || (HitActor == DyingActor);
+            });
+            bStreamExcludedDying = (StreamHits == 1 && !bStreamHitDying);
 
-                AActor* WindowNearest = nullptr;
-                bNearestExcludedDying = Subsystem->QueryNearestActor(FVector::ZeroVector, 200.0f, WindowNearest)
-                    && (WindowNearest == LiveActor);
+            AActor* WindowNearest = nullptr;
+            bNearestExcludedDying = Subsystem->QueryNearestActor(FVector::ZeroVector, 200.0f, WindowNearest)
+                && (WindowNearest == LiveActor);
 
-                Subsystem->QueryKNearestActors(FVector::ZeroVector, 200.0f, 3, WindowResults);
-                bKNearestExcludedDying = (WindowResults.Num() == 1 && WindowResults[0] == LiveActor);
+            Subsystem->QueryKNearestActors(FVector::ZeroVector, 200.0f, 3, WindowResults);
+            bKNearestExcludedDying = (WindowResults.Num() == 1 && WindowResults[0] == LiveActor);
 
-                Subsystem->GetActorsInLayer(WindowResults);
-                bLayerListExcludedDying = (WindowResults.Num() == 1 && WindowResults[0] == LiveActor);
+            Subsystem->GetActorsInLayer(WindowResults);
+            bLayerListExcludedDying = (WindowResults.Num() == 1 && WindowResults[0] == LiveActor);
 
-                PrunedInWindow = Subsystem->PruneStaleActors();
-            })
-        );
+            PrunedInWindow = Subsystem->PruneStaleActors();
+        })
+    );
 
-        DyingActor->Destroy();
+    DyingActor->Destroy();
 #if UE_VERSION_NEWER_THAN(5, 4, 99)
-        World->RemoveOnActorDestroyedHandler(DestroyedHandle);
+    World->RemoveOnActorDestroyedHandler(DestroyedHandle);
 #else
-        World->RemoveOnActorDestroyededHandler(DestroyedHandle);
+    World->RemoveOnActorDestroyededHandler(DestroyedHandle);
 #endif
 
-        TestTrue(TEXT("OnActorDestroyed 窗口期内 IsActorBeingDestroyed 为 true"), bObservedDestroyWindow);
-        TestTrue(TEXT("OnActorDestroyed 窗口期内 WeakObjectPtr 尚未 MarkAsGarbage"), bWeakStillValidInWindow);
-        TestTrue(TEXT("销毁窗口期内 QueryActorsInRadius 排除正在销毁的 Actor"), bRadiusExcludedDying);
-        TestTrue(TEXT("销毁窗口期内 ForEachActorInRadius 排除正在销毁的 Actor"), bStreamExcludedDying);
-        TestTrue(TEXT("销毁窗口期内 QueryNearestActor 排除更近的正在销毁 Actor"), bNearestExcludedDying);
-        TestTrue(TEXT("销毁窗口期内 QueryKNearestActors 排除正在销毁的 Actor"), bKNearestExcludedDying);
-        TestTrue(TEXT("销毁窗口期内 GetActorsInLayer 排除正在销毁的 Actor"), bLayerListExcludedDying);
-        TestEqual(TEXT("销毁窗口期内 PruneStaleActors 一致清理 1 个销毁中 Actor"), PrunedInWindow, 1);
-    }
+    TestTrue(TEXT("OnActorDestroyed 窗口期内 IsActorBeingDestroyed 为 true"), bObservedDestroyWindow);
+    TestTrue(TEXT("OnActorDestroyed 窗口期内 WeakObjectPtr 尚未 MarkAsGarbage"), bWeakStillValidInWindow);
+    TestTrue(TEXT("销毁窗口期内 QueryActorsInRadius 排除正在销毁的 Actor"), bRadiusExcludedDying);
+    TestTrue(TEXT("销毁窗口期内 ForEachActorInRadius 排除正在销毁的 Actor"), bStreamExcludedDying);
+    TestTrue(TEXT("销毁窗口期内 QueryNearestActor 排除更近的正在销毁 Actor"), bNearestExcludedDying);
+    TestTrue(TEXT("销毁窗口期内 QueryKNearestActors 排除正在销毁的 Actor"), bKNearestExcludedDying);
+    TestTrue(TEXT("销毁窗口期内 GetActorsInLayer 排除正在销毁的 Actor"), bLayerListExcludedDying);
+    TestEqual(TEXT("销毁窗口期内 PruneStaleActors 一致清理 1 个销毁中 Actor"), PrunedInWindow, 1);
 
     Subsystem->ClearAll();
     LiveActor->Destroy();
@@ -397,8 +401,8 @@ bool FGameSpatialSubsystemWeakPtrAndPruningTest::RunTest([[maybe_unused]] const 
     DefaultBatch.Reserve(BatchSize);
     OtherBatch.Reserve(BatchSize);
     for (int32 Index = 0; Index < BatchSize; ++Index) {
-        AActor* DefaultItem = SpawnSpatialTestActor(World, FVector(10.0, 10.0, 0.0));
-        AActor* OtherItem = SpawnSpatialTestActor(World, FVector(10.0, 10.0, 0.0));
+        AActor* DefaultItem = Game::Spatial::TestHelpers::SpawnTestActor(World, FVector(10.0, 10.0, 0.0));
+        AActor* OtherItem = Game::Spatial::TestHelpers::SpawnTestActor(World, FVector(10.0, 10.0, 0.0));
         DefaultBatch.Add(DefaultItem);
         OtherBatch.Add(OtherItem);
         Subsystem->RegisterActor(DefaultItem);

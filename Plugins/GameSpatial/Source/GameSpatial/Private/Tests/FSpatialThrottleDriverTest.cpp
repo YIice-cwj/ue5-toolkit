@@ -1,6 +1,6 @@
 /**
  * @file FSpatialThrottleDriverTest.cpp
- * @brief FSpatialThrottleDriver 全档位判定、双向迟滞带、配置钳制、回调重入与弱引用子系统安全单元测试
+ * @brief FSpatialThrottleDriver 全档位判定、双向迟滞带、配置钳制、析构清理、回调重入与弱引用子系统安全单元测试
  */
 
 #include "Throttle/FSpatialThrottleDriver.h"
@@ -9,25 +9,8 @@
 
 #include <limits>
 #include "Async/UThrottledTickerSubsystem.h"
-#include "Engine/Engine.h"
-#include "Engine/World.h"
 #include "Misc/AutomationTest.h"
-
-namespace {
-
-UWorld* GetThrottleTestWorld() {
-    if (GEngine == nullptr) {
-        return nullptr;
-    }
-    for (const FWorldContext& Context : GEngine->GetWorldContexts()) {
-        if (Context.World() != nullptr) {
-            return Context.World();
-        }
-    }
-    return nullptr;
-}
-
-}  // namespace
+#include "Tests/SpatialTestHelpers.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FSpatialThrottleDriverDistanceTiersTest,
@@ -36,7 +19,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证全部四级距离档位（含 DistanceFar 上限）、高重要度保真、背后/负视距/零朝向裁剪与 O(1) 注销
+ * @brief 验证全部四级距离档位、高重要度保真、非零 NearInterval 同步、析构自动注销与 O(1) 注销
  * @param Parameters 自动化测试参数
  * @return 全部断言通过返回 true
  */
@@ -194,13 +177,42 @@ bool FSpatialThrottleDriverDistanceTiersTest::RunTest([[maybe_unused]] const FSt
     TestEqual(TEXT("注册第 3 个实体后总数为 3"), Driver.Num(), 3);
     TestFalse(TEXT("注销 0 句柄返回 false"), Driver.UnregisterSpatialEntity(0ULL));
     TestFalse(TEXT("注销不存在句柄返回 false"), Driver.UnregisterSpatialEntity(9999ULL));
-    TestTrue(TEXT("O(1) 注销中间实体 Minion 成功"), Driver.UnregisterSpatialEntity(MinionHandle));
+    TestTrue(TEXT("驱动器侧 O(1) 注销中间实体 Minion 成功"), Driver.UnregisterSpatialEntity(MinionHandle));
     TestFalse(TEXT("注销后 Minion 未注册"), Driver.IsEntityRegistered(MinionHandle));
     TestTrue(TEXT("换位后的尾部实体 Third 仍可正常注销"), Driver.UnregisterSpatialEntity(ThirdHandle));
     TestEqual(TEXT("仅剩 Boss 1 个实体"), Driver.Num(), 1);
 
     Driver.Clear();
     TestEqual(TEXT("Clear 后总数为 0"), Driver.Num(), 0);
+
+    {
+        FThrottledTickScheduler ScopedScheduler;
+        {
+            FSpatialThrottleDriver ScopedDriver(ScopedScheduler);
+            FSpatialThrottleTierConfig NonZeroNearConfig;
+            NonZeroNearConfig.NearInterval = 0.05f;
+            ScopedDriver.SetTierConfig(NonZeroNearConfig);
+
+            int32 NonZeroTicks = 0;
+            ScopedDriver.RegisterSpatialEntity(
+                nullptr,
+                []() { return FVector(200.0, 0.0, 0.0); },
+                [&NonZeroTicks](float) { ++NonZeroTicks; },
+                false
+            );
+            ScopedDriver.RegisterSpatialEntity(nullptr, []() { return FVector(300.0, 0.0, 0.0); }, [](float) {});
+            TestEqual(TEXT("作用域内调度器持有 2 条心跳"), ScopedScheduler.GetRegisteredCount(), 2);
+
+            ScopedDriver.UpdateSpatialThrottle(View);
+            ScopedScheduler.Tick(0.02f);
+            TestEqual(TEXT("非零 NearInterval(0.05s) 首次更新后 0.02s 不触发"), NonZeroTicks, 0);
+            ScopedScheduler.Tick(0.04f);
+            TestEqual(TEXT("非零 NearInterval(0.05s) 累积超过 0.05s 后触发"), NonZeroTicks, 1);
+        }
+        TestEqual(TEXT("析构函数自动注销调度器中全部残留任务"), ScopedScheduler.GetRegisteredCount(), 0);
+        TestTrue(TEXT("析构后底层调度器为空"), ScopedScheduler.IsEmpty());
+    }
+
     return true;
 }
 
@@ -211,7 +223,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证 Near/Mid/Far/OutOfRange 距离迟滞带、FOV 角度双向迟滞带及非法配置参数钳制
+ * @brief 验证 Near/Mid/Far/OutOfRange 距离迟滞带、锐角/钝角/近全向 FOV 双向迟滞带及非法/折叠配置钳制
  * @param Parameters 自动化测试参数
  * @return 全部断言通过返回 true
  */
@@ -355,6 +367,59 @@ bool FSpatialThrottleDriverHysteresisAndConfigTest::RunTest([[maybe_unused]] con
     Scheduler.Tick(0.20f);
     TestEqual(TEXT("从 OutOfRange 回摆至 47度仍未跨过 45度进入阈值保持 OutOfRange"), Ticks, 0);
 
+    const FSpatialViewContext ObtuseView(FVector::ZeroVector, FVector(1.0, 0.0, 0.0), 240.0f, 10000.0f);
+    const double Angle115Rad = FMath::DegreesToRadians(115.0);
+    const double Angle123Rad = FMath::DegreesToRadians(123.0);
+    const double Angle128Rad = FMath::DegreesToRadians(128.0);
+
+    EntityPos = FVector(500.0 * FMath::Cos(Angle115Rad), 500.0 * FMath::Sin(Angle115Rad), 0.0);
+    Driver.UpdateSpatialThrottle(ObtuseView);
+    Ticks = 0;
+    Scheduler.Tick(0.016f);
+    TestEqual(TEXT("钝角 FOV=240(半角120度) 下 115度进入 Near"), Ticks, 1);
+
+    EntityPos = FVector(500.0 * FMath::Cos(Angle123Rad), 500.0 * FMath::Sin(Angle123Rad), 0.0);
+    Driver.UpdateSpatialThrottle(ObtuseView);
+    Ticks = 0;
+    Scheduler.Tick(0.016f);
+    TestEqual(TEXT("钝角 FOV=240 下 123度处于 [120,125] 迟滞带内保持 Near"), Ticks, 1);
+
+    EntityPos = FVector(500.0 * FMath::Cos(Angle128Rad), 500.0 * FMath::Sin(Angle128Rad), 0.0);
+    Driver.UpdateSpatialThrottle(ObtuseView);
+    Ticks = 0;
+    Scheduler.Tick(0.20f);
+    TestEqual(TEXT("钝角 FOV=240 下 128度超出 125度退出阈值降级为 OutOfRange"), Ticks, 0);
+
+    const FSpatialViewContext NearFullView(FVector::ZeroVector, FVector(1.0, 0.0, 0.0), 355.0f, 10000.0f);
+    EntityPos = FVector(-500.0, 0.0, 0.0);
+    Driver.UpdateSpatialThrottle(NearFullView);
+    Ticks = 0;
+    Scheduler.Tick(0.20f);
+    TestEqual(TEXT("FOV=355(半角177.5) 下处于正背后 180度时无法从 OutOfRange 进入"), Ticks, 0);
+
+    EntityPos = FVector(500.0, 0.0, 0.0);
+    Driver.UpdateSpatialThrottle(NearFullView);
+    EntityPos = FVector(-500.0, 0.0, 0.0);
+    Driver.UpdateSpatialThrottle(NearFullView);
+    Ticks = 0;
+    Scheduler.Tick(0.016f);
+    TestEqual(TEXT("FOV=355+迟滞5=360全向保持下移至正背后仍维持 Near"), Ticks, 1);
+
+    FSpatialThrottleTierConfig CollapsedConfig = Config;
+    CollapsedConfig.DistanceNear = 1000.0f;
+    CollapsedConfig.DistanceMid = 1000.0f;
+    CollapsedConfig.DistanceFar = 2000.0f;
+    CollapsedConfig.DistanceHysteresis = 200.0f;
+    Driver.SetTierConfig(CollapsedConfig);
+
+    EntityPos = FVector(1500.0, 0.0, 0.0);
+    Driver.UpdateSpatialThrottle(View);
+    Ticks = 0;
+    Scheduler.Tick(0.15f);
+    TestEqual(TEXT("折叠配置 DistanceNear==DistanceMid 在 1500 处正确进入 Far(0.25s)"), Ticks, 0);
+    Scheduler.Tick(0.15f);
+    TestEqual(TEXT("折叠配置在 Far 累积超 0.25s 后触发"), Ticks, 1);
+
     Driver.Clear();
     return true;
 }
@@ -366,20 +431,22 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证校验器失效自动剔除、回调重入增删改清防护与 UThrottledTickerSubsystem 弱引用销毁安全
+ * @brief 验证校验器失效自动剔除、回调重入增删改清防护、连跑零 Flaky 与 UThrottledTickerSubsystem 弱引用销毁安全
  * @param Parameters 自动化测试参数
  * @return 全部断言通过返回 true
  */
 bool FSpatialThrottleDriverReentrancyAndSubsystemTest::RunTest([[maybe_unused]] const FString& Parameters) {
-    AddExpectedMessage(TEXT("检测到 UpdateSpatialThrottle 递归重入调用"), EAutomationExpectedMessageFlags::Contains, 1);
-    AddExpectedMessage(TEXT("观察者上下文包含非有限浮点坐标/朝向"), EAutomationExpectedMessageFlags::Contains, 1);
-    AddExpectedMessage(TEXT("绑定的 UThrottledTickerSubsystem 已失效销毁"), EAutomationExpectedMessageFlags::Contains, 1);
+    AddExpectedMessage(TEXT("检测到 UpdateSpatialThrottle 递归重入调用"), EAutomationExpectedMessageFlags::Contains, -1, false);
+    AddExpectedMessage(TEXT("观察者上下文包含非有限浮点坐标/朝向"), EAutomationExpectedMessageFlags::Contains, -1, false);
+    AddExpectedMessage(TEXT("绑定的 UThrottledTickerSubsystem 已失效销毁"), EAutomationExpectedMessageFlags::Contains, 1, false);
 
     FThrottledTickScheduler Scheduler;
     FSpatialThrottleDriver Driver(Scheduler);
     const FSpatialViewContext View(FVector::ZeroVector, FVector(1.0, 0.0, 0.0), 90.0f, 10000.0f);
 
     const double NaNVal = std::numeric_limits<double>::quiet_NaN();
+    Driver.UpdateSpatialThrottle(FSpatialViewContext(FVector(NaNVal, 0.0, 0.0), FVector(1.0, 0.0, 0.0), 90.0f, 10000.0f));
+    Driver.UpdateSpatialThrottle(FSpatialViewContext(FVector::ZeroVector, FVector(NaNVal, 0.0, 0.0), 90.0f, 10000.0f));
     Driver.UpdateSpatialThrottle(FSpatialViewContext(FVector(NaNVal, 0.0, 0.0), FVector(1.0, 0.0, 0.0), 90.0f, 10000.0f));
 
     bool bAlive = true;
@@ -421,10 +488,12 @@ bool FSpatialThrottleDriverReentrancyAndSubsystemTest::RunTest([[maybe_unused]] 
     uint64 PendingCancelHandle = 0ULL;
     bool bPendingRegisteredInside = false;
     bool bPendingSignificanceInside = false;
+    int32 ReentrantEvalCalls = 0;
 
     SelfHandle = Driver.RegisterSpatialEntity(
         nullptr,
         [&]() -> FVector {
+            ++ReentrantEvalCalls;
             Driver.UpdateSpatialThrottle(View);
             PendingKeepHandle = Driver.RegisterSpatialEntity(
                 nullptr,
@@ -449,6 +518,7 @@ bool FSpatialThrottleDriverReentrancyAndSubsystemTest::RunTest([[maybe_unused]] 
     );
 
     Driver.UpdateSpatialThrottle(View);
+    TestEqual(TEXT("递归重入被安全拦截，未重复执行实体评估"), ReentrantEvalCalls, 1);
     TestTrue(TEXT("回调内重入新注册句柄立即可查"), bPendingRegisteredInside);
     TestTrue(TEXT("回调内对 PendingAdditions 句柄修改重要度成功"), bPendingSignificanceInside);
     TestTrue(TEXT("保留句柄刷入活跃数组后仍可查"), Driver.IsEntityRegistered(PendingKeepHandle));
@@ -471,7 +541,7 @@ bool FSpatialThrottleDriverReentrancyAndSubsystemTest::RunTest([[maybe_unused]] 
     TestTrue(TEXT("重注册实体句柄有效"), Driver.IsEntityRegistered(RecreatedHandle));
     Driver.Clear();
 
-    UWorld* World = GetThrottleTestWorld();
+    UWorld* World = Game::Spatial::TestHelpers::GetTestWorld();
     TestNotNull(TEXT("测试世界上下文有效"), World);
     if (World != nullptr) {
         if (UThrottledTickerSubsystem* TickerSubsystem = World->GetSubsystem<UThrottledTickerSubsystem>()) {
@@ -489,11 +559,13 @@ bool FSpatialThrottleDriverReentrancyAndSubsystemTest::RunTest([[maybe_unused]] 
 
     UThrottledTickerSubsystem* TransientSubsystem = NewObject<UThrottledTickerSubsystem>();
     FSpatialThrottleDriver ExpiredDriver(*TransientSubsystem);
-    TestTrue(
-        TEXT("临时子系统注册实体成功"),
-        ExpiredDriver.RegisterSpatialEntity(nullptr, []() { return FVector::ZeroVector; }, [](float) {}) > 0ULL
-    );
+    const uint64 ExpiredHandleA = ExpiredDriver.RegisterSpatialEntity(nullptr, []() { return FVector::ZeroVector; }, [](float) {});
+    const uint64 ExpiredHandleB = ExpiredDriver.RegisterSpatialEntity(nullptr, []() { return FVector::ZeroVector; }, [](float) {});
+    TestTrue(TEXT("临时子系统注册实体 A 成功"), ExpiredHandleA > 0ULL);
+    TestTrue(TEXT("临时子系统注册实体 B 成功"), ExpiredHandleB > 0ULL);
     TransientSubsystem->MarkAsGarbage();
+    TestTrue(TEXT("绑定子系统销毁后仍允许安全注销单个句柄"), ExpiredDriver.UnregisterSpatialEntity(ExpiredHandleA));
+    TestEqual(TEXT("注销后精确剩余 1 个待清理实体"), ExpiredDriver.Num(), 1);
     ExpiredDriver.UpdateSpatialThrottle(View);
     TestEqual(TEXT("绑定子系统销毁失效后自动清空实体且零悬垂崩溃"), ExpiredDriver.Num(), 0);
     TestEqual(

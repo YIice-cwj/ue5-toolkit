@@ -1,6 +1,6 @@
 /**
  * @file TSpatialHashGrid2DTest.cpp
- * @brief TSpatialHashGrid2D 纯逻辑二维空间哈希网格全路径与边界单元测试
+ * @brief TSpatialHashGrid2D 纯逻辑二维空间哈希网格全路径、向外壳层近邻、拷贝移动与边界单元测试
  */
 
 #include "Grid/TSpatialHashGrid2D.h"
@@ -17,7 +17,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证 2D 网格构造参数回退、插入/更新/移除错误码、O(1) 同桶交换索引一致性与容器遍历
+ * @brief 验证 2D 网格构造参数回退、IsEmpty、拷贝移动隔离、错误码、O(1) 桶交换一致性与容器遍历
  * @param Parameters 自动化测试参数
  * @return 全部断言通过返回 true
  */
@@ -36,22 +36,28 @@ bool FSpatialHashGrid2DLifecycleAndBucketsTest::RunTest([[maybe_unused]] const F
 
     TSpatialHashGrid2D<int32> Grid(500.0f);
     Grid.Reserve(64);
+    TestTrue(TEXT("初始网格为空"), Grid.IsEmpty());
     TestEqual(TEXT("初始元素数量为 0"), Grid.Num(), 0);
     TestEqual(TEXT("网格单元边长匹配"), Grid.GetCellSize(), 500.0f);
 
     const TGameStatusResult<void> NaNInsert = Grid.Insert(99, FVector2D(NaNVal, 0.0));
     TestTrue(TEXT("NaN 坐标插入被拦截"), NaNInsert.IsFailure());
     TestEqual(TEXT("NaN 坐标错误码为 6003"), NaNInsert.GetError().ErrorCode, Game::SpatialErrorCodes::InvalidCoordinate);
+    TestTrue(TEXT("非法插入后网格依然为空"), Grid.IsEmpty());
 
     const TGameStatusResult<void> InfInsert = Grid.Insert(99, FVector2D(0.0, InfVal));
     TestTrue(TEXT("Inf 坐标插入被拦截"), InfInsert.IsFailure());
     TestEqual(TEXT("Inf 坐标错误码为 6003"), InfInsert.GetError().ErrorCode, Game::SpatialErrorCodes::InvalidCoordinate);
 
     TestTrue(TEXT("插入元素 1 成功"), Grid.Insert(1, FVector2D(100.0, 100.0)).IsSuccess());
+    TestFalse(TEXT("插入后网格非空"), Grid.IsEmpty());
 
     const TGameStatusResult<void> DuplicateInsert = Grid.Insert(1, FVector2D(200.0, 200.0));
     TestTrue(TEXT("重复插入同名元素被拦截"), DuplicateInsert.IsFailure());
     TestEqual(TEXT("重复插入错误码为 6002"), DuplicateInsert.GetError().ErrorCode, Game::SpatialErrorCodes::ElementAlreadyExists);
+    if (const FVector2D* OriginalLoc = Grid.FindLocation(1)) {
+        TestEqual(TEXT("重复插入失败不污染原坐标 X"), OriginalLoc->X, 100.0);
+    }
 
     TestTrue(TEXT("Contains 包含元素 1"), Grid.Contains(1));
     TestEqual(TEXT("元素总数为 1"), Grid.Num(), 1);
@@ -101,9 +107,40 @@ bool FSpatialHashGrid2DLifecycleAndBucketsTest::RunTest([[maybe_unused]] const F
     TestTrue(TEXT("换位元素 4 跨格迁移成功"), Grid.Update(4, FVector2D(-1000.0, -1000.0)).IsSuccess());
     TestEqual(TEXT("跨格迁移后活跃桶数为 2"), Grid.GetBucketCount(), 2);
 
+    TSpatialHashGrid2D<int32> CopiedGrid(Grid);
+    TestEqual(TEXT("拷贝构造保留全部 3 个元素"), CopiedGrid.Num(), 3);
+    TestTrue(TEXT("修改拷贝副本移除元素 2 成功"), CopiedGrid.Remove(2).IsSuccess());
+    TestTrue(TEXT("修改拷贝不影响源网格包含元素 2"), Grid.Contains(2));
+    TestEqual(TEXT("源网格数量不受拷贝修改影响"), Grid.Num(), 3);
+
+    TSpatialHashGrid2D<int32> MovedGrid(MoveTemp(CopiedGrid));
+    TestEqual(TEXT("移动构造接收全部 2 个元素"), MovedGrid.Num(), 2);
+    TestTrue(TEXT("移动构造后包含元素 3"), MovedGrid.Contains(3));
+    TestTrue(TEXT("移动构造后包含元素 4"), MovedGrid.Contains(4));
+
+    TSpatialHashGrid2D<int32> AssignedGrid(100.0f);
+    AssignedGrid = Grid;
+    TestEqual(TEXT("拷贝赋值同步全部 3 个元素"), AssignedGrid.Num(), 3);
+    TestEqual(TEXT("拷贝赋值同步单元格边长"), AssignedGrid.GetCellSize(), 500.0f);
+    TSpatialHashGrid2D<int32> MoveAssignedGrid(100.0f);
+    MoveAssignedGrid = MoveTemp(AssignedGrid);
+    TestEqual(TEXT("移动赋值接收全部 3 个元素"), MoveAssignedGrid.Num(), 3);
+    TestTrue(TEXT("移动赋值保留元素 4"), MoveAssignedGrid.Contains(4));
+
+    using FPolicy2D = Game::Spatial::Detail::FSpatialCoordPolicy2D;
+    int32 UnpackedX = 0;
+    int32 UnpackedY = 0;
+    FPolicy2D::UnpackCellCoord(FPolicy2D::PackCellKey(-123456, 789012), UnpackedX, UnpackedY);
+    TestEqual(TEXT("2D CellKey 位解包负 X 精确一致"), UnpackedX, -123456);
+    TestEqual(TEXT("2D CellKey 位解包正 Y 精确一致"), UnpackedY, 789012);
+
     TArray<int32> AllElems;
     Grid.GetAllElements(AllElems);
     TestEqual(TEXT("GetAllElements 导出 3 个存活元素"), AllElems.Num(), 3);
+
+    int32 SingleArgSum = 0;
+    Grid.ForEachElement([&SingleArgSum](int32 Id) { SingleArgSum += Id; });
+    TestEqual(TEXT("ForEachElement 单参遍历累计 ID 正确"), SingleArgSum, 2 + 3 + 4);
 
     int32 IterSum = 0;
     Grid.ForEachElement([&IterSum](int32 Id, const FVector2D&) { IterSum += Id; });
@@ -117,6 +154,7 @@ bool FSpatialHashGrid2DLifecycleAndBucketsTest::RunTest([[maybe_unused]] const F
     TestTrue(TEXT("移除 3"), Grid.Remove(3).IsSuccess());
     TestTrue(TEXT("移除 4"), Grid.Remove(4).IsSuccess());
     TestEqual(TEXT("全部移除后元素数归零"), Grid.Num(), 0);
+    TestTrue(TEXT("全部移除后 IsEmpty 为 true"), Grid.IsEmpty());
     TestEqual(TEXT("全部移除后活跃桶归零"), Grid.GetBucketCount(), 0);
 
     return true;
@@ -129,7 +167,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证 2D 网格圆形、AABB、最近邻查询及 NaN/颠倒包围盒/负象限鲁棒性
+ * @brief 验证 2D 网格圆形、AABB、最近邻查询、贴角向外壳层扩展及 NaN/颠倒包围盒/负象限鲁棒性
  * @param Parameters 自动化测试参数
  * @return 全部断言通过返回 true
  */
@@ -147,6 +185,10 @@ bool FSpatialHashGrid2DGeometricQueriesTest::RunTest([[maybe_unused]] const FStr
     TestTrue(TEXT("命中 101"), CircleResults.Contains(101));
     TestTrue(TEXT("命中 102"), CircleResults.Contains(102));
     TestTrue(TEXT("命中 103"), CircleResults.Contains(103));
+
+    int32 SingleStreamHits = 0;
+    Grid.QueryRadiusMatching(FVector2D(0.0, 0.0), 100.0f, [&SingleStreamHits](int32) { ++SingleStreamHits; });
+    TestEqual(TEXT("QueryRadiusMatching 单参回调命中 3 个"), SingleStreamHits, 3);
 
     TArray<int32> PredRadiusResults;
     Grid.QueryRadius(FVector2D(0.0, 0.0), 100.0f, PredRadiusResults, [](int32, const FVector2D& Loc) {
@@ -190,7 +232,48 @@ bool FSpatialHashGrid2DGeometricQueriesTest::RunTest([[maybe_unused]] const FStr
     );
     TestEqual(TEXT("次近目标为 102"), PredNearest, 102);
 
+    int32 ExactNearest = 0;
+    TestTrue(TEXT("中心格完全重合点快路径命中"), Grid.QueryNearest(FVector2D(0.0, 0.0), 5000.0f, ExactNearest));
+    TestEqual(TEXT("完全重合点最近为 101"), ExactNearest, 101);
+
+    TSpatialHashGrid2D<int32> CenterSafeGrid(500.0f);
+    CenterSafeGrid.Insert(501, FVector2D(260.0, 250.0));
+    CenterSafeGrid.Insert(502, FVector2D(510.0, 250.0));
+    int32 SafeNearest = 0;
+    TestTrue(TEXT("严格位于中心格安全边距内快路径早退命中"), CenterSafeGrid.QueryNearest(FVector2D(250.0, 250.0), 5000.0f, SafeNearest));
+    TestEqual(TEXT("中心格安全边距早退命中 501"), SafeNearest, 501);
+
+    TArray<int32> OverKResults;
+    CenterSafeGrid.QueryKNearest(FVector2D(250.0, 250.0), 5000.0f, 10, OverKResults);
+    TestEqual(TEXT("K > Num 时返回全部 2 个元素"), OverKResults.Num(), 2);
+
     TestFalse(TEXT("半径内无目标返回 false"), Grid.QueryNearest(FVector2D(5000.0, 5000.0), 100.0f, NearestTarget));
+
+    TSpatialHashGrid2D<int32> RingGrid(500.0f);
+    RingGrid.Insert(201, FVector2D(505.0, 505.0));
+    RingGrid.Insert(202, FVector2D(520.0, 495.0));
+    RingGrid.Insert(203, FVector2D(1010.0, 495.0));
+    RingGrid.Insert(204, FVector2D(-10.0, 495.0));
+    for (int32 PadId = 300; PadId < 340; ++PadId) {
+        RingGrid.Insert(PadId, FVector2D(10000.0 + static_cast<double>(PadId) * 50.0, 10000.0));
+    }
+
+    int32 CornerNearest = 0;
+    TestTrue(
+        TEXT("空中心格贴近格角 (495,495) 向外环扩展命中对角邻格"),
+        RingGrid.QueryNearest(FVector2D(495.0, 495.0), 2000.0f, CornerNearest)
+    );
+    TestEqual(TEXT("对角邻格 201 (距 14.14) 优先于正交邻格 202 (距 25)"), CornerNearest, 201);
+
+    TArray<int32> RingK4;
+    RingGrid.QueryKNearest(FVector2D(495.0, 495.0), 2000.0f, 4, RingK4);
+    TestEqual(TEXT("跨多环向外扩展 K=4 命中全部 4 个近邻"), RingK4.Num(), 4);
+    if (RingK4.Num() == 4) {
+        TestEqual(TEXT("第 1 近为对角邻格 201"), RingK4[0], 201);
+        TestEqual(TEXT("第 2 近为正交邻格 202"), RingK4[1], 202);
+        TestEqual(TEXT("第 3 近为左邻格 204"), RingK4[2], 204);
+        TestEqual(TEXT("第 4 近为第 2 环 203"), RingK4[3], 203);
+    }
 
     const float NaNVal = std::numeric_limits<float>::quiet_NaN();
     TArray<int32> InvalidResults;
@@ -230,7 +313,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证 2D 扇形（锐角/45度边界/钝角/全向/零朝向）与 K 近邻严格升序及 K>16 堆溢出路径
+ * @brief 验证 2D 扇形（锐角/45度/90度斜向法线容差/钝角/全向/零朝向）与 K 近邻严格升序及 K>16 堆溢出路径
  * @param Parameters 自动化测试参数
  * @return 全部断言通过返回 true
  */
@@ -255,6 +338,16 @@ bool FSpatialHashGrid2DSectorAndKNearestTest::RunTest([[maybe_unused]] const FSt
     Grid.QuerySector(FVector2D::ZeroVector, FVector2D(1.0, 0.0), 150.0f, 90.0f, RightAngleResults);
     TestEqual(TEXT("90度半角命中 1、2、3、4"), RightAngleResults.Num(), 4);
     TestFalse(TEXT("不含 120度的 5"), RightAngleResults.Contains(5));
+
+    TSpatialHashGrid2D<int32> DiagonalRightGrid(100.0f);
+    DiagonalRightGrid.Insert(11, FVector2D(-300.0, 100.0));
+    DiagonalRightGrid.Insert(12, FVector2D(300.0, -100.0));
+    DiagonalRightGrid.Insert(13, FVector2D(-301.0, 100.0));
+    TArray<int32> DiagRightHits;
+    DiagonalRightGrid.QuerySector(FVector2D::ZeroVector, FVector2D(1.0, 3.0), 400.0f, 90.0f, DiagRightHits);
+    TestTrue(TEXT("斜向朝向 (1,3) 的精确 90度正交点 (-300,100) 无浮点假阴性漏检"), DiagRightHits.Contains(11));
+    TestTrue(TEXT("斜向朝向 (1,3) 的另一侧 90度正交点 (300,-100) 命中"), DiagRightHits.Contains(12));
+    TestFalse(TEXT("斜向朝向 (1,3) 超出 90度背后的点 (-301,100) 被准确剔除"), DiagRightHits.Contains(13));
 
     TArray<int32> ObtuseResults;
     Grid.QuerySector(FVector2D::ZeroVector, FVector2D(1.0, 0.0), 150.0f, 125.0f, ObtuseResults);
@@ -290,6 +383,10 @@ bool FSpatialHashGrid2DSectorAndKNearestTest::RunTest([[maybe_unused]] const FSt
         TestEqual(TEXT("K=5 严格按距离升序排列"), K5Results[Idx], Idx + 1);
     }
 
+    int32 SingleArgKCount = 0;
+    KGrid.QueryKNearestMatching(FVector2D::ZeroVector, 1000.0f, 4, [&SingleArgKCount](int32) { ++SingleArgKCount; });
+    TestEqual(TEXT("QueryKNearestMatching 单参回调命中 4 个"), SingleArgKCount, 4);
+
     TArray<int32> K24Results;
     KGrid.QueryKNearest(FVector2D::ZeroVector, 1000.0f, 24, K24Results);
     TestEqual(TEXT("K=24 (>16 内联溢出与二分插入路径) 命中 24 个"), K24Results.Num(), 24);
@@ -320,7 +417,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 )
 
 /**
- * @brief 验证 2D 大世界双精度坐标无假阴性剪枝、稀疏大半径快路径无卡顿无重复及流式消费原语
+ * @brief 验证 2D 大世界双精度、稀疏回退有状态谓词单次求值回归、钳制格近邻及流式原语
  * @param Parameters 自动化测试参数
  * @return 全部断言通过返回 true
  */
@@ -365,6 +462,78 @@ bool FSpatialHashGrid2DLwcAndSparseTest::RunTest([[maybe_unused]] const FString&
         TestEqual(TEXT("稀疏 K 近邻第 2 近为 2"), HugeKNearest[1], 2);
         TestEqual(TEXT("稀疏 K 近邻第 3 近为 3"), HugeKNearest[2], 3);
         TestEqual(TEXT("稀疏 K 近邻第 4 近为 4"), HugeKNearest[3], 4);
+    }
+
+    TSpatialHashGrid2D<int32> StatefulSparseGrid(500.0f);
+    StatefulSparseGrid.Insert(1, FVector2D(470.0, 0.0));
+    StatefulSparseGrid.Insert(2, FVector2D(450.0, 0.0));
+    StatefulSparseGrid.Insert(3, FVector2D(505.0, 0.0));
+
+    int32 KPredicateCalls = 0;
+    TArray<int32> StatefulKResults;
+    StatefulSparseGrid.QueryKNearest(
+        FVector2D(490.0, 0.0),
+        10000.0f,
+        2,
+        StatefulKResults,
+        [&KPredicateCalls, Quota = 3](int32) mutable {
+            ++KPredicateCalls;
+            return Quota-- > 0;
+        }
+    );
+    TestEqual(TEXT("2D 稀疏回退 K 近邻跳过中心格绝不重复调用谓词"), KPredicateCalls, 3);
+    TestEqual(TEXT("2D 稀疏回退有状态谓词完整返回 2 个最近元素"), StatefulKResults.Num(), 2);
+    if (StatefulKResults.Num() == 2) {
+        TestEqual(TEXT("最近为邻格 3"), StatefulKResults[0], 3);
+        TestEqual(TEXT("次近为中心格 1"), StatefulKResults[1], 1);
+    }
+
+    int32 NearestPredicateCalls = 0;
+    int32 StatefulNearest = 0;
+    TestTrue(
+        TEXT("2D 稀疏回退 QueryNearest 跳过中心格且有状态谓词精准命中"),
+        StatefulSparseGrid.QueryNearest(
+            FVector2D(490.0, 0.0),
+            10000.0f,
+            StatefulNearest,
+            [&NearestPredicateCalls](int32) mutable {
+                ++NearestPredicateCalls;
+                return true;
+            }
+        )
+    );
+    TestEqual(TEXT("2D 稀疏回退最近邻命中 3"), StatefulNearest, 3);
+    TestTrue(TEXT("2D 稀疏回退最近邻每个元素至多求值一次谓词"), NearestPredicateCalls <= 3);
+
+    TSpatialHashGrid2D<int32> MultiRingSparseGrid(500.0f);
+    MultiRingSparseGrid.Insert(1, FVector2D(100.0, 0.0));
+    MultiRingSparseGrid.Insert(2, FVector2D(600.0, 0.0));
+    MultiRingSparseGrid.Insert(3, FVector2D(1600.0, 0.0));
+    for (int32 PadId = 4; PadId <= 40; ++PadId) {
+        MultiRingSparseGrid.Insert(PadId, FVector2D(10000.0 + static_cast<double>(PadId) * 500.0, 0.0));
+    }
+    TSet<int32> VisitedInMultiRing;
+    bool bAnyDuplicatePredicateCall = false;
+    TArray<int32> MultiRingResults;
+    MultiRingSparseGrid.QueryKNearest(
+        FVector2D::ZeroVector,
+        50000.0f,
+        3,
+        MultiRingResults,
+        [&VisitedInMultiRing, &bAnyDuplicatePredicateCall](int32 Id) {
+            if (VisitedInMultiRing.Contains(Id)) {
+                bAnyDuplicatePredicateCall = true;
+            }
+            VisitedInMultiRing.Add(Id);
+            return true;
+        }
+    );
+    TestFalse(TEXT("2D 壳层扩展转稀疏回退 (CompletedRing>=1) 绝不对已访问壳层重复调用谓词"), bAnyDuplicatePredicateCall);
+    TestEqual(TEXT("2D 壳层转稀疏回退精确返回 3 个最近元素"), MultiRingResults.Num(), 3);
+    if (MultiRingResults.Num() == 3) {
+        TestEqual(TEXT("2D 壳层转稀疏第 1 近为 1"), MultiRingResults[0], 1);
+        TestEqual(TEXT("2D 壳层转稀疏第 2 近为 2"), MultiRingResults[1], 2);
+        TestEqual(TEXT("2D 壳层转稀疏第 3 近为 3"), MultiRingResults[2], 3);
     }
 
     int32 StreamCount = 0;
@@ -413,6 +582,10 @@ bool FSpatialHashGrid2DLwcAndSparseTest::RunTest([[maybe_unused]] const FString&
 
     ExtremeGrid.QueryAABB(FBox2D(ExtremePos - FVector2D(50.0, 50.0), ExtremePos + FVector2D(50.0, 50.0)), ExtremeHits);
     TestEqual(TEXT("2D MAX_CELL_COORD 钳制格 AABB 查询零死循环且精准命中"), ExtremeHits.Num(), 1);
+
+    int32 ExtremeNearest = 0;
+    TestTrue(TEXT("2D 钳制格最近邻零漏检"), ExtremeGrid.QueryNearest(ExtremePos + FVector2D(10.0, 0.0), 100.0f, ExtremeNearest));
+    TestEqual(TEXT("2D 钳制格最近邻命中 701"), ExtremeNearest, 701);
 
     TSpatialHashGrid2D<int32> CenterSparseKGrid(500.0f);
     CenterSparseKGrid.Insert(1, FVector2D(10.0, 0.0));
