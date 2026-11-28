@@ -404,6 +404,61 @@ def patch_uproject_plugin(uproject_path: str, plugin_name: str, b_enable: bool) 
         return False
 
 
+HYBRID_TOOL_MARKER = ".uetoolkit_hybrid"
+
+
+def deploy_excel_tool_hybrid(src: str, dst: str, force_overwrite: bool = False) -> bool:
+    """以“真实目录 + 文件软链”部署 Excel 工具链，并为目标工程生成独立配置
+
+    目录本身必须是真实目录，才能在不污染母仓的前提下写入工程专属
+    generator_config.json；其余脚本与资源仍以软链共享。
+    """
+    if os.path.islink(dst) or os.path.isfile(dst):
+        if not force_overwrite and not _is_repo_artifact(dst):
+            print(f"[✗] 目标路径已存在且不属于本工具产物，已拒绝覆盖: {os.path.abspath(dst)}（{_describe_size(dst)}）", file=sys.stderr)
+            print("     确认要删除并覆盖请追加 --force-overwrite 后重试。", file=sys.stderr)
+            return False
+        os.remove(dst)
+    elif os.path.isdir(dst):
+        has_marker = os.path.isfile(os.path.join(dst, HYBRID_TOOL_MARKER))
+        if not force_overwrite and not has_marker and os.listdir(dst):
+            print(f"[✗] 目标目录已存在且非空，已拒绝覆盖: {os.path.abspath(dst)}（{_describe_size(dst)}）", file=sys.stderr)
+            print("     确认要删除并覆盖请追加 --force-overwrite 后重试。", file=sys.stderr)
+            return False
+        shutil.rmtree(dst)
+
+    os.makedirs(dst, exist_ok=True)
+    for name in os.listdir(src):
+        if name == "generator_config.json":
+            continue
+        src_item = os.path.join(src, name)
+        dst_item = os.path.join(dst, name)
+        try:
+            rel_src = os.path.relpath(src_item, dst)
+            os.symlink(rel_src, dst_item, target_is_directory=os.path.isdir(src_item))
+        except (OSError, NotImplementedError):
+            if os.path.isdir(src_item):
+                shutil.copytree(
+                    src_item,
+                    dst_item,
+                    ignore=shutil.ignore_patterns(*COPY_EXCLUDED_DIRS, *COPY_EXCLUDED_FILES),
+                )
+            else:
+                shutil.copy2(src_item, dst_item)
+
+    example_cfg = os.path.join(src, "generator_config.example.json")
+    target_cfg = os.path.join(dst, "generator_config.json")
+    if os.path.isfile(example_cfg):
+        shutil.copy2(example_cfg, target_cfg)
+    else:
+        with open(target_cfg, "w", encoding="utf-8") as f:
+            f.write("{}\n")
+
+    with open(os.path.join(dst, HYBRID_TOOL_MARKER), "w", encoding="utf-8") as f:
+        f.write("UEToolkit hybrid Excel tool directory\n")
+    return True
+
+
 def _is_repo_artifact(dst: str) -> bool:
     """判断目标路径是否为指向本仓库的软链接产物"""
     if not os.path.islink(dst):
@@ -701,7 +756,11 @@ def install_tool(
             existing_config = None
 
     print(f"[+] 正在部署工具链: {tool_name} ({effective_mode}) -> {dst_dir}")
-    if not link_or_copy_dir(src_dir, dst_dir, effective_mode, force_overwrite):
+    if tool_name == "Excel" and effective_mode == "link":
+        if not deploy_excel_tool_hybrid(src_dir, dst_dir, force_overwrite):
+            print(f"[✗] 工具链部署失败: {tool_name}", file=sys.stderr)
+            return False
+    elif not link_or_copy_dir(src_dir, dst_dir, effective_mode, force_overwrite):
         print(f"[✗] 工具链部署失败: {tool_name}", file=sys.stderr)
         return False
 
@@ -723,10 +782,7 @@ def install_tool(
             except OSError as e:
                 print(f"[!] 创建生成器配置失败: {e}", file=sys.stderr)
 
-        if os.path.islink(dst_dir):
-            print("[-] link 模式与仓库共享生成器配置，跳过工程专属配置注入（发布请用 --mode copy）。")
-        else:
-            configure_generator_config(target_project_root)
+        configure_generator_config(target_project_root)
 
     for common_item in ("common.sh", "common.bat", "requirements.txt", "Script"):
         c_src = os.path.join(TOOLS_DIR, common_item)
