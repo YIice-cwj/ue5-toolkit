@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# P7.5 本地 CI：清理进程 → 编译编辑器 → 五前缀自动化测试 → 网络链路冒烟 → 日志归档
+# P7.5 本地 CI：清理进程 → 文档一致性校验 → 编译编辑器 → 十二前缀自动化测试 → 网络链路冒烟 → 日志归档
 #
 # 用法：
 #   ./.scripts/ci_local.sh               全流程
@@ -212,7 +212,16 @@ archive_results() {
     } > "${BASELINE_DIR}/summary.txt"
 }
 
+verify_docs() {
+    log_step "校验文档与源码事实一致性"
+    if ! python3 "${ROOT_DIR}/.scripts/verify_docs.py" > "${BASELINE_DIR}/docs_check.log" 2>&1; then
+        cat "${BASELINE_DIR}/docs_check.log"
+        mark_failed "文档一致性校验失败，见 ${BASELINE_DIR}/docs_check.log"
+    fi
+}
+
 cleanup_processes
+verify_docs
 build_editor
 run_tests
 run_net_smoke
