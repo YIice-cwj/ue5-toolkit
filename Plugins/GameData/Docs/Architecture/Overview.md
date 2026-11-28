@@ -7,14 +7,14 @@
 | 模块 / 插件 | 职责 | 是否随通用安装 |
 | :--- | :--- | :--- |
 | `GameDataCore` | 手写通用基础设施：`FStaticDataRepository`、`FStaticDataBinCodec`、`DataTableLoaderUtils`、`FSaveGameSegmentRegistry`、`FSaveGameFileIO`、`UGameSaveArchive`、`USaveGameSubsystem`；**100% 保持本地纯净（零网络依赖）** | 是（随 GameData 插件） |
-| `GameData` | 业务宿主与云同步集成门面：Excel 管线写入 `Public/Generated`、`Private/Generated`；提供 `UGameCloudSaveSubsystem` 调度强类型 RPC 上传/下载/原子落盘 | 是 |
+| `GameData` | 业务宿主与云同步集成门面：作为生成宿主时 Excel 管线写入 `Public/Generated`、`Private/Generated`（本仓库生成代码位于 `GameDataSamples`）；提供 `UGameCloudSaveSubsystem` 调度强类型 RPC 上传/下载/原子落盘 | 是 |
 | `GameDataSamples` | Item / Shop 示例域、`UGamePlayerDataRegistry`、`UGamePlayerProfileSaveAdapter` | 否（`--all` 跳过） |
 
 ```mermaid
 graph TD
     subgraph StaticData["静态数据管线"]
         Excel["DataTables/**/*.xlsx"] --> Pipeline["Tools/Excel 管线"]
-        Pipeline --> Code["GameData/Public+Private/Generated"]
+        Pipeline --> Code["宿主模块 Public+Private/Generated<br>(本仓库: GameDataSamples)"]
         Pipeline --> Json["DataTables_Json/**/*.json"]
         Pipeline --> Tags["Config/DefaultGameplayTags.ini"]
         Json --> Subsystem["UStaticDataSubsystem（生成）"]
@@ -63,7 +63,7 @@ graph TD
 
 - 子系统零业务字段：业务方通过 `RegisterSegment` 注册段名、段版本与保存/加载委托。
 - 保存时主线程捕获各段字节到内存归档，后台线程写 `.sav.tmp` 并原子替换 `.sav`。
-- 加载时先校验文件 magic、最小头长度与全段版本兼容性预检，再反序列化并应用业务段；正式档缺失或损坏时尝试从 `.sav.tmp` 抢救。
+- 加载时先校验文件 magic 与最小头长度，再反序列化并完成归档/全段版本兼容性预检，最后应用业务段；正式档缺失或损坏时尝试从 `.sav.tmp` 抢救。
 - 段版本由业务方迁移；槽位名默认校验非法字符，可选白名单。
 
 ---

@@ -27,7 +27,7 @@ graph TD
     WatchHub --> Keys["Private::GameDebugScreenKeys<br>(64位正交域盐)"]
     Print --> Keys
     Trail["FGameDebugTrailRecorder<br>(O(1) 定长环形缓冲)"] --> Draw
-    Stopwatch["FScopedDebugStopwatch<br>(组合 GameCore::FScopedCpuTimer)"] --> Print
+    Stopwatch["FScopedDebugStopwatch<br>(组合 FScopedCpuTimer)"] --> Print
     Stopwatch --> Logging["GameLogging (LogGameDebug)"]
     CheatReg --> Logging
     TimeCtrl --> Logging
@@ -46,7 +46,7 @@ graph TD
 - `ExecuteCheat(FStringView)`、`HasCheat` 与 `GetCheatCount` 仅触碰 `RegistryLock` 读锁（零 `ConsoleSyncLock` 竞争）：先无分配切片首个命令词并经 `FName(View, FNAME_Find)` 查表，未注册命令零堆分配短路；命中后仅将参数子串单遍分词写入 `Args` 并在锁外调用回调，支持回调内安全自注销。
 
 ### 2.3 `int32` 截断免疫的 64 位域盐屏幕槽位隔离
-`UEngine::AddOnScreenDebugMessage(uint64 Key, ...)` 内部会将 `Key` 截断为 `(int32)Key` 存入 `TMap<int32, FScreenMessageString>`。`GameDebugScreenKeys.h` 复用 `GameCore::Game::Hash::Hash64To32` 进行雪崩混洗，并将低 32 位按最高位正交隔离：
+`UEngine::AddOnScreenDebugMessage(uint64 Key, ...)` 内部会将 `Key` 截断为 `(int32)Key` 存入 `TMap<int32, FScreenMessageString>`。`GameDebugScreenKeys.h` 复用 `Game::Hash::Hash64To32` 进行雪崩混洗，并将低 32 位按最高位正交隔离：
 - `FGameDebugPrint` 通道域：低 32 位恒落入 `[0x00000000, 0x7FFFFFFF]`；
 - `FGameDebugWatchHub` 分类域：低 32 位恒落入 `[0x80000000, 0xFFFFFFFE]`（避开 `-1` 哨兵）。
 由此确保即使两子系统使用完全相同的 `FName`（如 `"Player"`），在 `UEngine` 内部也绝对不会互踩槽位。

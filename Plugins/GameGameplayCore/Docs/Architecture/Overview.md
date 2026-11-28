@@ -74,7 +74,7 @@ graph LR
 ```
 
 - **单趟高效演算**：`FGameStatModifierContainer` 采用 `TInlineAllocator<4>` 内联存储与单趟双轴演算（`EvaluateEffectivePair`），消除多趟重复哈希查找与常规小集合堆分配。
-- **代际句柄与原子批处理**：`FGameStatModifierHandle`（`GameCore::TGameHandle`）在 `Reset()` / 池化归还时递增代际彻底防 ABA；`UpdateStatModifier` 与 `FScopedModifierBatch` 保证修正器成组切换零中间态抖动。
+- **代际句柄与原子批处理**：`FGameStatModifierHandle`（GameCore 提供的 `TGameHandle`）在 `Reset()` / 池化归还时递增代际彻底防 ABA；`UpdateStatModifier` 与 `FScopedModifierBatch` 保证修正器成组切换零中间态抖动。
 - **重入安全订阅**：`FGameStatSubscriptionHub` 以 `TSharedRef` 在广播期保活多播对象，Owner 感知订阅直走 `CreateWeakLambda`，彻底免疫回调中自退订、扩容重排与中途销毁 Owner。
 - **权威与数值安全**：默认拒绝非权威端写（`bAllowNonAuthoritativeWrites = false`），公开写入口统一拦截 `NaN/±Inf`，失败统一返回 `Game::ModuleId::Gameplay` + `Game::GameplayCoreErrorCodes`。
 

@@ -12,12 +12,12 @@
 ```
 Level 0: GameCore (基石底座)
    │
-   ├── Level 1: 基础设施通用插件 (GameMessage, GameLogging, GameDebug, GameData, GameAssetCore, GameSpatial, GamePool)
+   ├── Level 1: 基础设施通用插件 (GameMessage, GameLogging, GameDebug, GameAssetCore, GameSpatial, GamePool, GameGameplayCore, GameNetCore)
    │      │   （说明：GameMessage 为零日志依赖的底层事件总线；GameLogging 可单向依赖 GameMessage 以广播 TAG_Game_Log_Remote）
    │      │
-   │      └── Level 2: 领域与调度级插件 (GameNetCore, GameNetService, GameNetSession, GameFlow, GameFeedback)
+   │      └── Level 2: 领域与调度级插件 (GameNetService, GameNetSession, GameFlow, GameFeedback, GameData)
    │             │
-   │             └── Level 3: Gameplay 与上层业务插件 (GameGameplay, GameGameplayCore, 游戏具体逻辑)
+   │             └── Level 3: Gameplay 与上层业务插件 (GameGameplay, GameDataSamples, 游戏具体逻辑)
 ```
 
 ---
@@ -27,9 +27,9 @@ Level 0: GameCore (基石底座)
 | 层级 | 包含插件 | 允许依赖的下层模块 | 严禁事项 (一票否决) |
 |---|---|---|---|
 | **Level 0 (基石底座)** | **`GameCore`** | 仅允许依赖 UE 原生模块：`Core`, `CoreUObject`, `Engine`, `GameplayTags` | **严禁依赖任何其他插件！**<br>保持 100% 纯粹原语与微核心状态。 |
-| **Level 1 (基础设施)** | **`GameMessage`**<br>**`GameLogging`**<br>**`GameDebug`**<br>**`GameData`**<br>**`GameAssetCore`**<br>**`GameSpatial`**<br>**`GamePool`** | 允许依赖 **Level 0 (`GameCore`)**、横切全局日志中枢 **`GameLogging`** 以及 UE 原生基础模块；**`GameMessage`** 仅依赖 `GameCore`（处于 `GameLogging` 之下，供 `GameLogging` 广播远程日志） | **严禁循环依赖与非日志/非总线类 Level 1 互相依赖！**<br>例如：`GameMessage` 严禁反向依赖 `GameLogging` 或 `GamePool`；`GameSpatial` 绝不能依赖 `GamePool`；`GamePool` 绝不能依赖 `GameAssetCore`。 |
-| **Level 2 (领域调度)** | **`GameNetCore`**<br>**`GameNetService`**<br>**`GameNetSession`**<br>**`GameFlow`**<br>**`GameFeedback`** | 允许依赖 **Level 0** 与 **Level 1** 插件 | 严禁依赖 Level 3 具体业务插件。 |
-| **Level 3 (业务实现)** | **`GameGameplay`**<br>**`GameGameplayCore`**<br>各玩法功能模块 | 允许依赖 **Level 0, Level 1, Level 2** 全部插件 | 严禁被 Level 0 / 1 / 2 反向依赖。 |
+| **Level 1 (基础设施)** | **`GameMessage`**<br>**`GameLogging`**<br>**`GameDebug`**<br>**`GameAssetCore`**<br>**`GameSpatial`**<br>**`GamePool`**<br>**`GameGameplayCore`**<br>**`GameNetCore`** | 允许依赖 **Level 0 (`GameCore`)**、横切全局日志中枢 **`GameLogging`** 以及 UE 原生基础模块；**`GameMessage`** 仅依赖 `GameCore`（处于 `GameLogging` 之下，供 `GameLogging` 广播远程日志） | **严禁循环依赖与非日志/非总线类 Level 1 互相依赖！**<br>例如：`GameMessage` 严禁反向依赖 `GameLogging` 或 `GamePool`；`GameSpatial` 绝不能依赖 `GamePool`；`GamePool` 绝不能依赖 `GameAssetCore`。 |
+| **Level 2 (领域调度)** | **`GameNetService`**<br>**`GameNetSession`**<br>**`GameFlow`**<br>**`GameFeedback`**<br>**`GameData`** | 允许依赖 **Level 0** 与 **Level 1** 插件（`GameData` 另单向依赖同层 `GameNetService`） | 严禁依赖 Level 3 具体业务插件。 |
+| **Level 3 (业务实现)** | **`GameGameplay`**<br>**`GameDataSamples`**<br>各玩法功能模块 | 允许依赖 **Level 0, Level 1, Level 2** 全部插件 | 严禁被 Level 0 / 1 / 2 反向依赖。 |
 
 ---
 

@@ -44,7 +44,7 @@ namespace Game::Config {
 `GameCore` 支持将不同配置来源（如命令行启动参数、INI 配置文件、远端拉取数据）通过 `FConfigSourceBridge` 接入：
 - **优先级级联覆盖**：遵循 Commandline > INI > Default 级联生效；
 - **PIE 实例独立隔离**：按 UWorld 独立分离配置实例并继承全局默认项，退出 PIE 时对应 World 注册表自动注销析构，绝不污染全局资产与常驻内存；
-- **只读键防篡改**：由 Bridge 声明的只读键，调用 `SetConfig` 时直接失败并记录告警。
+- **只读键防篡改**：内置只读键（`Env.*` 恒只读，Shipping 下 `Dev.*` 与 `Feature.GM` 只读）由 `SetConfig` 直接拒绝并返回 `RejectedReadOnly`、记录告警；`FConfigSourceBridge` 的外部写入亦在边界拦截并告警。
 
 ### 2.3 响应式监听模式
 配置中心支持实时监听。当 GM 工具、热更新或外部脚本修改配置时，业务层自动响应更新：

@@ -12,10 +12,10 @@
 | `Game.Core.Perf.SlotMapFindAndIterate` | `TSlotMap::Find` 代际句柄查找 | 200,000 次 | < 100 ns/op | **~1.3 ns/op** (745 Mops/s) |
 | `Game.Core.Perf.CachedConfigHandleVsRegistry` | `TCachedConfigHandle<float>::Get()` (无锁标量原子) | 200,000 次 | < 300 ns/op | **~2.3 ns/op** (**2.80×** vs Registry 6.5 ns) |
 | `Game.Core.Perf.SortedVectorMapFind` | `TSortedVectorMap::Find` 扁平二分查找 | 200,000 次 | < 150 ns/op | **~2.7 ns/op** (370 Mops/s) |
-| `Game.Core.Perf.LockFreeRingBuffer` | `TLockFreeRingBuffer` MPMC 入队/出队往返 | 200,000 次 | < 200 ns/op | **~3.6 ns/op** (278 Mops/s) |
+| `Game.Core.Perf.LockFreeRingBufferThroughput` | `TLockFreeRingBuffer` MPMC 入队/出队往返 | 200,000 次 | < 200 ns/op | **~3.6 ns/op** (278 Mops/s) |
 | `Game.Core.Perf.FixedSizePoolVsMalloc` | `TFixedSizePool` New/Free 对比原生堆分配 | 200,000 次 | < 200 ns/op | **~5.1 ns/op** (194 Mops/s) |
-| `Game.Core.Perf.WeightedPickerPick` | `TWeightedPicker` (32 项 Vose 别名表) | 200,000 次 | < 150 ns/op | **~6.7 ns/op** (150 Mops/s) |
-| `Game.Core.Perf.PriorityArbitrator` | `TPriorityArbitrator` (8 通道更新与累加仲裁) | 100,000 次 | < 500 ns/op | **~7.3 ns/op** (137 Mops/s) |
+| `Game.Core.Perf.RandomAndWeightedPicker` | `TWeightedPicker` (32 项 Vose 别名表) | 200,000 次 | < 150 ns/op | **~6.7 ns/op** (150 Mops/s) |
+| `Game.Core.Perf.PriorityArbitratorEval` | `TPriorityArbitrator` (8 通道更新与累加仲裁) | 100,000 次 | < 500 ns/op | **~7.3 ns/op** (137 Mops/s) |
 | `Game.Core.Perf.VersionedCacheFind` | `FVersionedCache::FindShared` (Eager 快照) | 4096 键 / 200,000 次 | < 2000 ns/op | **~8.9 ns/op** (112 Mops/s) |
 | `Game.Core.Perf.RewindSnapshotInterpolation` | `TRewindSnapshotBuffer` (128 帧二分插值) | 100,000 次 | < 300 ns/op | **~9.3 ns/op** (108 Mops/s) |
 | `Game.Core.Perf.ListenerHubThroughput` | `FListenerHub::Emit` (COW 零锁派发) | 100,000 次单订阅广播 | < 5000 ns/op | **~13.9 ns/op** (72 Mops/s) |
@@ -30,8 +30,8 @@
 
 `GameCore` 提供了面向微观性能分析的高精度工具库：
 - **`FScopedCpuTimer`**：基于 `FPlatformTime::Cycles64()`，纳秒/微秒级精度，析构自动回调传出。
-- **`GAME_SCOPED_CPU_TIMER` 宏**：在 `UE_BUILD_SHIPPING` 构建下完全宏擦除，零汇编开销。
-- **`FMovingAverageSampler<WindowSize>`**：固定数组栈上滑动平均，单次推进时间复杂度严格为 $O(1)$。
+- **`GAME_SCOPED_CPU_TIMER` 宏**：在 `GAME_ENABLE_CPU_PROFILER`（默认 `UE_BUILD_SHIPPING == 0`）关闭时完全宏擦除，零汇编开销。
+- **`FMovingAverageSampler<WindowSize>`**：固定数组栈上滑动平均，单次推进 O(1)（每写满一窗做一次 O(WindowSize) 重算以校正浮点误差）。
 
 ```cpp
 #include "Profiling/FScopedCpuTimer.h"

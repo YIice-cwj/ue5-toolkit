@@ -5,29 +5,95 @@
 [![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey.svg)]()
 [![Architecture](https://img.shields.io/badge/Architecture-Decoupled%20%26%20Modular-success.svg)]()
 
-**UEToolkit** 是面向 **Unreal Engine 5.1 ~ 5.8** 的通用模块化插件套件、工程规范体系与跨平台自动化工具链。
+**UEToolkit** 是面向 **Unreal Engine 5.1 ~ 5.8** 的通用模块化插件套件、工程规范体系与跨平台自动化工具链。16 个插件按 **Level 0 ~ 3** 单向分层，可单独引入，也可一键安装到任意 UE5 工程。
 
-本项目采用**分层解耦、零无序依赖、契约优先与配置驱动**的设计哲学。无论是从零起步的新项目，还是已有成熟的大型游戏工程，均可按需引入特定的独立插件或工具，亦可直接以 Git Submodule / 软链接模式快速挂载。
+## 30 秒了解
 
-> 当前插件版本以各插件 `.uplugin` 的 `VersionName` 为准（GameCore 与 GameGameplayCore 为 **2.1.0**，其余插件为 **2.0.0**）。旧 API 迁移见 [MIGRATION.md](MIGRATION.md)，发布检查见 [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)，性能预算见 [Performance.md](Plugins/GameCore/Docs/Architecture/Performance.md)。
+- **它解决什么**：把配置、日志、消息总线、对象池、空间索引、数值 / Buff、GAS 绑定、打击感、关卡流转、配表存档、网络长连接等通用能力，拆成互不循环依赖的独立插件。
+- **核心差异**：`GameCore` 零插件依赖；Level 0 ~ 3 单向分层；核心模块自带 Automation 测试与性能预算；文档由 `verify_docs.py` 按源码事实校验。
+- **最快接入**：`curl -fsSL .../install.sh | bash -s -- --all .`，或本地 `./.scripts/install.sh --all /path/to/Project`。
+- **阅读顺序**：下面的「插件选择」→ 目标插件 `README.md` → `Docs/Architecture/Overview.md` → `Docs/API/`。
 
----
+## 我该选哪个插件？
 
-## 插件生态矩阵
+| 你的需求 | 推荐入口 | 备注 |
+| :--- | :--- | :--- |
+| 配置注册表、确定性随机、协程、容器、状态机 | [GameCore](Plugins/GameCore/README.md) | 其他插件的共同底座，零插件依赖 |
+| 模块间解耦通信、跨线程消息 | [GameMessage](Plugins/GameMessage/README.md) | `GameplayTag` 寻址 + `UScriptStruct` 类型校验 |
+| 统一日志分类、限频、远程日志 | [GameLogging](Plugins/GameLogging/README.md) | 私有依赖 GameMessage |
+| Actor / UObject 对象池、结构体内存池 | [GamePool](Plugins/GamePool/README.md) | 世代句柄防悬空；支持池化预热 |
+| 2D / 3D 空间查询、视锥节流 | [GameSpatial](Plugins/GameSpatial/README.md) | 不依赖物理引擎 |
+| GM 指令、屏幕诊断、3D 绘制、耗时秒表 | [GameDebug](Plugins/GameDebug/README.md) | Shipping 下零开销裁剪 |
+| 异步加载资产并保持常驻 | [GameAssetCore](Plugins/GameAssetCore/README.md) | 流式加载 + 协程 + GC 保活 |
+| 不依赖 GAS 的数值 / Buff / 伤害契约 | [GameGameplayCore](Plugins/GameGameplayCore/README.md) | 可直接用于原生 Pawn 或 ECS |
+| GAS 绑定、属性集、ExecCalc、Cue 桥接 | [GameGameplay](Plugins/GameGameplay/README.md) | 业务层，公开依赖 GameFeedback |
+| 打击感、顿帧、震屏、受击闪白、网络表现 | [GameFeedback](Plugins/GameFeedback/README.md) | 消息总线 + 独立能力组件 |
+| 关卡流转、加载进度、就绪屏障 | [GameFlow](Plugins/GameFlow/README.md) | 三态流转 + 协程 / 蓝图等待 |
+| Excel 配表、静态数据、分段存档、云存档 | [GameData](Plugins/GameData/README.md) | 含 GameDataCore 通用数据模块 |
+| WebSocket 长连接、心跳、重连、RPC | [GameNetService](Plugins/GameNetService/README.md) | 含 GameNetCore 线格式与传输契约 |
+| 局域网房间发现、OSS 会话、Travel 握手 | [GameNetSession](Plugins/GameNetSession/README.md) | 按需引入，纯单机项目可不装 |
+| 查看生成管线与存档适配示例 | [GameDataSamples](Plugins/GameDataSamples/README.md) | 示例插件，`install.sh --all` 默认跳过 |
 
-项目内所有插件均存放在 `Plugins/` 目录下，各插件均配备独立的 `README.md` 与分类归档的完整技术文档库 `Docs/`：
+## 插件一览
+
+| 层级 | 插件 | 一句话 | 直接依赖 |
+| :---: | :--- | :--- | :--- |
+| 0 | [GameCore](Plugins/GameCore/README.md) | 配置、随机、协程、容器、事件、内存与调度底座 | 无 |
+| 1 | [GameMessage](Plugins/GameMessage/README.md) | `GameplayTag` 消息总线与蓝图异步节点 | GameCore |
+| 1 | [GameLogging](Plugins/GameLogging/README.md) | 日志分类、双轨分发与远程日志管道 | GameCore, GameMessage |
+| 1 | [GamePool](Plugins/GamePool/README.md) | Actor / UObject 双轨对象池与 `TStructPool` | GameCore, GameLogging |
+| 1 | [GameSpatial](Plugins/GameSpatial/README.md) | 纯逻辑 2D/3D 空间哈希与视锥节流 | GameCore, GameLogging |
+| 1 | [GameDebug](Plugins/GameDebug/README.md) | GM 指令、屏幕诊断、3D 绘制与耗时秒表 | GameCore, GameLogging |
+| 1 | [GameAssetCore](Plugins/GameAssetCore/README.md) | 异步资产加载、协程挂起与 GC 常驻保活 | GameCore, GameLogging |
+| 1 | [GameGameplayCore](Plugins/GameGameplayCore/README.md) | 零 GAS 伤害管线、数值、生命与 Buff 核心 | GameCore, GamePool, GameLogging |
+| 1 | [GameNetCore](Plugins/GameNetCore/README.md) | 16B 线格式、传输 / 序列化契约、内存回环 | GameCore, GameLogging |
+| 2 | [GameFeedback](Plugins/GameFeedback/README.md) | 打击感表现中枢、分层时间膨胀与网络派发 | GameCore, GameMessage, GameLogging, Niagara |
+| 2 | [GameFlow](Plugins/GameFlow/README.md) | 关卡流转状态机、代际就绪屏障与协程等待 | GameCore, GameLogging |
+| 2 | [GameData](Plugins/GameData/README.md) | Excel 生成宿主与云存档门面（含 GameDataCore 模块） | GameCore, GameLogging, GameNetCore, GameNetService |
+| 2 | [GameNetService](Plugins/GameNetService/README.md) | WebSocket 长连接、心跳、重连与异步 RPC | GameNetCore, GameCore, GameMessage, GameLogging |
+| 2 | [GameNetSession](Plugins/GameNetSession/README.md) | 局域网 UDP 发现、OSS 会话与 Travel 握手 | GameNetCore, GameCore, GameLogging |
+| 3 | [GameGameplay](Plugins/GameGameplay/README.md) | GAS 绑定、Bootstrap、ExecCalc 与 Cue 桥接 | GameGameplayCore, GameFeedback, GameCore, GameMessage, GamePool, GameLogging |
+| 3 | [GameDataSamples](Plugins/GameDataSamples/README.md) | Item / Shop / Profile 生成与存档示例 | GameData, GameCore, GameLogging |
+
+> 文档中的 `Layer` 与 `Level` 同义：0 = 核心底座，1 = 基础设施，2 = 领域调度，3 = 业务实现。除示例插件 `GameDataSamples` 外，各插件均提供 `Docs/` 文档库。
+
+## 插件能力矩阵
+
+按插件列出核心能力与关键入口；完整 API、线程与生命周期边界见各插件 `Docs/`。
+
+| 层级 | 插件 | 核心能力 | 关键入口 |
+| :---: | :--- | :--- | :--- |
+| 0 | [GameCore](Plugins/GameCore/README.md) | 配置注册表 / 编译开关、确定性随机与 PRD、C++20 协程与取消、容器与内存、事件总线与观察者、缓存与调度、状态机与帧率无关数学、性能计时与服务定位 | `FConfigRegistry`、`TGameResult`、`TGameCoroTask`、`FListenerHub` |
+| 1 | [GameMessage](Plugins/GameMessage/README.md) | `GameplayTag` 消息总线、祖先通道匹配、跨线程 MPSC、蓝图异步监听、RAII 订阅句柄 | `UGameplayMessageSubsystem`、`FGameplayMessageListenerHandle`、`UAsyncAction_ListenForGameplayMessage` |
+| 1 | [GameLogging](Plugins/GameLogging/README.md) | 模块分类注册、双轨分发、限频与单次输出、Shipping 零开销、远程日志管道 | `GAME_REGISTER_MODULE_LOG`、`GAME_LOG_THROTTLE`、`FGameRemoteLogOutputDevice` |
+| 1 | [GamePool](Plugins/GamePool/README.md) | Actor / UObject 对象池、世代安全句柄、池化预热、无锁延迟归还、`TStructPool` | `UObjectPoolSubsystem`、`TPooledObjectHandle`、`TStructPool` |
+| 1 | [GameSpatial](Plugins/GameSpatial/README.md) | 2D / 3D 空间哈希、范围与近邻查询、Actor 分层索引、视锥迟滞节流 | `TSpatialHashGrid2D/3D`、`UGameSpatialSubsystem`、`FSpatialThrottleDriver` |
+| 1 | [GameDebug](Plugins/GameDebug/README.md) | GM 指令注册、屏幕诊断、3D 绘制、轨迹记录、时间控制、作用域秒表 | `FGameCheatRegistry`、`FGameDebugPrint`、`FGameDebugDraw`、`FScopedDebugStopwatch` |
+| 1 | [GameAssetCore](Plugins/GameAssetCore/README.md) | 异步资产加载、协程加载与取消、GC 常驻保活、蓝图异步节点 | `FGameAssetLoader`、`FGameAssetLoadHandle`、`FGameAssetPinner`、`FScopedPinnedAsset` |
+| 1 | [GameGameplayCore](Plugins/GameGameplayCore/README.md) | 零 GAS 伤害契约、数值与修正器、生命状态、Buff 与叠层 | `IDamageable`、`UGameStatComponent`、`UGameVitalComponent`、`UGameBuffComponent` |
+| 1 | [GameNetCore](Plugins/GameNetCore/README.md) | 16B 报文头、粘包 / 半包解帧、传输与序列化契约、单机内存回环 | `FNetPacketHeader`、`FNetPacketCodec`、`INetTransport`、`FMockNetTransport` |
+| 2 | [GameFeedback](Plugins/GameFeedback/README.md) | 表现信号总线、震屏 / 顿帧 / 闪白 / VFX / 音效 / 触觉、分层时间膨胀、网络派发与预测去重 | `FGameFeedbackSignal`、`UGameFeedbackDefinition`、`UTimeDilationSubsystem`、`UGameFeedbackBlueprintLibrary` |
+| 2 | [GameFlow](Plugins/GameFlow/README.md) | 三态关卡流转、加权进度与遥测、代际就绪屏障、看门狗、协程 / 蓝图等待 | `ULoadingSubsystem`、`FLoadingBarrierToken`、`GameFlow::WaitLoadingComplete`、`UAsyncAction_WaitForLoadingComplete` |
+| 2 | [GameData](Plugins/GameData/README.md) | Excel 生成宿主、静态数据仓库与快照（GameDataCore）、分段存档、云存档 RPC | `UGameCloudSaveSubsystem`、`USaveGameSubsystem`、`TStaticDataSnapshotStore` |
+| 2 | [GameNetService](Plugins/GameNetService/README.md) | WebSocket 长连接、心跳 RTT、退避重连、异步 RPC、消息总线桥接、远程日志转发 | `UGameNetServiceSubsystem`、`FNetReconnectPolicy`、`FNetHeartbeatKeeper`、`TNetRequestStructAwaiter` |
+| 2 | [GameNetSession](Plugins/GameNetSession/README.md) | 局域网 UDP 发现、OSS 会话适配、安全 Travel | `UGameNetSessionSubsystem`、`FLanBeaconBroadcaster`、`UNetTravelLibrary` |
+| 3 | [GameGameplay](Plugins/GameGameplay/README.md) | GAS ASC、Bootstrap 引导、属性集、ExecCalc、Buff / Cue 桥接、UI 属性映射 | `UGameAbilitySystemComponent`、`UGameAbilitySystemBootstrap`、`UGameDamageExecution`、`UGameplayAttributeValueMapping` |
+| 3 | [GameDataSamples](Plugins/GameDataSamples/README.md) | Item / Shop 生成示例、PlayerProfile 存档适配 | `UGamePlayerDataRegistry`、`UGamePlayerProfileSaveAdapter`、`UStaticDataSubsystem` |
+
+<details>
+<summary><b>展开依赖拓扑图</b></summary>
 
 ```mermaid
 graph TD
     subgraph Layer3["业务层 (Game Project)"]
         MyGame["游戏主模块 / 玩法逻辑"]
+        GameGameplay["GameGameplay<br>GAS 绑定 / 全时序握手 / ExecCalc / Buff 桥接"]
+        GameDataSamples["GameDataSamples<br>Item / Shop / Profile 示例（不随通用安装）"]
     end
 
     subgraph Layer2["服务与管线层"]
         GameDataCore["GameDataCore<br>通用静态数据仓库 / 通用分段存档"]
         GameData["GameData<br>生成代码宿主 / 云存档网络同步门面"]
-        GameDataSamples["GameDataSamples<br>Item / Shop / Profile 示例（不随通用安装）"]
-        GameGameplay["GameGameplay<br>GAS 绑定 / 全时序握手 / ExecCalc / Buff 桥接"]
         GameFeedback["GameFeedback<br>打击感表现中枢 / 网络派发 / 预测去重"]
         GameFlow["GameFlow<br>关卡流转状态机 / 代际就绪屏障 / 协程与蓝图等待"]
         GameNetService["GameNetService<br>WebSocket 长连接 / 心跳 / 退避重连 / 异步 RPC / 日志转发"]
@@ -35,6 +101,7 @@ graph TD
     end
 
     subgraph Layer1["战斗契约与基础设施"]
+        GameAssetCore["GameAssetCore<br>异步资产加载 / 协程挂起 / GC 常驻保活"]
         GameGameplayCore["GameGameplayCore<br>零 GAS 伤害管线 / 通用数值与 Buff 核心"]
         GameNetCore["GameNetCore<br>16B 线格式 / 传输与序列化契约 / 预留协议 / 单机内存回环"]
         GamePool["GamePool<br>Actor/UObject 双轨池 / 世代句柄 / 协程预热 / TStructPool"]
@@ -73,6 +140,8 @@ graph TD
     GameNetSession --> GameNetCore
     GameNetCore --> GameCore
     GameNetCore --> GameLogging
+    GameAssetCore --> GameCore
+    GameAssetCore --> GameLogging
     GameGameplayCore --> GameCore
     GameGameplayCore --> GameLogging
     GameGameplayCore --> GamePool
@@ -89,115 +158,83 @@ graph TD
     GameMessage --> GameCore
 ```
 
-| 插件名称 | 职责定位 | 核心特性 | 依赖关系 | 文档入口 |
-| :--- | :--- | :--- | :--- | :--- |
-| [**GameCore**](Plugins/GameCore/README.md) | 底层基础设施 | 宏真源编译开关、配置中心与 INI/CLI 桥接、PCG32 确定性随机流与防脸黑抽卡、`TGameResult` 与代际 `TSlotMap`、轻量状态机与帧率无关阻尼数学、`FListenerHub`、`FObservableRegistry`、无锁环形缓冲与定长池分配器、C++20 协程原语、节流心跳与主线程时间切片 | 零外部依赖 (仅依赖引擎基础库) | [文档中心](Plugins/GameCore/Docs/Architecture/Overview.md) |
-| [**GameMessage**](Plugins/GameMessage/README.md) | 全局消息总线 | Pimpl 零 CDO 堆分配、GameplayTag 精确与零堆分配祖先树 `PartialMatch`、单层 Thunk + `CGameplayMessageStruct` 约束、重入安全栈内联快照、无竞态 `ActiveEpoch` RAII 句柄、ARM64 `seq_cst` 跨线程 MPSC 入队、`FStructOnScope` GC 安全蓝图节点 | `GameCore` | [API 参考](Plugins/GameMessage/Docs/API/GameplayMessageSubsystem.md) |
-| [**GameLogging**](Plugins/GameLogging/README.md) | 全局日志中枢 | 模块分类一键 RAII 注册、动态容量注册表、双轨分发架构、Epoch 纪元安全缓存、`GAME_LOG_THROTTLE` 限频、Shipping 零开销、零网络耦合远程日志管道（MPSC 队列 / GLog 挂载 / 总线广播） | `GameCore`, `GameMessage` | [文档中心](Plugins/GameLogging/Docs/Architecture/Overview.md) |
-| [**GamePool**](Plugins/GamePool/README.md) | 通用对象与内存池 | Actor/UObject 双轨对象池（Pimpl 隐藏、1-Pass 组件重置、GC 强引用追踪）、16B 编译期指纹载荷视图、世代防悬空安全句柄与 RAII 租约、事件驱动 C++20 协程预热、`TDeque` TTL 冷淘汰、无锁 MPMC 延迟归还、GC 安全低内存泄洪、原生 `TStructPool` | `GameCore`, `GameLogging` | [API 参考](Plugins/GamePool/Docs/API/ObjectPoolSubsystem.md) |
-| [**GameSpatial**](Plugins/GameSpatial/README.md) | 纯逻辑空间索引与节流 | 脱离物理引擎的 2D/3D 空间哈希（`Hash64To32` 雪崩散列、LWC 双精度、O(1) 桶维护、无开方紧致锥体剪枝、稀疏快路径、栈内联 K 近邻）、`UGameSpatialSubsystem` 分层弱引用检索与流式遍历、`FSpatialThrottleDriver` 视锥迟滞节流 | `GameCore`, `GameLogging` | [文档中心](Plugins/GameSpatial/Docs/Architecture/Overview.md) |
-| [**GameDebug**](Plugins/GameDebug/README.md) | 调试与诊断工具链 | 锁序安全 GM 指令中心（`FStringView` 前置短路/引号转义）、64 位正交域盐屏幕通道打印、全边界防卫 3D 绘制、O(1) 定长环形轨迹记录器、按世界隔离时间膨胀与单步步进、零拷贝快照观察中心、`FScopedCpuTimer` 耗时秒表与蓝图函数库（Shipping 零开销剥离） | `GameCore`, `GameLogging` | [文档中心](Plugins/GameDebug/Docs/Architecture/Overview.md) |
-| [**GameGameplayCore**](Plugins/GameGameplayCore/README.md) | 战斗核心契约 | 零 GAS 强依赖、`IDamageable` 泛型可受击契约、闭环同步打击反馈、通用数值 `UGameStatComponent`（属性字典 / 修正器 / 按 Tag 订阅）、生命组件 `UGameVitalComponent`（存活状态机 / 复活）、通用 Buff `UGameBuffComponent`（全员实现 `IGamePoolable`） | `GameCore`, `GamePool`, `GameLogging` | [文档中心](Plugins/GameGameplayCore/Docs/Architecture/Overview.md) |
-| [**GameGameplay**](Plugins/GameGameplay/README.md) | GAS 业务绑定 | 通用 ASC 基类、全时序自动握手 Bootstrap 组件（实现 `IGamePoolable`）、双轨元属性集、运行时通道 Registry 的 ExecCalc、GAS Buff 桥接、UI 属性解耦映射 | `GameGameplayCore`, `GameplayAbilities`, `GameCore`, `GameMessage`, `GamePool`, `GameLogging`, `GameFeedback` | [文档中心](Plugins/GameGameplay/Docs/Architecture/Overview.md) |
-| [**GameFeedback**](Plugins/GameFeedback/README.md) | 打击感表现中枢 | 零玩法耦合消息总线 + 独立能力组件、空闲零 Tick 分层时间膨胀（`TStaticArray` 零堆分配）、单次预解析与 O(1) ID 缓存、统一软资产去重预热、弱存活令牌防 UAF 闪白、分屏交错去重、紧凑 41B/44B 网络派发（`TBitMask` / 零受众免耗配额 / 视距裁剪）、有界预测指纹去重 | `GameCore`, `GameMessage`, `GameLogging`, `Niagara` | [文档中心](Plugins/GameFeedback/Docs/Architecture/Overview.md) |
-| [**GameFlow**](Plugins/GameFlow/README.md) | 关卡流转与就绪屏障 | `ELoadingTransitionPhase` 显式三态流转、多 PIE `PreLoadMapWithContext` 与预览世界隔离、`GameCore::TSlotMap` 代际零堆分配 `FLoadingBarrierToken`、O(1) 加权进度与遥测报告、自动联动全局/单屏障看门狗、跨线程安全零直通分配 C++20 协程等待器与重入安全蓝图异步节点 | `GameCore`, `GameLogging` | [文档中心](Plugins/GameFlow/Docs/Architecture/Overview.md) |
-| [**GameDataCore**](Plugins/GameData/Source/GameDataCore/README.md) | 通用数据与持久化 | 二进制 `.bin` 脱机仓库（CRC32 强校验）、不可变快照与版本原子发布、通用分段存档（段注册 / 版本迁移 / 槽位白名单） | `GameCore`, `GameLogging`, `Json` | [GameData 文档](Plugins/GameData/Docs/Architecture/Overview.md) |
-| [**GameData**](Plugins/GameData/README.md) | 业务宿主与云同步 | 由 Excel 管线写入 `Public/Generated`、`Private/Generated`；提供 `UGameCloudSaveSubsystem` 强类型 RPC 云存档上传/拉取/落盘热应用门面 | `GameDataCore`, `GameNetCore`, `GameNetService` | [GameData 文档](Plugins/GameData/Docs/Architecture/Overview.md) |
-| [**GameDataSamples**](Plugins/GameDataSamples/README.md) | 示例插件 | Item / Shop 生成域、PlayerProfile 存档段适配器与示例测试；`install.py --all` 默认跳过 | `GameData`, `GameCore`, `GameLogging` | [README](Plugins/GameDataSamples/README.md) |
-| [**GameNetCore**](Plugins/GameNetCore/README.md) | 网络核心契约 | 16 字节线格式报文头、环形粘包/半包解包器、`INetTransport` / `INetSerializer` 契约、JSON 与二进制 Archive 序列化器、单机零开销回环 `FMockNetTransport` | `GameCore`, `GameLogging` | [文档中心](Plugins/GameNetCore/Docs/Architecture/Overview.md) |
-| [**GameNetService**](Plugins/GameNetService/README.md) | 业务长连接服务 | 跨关卡 `UGameNetServiceSubsystem`、WebSocket (WSS) 驱动、无锁 GameThread 派发、指数退避抖动重连、动态心跳 RTT、异步 Request-Response、`GameMessage` 消息总线双向桥接、远程日志自动转发 | `GameNetCore`, `GameCore`, `GameMessage`, `GameLogging`, `WebSockets` | [文档中心](Plugins/GameNetService/Docs/Architecture/Overview.md) |
-| [**GameNetSession**](Plugins/GameNetSession/README.md) | 房间会话与发现 | 零平台 SDK 局域网非阻塞 UDP 房间发现（`FLanBeaconBroadcaster`）、`IOnlineSubsystem` 在线房间封装、防注入 `ServerTravel` / `ClientTravel` 握手工具 | `GameNetCore`, `GameCore`, `GameLogging`, `OnlineSubsystem` | [文档中心](Plugins/GameNetSession/Docs/Architecture/Overview.md) |
+</details>
 
----
+## 快速开始
 
-## 自动化工具链 (Tools)
-
-`Tools/` 目录提供跨平台（macOS / Windows / Linux）无环境锁定的 DevOps 与代码生成工具套件（详细说明见 [Tools/README.md](Tools/README.md)）：
-
-- **`Tools/Build`**：VSCode / Clangd 编译数据库自适应生成（解析 `.uproject`，处理 rsp 参数与软链接兜底）。
-- **`Tools/Excel`**：数据表全流程代码生成管线（跨表外键校验、生成 C++ RowStruct/复合容器/查询服务/序列化器、导出 JSON 数据、写前快照回滚；运行期 `.bin` 由生成式导出命令行工具在 Cook 前确定性生成）。
-- **`Tools/Cook`**：打包产物 CI 双通道一致性对拍（.bin vs JSON）与无头冷启动反序列化基准采集（取证依赖生成物的启动自检开关，不依赖启动期 `-ExecCmds` 时序）。
-- **`Tools/Script`**：约定优于配置的基础设施与路径推导模块。
-
----
-
-## 一键安装与验收（支持 GitHub `curl` / `wget` 远程无痕安装）
-
-所有安装、验收与 CI 脚本均收拢于隐藏目录 `.scripts/` 下，保持工程根目录纯净。
-
-### 1. GitHub 远程一键安装（无需克隆母仓，零残留）
-
-在你的目标 UE5（5.1 ~ 5.8）工程根目录下直接执行：
+### 1. 安装
 
 ```bash
-# 使用 curl 一键安装全部通用插件与工具链（自动物理拷贝至当前工程并清理临时目录）
+# 远程安装：无需克隆母仓，安装后自动清理临时目录
 curl -fsSL https://raw.githubusercontent.com/yiice/UEToolkit/main/.scripts/install.sh | bash -s -- --all .
-
-# 使用 wget 一键安装指定插件（自动递归补齐前置依赖）
 wget -qO- https://raw.githubusercontent.com/yiice/UEToolkit/main/.scripts/install.sh | bash -s -- GameGameplay /path/to/MyTargetProject
-```
 
-### 2. 本地仓库安装与管理（`.scripts/install.sh`）
-
-```bash
-# 查看所有可用插件与工具链
+# 本地安装：自动补齐前置依赖；GameData 默认 copy，其余 link
 ./.scripts/install.sh --list
-
-# 安装全部通用插件与工具链（自动补齐依赖；GameData 默认 copy，其余 link）
 ./.scripts/install.sh --all /path/to/MyTargetProject
-
-# 安装单个插件（自动补齐前置依赖）
 ./.scripts/install.sh GameGameplay /path/to/MyTargetProject
+./.scripts/install.sh --all /path/to/MyTargetProject --mode copy   # 发布模式：全部物理拷贝
 
-# 发布模式：全部物理拷贝
-./.scripts/install.sh --all /path/to/MyTargetProject --mode copy
-
-# 部署 Excel 配表工具链
-./.scripts/install.sh Tools/Excel /path/to/MyTargetProject --mode copy
-
-# 安全卸载（非交互环境必须显式 --yes）
+# 卸载
 ./.scripts/install.sh GameGameplay /path/to/MyTargetProject --uninstall --yes
 ```
 
-### 3. 空工程与打包冒烟一键验收
-
-空工程一键验收（安装 → 生成 → 编译 → Automation 测试 → 摘要）：
+### 2. 验收与 CI
 
 ```bash
 python3 .scripts/verify_install.py --project /path/to/EmptyProject
-```
-
-打包冒烟验收（安装 → 生成 → 编译 → 无头导出 `.bin` → Cook 打包 → 包内双数据目录 → 打包产物双通道对拍）：
-
-```bash
 python3 .scripts/verify_package.py --project /path/to/EmptyProject
+./.scripts/ci_local.sh              # 清理进程 → 文档校验 → 编译 → 自动化测试 → 网络冒烟
+./.scripts/ci_local.sh --skip-build # 复用已有二进制
 ```
 
-Shipping 冒烟验收（打包与启动自检，日志被裁剪时以 `StaticDataVerify.txt` 报告取证）：
+- 自动化覆盖 `Game.Core` / `Game.Data` / `Game.Debug` / `Game.Flow` / `Game.Gameplay` / `Game.GameplayCore` / `Game.Logging` / `Game.Message` / `Game.Feedback` / `Game.Net` / `Game.Pool` / `Game.Spatial` 十二个前缀；
+- 网络冒烟以 `-nullrhi` 起监听服务端与客户端，服务端施加带状态标签的 Buff，客户端确认标签复制到达后写 `Saved/NetSmoke/ClientResult.txt`；
+- 全部日志与结果归档到 `.memory/baseline/<时间戳>/`。
+
+单独跑测试：
 
 ```bash
-python3 .scripts/verify_package.py --project /path/to/EmptyProject --client-config=Shipping
+python3 .scripts/run_automation_tests.py                     # 7 个 SRP 解耦用例
+python3 .scripts/run_automation_tests.py --all               # 十三前缀全量回归
+python3 .scripts/run_automation_tests.py --prefix Game.Core  # 追加前缀
+python3 .scripts/run_automation_tests.py --dry-run           # 仅打印命令行
 ```
 
----
+### 3. 工具链
 
-## 项目工程结构
+```bash
+./Tools/Build/update_compile_commands.sh                                      # Clangd 编译数据库
+./Tools/Excel/generate_all_tables.sh --config Tools/Excel/generator_config.json --all
+./Tools/Cook/run_cook_tools.sh --diff                                         # .bin / JSON 双通道对拍
+```
+
+- **`Tools/Build`**：解析 `.uproject` 生成 `compile_commands.json`，支持 rsp 与软链接兜底。
+- **`Tools/Excel`**：外键校验 → 生成 RowStruct / 容器 / 查询服务 / 序列化器 → 导出 JSON → 写前快照回滚。
+- **`Tools/Cook`**：打包产物双通道一致性对拍与无头冷启动反序列化基准。
+- **`Tools/Script`**：约定优于配置的路径推导与共享基础设施。
+
+## 工程结构
+
+<details>
+<summary><b>展开目录树</b></summary>
 
 ```text
 UEToolkit/
 ├── Plugins/                         # 模块化插件集合
 │   ├── GameCore/                    # [Layer 0] 通用基础设施 (零外部依赖)
+│   ├── GameAssetCore/               # [Layer 1] 异步资产加载 / 协程挂起 / GC 常驻保活
 │   ├── GameMessage/                 # [Layer 1] GameplayTag 消息总线与蓝图异步节点
 │   ├── GameLogging/                 # [Layer 1] 全局日志分发与远程日志管道
 │   ├── GamePool/                    # [Layer 1] Actor/UObject 对象池与原生结构体内存池
 │   ├── GameSpatial/                 # [Layer 1] 纯逻辑 2D/3D 空间哈希网格、Actor 分层子系统与视锥节流
 │   ├── GameDebug/                   # [Layer 1] GM 指令中心、域盐屏幕诊断、3D 绘制、O(1) 轨迹、时间控制器与观察中心
 │   ├── GameGameplayCore/            # [Layer 1] 战斗契约 / 通用数值与 Buff
-│   ├── GameGameplay/                # [Layer 2] GAS 业务绑定与引导组件
+│   ├── GameGameplay/                # [Layer 3] GAS 业务绑定与引导组件
 │   ├── GameFeedback/                # [Layer 2] 打击感表现中枢 / 网络派发
 │   ├── GameFlow/                    # [Layer 2] 关卡流转状态机、代际就绪屏障与协程/蓝图等待原语
 │   ├── GameData/                    # [Layer 2] GameDataCore + 生成宿主双模块
-│   ├── GameDataSamples/             # 示例域与 Profile 适配器（不随通用安装）
+│   ├── GameDataSamples/             # [Layer 3] 示例域与 Profile 适配器（不随通用安装）
 │   ├── GameNetCore/                 # [Layer 1] 网络报文头契约 / 序列化器 / 单机内存回环
 │   ├── GameNetService/              # [Layer 2] WebSocket 长连接 / 心跳 / 退避重连 / 异步 RPC
 │   └── GameNetSession/              # [Layer 2] 零 SDK 局域网 UDP 发现 / OSS 会话 / Travel 握手
@@ -211,6 +248,7 @@ UEToolkit/
 │   ├── verify_install.py            # 空工程一键验收脚本
 │   ├── verify_package.py            # 打包冒烟一键验收脚本
 │   ├── run_automation_tests.py      # 自动化测试运行脚本（默认 7 个解耦用例）
+│   ├── verify_docs.py               # 文档与源码事实一致性校验脚本
 │   └── ci_local.sh                  # 本地 CI 全链路验收脚本
 ├── DataTables/                      # 策划 Excel 源表（示例）
 ├── DataTables_Json/                 # 导出的 JSON 数据（示例）
@@ -219,57 +257,24 @@ UEToolkit/
 └── README.md                        # 本文档
 ```
 
----
+</details>
 
-## 快速上手与验证
+## 工程规范
 
-### 1. 环境准备
-- **操作系统**：macOS (Apple Silicon / Intel) / Windows 10/11 / Linux
-- **引擎版本**：**Unreal Engine 5.1 ~ 5.8**
-- **编译器支持**：Clang 15+ / MSVC 2022 (v143) / GCC 12+，强制 C++20 标准。
-- **Python 环境**：Python 3.8+（安装工具链依赖：`pip install -r Tools/requirements.txt`）。
+规范以 Agent Skills 形式维护于 [.agents/skills/](.agents/skills/)：
 
-### 2. 生成编译数据库 (以 VSCode + Clangd 为例)
-```bash
-./Tools/Build/update_compile_commands.sh
-```
-执行完成后，根目录下会自动生成或软链接 `compile_commands.json`，在 VSCode 中可享受毫秒级跨插件代码跳转与精准诊断。
+- [acs-core-workflow](.agents/skills/acs-core-workflow/SKILL.md)：B1~B8 行为宪法、五阶状态机、L3/L4 计划与根因排障
+- [acs-cpp](.agents/skills/acs-cpp/SKILL.md)：类排布、RAII、零开销抽象、移动语义
+- [acs-ue5](.agents/skills/acs-ue5/SKILL.md)：命名、GC、反射、网络同步与生命周期
+- [acs-engineering-baseline](.agents/skills/acs-engineering-baseline/SKILL.md)：架构原则、API 契约、测试与可观测性
+- [acs-code-review](.agents/skills/acs-code-review/SKILL.md)：五阶审查流水线与严重度分级
+- [acs-git-docs](.agents/skills/acs-git-docs/SKILL.md)：分支流、提交格式、文档与 ADR 治理
 
-### 3. 数据表全流程生成
-```bash
-./Tools/Excel/generate_all_tables.sh --config Tools/Excel/generator_config.json --all
-```
-自动校验 Excel 外键、生成 C++ RowStruct / 静态数据容器 / 查询代码、导出 JSON 并同步 GameplayTag 注册 ini；运行期 `.bin` 由编辑器命令导出。
+## 版本与兼容
 
-### 4. 本地 CI 一键验收
-```bash
-./.scripts/ci_local.sh              # 清理进程 → 编译 → 五前缀自动化测试 → 网络冒烟
-./.scripts/ci_local.sh --skip-build # 复用已有二进制
-```
-- 自动化覆盖 `Game.Core` / `Game.Data` / `Game.Gameplay` / `Game.GameplayCore` / `Game.Logging` 五个前缀；
-- 网络冒烟以 `-nullrhi` 起监听服务端与客户端，服务端施加带状态标签的 Buff，客户端确认标签复制到达后写 `Saved/NetSmoke/ClientResult.txt`；
-- 全部日志与结果归档到 `.memory/baseline/<时间戳>/`。
+- **引擎**：Unreal Engine 5.1 ~ 5.8（当前 CI 基线为 5.8；更低至 5.1 的版本由安装脚本版本门禁放行，尚未纳入多版本 CI）。
+- **编译器**：Clang 15+ / MSVC 2022 (v143) / GCC 12+，强制 C++20。
+- **Python**：3.8+；工具链依赖 `pip install -r Tools/requirements.txt`。
+- **插件版本**：以各插件 `.uplugin` 的 `VersionName` 为准；性能预算见 [Performance.md](Plugins/GameCore/Docs/Architecture/Performance.md)。
 
-### 5. 自动化测试单独运行
-```bash
-python3 .scripts/run_automation_tests.py                     # SRP 解耦新增的 7 个用例
-python3 .scripts/run_automation_tests.py --all               # 六插件前缀回归
-python3 .scripts/run_automation_tests.py --prefix Game.Core  # 追加前缀目标
-python3 .scripts/run_automation_tests.py --dry-run           # 仅打印命令行
-```
-- 多个目标以 `+` 拼接为单条 `Automation RunTests`；用 `;` 串联多条时，后续命令会因 `Automation` 前缀被丢弃而报 `Unknown Automation command`，只有第一条生效；
-- 目标未在日志中出现即判定"未执行"并计入失败，防止漏跑被误判为通过；
-- 内置 `-DDC-ForceMemoryCache` / `-NoZenAutoLaunch` / `-notraceserver` 三个隔离开关，避免向共享 DDC、Zen 安装目录与 UnrealTrace 日志写入，可直接运行于 CI 容器与受限沙箱；
-- 日志固定写入 `Saved/Logs/AutomationTests.log`。
-
----
-
-## 工程规范与代码标准
-
-本项目内置了一套严谨的代码标准与团队工程规范，存放于 [guidelines/](guidelines/) 目录，为虚幻引擎工程提供高可维护性基线：
-- **规范总览与导航**：[guidelines/INDEX.md](guidelines/INDEX.md)
-- **现代 C++ 规范**：[20-CPP规范](guidelines/20-CPP规范/01-格式命名与注释.md)（类排布契约、RAII 智能指针、零开销抽象、移动语义）
-- **UE5 引擎规范**：[30-UE5规范](guidelines/30-UE5规范/01-命名格式与注释.md)（命名法则、GC 内存管理、反射体系、网络同步与生命周期）
-- **通用风格与健壮性**：[10-通用代码规范](guidelines/10-通用代码规范/01-风格命名与注释.md)（强类型安全、不可信边界校验与契约设计）
-- **版本控制与协作**：[40-协作规范](guidelines/40-协作规范/01-Git协作与版本规范.md)（Git 分支流、标准提交格式、LFS 资源管理）
-
+> 文档中的性能数值均为历史 Development 构建实测参考值，测量环境见各插件 README 的性能基准章节；未纳入 CI 自动复测，不构成 Shipping 绝对性能承诺。

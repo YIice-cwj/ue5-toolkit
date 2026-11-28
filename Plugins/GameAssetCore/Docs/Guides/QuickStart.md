@@ -96,7 +96,7 @@ TGameCoroTask<void> UBossEncounterManager::PreloadPhaseAssetsCoro(
 #include "Pinning/FScopedPinnedAsset.h"
 
 void UCombatVfxDirector::PlayTransientComboVfx(const TSoftObjectPtr<UObject>& VfxAsset) {
-    // 构造仅 1 次加锁，离开作用域自动递减引用计数；Get() 为栈缓存 O(1) 零锁访问
+    // 已驻留热路径构造仅 1 次加锁，离开作用域自动递减引用计数；Get() 为栈缓存 O(1) 零锁访问
     FScopedPinnedAsset PinnedVfx(VfxAsset);
     if (UObject* AssetObj = PinnedVfx.Get()) {
         TriggerVfx(AssetObj);

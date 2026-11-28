@@ -1,6 +1,6 @@
 /**
  * @file FScopedDebugStopwatch.h
- * @brief 现代化 RAII 作用域耗时诊断秒表（复用 GameCore::FScopedCpuTimer，受 GAME_ENABLE_CPU_PROFILER 编译期零开销裁剪）
+ * @brief 现代化 RAII 作用域耗时诊断秒表（复用 FScopedCpuTimer，受 GAME_ENABLE_CPU_PROFILER 编译期零开销裁剪）
  */
 
 #pragma once
@@ -23,7 +23,7 @@ public:
 
 public:
     /**
-     * @brief 构造函数：使用 GameCore::FScopedCpuTimer 记录当前作用域起始硬件周期
+     * @brief 构造函数：使用 FScopedCpuTimer 记录当前作用域起始硬件周期
      * @param InScopeName 诊断作用域名称
      * @param InThresholdMs 超时告警毫秒阈值（<= 0.0 或非有限值均归零，0.0 表示总是输出告警）
      * @param InChannel 屏幕告警通道名称（默认 "Profiler"）

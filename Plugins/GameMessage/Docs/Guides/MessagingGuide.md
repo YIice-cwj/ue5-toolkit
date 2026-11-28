@@ -151,6 +151,6 @@ void UCombatHudWidget::BindCritChance(UCombatAttributeComponent* AttributeComp)
 ```
 
 - `ObserverName` 对应唯一的业务观察域配置键（`Listener.{Name}.Enabled`），不需要在框架中登记枚举或结构体。
-- UI 控件销毁时 `CritSubscription` 自动退订；绑定 UObject 宿主在 GC 销毁后自动跳过回调并由 `NumListeners()` 惰性清理。
+- UI 控件销毁时 `CritSubscription` 自动退订；绑定 UObject 宿主在 GC 销毁后自动跳过回调，其失效监听条目在下一次 `Set()` 时惰性清理（`NumListeners()` 仅统计未失效条目）。
 - 构造期支持指定初始值与默认值初始化，通过 `SubscribeWithReplay` 可在订阅瞬间获取当前属性值。
 

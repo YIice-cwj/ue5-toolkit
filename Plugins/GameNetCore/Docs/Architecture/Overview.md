@@ -31,5 +31,5 @@
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
-- **不可信边界防御**：`FNetPacketCodec::IsValidHeader(Header, MaxAllowedPayloadBytes)` 与 `ValidateHeader(...)` 在分配任何负载内存前率先核验 `Magic == 0x5545`、`HeaderSize == 16` 以及 `PayloadSize <= MaxAllowedPayloadBytes`（默认 2 MB），从根源阻断畸形包与超大包 OOM 攻击。
+- **不可信边界防御**：`FNetPacketCodec::IsValidHeader(Header, MaxAllowedPayloadBytes)` 与 `ValidateHeader(...)` 在分配任何负载内存前率先核验 `Magic == 0x5545`、`HeaderSize == 16` 以及 `PayloadLength <= MaxAllowedPayloadBytes`（默认 2 MB），从根源阻断畸形包与超大包 OOM 攻击。
 - **粘包/半包安全拆帧与防 OOM 熔断**：`FNetPacketRingBuffer` 维护 2 的幂次容量与位掩码 `& CapacityMask` 索引、强制 `MaxBufferCapacityBytes` 总容量上限（防止无头垃圾字节流撑爆内存）、使用 `ResetEpoch` 防止消费者回调重入 `Reset()` 破坏读游标，并通过 `TryConsumePacket` / `ConsumeAllAvailable` 直接返回 `ENetFrameParseStatus` 实现零拷贝连续段直读与跨回绕段拼接。

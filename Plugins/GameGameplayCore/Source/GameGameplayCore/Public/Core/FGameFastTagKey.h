@@ -1,6 +1,6 @@
 /**
  * @file FGameFastTagKey.h
- * @brief 运行期零字符串比较的 GameplayTag 排序键包装器（配合 GameCore::TSortedVectorMap 使用）
+ * @brief 运行期零字符串比较的 GameplayTag 排序键包装器（配合 TSortedVectorMap 使用）
  */
 
 #pragma once

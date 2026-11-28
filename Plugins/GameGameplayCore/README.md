@@ -1,10 +1,104 @@
-# GameGameplayCore 插件
+# GameGameplayCore
 
-**GameGameplayCore** 是全项目的通用战斗框架与数值核心层。它实现了**零 GameplayAbilities 强依赖、零具体游戏业务假设**的通用伤害管线契约与通用数值状态管理组件，将攻击发起方、受击处理方与属性系统彻底解耦。无论是传统 GAS 角色、原生 C++ Pawn、蓝图角色、可破坏场景物件，还是基于 ECS / MassEntity 的海量同屏怪物，均能无缝接入统一的战斗分发与属性管理网络。
+> **一句话**：零 GameplayAbilities 强依赖的通用战斗契约层，提供伤害管线、Tag 驱动数值、生命状态机与 Buff 运行时。
+> **版本** v2.1.0 · **引擎** UE 5.1~5.8 · **层级** Level 1 · **直接依赖** GameCore、GamePool、GameLogging
 
----
+## 30 秒速览
 
-## 战斗管线架构
+- **解决什么问题**：把「谁挨打、掉多少血、何时死亡、挂什么状态」从 GAS 和具体玩法中拆出来，供 GAS 角色、原生 Pawn、可破坏物与 ECS / MassEntity 共用同一套契约。
+- **核心能力**
+  - 同步闭环伤害：`FGameDamageContext` 多通道输入，`FGameDamageResult` 同步返回实际伤害、主导通道、反馈标签与动态参数。
+  - 通用数值：`UGameStatComponent` 按 `GameplayTag` 注册任意属性，支持修正器、订阅回放与网络复制。
+  - 生命状态机：`UGameVitalComponent` 独立管理存活判定、致死与复活。
+  - Buff 运行时：`UGameBuffComponent` 用 `FGameBuffSpec` 描述叠层、时长与属性修正。
+- **什么时候用**：需要不依赖 GAS 的战斗数值底座，或要让原生 Pawn、场景物件、ECS 单位接入统一受击契约。
+- **什么时候不用**：需要 GAS 属性集、GameplayEffect、ExecCalc 或 GameplayCue 时，使用 [GameGameplay](../GameGameplay/README.md)；只需要打击表现时使用 [GameFeedback](../GameFeedback/README.md)。
+
+## 快速开始
+
+模块依赖（`MyGame.Build.cs`）：
+
+```csharp
+PublicDependencyModuleNames.AddRange(new string[] {
+    "Core", "CoreUObject", "Engine", "GameplayTags", "GameCore", "GameGameplayCore",
+});
+```
+
+受击方实现 `IDamageable`，在 `BeginPlay` 注册属性并绑定生命状态机（节选自 [QuickStart](Docs/Guides/QuickStart.md)）：
+
+```cpp
+void ADummyTarget::BeginPlay()
+{
+    Super::BeginPlay();
+
+    const FGameplayTag HealthTag = FGameplayTag::RequestGameplayTag(TEXT("Attribute.Health"));
+    StatComponent->RegisterStat(HealthTag, 100.0f, 100.0f, 0.0f);
+    VitalComponent->BindStatComponent(StatComponent);
+    VitalComponent->SetPrimaryVitalTag(HealthTag);
+}
+```
+
+攻击方组装上下文并同步取回结果：
+
+```cpp
+FGameDamageContext Context;
+Context.Instigator = GetInstigator();
+Context.DamageCauser = this;
+Context.AddChannelDamage(FGameplayTag::RequestGameplayTag(TEXT("Damage.Physical")), 35.0f);
+
+const FGameDamageResult Result = IDamageable::Execute_ApplyDamageContext(TargetActor, Context);
+const float HitStop = Result.GetDynamicValue(FGameplayTag::RequestGameplayTag(TEXT("Damage.Feedback.HitStop")));
+```
+
+## 核心能力
+
+### 同步闭环伤害管线
+
+- `FGameDamageContext` 承载 GameplayTag 多通道伤害，以及攻击者、施害者与命中点元信息。
+- `FGameDamageResult` 即时返回各通道实际伤害、总通道伤害、主导通道、`FeedbackTags` 与 `DynamicValues`，调用端无需异步反查。
+- `IDamageable` 蓝图可调用、C++ 可继承，攻击端不感知受击方的具体类型。
+- 命中、致死等反馈标签由受击方就地判定并写入结果，攻击方直接据此驱动表现。
+
+### 通用数值组件
+
+- 自持属性表与 $O(1)$ 标签索引并自动网络复制；非权威端默认拒绝写入（`bAllowNonAuthoritativeWrites = false`），公开写入口防御 `NaN/±Inf`。
+- `AddStatModifier` / `UpdateStatModifier` / `RemoveStatModifier` / `ClearStatModifiers` 提供完整 `K2_*` 蓝图门面，`FGameStatModifierHandle` 以 64 位强类型代际句柄防 ABA。
+- `FScopedModifierBatch` 以 RAII 合并同一属性的多次增删改，退出作用域时按终态差分广播一次；演算为单趟双轴 + 4 槽内联零堆分配。
+- `SubscribeStatChanged` 订阅即回放当前有效值，`TSharedRef` 保活配合 `CreateWeakLambda` 弱绑定，回调内退订或中途销毁不失效；入池静默清空修正器并回满基础值。
+
+### 生命与存活状态机
+
+- `UGameVitalComponent` 承载主生命标签绑定、`IsVitalAlive` 存活判定、致死判定与 `ReviveVital` 复活。
+- `BeginPlay` 自动发现宿主数值组件；CDO 预配置的主生命标签会补齐订阅。
+- `BindStatComponent(nullptr)` 可显式关闭自动重绑；网络复制幂等去重，入池静默重置。
+
+### 通用 Buff 运行时
+
+- 框架不预置具体 Buff，`FGameBuffSpec` 由 `GameplayTag` 自由描述；叠层策略包含刷新时长、累加时长与独立实例。
+- `HasGrantedTag` 零拷贝查询状态，`ClearAllBuffs` 批量清理，属性修正器原子挂接：满层刷新免重建，叠层/扣层原地更新。
+- 服务端权威，`ActiveBuffs` 以 FastArray 增量复制，`PreReplicatedRemove` 当帧关停 Tick。
+- 客户端基于 `TSortedVectorMap<FGameFastTagKey, int32, 8>` 做零堆分配整型二分差分。
+
+### 错误码与子域日志
+
+- `Core/GameplayCoreErrorCodes.h` 统一归属 `Game::ModuleId::Gameplay`（`11001~11006`）。
+- 模块主分类 `LogGameGameplayCore`，另有编译期直轨子域 `LogGameStat` / `LogGameVital` / `LogGameBuff`；高频操作降级 `Verbose`，权限拒绝使用限频 `Warning`。
+
+## 架构与依赖
+
+| 项 | 内容 |
+| :--- | :--- |
+| 公开依赖 | `Core`、`CoreUObject`、`Engine`、`GameplayTags`、`GameCore`、`GamePool`、`NetCore` |
+| 私有依赖 | `GameLogging` |
+| 禁止依赖 | `GameplayAbilities`、`GameGameplay`、`GameData`、`GameNetCore`、`GameNetService` |
+| C++ 标准 | C++20 |
+
+- 定位为 Level 1 战斗契约层：向上被 `GameGameplay` 绑定，向下只依赖 `GameCore` / `GamePool`，可离线独立运行。
+- 三个核心组件均实现 `IGamePoolable`，可随宿主 Actor 一起进出对象池。
+- 数值写入集中在 `UGameStatComponent`，生命状态集中在 `UGameVitalComponent`，Buff 状态集中在 `UGameBuffComponent`，三者通过标签与委托协作而非互相持有业务知识。
+
+<details>
+<summary><b>展开伤害管线时序图</b></summary>
 
 ```mermaid
 sequenceDiagram
@@ -23,47 +117,10 @@ sequenceDiagram
     Attacker->>Attacker: 即时触发打击定格 / 死亡播片 (调用端零异步反查)
 ```
 
----
+</details>
 
-## 核心特性
-
-- **零 GAS 强依赖契约（Zero GameplayAbilities Dependency）**：核心伤害与数值系统不绑定 GAS，保证轻量、极致性能与超强跨项目复用能力。
-- **纯粹通用的 Tag 驱动架构（Tag-Driven Architecture）**：
-  - 彻底移除命中、致死、暴击、霸体、卡肉等任何具体玩法硬编码；
-  - 开发者通过 `GameplayTag` 自由注册与驱动属性（生命、护盾、体力、法力、躯干值等）；
-  - 统一通过 `FeedbackTags`（状态标签容器）与 `DynamicValues`（动态参数容器）完成打击反馈。
-- **闭环同步打击反馈（Closed-Loop Damage Pipeline）**：
-  - 输入上下文 `FGameDamageContext`（支持 GameplayTag 多通道伤害、攻击者/施害者/命中点元信息）。
-  - 同步打击反馈 `FGameDamageResult`（即时返回各通道实际伤害、总通道伤害、主导通道、反馈标签与动态参数，调用端零异步反查）。
-- **开放的可受击契约 `IDamageable`**：蓝图可调、C++ 可继承的泛型接口，攻击端对受击方具体类型保持完全无知。
-- **通用数值管理组件 `UGameStatComponent`**（实现 `IGamePoolable`）：
-  - **自持数值模型**：内部维护属性表与 $O(1)$ 标签索引，网络自动同步复制；非权威端默认拒绝写入（`bAllowNonAuthoritativeWrites = false`），公开写入口统一防御 `NaN/±Inf`。
-  - **属性修正器与代际句柄**：`AddStatModifier` / `UpdateStatModifier` / `RemoveStatModifier` / `ClearStatModifiers`（提供完整 `K2_*` 蓝图门面与 `FGameStatModifierHandle` 64 位强类型代际句柄防 ABA）；支持 `FScopedModifierBatch` RAII 原子批处理；单趟双轴演算 + 4 槽内联零堆分配。
-  - **重入安全按 Tag 订阅**：`SubscribeStatChanged` 订阅即回放当前有效值，底层采用 `TSharedRef` 保活 + `CreateWeakLambda` 弱绑定，免疫回调重入退订/扩容/中途销毁。
-  - **纯只读 `BlueprintPure` 查询与静默对象池重置**：查询节点零执行引脚，入池静默清空修正器并回满基础值，杜绝误播业务事件。
-- **生命与存活状态机 `UGameVitalComponent`**（实现 `IGamePoolable`）：
-  - 遵循 SRP 职责解耦，独立承载主生命标签绑定、存活判定（`IsVitalAlive`）、致死判定与复活（`ReviveVital`）；
-  - 支持 `BeginPlay` 自动发现宿主数值组件与 CDO 预配置主生命标签补齐订阅、显式 `BindStatComponent(nullptr)` 防自动重绑、网络复制幂等去重与静默入池重置。
-- **通用 Buff / 状态组件 `UGameBuffComponent`**（实现 `IGamePoolable`）：
-  - 框架不预置任何具体 Buff，`FGameBuffSpec` 由开发者用 `GameplayTag` 自由描述；
-  - 叠层策略（刷新时长 / 累加时长 / 独立实例）、持续时长、零拷贝 `HasGrantedTag` 状态查询、`ClearAllBuffs` 批量清理与原子属性修正器挂接（满层刷新免重建，叠层/扣层原地更新零掉血误杀）；
-  - 服务端权威，`ActiveBuffs` 以 FastArray 增量复制，`PreReplicatedRemove` 当帧关停 Tick，客户端基于 `GameCore::TSortedVectorMap<FGameFastTagKey, int32, 8>` 实现零堆分配整型快速二分差分。
-- **统一强类型错误码与子域分级日志**：
-  - `Core/GameplayCoreErrorCodes.h` 统一归属 `Game::ModuleId::Gameplay`（`11001~11006`）；
-  - 接入 `GameLogging`，模块主分类 `LogGameGameplayCore` + 编译期直轨子域分类 `LogGameStat` / `LogGameVital` / `LogGameBuff`，高频操作降级 `Verbose`，高频权限拒绝采用限频 `Warning`。
-
----
-
-## 插件依赖
-
-- **公开依赖 (Public)**：`Core`, `CoreUObject`, `Engine`, `GameplayTags`, `GameCore`, `GamePool`, `NetCore`
-- **私有依赖 (Private)**：`GameLogging`
-- **外部依赖限制**：严格禁止依赖 `GameplayAbilities`、`GameGameplay`、`GameData`，以及应用层长连接网络库（`GameNetCore`、`GameNetService`），保持其作为战斗底层契约层的独立性与 100% 离线立即可用性。
-- **C++ 标准**：C++20
-
----
-
-## 目录结构
+<details>
+<summary><b>展开目录结构</b></summary>
 
 ```text
 Plugins/GameGameplayCore/
@@ -95,61 +152,23 @@ Plugins/GameGameplayCore/
 │       ├── Private/
 │       │   ├── GameGameplayCore.cpp
 │       │   ├── GameGameplayCoreLog.h               # 子域日志分类 (LogGameStat/Vital/Buff) 与直轨宏
-│       │   ├── Stat/
-│       │   │   ├── FGameStatAcknowledgedDiff.cpp
-│       │   │   ├── FGameStatModifierContainer.cpp
-│       │   │   ├── FGameStatSubscriptionHub.cpp
-│       │   │   ├── UGameStatComponent.cpp
-│       │   │   └── UGameVitalComponent.cpp
-│       │   ├── Buff/
-│       │   │   ├── FGameActiveBuffArray.cpp
-│       │   │   ├── FGameBuffModifierBridge.cpp
-│       │   │   └── UGameBuffComponent.cpp
-│       │   └── Tests/
-│       │       ├── GameGameplayCoreTestUtils.h         # 共享测试世界与 RAII 宿主守卫
-│       │       ├── UGameGameplayCoreTestReceiver.h     # 蓝图动态多播委托私有测试接收器
-│       │       ├── UGameDamageTestTarget.h/.cpp        # 私有 IDamageable 测试受击桩
-│       │       ├── UGameDamageDefaultTestTarget.h      # 私有 IDamageable 默认实现测试桩
-│       │       ├── FGameDamageChannelTest.cpp
-│       │       ├── FGameDamageContextTest.cpp
-│       │       ├── FGameDamageResultTest.cpp
-│       │       ├── FIDamageableTest.cpp
-│       │       ├── FGameStatAcknowledgedDiffTest.cpp
-│       │       ├── FGameStatModifierContainerTest.cpp
-│       │       ├── FGameStatSubscriptionHubTest.cpp
-│       │       ├── UGameStatComponentTest.cpp
-│       │       ├── UGameVitalComponentTest.cpp
-│       │       ├── FGameActiveBuffArrayTest.cpp
-│       │       ├── FGameBuffModifierBridgeTest.cpp
-│       │       ├── UGameBuffComponentTest.cpp
-│       │       ├── FGamePoolableComponentsTest.cpp
-│       │       └── GameGameplayCorePerformanceTest.cpp # 全组件 12 项热路径微基准套件
+│       │   ├── Stat/                               # 数值组件、修正器容器、订阅中心与差分实现
+│       │   ├── Buff/                               # Buff 组件、FastArray 与修正器桥接实现
+│       │   └── Tests/                              # 单测、测试桩与 12 项微基准套件
 │       └── GameGameplayCore.Build.cs
 ├── Docs/                                     # 详细技术文档库
 ├── GameGameplayCore.uplugin
 └── README.md
 ```
 
----
+</details>
 
-## 自动化测试与微基准性能套件
+## 性能与边界
 
-插件包含完整的自动化测试集（**共 54 项**，其中功能与回归单测 42 项 + 全组件微基准 12 项），可在虚幻编辑器 Test Automation 窗口过滤 `Game.GameplayCore` 执行，或通过命令行运行：
+<details>
+<summary><b>展开性能基准（历史 Development 构建参考值）</b></summary>
 
-```bash
-UnrealEditor-Cmd <Project.uproject> -ExecCmds="Automation RunTests Game.GameplayCore; Quit" -nullrhi -unattended
-```
-
-### 功能与回归测试（42 项）
-- **伤害管线 (`Damage`，4 项)**：`ChannelOperations`、`ContextOperations`、`IDamageableContract`、`ResultFeedback`
-- **通用数值 (`Stat`，15 项)**：`RegistrationAndClamping`、`BoundaryClamping`、`SetMaxClamping`、`TaggedSubscription`、`RegisterReplay`、`OwnerBoundSubscription`、`OwnerSubscriptionTargetedReplay`、`UnregisterSubscriptionCleanup`、`SubscriptionReentrancy`、`ModifierContainerDirect`、`ModifierStack`、`AcknowledgedDiff`、`Replication`、`DefensiveBranches`、`FullApiCoverage`（注：`EffectiveEvaluator` 已合并归位至 `ModifierContainerDirect`）
-- **生命与存活状态机 (`Vital`，6 项)**：`LifecycleAndRevive`、`RepAliveDeduplication`、`RepAliveForwardBroadcast`、`ActorLifecycle`、`CdoTagSubscription`、`TagSwitchAndBoundary`
-- **通用状态与 Buff (`Buff`，16 项)**：`StackAndExpire`、`CooldownAsStatus`、`IndependentInstances`、`RemoveStacks`、`InstanceAndQueryCoverage`、`PermanentDurationTransition`、`DefensiveBranches`、`ReentrancyAndUnbind`、`ReplicationCallbacks`、`ReplicatedSpecChange`、`ReplicationEmptyTick`、`ModifierBridge`、`AtomicRefreshNoDeath`、`ModifierLateBinding`、`ModifierRebinding`、`ModifierDestroyRollback`
-- **对象池生命周期 (`Poolable`，1 项)**：`ComponentLifecycleReset`
-
-### 热路径微基准性能套件（`Game.GameplayCore.Perf.*`，12 项）
-
-实测基线（Apple Silicon macOS / UE 5.8 Development，2 轮预热 + 7 轮正式采样）：
+实测基线：Apple Silicon macOS / UE 5.8 Development，2 轮预热 + 7 轮正式采样。
 
 | 微基准用例 | 覆盖热路径 | 实测中位数 (ns/op) | 吞吐 (Mops/s) | CV% |
 |---|---|---:|---:|---:|
@@ -166,20 +185,39 @@ UnrealEditor-Cmd <Project.uproject> -ExecCmds="Automation RunTests Game.Gameplay
 | `VitalStateTransition` | 扣血致死 + `ReviveVital` 状态机闭环 | 364.9 | 2.74 | 2.69% |
 | `PoolableReset` | `Stat + Buff + Vital` 三组件静默入池与出库 | 1050.1 | 0.95 | 0.53% |
 
----
+</details>
+
+- **网络**：属性写入受权威校验，非权威端默认拒绝；修正器是本地派生层，不参与复制，客户端由 Buff / 装备状态重建。
+- **线程**：伤害派发、数值修改与订阅回调均按游戏线程调用约定使用。
+- **生命周期**：入池时静默清空修正器并回满基础值，不广播业务事件；`PreReplicatedRemove` 当帧关停对应 Buff 的 Tick。
+- **依赖边界**：不依赖 `GameplayAbilities` 与网络应用层，可作为纯逻辑层在无 GAS、无长连接的环境使用。
+- **性能口径**：以上指标为历史 Development 构建参考值，未纳入 CI 自动复测，不构成 Shipping 性能承诺。
+
+<details>
+<summary><b>展开自动化测试清单（54 项）</b></summary>
+
+命令：`UnrealEditor-Cmd <Project.uproject> -ExecCmds="Automation RunTests Game.GameplayCore; Quit" -nullrhi -unattended`
+
+- **伤害管线 (4)**：`ChannelOperations`、`ContextOperations`、`IDamageableContract`、`ResultFeedback`
+- **通用数值 (15)**：`RegistrationAndClamping`、`BoundaryClamping`、`SetMaxClamping`、`TaggedSubscription`、`RegisterReplay`、`OwnerBoundSubscription`、`OwnerSubscriptionTargetedReplay`、`UnregisterSubscriptionCleanup`、`SubscriptionReentrancy`、`ModifierContainerDirect`、`ModifierStack`、`AcknowledgedDiff`、`Replication`、`DefensiveBranches`、`FullApiCoverage`
+- **生命与存活 (6)**：`LifecycleAndRevive`、`RepAliveDeduplication`、`RepAliveForwardBroadcast`、`ActorLifecycle`、`CdoTagSubscription`、`TagSwitchAndBoundary`
+- **Buff (16)**：`StackAndExpire`、`CooldownAsStatus`、`IndependentInstances`、`RemoveStacks`、`InstanceAndQueryCoverage`、`PermanentDurationTransition`、`DefensiveBranches`、`ReentrancyAndUnbind`、`ReplicationCallbacks`、`ReplicatedSpecChange`、`ReplicationEmptyTick`、`ModifierBridge`、`AtomicRefreshNoDeath`、`ModifierLateBinding`、`ModifierRebinding`、`ModifierDestroyRollback`
+- **对象池 (1)**：`ComponentLifecycleReset`
+- **微基准 (12)**：见上方性能基准表
+
+</details>
 
 ## 文档导航
 
-- **架构设计 (Architecture)**
-  - [架构概述与零业务假设设计哲学](Docs/Architecture/Overview.md)
-  - [闭环伤害管线机制](Docs/Architecture/DamagePipeline.md)
-- **接口参考 (API Reference)**
-  - [伤害数据类型参考](Docs/API/DamageTypes.md)
-  - [可受击接口参考](Docs/API/IDamageable.md)
-  - [通用数值组件 API](Docs/API/GameStatComponent.md)
-  - [生命与存活状态组件 API](Docs/API/GameVitalComponent.md)
-  - [通用 Buff 组件 API](Docs/API/BuffComponent.md)
-- **使用指南 (Guides)**
-  - [快速上手指南](Docs/Guides/QuickStart.md)
-  - [数值组件实战指南 (Standalone)](Docs/Guides/StandaloneStatGuide.md)
-  - [Buff 与冷却指南](Docs/Guides/BuffGuide.md)
+| 分类 | 文档 |
+| :--- | :--- |
+| 架构 | [架构概述与零业务假设设计](Docs/Architecture/Overview.md) |
+| 架构 | [闭环伤害管线机制](Docs/Architecture/DamagePipeline.md) |
+| API | [伤害数据类型参考](Docs/API/DamageTypes.md) |
+| API | [可受击接口参考](Docs/API/IDamageable.md) |
+| API | [通用数值组件 API](Docs/API/GameStatComponent.md) |
+| API | [生命与存活状态组件 API](Docs/API/GameVitalComponent.md) |
+| API | [通用 Buff 组件 API](Docs/API/BuffComponent.md) |
+| 指南 | [快速上手指南](Docs/Guides/QuickStart.md) |
+| 指南 | [数值组件实战指南 (Standalone)](Docs/Guides/StandaloneStatGuide.md) |
+| 指南 | [Buff 与冷却指南](Docs/Guides/BuffGuide.md) |

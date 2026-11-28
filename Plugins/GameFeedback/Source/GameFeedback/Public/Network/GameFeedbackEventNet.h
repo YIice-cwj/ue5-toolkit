@@ -14,7 +14,7 @@
 #include "GameFeedbackEventNet.generated.h"
 
 /**
- * @brief 网络紧凑载荷状态标记位索引（配合 GameCore::TBitMask 使用）
+ * @brief 网络紧凑载荷状态标记位索引（配合 TBitMask 使用）
  */
 enum class EGameFeedbackNetFlag : uint8 {
     Lethal = 0

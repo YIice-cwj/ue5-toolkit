@@ -19,7 +19,7 @@ PublicDependencyModuleNames.AddRange(new string[] {
 
 `GameData` 已公开传递依赖 `GameDataCore`、`GameLogging`、`GameCore`，因此静态数据子系统与存档子系统都无需重复声明。
 
-> 生成代码（`Generated/**`）写入 `GameData` 模块；安装到目标工程后，表名与目录随您的 Excel 结构变化。
+> 生成代码（`Generated/**`）写入宿主模块；本仓库示例生成代码位于 `GameDataSamples`，安装到目标工程后由 `install.py` 重绑到 `GameData`，表名与目录随您的 Excel 结构变化。
 
 ---
 

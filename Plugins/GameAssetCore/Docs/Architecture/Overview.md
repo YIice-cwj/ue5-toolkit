@@ -50,7 +50,7 @@ flowchart TD
 ### 3. SIOF 免疫与真 GC 强引用常驻保活 (`FGameAssetPinner` & `FScopedPinnedAsset`)
 - **SIOF 免疫存储**：底层 `FPinnedAssetStorage` 在对齐静态缓冲区内通过 C++20 `std::construct_at` 原地构造，彻底消除跨编译单元静态初始化与退出期逆序析构崩溃。
 - **单点 `FGCObject` 强引用收集**：内部唯一 `FGCObject` 收集器在 GC 屏障期间遍历常驻表并向引擎报告 `TObjectPtr<UObject>` 强引用。即便对于无磁盘包体的运行时动态 `UObject`，在 `PinAsset` 期间亦 100% 免疫 `CollectGarbage` 误杀，且已驻留对象锁定无需额外分配 `FStreamableHandle`。
-- **单次加锁构造与零锁读取**：`PinAsset` 直接返回 `TGameStatusResult<UObject*>`，`FScopedPinnedAsset` 构造仅需 **1 次**加锁与哈希查找即可缓存原生指针，后续 `Get()` / `Get<T>()` 为纯栈指针读取。
+- **单次加锁构造与零锁读取**：`PinAsset` 直接返回 `TGameStatusResult<UObject*>`，`FScopedPinnedAsset` 在已驻留热路径构造仅需 **1 次**加锁与哈希查找即可缓存原生指针，后续 `Get()` / `Get<T>()` 为纯栈指针读取。
 
 ### 4. 可观测性与日志分级纪律 (`LogGameAssetCore`)
 - 通过 `PrivateDependencyModuleNames` 单向接入 `GameLogging`，公共头文件零日志宏泄漏，并受 `Game::Config::bEnableLog` 编译期开关控制（Shipping 零开销）：

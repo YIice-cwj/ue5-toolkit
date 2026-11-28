@@ -7,12 +7,23 @@ OUTPUT_DIRECTORY       = Docs/ApiReference
 OUTPUT_LANGUAGE        = Chinese
 CREATE_SUBDIRS         = NO
 
-INPUT                  = Plugins/GameCore/Source/GameCore/Public \
+INPUT                  = Plugins/GameAssetCore/Source/GameAssetCore/Public \
+                         Plugins/GameCore/Source/GameCore/Public \
                          Plugins/GameData/Source/GameDataCore/Public \
+                         Plugins/GameData/Source/GameData/Public \
                          Plugins/GameDataSamples/Source/GameDataSamples/Public \
+                         Plugins/GameDebug/Source/GameDebug/Public \
+                         Plugins/GameFeedback/Source/GameFeedback/Public \
+                         Plugins/GameFlow/Source/GameFlow/Public \
                          Plugins/GameGameplay/Source/GameGameplay/Public \
                          Plugins/GameGameplayCore/Source/GameGameplayCore/Public \
                          Plugins/GameLogging/Source/GameLogging/Public \
+                         Plugins/GameMessage/Source/GameMessage/Public \
+                         Plugins/GameNetCore/Source/GameNetCore/Public \
+                         Plugins/GameNetService/Source/GameNetService/Public \
+                         Plugins/GameNetSession/Source/GameNetSession/Public \
+                         Plugins/GamePool/Source/GamePool/Public \
+                         Plugins/GameSpatial/Source/GameSpatial/Public \
                          Source/UEToolkit/Public
 FILE_PATTERNS          = *.h
 RECURSIVE              = YES
@@ -62,12 +73,23 @@ INPUT_FILTER           = "sed -E -e '/^[[:space:]]*(UCLASS|USTRUCT|UENUM|UFUNCTI
 PREDEFINED             = GENERATED_BODY()= \
                          GENERATED_UCLASS_BODY()= \
                          GENERATED_USTRUCT_BODY()= \
+                         GAMEASSETCORE_API= \
                          GAMECORE_API= \
-                         GAMEGAMEPLAY_API= \
-                         GAMEGAMEPLAYCORE_API= \
+                         GAMEDATA_API= \
                          GAMEDATACORE_API= \
                          GAMEDATASAMPLES_API= \
+                         GAMEDEBUG_API= \
+                         GAMEFEEDBACK_API= \
+                         GAMEFLOW_API= \
+                         GAMEGAMEPLAY_API= \
+                         GAMEGAMEPLAYCORE_API= \
                          GAMELOGGING_API= \
+                         GAMEMESSAGE_API= \
+                         GAMENETCORE_API= \
+                         GAMENETSERVICE_API= \
+                         GAMENETSESSION_API= \
+                         GAMEPOOL_API= \
+                         GAMESPATIAL_API= \
                          UETOOLKIT_API= \
                          FORCEINLINE=inline
 
@@ -92,7 +114,7 @@ HAVE_DOT               = NO
 
 QUIET                  = NO
 WARNINGS               = YES
-WARN_IF_UNDOCUMENTED   = NO
+WARN_IF_UNDOCUMENTED   = YES
 WARN_IF_DOC_ERROR      = YES
 WARN_NO_PARAMDOC       = NO
 WARN_AS_ERROR          = NO

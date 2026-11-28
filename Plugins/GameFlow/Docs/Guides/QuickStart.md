@@ -79,7 +79,7 @@ TGameCoroTask<void> StartIntroCutsceneAfterLoad(UObject* Host, FCancellationToke
     co_await Game::Coro::BindContext(Host, Token);
 
     // 统一签名：(WorldContextObject, CancellationToken, TimeoutSeconds)
-    const bool bReady = co_await GameFlow::WaitLoadingComplete(Host, MoveTemp(Token), 15.0f);
+    const bool bReady = co_await WaitLoadingComplete(Host, MoveTemp(Token), 15.0f);
     if (!bReady) {
         // 已被取消、超时或子系统销毁中止
         co_return;

@@ -20,11 +20,11 @@ sequenceDiagram
 
 1. **职责边界清晰拆分**：
    - `FWebSocketFragmentAssembler` 仅负责多段二进制分片零外拷贝拼装（返回只读 `TConstArrayView<uint8>`）、最大帧长拦截与超大帧后的容量收缩；
-   - `FWebSocketNetTransport` 负责 `IWebSocket` 生命周期、主线程 64 位代际号（`ConnectionGeneration`）防串扰、`GameCore::TLockFreeRingBuffer<FInboundSocketEvent, 1024>` 有界无锁事件通道（带满队过载熔断）、IO 线程超长帧零分配前置拦截，以及单分片整包零拷贝直通快路径；
+   - `FWebSocketNetTransport` 负责 `IWebSocket` 生命周期、主线程 64 位代际号（`ActiveGeneration`）防串扰、`TLockFreeRingBuffer<FInboundSocketEvent, 1024>` 有界无锁事件通道（带满队过载熔断）、IO 线程超长帧零分配前置拦截，以及单分片整包零拷贝直通快路径；
    - `FNetTransportFactory` 负责具体传输实例创建（支持注入自定义 `FWebSocketFactory` 便于测试与扩展），使 `UGameNetServiceSubsystem` 仅面向抽象 `INetTransport` 编程；
    - `FNetPendingRequestTracker` 与 `FNetMessageDispatcher` 彻底分离“可取消单次异步 RPC 序列追踪（支持 `FCancellationToken` 与栈内局部快照防重入）”与“常驻 `MessageId` 快照多播”；
    - `FNetMessageBusBridge` 独立封装 `GameMessage`（`UGameplayMessageSubsystem`）的监听句柄、无监听零分配短路门控与双向消息广播。
-2. **GameThread 唯一消费铁律**：后台 Socket 线程绝不触碰任何 `UObject`、委托或业务容器；全部解帧、反序列化、超时结算与回调触发 100% 运行在主线程。模块日志统一经 `GameLogging` 输出至 `LogGameNetService`（已在远程日志输出设备黑名单中豁免，避免转发死循环）。
+2. **GameThread 唯一消费铁律**：后台 Socket 线程绝不触碰任何 `UObject`、委托或业务容器；全部解帧、反序列化、超时结算与回调触发 100% 运行在主线程。模块日志统一经 `GameLogging` 输出至 `LogGameNetService`（已在远程日志输出设备中纳入防循环黑名单，避免转发死循环）。
 
 ---
 

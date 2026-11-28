@@ -29,7 +29,7 @@ namespace Game::Spatial {
     namespace Private {
 
         /**
-         * @brief 64 位空间单元格哈希键雪崩散列键策略（复用 GameCore::Game::Hash::Hash64To32，消除 2D/3D 平面格网桶聚集）
+         * @brief 64 位空间单元格哈希键雪崩散列键策略（复用 Game::Hash::Hash64To32，消除 2D/3D 平面格网桶聚集）
          * @tparam TValue 桶映射值类型
          */
         template <typename TValue>

@@ -232,7 +232,7 @@ Settings.MaxEvictionsPerStep = 2;
 Pool.SetActorPoolEvictionSettings(AMyProjectile::StaticClass(), Settings);
 ```
 - **LIFO + FIFO 协同**：底层 `TDeque<FIdleEntry>` 从队尾弹出最热实例（提升 L1/L2 缓存命中率），从队首 $O(1)$ 逐出最冷超时实例。
-- **动态调度零空转**：调度器托管于 `GameCore::UThrottledTickerSubsystem`，自动按全部启用池的最小 `CheckIntervalSeconds` 心跳；全部池关闭淘汰后自动注销定时句柄。
+- **动态调度零空转**：调度器托管于 `UThrottledTickerSubsystem`，自动按全部启用池的最小 `CheckIntervalSeconds` 心跳；全部池关闭淘汰后自动注销定时句柄。
 - **按位裁剪组件重置**：对纯逻辑或轻量 Actor，可通过 `Pool.SetPoolResetFlags(ActorClass, EPoolResetFlags::Timers | EPoolResetFlags::Movement)` 精准跳过不必要的组件分支，将归还开销压降至约 `1.2 µs`。
 
 ### 6.2 低内存应急泄洪与 GC 安全

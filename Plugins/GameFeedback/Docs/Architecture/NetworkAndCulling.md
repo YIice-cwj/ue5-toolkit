@@ -15,7 +15,7 @@
   - `ImpactNormal`、`ImpactDirection`、`TraceDirection`：`FVector_NetQuantizeNormal`（单位球面量化，仅 16 位）；
 - **确定性资产身份**：`DefinitionId`（uint32）+ `DefinitionMappingVersion`（uint32）；
 - **伤害数值半精度编码**：`SetDamage` / `GetDamage` 基于 IEEE 754 半精度浮点 `FFloat16`（uint16），经过 NaN 过滤并钳制至 `[0.0f, 65504.0f]`，既能满足常规伤害精度又节省 50% 浮点带宽；
-- **状态标记与预测 ID**：`StateFlags`（uint8，经 `GameCore::TBitMask<EGameFeedbackNetFlag>` 强类型读写）、`PredictionEventId`（uint16，跨端预测去重）；
+- **状态标记与预测 ID**：`StateFlags`（uint8，经 `TBitMask<EGameFeedbackNetFlag>` 强类型读写）、`PredictionEventId`（uint16，跨端预测去重）；
 - **主通道索引哨兵与安全校验**：`PrimaryChannelIndex` 默认初始化为 `MAX_uint16` 哨兵；仅在开启 `FastReplication` 且主通道合法非 `InvalidTagNetIndex` 时编码，客户端仅在开启 `FastReplication` 且索引落于有效表范围内时还原，绝不触发引擎 `ensure` 断言；
 - **错误归并**：`NetSerialize` 对每个子向量使用独立步进结果并按位与归并至 `bOutSuccess`，杜绝后续字段覆盖前序序列化失败；
 - **紧凑骨骼索引**：受击命中 `USkeletalMeshComponent` 且 `BoneName` 非空时，自动提取 `GetBoneIndex` 压缩为 `uint16` 传输；客户端还原时由骨骼数二次校验后还原 `BoneName`，未命中或静态网格体则使用 `MAX_uint16` 哨兵。

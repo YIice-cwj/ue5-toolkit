@@ -1,17 +1,31 @@
-# GameFeedback 表现配置资产与注册表 API 参考
+# GameFeedback 表现资产与注册表 API 参考
 
-本文档详细介绍打击表现资产（`UGameFeedbackDefinition`）、表现路由注册表（`UGameFeedbackRegistry`）以及运行时资产解析服务（`UGameFeedbackDefinitionProvider`）。
+> **一句话**：表现配置资产、四级匹配注册表与软引用去重预热服务的公共 API。
+> **头文件**：`Asset/GameFeedbackDefinition.h`、`Asset/GameFeedbackRegistry.h`、`System/GameFeedbackDefinitionProvider.h` · **线程**：仅 GameThread；异步加载的缓存写入与结果返回在 GameThread · **失败语义**：服务解析失败返回 `nullptr`，ID 查询失败返回 `0`，软引用查询返回空软指针
 
-- 头文件：
-  - `#include "Asset/GameFeedbackDefinition.h"`
-  - `#include "Asset/GameFeedbackRegistry.h"`
-  - `#include "System/GameFeedbackDefinitionProvider.h"`
+## 30 秒速览
 
----
+- **资产**：`UGameFeedbackDefinition` 聚合 HitStop、CameraShake、HitFlash、VFX、Audio、Haptics 六组原子动作。
+- **匹配**：`UGameFeedbackRegistry` 按“精确通道 → 标签深度 → 复合规则优先级 → 默认兜底”四级解析，未命中时回退兜底资产。
+- **身份**：`MakeDefinitionId` 由完整软对象路径 CRC32 生成稳定 ID；`DefinitionMappingVersion` 由注册表内容归一化哈希生成。
+- **服务**：`UGameFeedbackDefinitionProvider` 统一解析，并按 `FSoftObjectPath` 去重预热 Definition、VFX 与 Audio。
+- **约束**：只异步预热，不阻塞主线程同步加载；未驻留资产在解析时返回 `nullptr`。
 
-## 1. 单条表现资产定义 (`UGameFeedbackDefinition`)
+## API 速查
 
-`UGameFeedbackDefinition` 继承自 `UPrimaryDataAsset`，聚合了针对某种打击风格的完整视听配置：
+| 接口 | 用途 | 关键约束 |
+| :--- | :--- | :--- |
+| `UGameFeedbackRegistry::ResolveDefinitionPtr` | 四级流水线解析最优表现资产 | 仅 GameThread；均未命中返回兜底资产（可能为空） |
+| `UGameFeedbackRegistry::RebuildDefinitionIndex` | 重建标签索引、ID 索引与映射版本 | 运行时修改注册表后须显式调用 |
+| `UGameFeedbackRegistry::GetDefinitionId` | 指针直查稳定 ID | 未登记或 CRC32 冲突返回 `0` |
+| `UGameFeedbackRegistry::FindDefinitionById` | 按 ID 反查资产软引用 | 未知或冲突 ID 返回空软引用 |
+| `UGameFeedbackRegistry::MakeDefinitionId` | 由完整软对象路径生成稳定 ID | 空路径返回 `0`；哈希为 `0` 时映射为 `1` |
+| `UGameFeedbackDefinitionProvider::Resolve` | 由信号解析定义指针 | 未配置注册表或资产未驻留返回 `nullptr` |
+| `UGameFeedbackDefinitionProvider::ResolveById` | 按 ID + 版本还原定义 | 未知、冲突、版本不一致或未加载返回 `nullptr` |
+| `UGameFeedbackDefinitionProvider::PreloadSoftAsset` | 按路径去重异步预热 VFX / Audio | 不阻塞主线程；加载后随世界保活 |
+| `UGameFeedbackDefinitionProvider::GetPtr` | 获取世界级服务指针 | 仅 GameThread；未就绪返回 `nullptr` |
+
+## 资产定义 `UGameFeedbackDefinition`
 
 ```cpp
 UCLASS(BlueprintType)
@@ -39,95 +53,117 @@ public:
 };
 ```
 
----
+| 成员 | 类型 | 说明 |
+| :--- | :--- | :--- |
+| `HitStop` | `FGameFeedbackHitStopAction` | 攻击者 / 受击者顿帧与致死全局定格参数 |
+| `CameraShake` | `FGameFeedbackCameraShakeAction` | 攻击者 / 受击者镜头震动类与倍率 |
+| `HitFlash` | `FGameFeedbackHitFlashAction` | Overlay 材质、目标模式与持续时长 |
+| `VFX` | `FGameFeedbackVFXAction` | Niagara 软引用、附着策略与朝向模式 |
+| `Audio` | `FGameFeedbackAudioAction` | 空间受击音与攻击者 2D 确认音 |
+| `Haptics` | `FGameFeedbackForceFeedbackAction` | 攻击者 / 受击者手柄触觉反馈 |
 
-## 2. 全局表现映射注册表 (`UGameFeedbackRegistry`)
+## 注册表 `UGameFeedbackRegistry`
 
-`UGameFeedbackRegistry` 负责根据信号中的伤害通道与特征标签，以最优性能匹配出最具体的表现资产：
+### 四级匹配流水线
 
-### 2.1 四级匹配流水线 (Resolution Hierarchy)
+| 层级 | 数据源 | 规则 | 未命中行为 |
+| :---: | :--- | :--- | :--- |
+| 1 | `ExactChannelMap` | 按 `PrimaryChannel` 精确查找 | 进入第 2 层 |
+| 2 | `ExactFeedbackTagMap` | `RebuildDefinitionIndex` 预排序为深度降序、同深度 `FName` 字典序升序；首个 `FeedbackTags.HasTag` 命中即返回 | 进入第 3 层 |
+| 3 | `CompositeRules` | 按 `Priority` 降序，首个 `FGameplayTagQuery` 命中即返回 | 进入第 4 层 |
+| 4 | `DefaultFallbackDefinition` | 直接返回兜底资产 | 返回空软引用 |
 
-```mermaid
-flowchart TD
-    In[输入 Signal: PrimaryChannel & FeedbackTags] --> Tier1{1. ExactChannelMap 命中?}
-    Tier1 -- 是且非空 --> Ret1[返回对应 Definition]
-    Tier1 -- 否 --> Tier2{2. ExactFeedbackTagMap 命中?}
-    
-    Tier2 -- 是 --> DepthCheck[按标签树深度降序排序<br>同深度按 FName 字典序升序早出]
-    DepthCheck --> Ret2[返回深度最具体 Definition]
-    Tier2 -- 否 --> Tier3{3. CompositeRules 复合查询命中?}
+标签索引在 `PostLoad` / `RebuildDefinitionIndex` 时预排序，运行期 `ResolveDefinitionPtr` 只做数组遍历，避免高频受击时重复计算标签树深度。
 
-    Tier3 -- 是 --> Ret3[按 Priority 降序返回首个匹配资产]
-    Tier3 -- 否 --> Fallback[4. 返回 DefaultFallbackDefinition]
-```
-
-1. **第一层：精确主伤害通道 (`ExactChannelMap`)**
-   - 字典快速查找 `PrimaryChannel`（例如 `Damage.Channel.Fire` 直接映射到火焰打击资产）。
-2. **第二层：特征标签深度匹配 (`ExactFeedbackTagMap`)**
-   - 在 `PostLoad` 或 `RebuildDefinitionIndex` 时，字典条目预排序构建为 `SortedExactFeedbackTags`（深度深者优先，同深度按键字典序升序）；
-   - 运行时 `ResolveDefinitionPtr` 直接遍历预排序数组，首个匹配 `FeedbackTags.HasTag` 的项即为最优项直接返回，避免高频受击时反复计算标签树深度。
-3. **第三层：复合规则查询 (`CompositeRules`)**
-   - 基于 `FGameplayTagQuery` 的高级组合匹配（如“受击者是机械 AND 武器是重锤”）；
-   - 数组按 `Priority` 降序排列，首个匹配项胜出。
-4. **第四层：缺省兜底资产 (`DefaultFallbackDefinition`)**
-   - 上述三层均未命中时返回通用兜底打击资产，保证系统永不落空。
-
-### 2.2 确定性网络身份与版本管理
+### 公共接口
 
 ```cpp
-class GAMEFEEDBACK_API UGameFeedbackRegistry : public UDataAsset {
-public:
-    void RebuildDefinitionIndex();
-    uint32 GetDefinitionId(const UGameFeedbackDefinition* Definition) const;
-    TSoftObjectPtr<UGameFeedbackDefinition> FindDefinitionById(uint32 DefinitionId) const;
-    uint32 GetDefinitionMappingVersion() const;
-    static uint32 MakeDefinitionId(const FSoftObjectPath& DefinitionPath);
-};
+[[nodiscard]] TSoftObjectPtr<UGameFeedbackDefinition> ResolveDefinitionPtr(
+    const FGameplayTag& PrimaryChannel,
+    const FGameplayTagContainer& FeedbackTags) const;
+
+void RebuildDefinitionIndex();
+
+[[nodiscard]] uint32 GetDefinitionId(const UGameFeedbackDefinition* Definition) const;
+[[nodiscard]] TSoftObjectPtr<UGameFeedbackDefinition> FindDefinitionById(uint32 DefinitionId) const;
+[[nodiscard]] uint32 GetDefinitionMappingVersion() const;
+[[nodiscard]] static uint32 MakeDefinitionId(const FSoftObjectPath& DefinitionPath);
 ```
 
-- **稳定 CRC32 ID 与 O(1) 索引**：通过 `MakeDefinitionId` 为完整软对象路径生成确定性 ID（0 映射为 1），并在 `RebuildDefinitionIndex` 中同步缓存 `DefinitionIdByPath` 实现 O(1) 路径直查；编辑器修改属性时经 `PostEditChangeProperty` 自动重建索引；
-- **冲突检测**：`RebuildDefinitionIndex` 会自动检测不同路径的 CRC32 冲突，冲突资产加入黑名单，禁止网络传输；
-- **TokenStream 映射版本**：将默认资产、通道表、标签表与复合规则（基于 `FGameplayTagQuery` 真实表达式 `TokenStream` 与 `TagDictionary`，且规则采用 `Algo::StableSort` 稳定排序）归一化哈希生成 `DefinitionMappingVersion`，客户端与服务端版本不一致时直接拒绝解析。
+| 方法 | 参数 | 返回 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `ResolveDefinitionPtr` | `PrimaryChannel`、`FeedbackTags` | 最优资产软引用 | 四级流水线入口；均未命中时返回兜底资产 |
+| `RebuildDefinitionIndex` | 无 | `void` | 重建标签有序索引、ID 索引、冲突集合与映射版本 |
+| `GetDefinitionId` | `Definition` | `uint32` | 已登记且无冲突返回非零 ID；未登记或冲突返回 `0` |
+| `FindDefinitionById` | `DefinitionId` | 软引用 | 未知或冲突 ID 返回空软引用 |
+| `GetDefinitionMappingVersion` | 无 | `uint32` | 空映射返回 `0` |
+| `MakeDefinitionId` | `DefinitionPath` | `uint32` | 空路径返回 `0`；哈希结果为 `0` 时映射为 `1` |
 
----
+- **线程**：索引查询为只读纯逻辑，仅在 GameThread 调用。
+- **生命周期**：`PostLoad` 自动构建索引；编辑器属性变更经 `PostEditChangeProperty` 重建。
+- **失败语义**：`ResolveDefinitionPtr` 永不返回空指针以外的错误码；软引用是否可立即访问由调用方检查。
 
-## 3. 资产解析与统一软引用预热服务 (`UGameFeedbackDefinitionProvider`)
+### 稳定身份与版本
 
-`UGameFeedbackDefinitionProvider` 是一个 `UWorldSubsystem`（仅在游戏世界创建，包含 Dedicated Server），是运行期访问表现资产与媒体软引用异步预热的**唯一托管来源**：
+- **确定性 CRC32 ID**：`MakeDefinitionId` 对完整软对象路径生成 ID，`RebuildDefinitionIndex` 同步维护 `DefinitionIdByPath` 与 `DefinitionsById`，实现 O(1) 直查。
+- **冲突拉黑**：不同路径碰撞为同一 CRC32 时加入 `ConflictedDefinitionIds`，该 ID 禁止网络传输与远端解析。
+- **映射版本**：默认资产、通道表、标签表与复合规则（`FGameplayTagQuery` 的 `TokenStream` 与 `TagDictionary`，复合规则经 `Algo::StableSort`）归一化哈希生成 `DefinitionMappingVersion`；客户端与服务端不一致时拒绝解析。
+
+## 解析与预热服务 `UGameFeedbackDefinitionProvider`
+
+`UGameFeedbackDefinitionProvider` 是 `UWorldSubsystem`，在包含 Dedicated Server 的游戏世界创建，是运行期访问表现资产与媒体软引用的唯一托管来源。
 
 ```cpp
-UCLASS()
-class GAMEFEEDBACK_API UGameFeedbackDefinitionProvider : public UWorldSubsystem {
-    GENERATED_BODY()
+const UGameFeedbackDefinition* Resolve(const FGameFeedbackSignal& Signal);
 
-public:
-    /** 按信号主通道与反馈标签同步解析最优资产指针 */
-    const UGameFeedbackDefinition* Resolve(const FGameFeedbackSignal& Signal);
+[[nodiscard]] uint32 GetDefinitionId(const UGameFeedbackDefinition* Definition) const;
+[[nodiscard]] uint32 GetDefinitionMappingVersion() const;
+const UGameFeedbackDefinition* ResolveById(uint32 DefinitionId, uint32 DefinitionMappingVersion);
 
-    /** O(1) 查询已登记 Definition 的稳定网络 ID（带版本校验的指针直查缓存） */
-    uint32 GetDefinitionId(const UGameFeedbackDefinition* Definition) const;
+void PreloadFeedbackBundle(TConstArrayView<TSoftObjectPtr<UGameFeedbackDefinition>> Definitions);
+void PreloadSoftAsset(const FSoftObjectPath& AssetPath);
 
-    /** 获取当前 Registry 的确定性映射版本 */
-    uint32 GetDefinitionMappingVersion() const;
-
-    /** 按网络 ID 与映射版本还原服务端资产 */
-    const UGameFeedbackDefinition* ResolveById(uint32 DefinitionId, uint32 DefinitionMappingVersion);
-
-    /** 批量预热软引用定义资产集合（关卡加载或英雄入场时调用） */
-    void PreloadFeedbackBundle(TConstArrayView<TSoftObjectPtr<UGameFeedbackDefinition>> Definitions);
-
-    /** 按路径去重异步预热视听软资产（VFX / Audio），随世界生命周期保活并在注销时释放 */
-    void PreloadSoftAsset(const FSoftObjectPath& AssetPath);
-
-    /** 查询当前在飞异步预热句柄总数（供观测与测试） */
-    int32 GetActivePreloadHandleCount() const;
-
-    /** 安全获取当前世界的服务实例 */
-    static UGameFeedbackDefinitionProvider* GetPtr(const UObject* WorldContextObject);
-};
+[[nodiscard]] int32 GetActivePreloadHandleCount() const;
+[[nodiscard]] static UGameFeedbackDefinitionProvider* GetPtr(const UObject* WorldContextObject);
 ```
 
-### 3.1 强缓存、同步完成竞态安全与句柄闭环管理
-- **同步返回与 O(1) 缓存**：已解析定义存入 `LoadedDefinitions`，媒体软资产存入 `PreloadedMediaAssets`，并提供带 `CachedMappingVersion` 自动失效刷新的 `TObjectKey` 指针直查 `DefinitionIdCache`；
-- **去重异步预热与同步完成处理**：Definition、Audio 与 VFX 软引用全部收口至本服务按 `FSoftObjectPath` 去重异步加载；若引擎在 `RequestAsyncLoad` 返回前即同步完成，立即直接入缓存返回而绝不残留已完成句柄；
-- **注销安全清理**：在子系统 `Deinitialize` 时，自动遍历 `DefinitionLoads` 与 `PendingMediaLoads` 调用 `CancelHandle()` 并清空全部缓存，彻底杜绝异步加载句柄泄漏。
+| 方法 | 参数 | 返回 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `Resolve` | `Signal` | 定义指针 | 未配置注册表返回 `nullptr`，并输出一次性 Warning |
+| `GetDefinitionId` | `Definition` | `uint32` | 带版本校验的指针直查缓存；未登记、冲突或未配置返回 `0` |
+| `GetDefinitionMappingVersion` | 无 | `uint32` | 未配置注册表返回 `0` |
+| `ResolveById` | `DefinitionId`、`DefinitionMappingVersion` | 定义指针 | 未知、冲突、版本不一致或未加载返回 `nullptr` |
+| `PreloadFeedbackBundle` | 定义软指针集合 | `void` | 批量异步预热 |
+| `PreloadSoftAsset` | `AssetPath` | `void` | 按路径去重预热 VFX / Audio，加载后随世界保活 |
+| `GetActivePreloadHandleCount` | 无 | `int32` | 在飞句柄数，供观测与测试 |
+| `GetPtr` | `WorldContextObject` | 服务指针 | 未就绪返回 `nullptr` |
+
+- **线程**：全部接口仅限 GameThread；异步加载完成后的缓存写入也在 GameThread。
+- **生命周期**：已解析定义写入 `LoadedDefinitions`，媒体软资产写入 `PreloadedMediaAssets`；`Deinitialize` 遍历 `DefinitionLoads` 与 `PendingMediaLoads` 调用 `CancelHandle()` 并清空缓存。
+- **失败语义**：`RequestAsyncLoad` 若同步完成则立即入缓存返回，不残留已完成句柄；加载中或失败返回 `nullptr`。
+
+```cpp
+UGameFeedbackDefinitionProvider* Provider = UGameFeedbackDefinitionProvider::GetPtr(this);
+if (Provider != nullptr) {
+    Provider->PreloadSoftAsset(VfxPath);
+    if (const UGameFeedbackDefinition* Definition = Provider->Resolve(Signal)) {
+        PlayLocalFeedback(*Definition);
+    }
+}
+```
+
+## 常见错误与边界
+
+- **注册表未配置**：`Resolve` 返回 `nullptr` 并只告警一次；调用方需容忍无表现资产。
+- **资产未驻留**：解析不会同步加载，返回 `nullptr`；应先经 `PreloadFeedbackBundle` / `PreloadSoftAsset` 预热。
+- **版本不一致**：`ResolveById` 直接返回 `nullptr`，不会退回本地注册表重新匹配。
+- **CRC32 冲突**：冲突 ID 的 `GetDefinitionId` 返回 `0`，该资产不会被网络派发。
+- **运行时修改注册表**：运行时变更后需显式调用 `RebuildDefinitionIndex`；编辑器内由 `PostEditChangeProperty` 自动重建。
+- **子系统销毁**：`Deinitialize` 后所有缓存与在飞句柄清空，不应继续持有 `Resolve` 返回的裸指针。
+
+## 相关文档
+
+- [插件 README](../../README.md)
+- [架构概览](../Architecture/Overview.md)
+- [网络同步、裁剪与预测去重](../Architecture/NetworkAndCulling.md)
+- [快速上手](../Guides/QuickStart.md)

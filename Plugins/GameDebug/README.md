@@ -1,51 +1,104 @@
-# GameDebug 插件
+# GameDebug
 
-**GameDebug**（v2.0.0）是面向 Unreal Engine 5（UE 5.1 ~ 5.8）的模块化游戏调试、GM 作弊指令、屏幕诊断与轻量 3D 可视化基础设施插件。它公开仅依赖底层 `GameCore` 与引擎原生模块，私有单向接入全局日志中枢 `GameLogging`（统一分类 `LogGameDebug`），严格遵守单向无环分层矩阵（**零 `Slate` 死依赖、零 `GamePool` 或横向 Level 1 依赖**），并在 Shipping 构建下通过 `GameCore` 编译开关实现物理零开销裁剪。
+> **一句话**：GM 指令、域隔离屏幕诊断、3D 绘制、O(1) 轨迹、时间控制、观察中心与作用域秒表的一体化调试设施。
+> **版本** v2.0.0 · **引擎** UE 5.1~5.8 · **层级** Level 1 · **直接依赖** GameCore（公开）· GameLogging（私有）
 
----
+## 30 秒速览
 
-## 一、 核心功能与架构特性
+- **解决什么问题**：把散落的 `PrintString`、`DrawDebug*`、控制台 GM 命令与临时耗时计时，收敛成可注册、可开关、可编译期裁剪的统一调试层。
+- **核心能力**
+  - `FGameCheatRegistry`：模块化 GM / 控制台指令注册与执行。
+  - `FGameDebugPrint` + `FGameDebugWatchHub`：域盐隔离的屏幕打印与实时变量观察。
+  - `FGameDebugDraw` + `FGameDebugTrailRecorder`：常用 3D 图元与 O(1) 环形轨迹。
+  - `FGameDebugTimeController` + `FScopedDebugStopwatch`：按世界时间膨胀 / 单步与 RAII 耗时告警。
+  - `UGameDebugBlueprintLibrary`：上述能力的蓝图入口。
+- **什么时候用**：开发期 GM 调试、战斗与网络问题定位、运行时数值观察、临时性能热点计时。
+- **什么时候不用**：需要落盘、分级或远程上报的正式日志用 `GameLogging`；长期性能剖析用 Unreal Insights 或 `stat`；面向玩家的提示不要走调试打印通道。
 
-1. **模块化 GM / 作弊指令注册中心 (`FGameCheatRegistry`)**：
-   - 跨模块注册自定义控制台 GM 指令（如 `GM.AddGold 1000`），自动绑定引擎 `IConsoleManager`（`ECVF_Cheat`）；
-   - **锁序安全与无死锁设计**：严格拒绝空名称或含空白指令名；`ConsoleSyncLock` 串行化控制台注册/注销写路径（零 ABA 竞态），全程在释放 `FRWLock` 后交互 `IConsoleManager` 并按名称 $O(1)$ 注销句柄，彻底根除 AB-BA 锁序倒置，冲突时通过 `LogGameDebug` 输出 `Warning`；
-   - **零二次搬移解析 (`ExecuteCheat(FStringView)`)**：先切片提取命令名并经 `FName(View, FNAME_Find)` 零分配短路未命中请求，命中后再单遍解析双引号含空格参数、空双引号 `""` 与 `\"`/`\\` 转义字符并锁外派发；
-   - 受 `Game::Config::bEnableGM` 编译期开关控制，Shipping 物理剥离。
+## 快速开始
 
-2. **域隔离屏幕调试打印 (`FGameDebugPrint`)**：
-   - 提供 `Print`、`PrintChannel`、`PrintWarning`、`PrintError`、`GetChannelKey` 及 `do { ... } while (false)` 语句安全宏 `GAME_DEBUG_PRINT*`；
-   - **64 位域盐槽位防碰撞**：结合 `GameCore::Game::Hash::Hash64To32` 将低 32 位正交划分（Print 通道恒占 `[0, 0x7FFFFFFF]`，WatchHub 分类恒占 `[0x80000000, 0xFFFFFFFE]`），即便在 `UEngine::ScreenMessages` 的 `int32` 键截断下亦与 `FGameDebugWatchHub` 零碰撞且永不等于 `InvalidKey (MAX_uint64)`；
-   - `PrintChannel` 使用栈上 `TStringBuilder<256>` 零临时 `FString` 拼装，自动钳制非法/负驻留时长。
+```csharp
+PrivateDependencyModuleNames.AddRange(new string[] {
+    "GameDebug",
+});
+```
 
-3. **轻量 3D 空间调试图形绘制 (`FGameDebugDraw`)**：
-   - 封装 9 大常用 3D 图元：`DrawLine`、`DrawSphere`、`DrawBox`、`DrawCapsule`、`DrawCylinder`、`DrawCone`、`DrawArrow`、`DrawCoordinateSystem`、`DrawString` 及配套 `GAME_DEBUG_DRAW_*` 宏；
-   - 全量边界防卫：统一拦截空世界、`NaN`/`Inf` 坐标与尺度、非正半径/半高/张角/字体缩放、非法分段数、零体积盒、起终点重合退化及跨世界/失效 `TestActor`，并对非单位四元数自动安全归一化。
+```cpp
+#include "Cheat/FGameCheatRegistry.h"
+#include "Print/FGameDebugPrint.h"
 
-4. **真 $O(1)$ 3D 空间运动轨迹记录器 (`FGameDebugTrailRecorder`)**：
-   - 构造期一次分配定长环形缓冲（Shipping 零堆分配），满容量淘汰与过期清理仅推进 `HeadIndex`、零 `memmove`、零稳态堆分配；
-   - 支持最小移动距离去重、拦截 `NaN` 坐标与非有限时间戳、对回退时间戳单调非递减钳制，以负数哨兵 `-1.0` 区分平台时钟（完整支持 `t = 0.0` 仿真起始时间）；
-   - `DrawTrail` 先行淘汰包括单点在内的全部超期样本并前置校验线宽/时长，外提 `FLinearColor` 转换，按真实剩余生命周期计算时间衰减颜色渐变。
+FGameCheatRegistry::Get().RegisterCheat(
+    FName(TEXT("GM.GiveItem")),
+    TEXT("发放测试道具。用法: GM.GiveItem \"Item Name\" <Count>"),
+    [](const TArray<FString>& Args) {
+        // 参数个数与合法性由业务自行校验
+    });
 
-5. **按世界隔离的时间膨胀与单步调试控制器 (`FGameDebugTimeController`)**：
-   - 直接操作 `AWorldSettings::SetTimeDilation`，内部以 `FObjectKey` 按 `UWorld` 隔离多 PIE 暂停记忆倍率与步进代次；`StepFrame` 自动补偿 `UWorld::Tick` 中途调用并在世界销毁时即时清理条目；对称提供 `Initialize()` / `Shutdown()`；
-   - 明确定义具名契约常量：`MinTimeDilation = 0.001f`、`MaxTimeDilation = 20.0f`、`PausedTimeDilation = 0.0001f`、`PauseDetectionThreshold = 0.0005f`（合法边界 `0.001f` 不被误判为暂停），拦截 `NaN`/`Inf` 与显式非空无效上下文防穿透；
-   - 挂载 `GM.TimeScale`、`GM.TimePause`、`GM.TimeResume`、`GM.TimeReset`、`GM.TimeStep` 并严格拒绝尾随杂字符、非正步进帧数或无世界上下文。
+GAME_DEBUG_PRINT_CHANNEL(FName(TEXT("Player")), "Taken Damage: %.1f", 12.5f);
+```
 
-6. **高性能运行时调试观察中心 (`FGameDebugWatchHub`)**：
-   - 脱离构造期副作用，由模块对称调用 `Initialize()` / `Shutdown()` 挂载与注销 `GM.Watch`；全接口受 `bEnableDebugDraw` 裁剪；
-   - `bGlobalEnabled` 采用 `std::atomic<bool>` 消除跨线程数据竞态；关闭分类/全局关闭/清空或项数归零时即时撤销对应屏幕面板，空分类自动回收；`Watch` 返回 `bool`；
-   - `TickDisplay` 采用 `TSharedPtr<const FValueGetter>` + 栈内联快照 + `TStringBuilder<512>`，彻底消除每帧 `TFunction` 闭包深拷贝与临时 `FString` 分配，屏幕驻留时长自适应 `FMath::Max(0.1f, DeltaTime * 2.0f)` 防止低帧闪烁。
+观察变量使用 `GAME_DEBUG_WATCH("Player", "Speed", Getter)` 注册，`GAME_DEBUG_UNWATCH` 对称注销；同名通道与观察分组使用正交域盐键，屏幕上互不覆盖。
 
-7. **RAII 作用域耗时诊断秒表 (`FScopedDebugStopwatch`)**：
-   - 内部复用 `GameCore::FScopedCpuTimer`（`Cycles64` 硬件时钟）并由 `GAME_ENABLE_CPU_PROFILER` 编译开关精准门控（Shipping 下裁剪为 `sizeof == 1` 空类、零成员零时钟开销）；
-   - 离开作用域耗时达到或超出阈值时通过 `LogGameDebug` 输出 `Warning` 并同步在屏幕通道高亮（$\ge 2\times$ 阈值为红色，普通超阈值为橙色）；宏采用 `__COUNTER__` 杜绝同行命名冲突。
+## 核心能力
 
-8. **蓝图函数库全景支持 (`UGameDebugBlueprintLibrary`)**：
-   - 向蓝图统一暴露打印、9 大 3D 图元绘制与 7 项时间控制节点；默认颜色（`DrawDebugCylinder=Orange`、`DrawDebugArrow=Purple`）与 C++ 100% 对齐，并通过内部 `GameDebugWorldResolver` 解除绘制对时间控制器的耦合。
+### GM / 作弊指令中心
 
----
+- `FGameCheatRegistry::RegisterCheat` 自动绑定引擎 `IConsoleManager`（`ECVF_Cheat`），并提供 `UnregisterCheat`、`ExecuteCheat(FStringView)`、`HasCheat`、`ClearAll`。
+- 拒绝空名称或含空白字符的指令名；`ConsoleSyncLock` 串行化控制台注册 / 注销写路径，`FRWLock` 保护注册表，与控制台交互在锁外执行。
+- `ExecuteCheat` 先以 `FName(View, FNAME_Find)` 零分配短路未命中，命中后单遍解析双引号含空格参数、空引号 `""` 与 `\"` / `\\` 转义。
+- 受 `Game::Config::bEnableGM` 编译期开关约束，关闭时各入口以 `if constexpr` 短路为无操作。
 
-## 二、 目录结构
+### 域隔离屏幕打印
+
+- 提供 `Print`、`PrintChannel`、`PrintWarning`、`PrintError`、`GetChannelKey` 与 `do { ... } while (false)` 语句安全宏 `GAME_DEBUG_PRINT*`。
+- 64 位域盐槽位：Print 通道占 `[0, 0x7FFFFFFF]`，WatchHub 分类占 `[0x80000000, 0xFFFFFFFE]`，在 `UEngine::ScreenMessages` 的 `int32` 键截断下仍零碰撞，且永不等于 `InvalidKey`。
+- `PrintChannel` 使用栈上 `TStringBuilder<256>` 拼装，自动钳制非法或负驻留时长。
+
+### 3D 绘制与轨迹
+
+- `FGameDebugDraw` 封装 `DrawLine`、`DrawSphere`、`DrawBox`、`DrawCapsule`、`DrawCylinder`、`DrawCone`、`DrawArrow`、`DrawCoordinateSystem`、`DrawString` 及 `GAME_DEBUG_DRAW_*` 宏。
+- 绘制入口统一拦截空世界、`NaN` / `Inf` 坐标与尺度、非正半径 / 半高 / 张角 / 字体缩放、非法分段数、零体积盒、起终点重合，并对非单位四元数安全归一化。
+- `FGameDebugTrailRecorder` 构造期一次分配定长环形缓冲，满容量淘汰与过期清理只推进 `HeadIndex`，稳态零 `memmove`、零堆分配。
+- 轨迹支持最小移动距离去重、非有限时间戳拦截、回退时间戳单调非递减钳制；`DrawTrail` 先淘汰超期样本，再按剩余生命周期计算颜色渐变。
+
+### 按世界时间控制
+
+- `FGameDebugTimeController` 直接操作 `AWorldSettings::SetTimeDilation`，以 `FObjectKey` 按 `UWorld` 隔离多 PIE 的暂停记忆倍率与步进代次。
+- 具名常量：`MinTimeDilation = 0.001f`、`MaxTimeDilation = 20.0f`、`PausedTimeDilation = 0.0001f`、`PauseDetectionThreshold = 0.0005f`。
+- 提供 `SetTimeDilation`、`Pause`、`Resume`、`IsPaused`、`ResetTime`、`StepFrame`，并挂载 `GM.TimeScale`、`GM.TimePause`、`GM.TimeResume`、`GM.TimeReset`、`GM.TimeStep`。
+- `StepFrame` 自动补偿 `UWorld::Tick` 中途调用，并在世界销毁时清理对应状态。
+
+### 运行时观察与耗时诊断
+
+- `FGameDebugWatchHub` 由模块对称调用 `Initialize()` / `Shutdown()` 挂载与注销 `GM.Watch`；`bGlobalEnabled` 使用 `std::atomic<bool>`。
+- 关闭分类、全局关闭、清空或项数归零时即时撤销对应屏幕面板，空分类自动回收；`Watch` 返回 `bool`。
+- `TickDisplay` 使用 `TSharedPtr<const FValueGetter>` + 栈内联快照 + `TStringBuilder<512>`，避免每帧闭包深拷贝与临时 `FString`；驻留时长自适应 `FMath::Max(0.1f, DeltaTime * 2.0f)`。
+- `FScopedDebugStopwatch` 复用 `FScopedCpuTimer`（`Cycles64`），由 `GAME_ENABLE_CPU_PROFILER` 门控；超阈值时经 `LogGameDebug` 告警并在屏幕通道高亮（`>= 2x` 阈值为红，普通超阈为橙）。
+
+### 蓝图函数库
+
+- `UGameDebugBlueprintLibrary` 向蓝图暴露打印、3D 图元绘制与时间控制节点，默认颜色与 C++ 侧对齐（如 `DrawDebugCylinder` 为 Orange、`DrawDebugArrow` 为 Purple）。
+- 内部通过 `GameDebugWorldResolver` 解析世界上下文，解除绘制对时间控制器的耦合。
+
+## 架构与依赖
+
+| 依赖 | 可见性 | 用途 |
+| :--- | :---: | :--- |
+| `GameCore` | Public | 编译开关 `Game::Config`、`FScopedCpuTimer`、哈希 |
+| `GameLogging` | Private | `LogGameDebug` 分类日志 |
+| `Core` / `CoreUObject` / `Engine` | Public | `IConsoleManager`、`ScreenMessages`、`AWorldSettings`、蓝图库 |
+
+| 关键类型 | 角色 |
+| :--- | :--- |
+| `FGameCheatRegistry` | GM / 控制台指令注册与解析 |
+| `FGameDebugPrint` / `FGameDebugWatchHub` | 屏幕打印 / 实时变量观察 |
+| `FGameDebugDraw` / `FGameDebugTrailRecorder` | 3D 图元 / 环形轨迹 |
+| `FGameDebugTimeController` | 按世界时间膨胀与单步 |
+| `FScopedDebugStopwatch` | RAII 作用域耗时告警 |
+| `UGameDebugBlueprintLibrary` | 蓝图入口 |
+
+<details>
+<summary><b>展开目录结构</b></summary>
 
 ```text
 Plugins/GameDebug/
@@ -97,9 +150,12 @@ Plugins/GameDebug/
 └── README.md
 ```
 
----
+</details>
 
-## 三、 性能基准
+## 性能与边界
+
+<details>
+<summary>展开性能基准（历史 Development 构建参考值）</summary>
 
 实测环境：Apple M5（macOS `27.2.1` arm64，UE `5.8` Development 构建，Apple Clang `21.1.6`，2 轮预热 + 7 轮采样中位数，基线提交 `f29588e`，复现命令 `python3 .scripts/run_automation_tests.py --case Game.Debug`）：
 
@@ -107,22 +163,29 @@ Plugins/GameDebug/
 |---|---:|---:|---:|---:|
 | `FGameDebugDraw` 空世界快速拦截 | `0.94 ns/op` | `0.94 ns/op` | `1.00%` | `1.07 Gops/s` |
 | `FGameDebugPrint` 64 位域盐槽位 Key 雪崩散列 | `1.51 ns/op` | `1.51 ns/op` | `1.04%` | `660.62 Mops/s` |
-| `FGameDebugTrailRecorder` $O(1)$ 环形写入 (`Cap=64`) | `3.72 ns/op` | `3.76 ns/op` | `3.04%` | `268.94 Mops/s` |
-| `FGameDebugTrailRecorder` $O(1)$ 环形写入 (`Cap=256`) | `3.66 ns/op` | `3.69 ns/op` | `1.22%` | `273.34 Mops/s` |
+| `FGameDebugTrailRecorder` O(1) 环形写入 (`Cap=64`) | `3.72 ns/op` | `3.76 ns/op` | `3.04%` | `268.94 Mops/s` |
+| `FGameDebugTrailRecorder` O(1) 环形写入 (`Cap=256`) | `3.66 ns/op` | `3.69 ns/op` | `1.22%` | `273.34 Mops/s` |
 | `FScopedDebugStopwatch` 未超时快路径 (`Cycles64`) | `21.55 ns/op` | `21.63 ns/op` | `0.94%` | `46.41 Mops/s` |
 | `FGameCheatRegistry` 未命中零分配短路 | `39.19 ns/op` | `39.21 ns/op` | `0.99%` | `25.52 Mops/s` |
 | `FGameCheatRegistry` 命中分词 + 锁外派发 | `121.33 ns/op` | `120.72 ns/op` | `1.30%` | `8.24 Mops/s` |
 | `FGameDebugTrailRecorder` 64 点时间渐变绘制 (`DrawTrail`) | `1,123.75 ns/op` | `1,135.92 ns/op` | `3.56%` | `889.88 Kops/s` |
 | `FGameDebugWatchHub` 5 组 50 项快照采样 + 格式化 | `6,068.16 ns/op` | `6,072.00 ns/op` | `1.35%` | `164.80 Kops/s` |
 
----
+</details>
 
-## 四、 自动化测试与延伸文档
+- **Shipping 裁剪**：`GAME_DEBUG_PRINT*` / `GAME_DEBUG_WATCH` / `GAME_DEBUG_DRAW_*` 在 `GAME_ENABLE_DEBUG_DRAW == 0` 时展开为 `((void)0)`，实参不求值；`FScopedDebugStopwatch` 在 `GAME_ENABLE_CPU_PROFILER == 0` 时成员与时钟全部移除。
+- **线程**：屏幕打印、3D 绘制、时间控制与观察面板刷新依赖引擎 GameThread 侧 API；`FGameDebugWatchHub` 的全局开关为原子变量，注册表由读写锁保护。
+- **生命周期**：`FGameDebugWatchHub` 与 `FGameDebugTimeController` 由模块启动 / 卸载对称调用 `Initialize()` / `Shutdown()`；`FGameCheatRegistry::ClearAll()` 用于模块卸载或测试清理。
+- **缓冲边界**：`FGameDebugTrailRecorder` 的容量在构造期固定（默认 64），生命周期与最小距离下限分别为 `0.1s` 与 `0.0`。
+- **时间倍率**：`FGameDebugTimeController` 合法范围为 `[0.001f, 20.0f]`，暂停写入 `0.0001f`，`0.001f` 不会被误判为暂停。
+- **性能数据**：均为历史 Development 实测参考值，未纳入 CI 自动复测，不构成 Shipping 性能承诺。
 
-```bash
-python3 .scripts/run_automation_tests.py --case Game.Debug
-```
+## 文档导航
 
-- [架构概述与核心设计](Docs/Architecture/Overview.md)
-- [公共 API 契约参考手册](Docs/API/GameDebugReference.md)
-- [快速上手与最佳实践指南](Docs/Guides/QuickStart.md)
+| 文档 | 内容 |
+| :--- | :--- |
+| [架构概述](Docs/Architecture/Overview.md) | 模块分层、域盐键隔离、锁序与环形缓冲设计 |
+| [API 参考](Docs/API/GameDebugReference.md) | 8 大组件公共 API、常量与宏契约 |
+| [快速开始](Docs/Guides/QuickStart.md) | C++ / 蓝图 / GM 指令接入指南 |
+
+自动化回归：`python3 .scripts/run_automation_tests.py --case Game.Debug`（16 项功能测试 + 9 项微基准）。

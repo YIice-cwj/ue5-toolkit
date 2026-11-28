@@ -41,7 +41,7 @@ flowchart TD
 | 组件 ID | 核心设施与原语 | 机制特点 | 专属 API 规范链接 |
 |---|---|---|:---:|
 | **01. Config** | `FConfigRegistry`, `FConfigSourceBridge` | 读写锁、单向级联多源覆盖、PIE 自动回滚 | [ConfigRegistry.md](../API/ConfigRegistry.md) |
-| **02. Types** | `TGameResult<T>`, `FGameError`, `TBitMask`, `FGameDistId`, `FGameLocalId`, `TGameHandle`, `FGameTypeFingerprint` | 强类型错误、枚举位掩码、无撞车 Snowflake 分布式 ID 与编译期类型指纹 | [RandomAndTypes.md](../API/RandomAndTypes.md) |
+| **02. Types** | `TGameResult<T>`, `FGameError`, `TBitMask`, `FGameDistId`, `FGameLocalId`, `TGameHandle`, `TGameCustomTypeFingerprint` | 强类型错误、枚举位掩码、无撞车 Snowflake 分布式 ID 与跨动态库稳定类型指纹 | [RandomAndTypes.md](../API/RandomAndTypes.md) |
 | **03. Containers** | `TSlotMap`, `TSortedVectorMap`, `TLockFreeRingBuffer`, `FFastTagBitmask`, `TScratchArray` | 紧凑存储代际句柄防 ABA、连续内存二分查找、Vyukov MPMC 无锁环形缓冲与 64 位状态位掩码 | [Containers.md](../API/Containers.md) |
 | **04. Memory** | `FLinearArena`, `FScopedFrameScratchpad`, `TFixedBlockAllocator`, `TFixedSizePool`, `FByteSpanReader/Writer` | 1~3ns 极速线性分配、帧局部暂存栈、侵入式空闲链表对象池与零拷贝二进制切片流 | [Memory.md](../API/Memory.md) |
 | **05. Determinism** | `FFixedTimestepAccumulator`, `TRewindSnapshotBuffer`, `FStateChecksumBuilder`, `FDesyncDetector` | 亚毫秒固定步长累加器、确定性回放快照环、Mix64 零堆分配增量状态校验与双端分叉检测 | [Determinism.md](../API/Determinism.md) |
@@ -66,13 +66,13 @@ graph TD
     subgraph Layer2["服务与领域调度层"]
         GameGameplay["GameGameplay (GAS集成/属性/打击反馈)"]
         GameData["GameData (联网数据同步/云存档)"]
-        GameDomain["GameNetCore | GameNetService | GameNetSession | GameFlow | GameMessage | GameFeedback"]
+        GameDomain["GameNetCore | GameNetService | GameNetSession | GameFlow | GameFeedback"]
     end
 
     subgraph Layer1["通用基础设施与底层契约层"]
         GameGameplayCore["GameGameplayCore (纯C++伤害/生命状态机)"]
         GameDataCore["GameDataCore (静态配置与数据表解析)"]
-        GameLogging["GameLogging | GameDebug | GamePool | GameSpatial | GameAssetCore"]
+        GameLogging["GameMessage | GameLogging | GameDebug | GamePool | GameSpatial | GameAssetCore"]
     end
 
     subgraph Layer0["基础设施核心层 (Level 0)"]

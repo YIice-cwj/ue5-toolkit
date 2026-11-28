@@ -22,7 +22,7 @@ flowchart TD
 
     subgraph Tier0["Tier 0: 底座级高频事件总线 (GameCore/Listener 核心)"]
         LH["FListenerHub + FValueObserver"]
-        T0Desc["• 寻址：64 位编译期稳定类型指纹 (GAME_TYPE_FINGERPRINT)<br>• 载荷：纯 C++ 原生值对象 / 引用传递<br>• 边界：纯 C++ 模块间高频通信 (零 GC、零 UObject、零堆装箱)<br>• 开销：纳秒级 (Copy-on-Write 锁外零锁遍历)<br>• 适用场景：网络数据包分发、配置实时重载、内存阈值告警、状态机状态切换"]
+        T0Desc["• 寻址：64 位跨动态库稳定类型指纹 (Game::Core::GetTypeFingerprint)<br>• 载荷：纯 C++ 原生值对象 / 引用传递<br>• 边界：纯 C++ 模块间高频通信 (零 GC、零 UObject、零堆装箱)<br>• 开销：纳秒级 (Copy-on-Write 锁外零锁遍历)<br>• 适用场景：网络数据包分发、配置实时重载、内存阈值告警、状态机状态切换"]
     end
 
     Tier1 -. 业务监听底层状态 .-> Tier0

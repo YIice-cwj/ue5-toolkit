@@ -1,29 +1,93 @@
-# GameCore 版本化缓存与淘汰策略 API 参考
+# GameCore 缓存 API
 
-本文档汇总 `GameCore` 提供的三策略版本化缓存与连续节点池淘汰原语（全部位于 `Cache/` 目录）：
-- `FVersionedCache<T>`：Eager 全量快照、Lazy 惰性填充与 LRU 限长淘汰三策略聚合缓存容器
-- `FCachePolicy`：配置中心驱动的动态策略解析与自适应阈值决策
-- `FLruIndexPool`：基于连续数组与 Clock 二次机会（Second-Chance）原子热度位的零堆分配 LRU 双向链表索引池
+> **一句话**：三策略版本化缓存、配置驱动的缓存策略解析与 Clock 二次机会 LRU 索引池。
+> **头文件**：`Cache/FVersionedCache.h`、`Cache/FCachePolicy.h`、`Cache/FLruIndexPool.h` · **线程**：`FVersionedCache` 的公开接口可并发调用（内部 `FRWLock` 读写分离）；`FLruIndexPool` 非线程安全，须由调用方持锁 · **失败语义**：未命中 / 未缓存键返回空共享指针或 `false`；未知策略字符串回退 `Automatic` 并记录 Warning
 
----
+## 30 秒速览
 
-## 1. 三策略聚合版本化缓存 `FVersionedCache<T>`
+- **容器**：`FVersionedCache<T>` 按 `Cache.{Domain}.*` 配置在 Eager / Lazy / LRU 三种策略间自动选择。
+- **指针稳定**：`FindShared` 返回 `TSharedPtr<const ValueType>`，缓存重建、驱逐或单键失效都不会提前析构外部正在使用的数据。
+- **代次守卫**：Lazy / LRU 的锁外构建完成后会校验 `Generation`，期间发生 `Rebuild()` / `Reset()` 则丢弃陈旧构建结果。
+- **策略**：`FCachePolicy::Resolve(Domain)` 读取全局 `FConfigRegistry`；行数先比 `LruMinRows`、再比 `LazyMinRows`，均未达到则 Eager。
+- **索引池**：`FLruIndexPool` 用连续数组 + `int32` 前后驱 + 原子 `HotBit` 实现零每键堆分配的 LRU。
+
+## API 速查
+
+| 接口 | 用途 | 关键约束 |
+| :--- | :--- | :--- |
+| `FVersionedCache<T>::Rebuild` | 按全量键集重建主表 | 可跨线程；空构建闭包等价 `Reset()` |
+| `FVersionedCache<T>::FindShared` | 并发安全查找单键 | 可跨线程；未命中返回空指针；外部共享指针延长实例生命周期 |
+| `FVersionedCache<T>::Invalidate` | 精确失效单键 | 可跨线程；键原本未缓存返回 `false` |
+| `FVersionedCache<T>::Reset` | 清空全部状态并自增代次 | 可跨线程；对象不可拷贝、不可移动 |
+| `FCachePolicy::Resolve` | 按业务域解析缓存策略 | 经全局 `FConfigRegistry` 读取；未知策略回退 `Automatic` 并记 Warning |
+| `FLruIndexPool::MarkReferenced` | 读取时原子置热位 | 唯一可在读锁下并发调用的接口 |
+| `FLruIndexPool::Touch` | 置热位并移到链表头 | 需调用方持写锁 |
+| `FLruIndexPool::EvictTail` | 淘汰尾部冷节点 | 需持写锁；链表为空返回 `NAME_None` |
+| `FLruIndexPool::AllocateNode` | 分配或复用节点槽位 | 需持写锁；不会失败；槽位索引不可跨调用缓存 |
+
+## 三策略缓存 `FVersionedCache<T>`
 
 头文件：`#include "Cache/FVersionedCache.h"`
 
-### 核心特性与并发安全模型
-- **脱锁生命周期安全（Pointer Stability & Lifetime Guarantee）**：
-  - 查询接口 `FindShared(Key)` 返回只读数据共享指针 `TSharedPtr<const ValueType>`；
-  - 外部读取线程拿到共享指针后，即使缓存立即执行 `Rebuild()` 重构整表、被 LRU 驱逐或调用 `Invalidate(Key)` 精确剔除，由于外部强引用计数 $> 0$，该数据实例绝不会被提前析构；
-  - 外部使用完毕后对象正常安全释放，彻底消灭野指针与生命周期竞态；
-- **双重检查代次守卫（Double-checked Generation Guard）**：
-  - 在 Lazy 与 LRU 策略中，未命中的单条构建函数（`LocalBuildFn(Key)`）**在完全脱离读写锁的环境下执行**，防止耗时的数据加载或反序列化长时间阻塞其他读取线程；
-  - 构建完成后重新申请写锁，并校验代次 `Generation == ObservedGeneration`：若构建期间发生了并发 `Rebuild()` 或 `Reset()`，则丢弃陈旧数据并重新取数，严禁陈旧快照覆盖最新数据；
-- **锁外内存回收（Out-of-lock Memory Reclamation）**：
-  - 重建或重置时，内部仅在写锁内通过 `MoveTemp` 转移被淘汰的 `ValueMap` 与有效键集的所有权至 `FRetiredStorage`；
-  - 释放锁后，`FRetiredStorage` 离开局部作用域自然析构，消灭因锁内批量析构大容器引发的微秒级停顿；
-- **单键精确失效（`Invalidate`）**：
-  - 支持单条记录精确剔除，完美契合热更新配置目录监听，无需全量整表重建。
+```cpp
+template<typename T>
+class FVersionedCache {
+public:
+    using ValueType = T;
+    using ValueTypePtr = TSharedPtr<const ValueType>;
+    using ValueMap = TMap<FName, ValueTypePtr>;
+
+    explicit FVersionedCache(const FName& Domain);
+
+    void Rebuild(const TArray<FName>& AllKeys, TFunction<ValueType(FName Key)> InBuildFn);
+    [[nodiscard]] ValueTypePtr FindShared(FName Key) const;
+    void Reset();
+    bool Invalidate(FName Key);
+    [[nodiscard]] int32 Num() const;
+    [[nodiscard]] bool IsEmpty() const;
+    [[nodiscard]] bool Contains(FName Key) const;
+    [[nodiscard]] ECacheStrategy GetEffectiveStrategy() const;
+    [[nodiscard]] const FName& GetDomain() const noexcept;
+    [[nodiscard]] uint64 GetGeneration() const noexcept;
+};
+```
+
+| 接口 | 说明 |
+| :--- | :--- |
+| `FVersionedCache(Domain)` | 构造时即调用 `FCachePolicy::Resolve(Domain)` 解析域策略 |
+| `Rebuild(AllKeys, InBuildFn)` | 重建主表；Eager 在锁外构建全量快照，Lazy / LRU 只登记键集 |
+| `FindShared(Key)` | 并发安全查找；Lazy / LRU 未命中时锁外单条构建并按代次校验写回 |
+| `Invalidate(Key)` | 精确失效单键；键原本未缓存返回 `false` |
+| `Reset()` | 清空全部状态并使代次自增 |
+| `Contains(Key)` / `Num()` / `IsEmpty()` | 只读统计；`Contains` 不触发惰性构建 |
+| `GetEffectiveStrategy()` / `GetGeneration()` / `GetDomain()` | 观测当前策略、代次与业务域 |
+
+- **线程**：`Rebuild` / `FindShared` / `Reset` / `Invalidate` / 统计接口均可跨线程调用；对象本身不可拷贝、不可移动。
+- **生命周期**：`FindShared` 返回的共享指针强引用数据实例；即使随后发生 `Rebuild()`、LRU 驱逐或 `Invalidate(Key)`，该实例在外部引用释放前不会被析构。
+- **失败语义**：`Key.IsNone()` 或未命中返回空 `ValueTypePtr`；Eager 策略下未命中不会触发构建；`Rebuild` 传入空构建闭包等价于 `Reset()`。
+
+### 策略判定 `ECacheStrategy`
+
+```cpp
+enum class ECacheStrategy : uint8 {
+    Automatic,
+    Eager,
+    Lazy,
+    Lru,
+};
+```
+
+| 策略 | 行为 |
+| :--- | :--- |
+| `Automatic` | 由 `Rebuild` 时的总行数与阈值动态决定，默认值 |
+| `Eager` | `Rebuild` 一次性构建全部条目并持有只读快照 |
+| `Lazy` | 首次 `FindShared` 命中未缓存键时单条构建并常驻 |
+| `Lru` | `Lazy` 基础上限制容量，超出后按 Clock 二次机会淘汰 |
+
+- `Rebuild` 时重新解析一次策略，因此运行期修改配置后再次 `Rebuild` 即可切换策略。
+- Lazy / LRU 只对 `Rebuild` 时传入的键集合做惰性构建；键不在集合内时 `FindShared` 直接返回空指针。
+
+### 最小示例
 
 ```cpp
 struct FItemConfig {
@@ -31,10 +95,8 @@ struct FItemConfig {
     int32 Price = 0;
 };
 
-// 1. 初始化针对 "Item" 业务域的缓存实例
 FVersionedCache<FItemConfig> ItemCache(TEXT("Item"));
 
-// 2. 预热/重构缓存（传入所有已知键与按键构建闭包）
 TArray<FName> AllItemKeys = { TEXT("Sword"), TEXT("Shield"), TEXT("Potion") };
 ItemCache.Rebuild(AllItemKeys, [](FName Key) -> FItemConfig {
     FItemConfig Config;
@@ -43,84 +105,126 @@ ItemCache.Rebuild(AllItemKeys, [](FName Key) -> FItemConfig {
     return Config;
 });
 
-// 3. 并发安全查询（返回只读共享指针）
 TSharedPtr<const FItemConfig> Item = ItemCache.FindShared(TEXT("Sword"));
 if (Item.IsValid()) {
     UE_LOG(LogTemp, Log, TEXT("Item: %s, Price: %d"), *Item->ItemName, Item->Price);
 }
 
-// 4. 精确失效单个键（如热重载单个文件）
 ItemCache.Invalidate(TEXT("Shield"));
 ```
 
----
-
-## 2. 策略配置与自适应决策 `FCachePolicy`
+## 配置驱动策略 `FCachePolicy`
 
 头文件：`#include "Cache/FCachePolicy.h"`
 
-### 策略枚举与判定规则
 ```cpp
-enum class ECacheStrategy : uint8 {
-    Automatic, // 自动判定策略（默认）
-    Eager,     // 全量预热构建（不可变快照替换）
-    Lazy,      // 惰性按需填充（单条动态构建常驻）
-    Lru        // LRU 限长淘汰（连续节点池）
+struct GAMECORE_API FCachePolicy {
+    static constexpr int64 MinLruCapacity = 1;
+    static constexpr int64 MaxLruCapacity = 1000000;
+    static constexpr int64 DefaultLruCapacity = 10000;
+
+    static FCachePolicy Resolve(const FName& Domain);
+    [[nodiscard]] int32 GetClampedLruCapacity() const noexcept;
+
+    ECacheStrategy Strategy = ECacheStrategy::Automatic;
+    int64 LazyMinRows = MAX_int64;
+    int64 LruMinRows = MAX_int64;
+    int64 LruCapacity = DefaultLruCapacity;
 };
 ```
 
-- **配置键命名约定**：
-  `FCachePolicy::Resolve(Domain)` 自动从 `FConfigRegistry` 读取 `Cache.{Domain}.*` 开关与参数：
-  - `Cache.{Domain}.Strategy`：显式指定策略（`"automatic"` / `"eager"` / `"lazy"` / `"lru"`，大小写不敏感）；
-  - `Cache.{Domain}.LazyMinRows`：数据行数 $\ge$ 该值时启用 Lazy；
-  - `Cache.{Domain}.LruMinRows`：数据行数 $\ge$ 该值时启用 LRU（优先级高于 Lazy）；
-  - `Cache.{Domain}.LruCapacity`：LRU 最大缓存容量，内部严格钳制在安全区间 $[1, 1000000]$。
-- **自适应判定流向**：
-  若策略配置为 `Automatic`：
-  1. 若 `RowCount >= LruMinRows` $\rightarrow$ 生效策略为 `Lru`；
-  2. 否则若 `RowCount >= LazyMinRows` $\rightarrow$ 生效策略为 `Lazy`；
-  3. 未达任何阈值（小数据集） $\rightarrow$ 生效策略为 `Eager`。
+| 配置键 | 类型 | 默认值 | 说明 |
+| :--- | :--- | :---: | :--- |
+| `Cache.{Domain}.Strategy` | `FString` | `"auto"` | `auto` / `automatic` / `eager` / `lazy` / `lru`，大小写不敏感 |
+| `Cache.{Domain}.LazyMinRows` | `int64` | `MAX_int64` | 行数 `>=` 该值时启用 Lazy，负值按 `0` 处理 |
+| `Cache.{Domain}.LruMinRows` | `int64` | `MAX_int64` | 行数 `>=` 该值时启用 LRU，优先于 Lazy，负值按 `0` 处理 |
+| `Cache.{Domain}.LruCapacity` | `int64` | `10000` | LRU 容量，读取时钳制到 `[1, 1000000]` |
+
+- **线程**：`Resolve` 通过全局根注册表 `FConfigRegistry::Get()` 读取配置，遵循注册表的读写分离保证。
+- **失败语义**：未知策略字符串记录 Warning 并回退 `Automatic`；配置键未注册时使用上表默认值。
+- **自动判定顺序**：`RowCount >= LruMinRows` → `Lru`；否则 `RowCount >= LazyMinRows` → `Lazy`；否则 `Eager`。
+- `Domain` 为空时 `Resolve` 触发 `ensureMsgf`。
 
 ```ini
-; 示例：在 DefaultGame.ini 中微调配置域缓存策略
 [GameCore.Config]
-+StringConfigs=(Key="Cache.SkillTable.Strategy", Value="automatic")
-+IntConfigs=(Key="Cache.SkillTable.LazyMinRows", Value="500")
-+IntConfigs=(Key="Cache.SkillTable.LruMinRows", Value="5000")
-+IntConfigs=(Key="Cache.SkillTable.LruCapacity", Value="1024")
+Cache.SkillTable.Strategy=automatic
+Cache.SkillTable.LazyMinRows=500
+Cache.SkillTable.LruMinRows=5000
+Cache.SkillTable.LruCapacity=1024
 ```
 
----
+上述节可通过 `FConfigSourceBridge::LoadIniSection` 按 `Key=Value` 注入，详见 [ConfigRegistry](ConfigRegistry.md)。
 
-## 3. Clock 二次机会双向链表索引池 `FLruIndexPool`
+## LRU 索引池 `FLruIndexPool`
 
 头文件：`#include "Cache/FLruIndexPool.h"`
 
-### 架构设计与并发无锁热度更新
-传统的 LRU 容器在每次读取命中时都需要获取互斥写锁调整链表指针，在高并发读取场景下会产生极其严重的锁颠簸。`FLruIndexPool` 采用工业级改进设计：
+```cpp
+struct FLruIndexPool {
+    struct FLruNode {
+        FName Key;
+        int32 Prev = INDEX_NONE;
+        int32 Next = INDEX_NONE;
+        mutable volatile int32 HotBit = 0;
+    };
 
-- **零每键堆内存分配**：
-  - 内部预分配连续节点池 `TArray<FLruNode> Pool` 与 `KeyToNode` 哈希表；
-  - 节点前驱 `Prev`、后继 `Next` 均为 `int32` 索引，未占用的槽位通过 `FreeHead` 构成空闲回收单向链表，内存连续且 CPU 缓存极其友好；
-- **并发读零锁热度标记（Clock Second-Chance）**：
-  - `FindShared` 在处于读锁环境下，调用 `LruPool.MarkReferenced(Key)`；
-  - 仅执行原子操作 `FPlatformAtomics::InterlockedExchange(&Pool[Idx].HotBit, 1)` 将热度位置 1，**全程不争抢写锁**；
-- **淘汰时平滑晋升（EvictTail）**：
-  - 当容量超出上限触发淘汰时，在写锁内扫描尾部节点 `Tail`；
-  - 若尾部节点的 `HotBit == 1`，则清零热度位并将其移回链表头部给予二次机会，继续向前扫描；
-  - 仅当尾部节点处于绝对冷态（`HotBit == 0`）时，才将其真正淘汰出池并回收槽位。
+    void Reset();
+    void Reserve(int32 Capacity);
+    [[nodiscard]] bool Contains(FName Key) const;
+    [[nodiscard]] bool IsHead(FName Key) const;
+    [[nodiscard]] FName GetHeadKey() const noexcept;
+    [[nodiscard]] FName GetTailKey() const noexcept;
+    [[nodiscard]] int32 GetCapacity() const noexcept;
+    [[nodiscard]] int32 Num() const noexcept;
+    [[nodiscard]] bool IsEmpty() const noexcept;
+    bool MarkReferenced(FName Key) const;
+    void Touch(FName Key);
+    bool Remove(FName Key);
+    void RemoveFromChain(int32 NodeIdx);
+    void InsertAtHead(int32 NodeIdx);
+    int32 AllocateNode(FName Key);
+    FName EvictTail();
+};
+```
+
+| 接口 | 说明 |
+| :--- | :--- |
+| `Reserve(Capacity)` | 预分配节点池与 `KeyToNode` 容量 |
+| `AllocateNode(Key)` | 复用空闲槽或扩容，返回节点池索引；已存在的键会重置并复用原槽位 |
+| `InsertAtHead(NodeIdx)` / `RemoveFromChain(NodeIdx)` | 手工维护双向链表 |
+| `MarkReferenced(Key)` | 读锁内仅做原子读 + 置热位，不争用写锁 |
+| `Touch(Key)` | 置热位并移到链表头，需调用方持写锁 |
+| `EvictTail()` | 淘汰尾部冷节点；热节点清零热位后晋升至头部并继续扫描 |
+| `Remove(Key)` | 摘链、删除映射并将槽位回收到空闲链表 |
+
+- **线程**：结构体本身无锁，除 `MarkReferenced` 可在读锁内并发调用外，其余接口要求调用方持有写锁。
+- **生命周期**：节点以 `int32` 索引互链；被 `Reset()` / `Remove()` / `EvictTail()` 回收的槽位索引立即失效，不要跨调用缓存节点索引。
+- **失败语义**：`Contains` / `MarkReferenced` / `Remove` / `IsHead` 对不存在的键返回 `false`；`AllocateNode` 不会失败；链表为空时 `EvictTail()` / `GetTailKey()` 返回 `NAME_None`。
 
 ```cpp
-// 内部由 FVersionedCache 自动管理，开发者亦可单独使用于自定义紧凑 LRU 逻辑
 FLruIndexPool Lru;
 Lru.Reserve(1024);
 
 const int32 Node = Lru.AllocateNode(TEXT("Player_1001"));
 Lru.InsertAtHead(Node);
 
-// 并发读命中时打标（零写锁争用）
 Lru.MarkReferenced(TEXT("Player_1001"));
 
-// 淘汰尾部最久未访问条目（自动处理二次机会晋升）
 const FName EvictedKey = Lru.EvictTail();
 ```
+
+## 常见错误与边界
+
+- **把 `FindShared` 的返回值当缓存所有权**：返回的是共享快照；缓存侧移除不影响外部使用，但外部不应写回修改。
+- **忘记传全量键集**：Lazy / LRU 只对 `Rebuild` 传入的 `AllKeys` 做惰性构建，键集缺失会让合法键永远查不到。
+- **Eager 下期望惰性构建**：Eager 未命中直接返回空指针，不会调用构建闭包。
+- **LRU 容量假设**：`LruCapacity` 读取时钳制到 `[1, 1000000]`，超出区间不会生效原值。
+- **并发误用 `FLruIndexPool`**：仅 `MarkReferenced` 可在读锁下调用；其余写操作必须持写锁。
+- **缓存策略热更**：`FVersionedCache` 构造时解析策略，修改配置后需再次 `Rebuild` 才会重新解析。
+
+## 相关文档
+
+- [插件 README](../../README.md)
+- [缓存与内存架构](../Architecture/CachingAndMemory.md)
+- [性能基准](../Architecture/Performance.md)
+- [配置注册中心 API](ConfigRegistry.md)

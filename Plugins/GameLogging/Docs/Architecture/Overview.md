@@ -9,7 +9,7 @@
 4. **高频 Tick 刷屏与时钟损耗**：高频循环中反复格式化、查时钟或刷盘会直接拖垮帧率。
 5. **跨网络集中上报耦合**：日志模块直接引用网络库会引发严重循环依赖。
 
-**GameLogging** 采用**编译期直轨 + 常驻原子槽位动态分发**双轨架构，并配合基于 `GameCore::TLockFreeRingBuffer` 与 `UGameplayMessageSubsystem` 的**零网络耦合远程日志管道**，同时兼顾极致热路径性能与绝对并发安全。
+**GameLogging** 采用**编译期直轨 + 常驻原子槽位动态分发**双轨架构，并配合基于 `TLockFreeRingBuffer` 与 `UGameplayMessageSubsystem` 的**零网络耦合远程日志管道**，同时兼顾极致热路径性能与绝对并发安全。
 
 ---
 
@@ -95,7 +95,7 @@ flowchart TD
 
 ### 3.5 零耦合远程日志管道
 - **依赖边界洁净**：`GameMessage` 仅位于 `PrivateDependencyModuleNames`，不向 `GameLogging` 的下游模块传递暴露；零网络插件、零 `GamePool` 依赖。
-- **MPMC 零节点分配环形队列**：`FGameRemoteLogOutputDevice` 堆上单次持有 `GameCore::TLockFreeRingBuffer<FGameRemoteLogEntry, 2048>`，逐条入队/出队零节点 `new`/`delete`；入队前经 CAS 预留严格满足软上限 `MaxCapacity`。
+- **MPMC 零节点分配环形队列**：`FGameRemoteLogOutputDevice` 堆上单次持有 `TLockFreeRingBuffer<FGameRemoteLogEntry, 2048>`，逐条入队/出队零节点 `new`/`delete`；入队前经 CAS 预留严格满足软上限 `MaxCapacity`。
 - **过滤与防重入**：先执行无锁纯算术 `NoLogging`/`SetColor` 与 `MinVerbosity` 快速拦截（99% 常规日志零 TLS 访问直接返回）；通过阈值后再进入模块私有 `FRemoteLogReentrancyScope` 防重入守卫 -> `FRWLock` 保护的 L1 内联黑名单 -> `acquire`/`release` 内存序配对的 CAS 容量预留 -> 延迟读取 `FPlatformTime::Seconds()`。`Clear()` 同样按 `MAX_CAPACITY` 设界防止持续并发生产下无限自旋。
 - **生命周期与卸载安全**：`UGameLoggingSubsystem` 默认构造零堆分配；`Initialize()` 显式调用 `Collection.InitializeDependency<UGameplayMessageSubsystem>()` 保障初始化期消息总线就绪；`Deinitialize()` 停止 `FTSTicker` 与 `GLog` 捕获后调用 `FlushQueue()`（总线仍活跃时自动刷新至监听器，总线先于其卸载时安全丢弃零崩溃）；禁用态自动卸载 `FTSTicker` 零空转。
 

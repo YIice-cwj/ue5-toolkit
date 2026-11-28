@@ -1,29 +1,36 @@
 # RemoteLogging 远程日志管道 API 参考
 
-`GameLogging` 插件提供零网络耦合的全局日志捕获与总线分发管道。它由解耦数据载荷 `FGameRemoteLogEntry`、挂载到 `GLog` 的无锁环形输出设备 `FGameRemoteLogOutputDevice` 以及常驻子系统 `UGameLoggingSubsystem` 组成。
+> **一句话**：把 `GLog` 日志捕获为 `FGameRemoteLogEntry`，经无锁环形队列由 `UGameLoggingSubsystem` 广播到 `TAG_Game_Log_Remote` 的消息总线管道。
+> **头文件**：`Remote/GameRemoteLogTypes.h`、`Remote/GameRemoteLogOutputDevice.h`、`Remote/GameLoggingSubsystem.h`
+> **线程**：`Serialize` 可被多工作线程并发调用；子系统生命周期、Ticker 排空与广播在 GameThread
+> **失败语义**：不抛异常；队列满时写入计入 `DroppedCount`，无监听者时零分配丢弃
 
----
+## 30 秒速览
 
-## 包含头文件
+- **数据契约**：`FGameRemoteLogEntry` 是 `USTRUCT(BlueprintType)` 值类型；固定通道为 `TAG_Game_Log_Remote`（`"Game.Log.Remote"`）。
+- **采集**：`FGameRemoteLogOutputDevice` 挂载到 `GLog`，默认只捕获 `Warning` 及以上，并预置防自激黑名单。
+- **防重入**：私有 TLS 守卫 `Game::Log::Private::FRemoteLogReentrancyScope` 拦截捕获与广播期间的二次重入。
+- **缓冲**：`TLockFreeRingBuffer<FGameRemoteLogEntry, 2048>` MPMC 队列，CAS 预留容量，满溢计入 `DroppedCount`。
+- **常驻**：`UGameLoggingSubsystem` 继承 `UGameInstanceSubsystem`，默认每帧排空 `50` 条；禁用后注销 Ticker，零空转。
+
+## API 速查
+
+| 接口 | 用途 | 关键约束 |
+| :--- | :--- | :--- |
+| `FGameRemoteLogEntry` | 远程日志条目值类型 | 纯值类型可跨线程复制；固定通道 `TAG_Game_Log_Remote` |
+| `FGameRemoteLogOutputDevice::Serialize` | 日志拦截并写入队列 | 可多工作线程并发调用；先过滤、过 TLS 重入守卫与黑名单 |
+| `FGameRemoteLogOutputDevice::DrainBatch` | 并发安全批量出队 | 返回实际排出条数 |
+| `FGameRemoteLogOutputDevice::DiscardBatch` | 无监听者时原地丢弃 | 零 `TArray` 分配 |
+| `FGameRemoteLogOutputDevice::SetMaxCapacity` | 调整队列容量 | 钳制至 `[1, 2048]`，非正值忽略 |
+| `UGameLoggingSubsystem::SetRemoteLoggingEnabled` | 启停远程日志 | 禁用即注销 Ticker 并从 `GLog` 解挂，零每帧开销 |
+| `UGameLoggingSubsystem::FlushQueue` | 按有界预算排空队列 | GameThread 调用；重入被 TLS 守卫拦截 |
+| `UGameLoggingSubsystem::GetPtr` | 取远程日志子系统指针 | 未就绪返回 `nullptr` |
+
+## 数据契约
 
 ```cpp
-#include "Remote/GameRemoteLogTypes.h"
-#include "Remote/GameRemoteLogOutputDevice.h"
-#include "Remote/GameLoggingSubsystem.h"
-```
+GAMELOGGING_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(TAG_Game_Log_Remote);
 
----
-
-## 1. 核心标签与数据结构
-
-### 消息总线标签：`TAG_Game_Log_Remote`
-- **常量定义**：`GAMELOGGING_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(TAG_Game_Log_Remote);`
-- **Tag 路径**：`"Game.Log.Remote"`
-- **声明位置**：`Plugins/GameLogging/Source/GameLogging/Public/Remote/GameRemoteLogTypes.h`
-- **用途**：通过 `UGameplayMessageSubsystem` 向全工程解耦广播结构化日志条目时所使用的标准固定通道。
-
-### 结构体：`FGameRemoteLogEntry`
-```cpp
 USTRUCT(BlueprintType)
 struct GAMELOGGING_API FGameRemoteLogEntry {
     GENERATED_BODY()
@@ -42,7 +49,6 @@ public:
     [[nodiscard]] ELogVerbosity::Type GetVerbosity() const noexcept;
     [[nodiscard]] bool operator==(const FGameRemoteLogEntry& Other) const noexcept;
 
-public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Logging")
     FName Category;
 
@@ -60,28 +66,22 @@ public:
 };
 ```
 
-#### 字段与契约说明
-- **`Category`**：日志所属分类名称（如 `LogGame`、`LogCombat`）；
-- **`Verbosity`**：日志详细级别（`uint8` 存储，构造函数自动按 `ELogVerbosity::VerbosityMask` 清除非级别标志位）；可通过 `GetVerbosity()` 获取 `ELogVerbosity::Type`；
-- **`Message`**：日志正文字符串；`operator==` 采用**精确大小写敏感匹配**（`ESearchCase::CaseSensitive`）；
-- **`Timestamp`**：日志触发时钟秒数（`FPlatformTime::Seconds()`）；
-- **`FrameNumber`**：日志发生时的引擎全局帧序号（`GFrameCounter`）。
+| 字段 / 接口 | 说明 |
+| :--- | :--- |
+| `Category` | 日志分类名（如 `LogGame`、`LogCombat`） |
+| `Verbosity` | `uint8` 存储详细级别；带参构造按 `ELogVerbosity::VerbosityMask` 清除非级别标志位 |
+| `GetVerbosity()` | 取强类型 `ELogVerbosity::Type` |
+| `Message` | 日志正文 |
+| `Timestamp` | 日志时钟秒数（`FPlatformTime::Seconds()`） |
+| `FrameNumber` | 日志发生时的引擎帧序号（`GFrameCounter`） |
+| `operator==` | 正文精确大小写敏感匹配，时间戳按浮点容差比较 |
 
----
+- **线程**：纯值类型，可跨线程复制；`FString` 复制遵循 UE 容器语义。
+- **生命周期**：无外部资源持有；随批次数组或监听回调入参存活。
+- **失败语义**：无错误返回；无监听者时条目由子系统零分配丢弃。
 
-## 2. 输出设备：`FGameRemoteLogOutputDevice`
+## 输出设备 `FGameRemoteLogOutputDevice`
 
-继承自 Unreal 原生 `FOutputDevice`，挂载至全局 `GLog`（`FOutputDeviceRedirector`）。
-
-### 特性与保护机制
-1. **私有 TLS 重入守卫**：内部由模块私有类 `Game::Log::Private::FRemoteLogReentrancyScope` 守卫（支持嵌套无损恢复），拦截捕获与总线广播期间的二次重入雪崩；
-2. **级别与控制符过滤**：自动拦截 `ELogVerbosity::NoLogging` 及 `ELogVerbosity::SetColor`（配色控制符），并通过 `std::atomic<uint8> MinVerbosity`（默认 `Warning`）快速无锁过滤低级别日志；
-3. **L1 内联零泄漏黑名单**：通过 `FRWLock` 保护 `TArray<FName, TInlineAllocator<8>> IgnoredCategories`，默认预置忽略 `LogGameMessage`、`LogGameNetService` 与 `LogGameNetCore`，8 项以内零堆分配且彻底零快照泄漏；
-4. **延迟平台时钟采集**：3 参 `Serialize`（及 `Time < 0.0` 调用）仅在通过全部过滤与容量预留后才调用 `FPlatformTime::Seconds()`；
-5. **MPMC 无锁环形队列**：复用 `GameCore::TLockFreeRingBuffer<FGameRemoteLogEntry, MAX_CAPACITY>`（`MAX_CAPACITY = 2048`，堆分配单次持有防栈溢出），每条日志零节点 `new`/`delete`；
-6. **严格 CAS 容量守恒**：入队前通过 CAS 原子预留容量槽位，严格杜绝多线程突发写入突破软上限 `MaxCapacity`，溢出项精确累加至 `DroppedCount`；支持并发安全 `Clear()` 与无监听者零分配 `DiscardBatch()`。
-
-### 公共接口
 ```cpp
 class GAMELOGGING_API FGameRemoteLogOutputDevice final : public FOutputDevice {
 public:
@@ -91,6 +91,19 @@ public:
     ~FGameRemoteLogOutputDevice() override;
 
     [[nodiscard]] bool CanBeUsedOnMultipleThreads() const override;
+
+    void Serialize(
+        const TCHAR* V,
+        ELogVerbosity::Type Verbosity,
+        const class FName& Category,
+        const double Time
+    ) override;
+
+    void Serialize(
+        const TCHAR* V,
+        ELogVerbosity::Type Verbosity,
+        const class FName& Category
+    ) override;
 
     int32 DrainBatch(TArray<FGameRemoteLogEntry>& OutBatch, int32 MaxCount);
     int32 DiscardBatch(int32 MaxCount);
@@ -113,21 +126,25 @@ public:
 };
 ```
 
----
+| 接口 | 说明 |
+| :--- | :--- |
+| `Serialize` | 日志拦截入口；先做级别 / 控制符过滤、TLS 重入守卫与黑名单判断，通过后再入队 |
+| `DrainBatch(OutBatch, MaxCount)` | 并发安全批量出队，返回实际排出条数 |
+| `DiscardBatch(MaxCount)` | 无监听者快速路径，原地丢弃并返回条数，零 `TArray` 分配 |
+| `SetMinVerbosity` / `GetMinVerbosity` | 调整最低严重程度，默认 `Warning` |
+| `SetMaxCapacity` / `GetMaxCapacity` | 容量钳制至 `[1, MAX_CAPACITY]`，非正值忽略 |
+| `AddIgnoredCategory` / `RemoveIgnoredCategory` / `IsCategoryIgnored` | 维护忽略黑名单，`NAME_None` 忽略 |
+| `GetQueuedCount` / `GetDroppedCount` | 查询队列条目数与累计丢弃数 |
+| `Clear` | 并发安全清空队列并重置丢弃计数 |
 
-## 3. 常驻子系统：`UGameLoggingSubsystem`
+- **防重入**：TLS 守卫支持嵌套无损恢复，阻断日志捕获与总线广播触发的递归日志雪崩。
+- **过滤**：拦截 `ELogVerbosity::NoLogging` 与 `ELogVerbosity::SetColor`；`FRWLock` 保护 `TArray<FName, TInlineAllocator<8>> IgnoredCategories`，默认忽略 `LogGameMessage`、`LogGameNetService`、`LogGameNetCore`。
+- **线程**：`CanBeUsedOnMultipleThreads` 恒为 `true`；多线程可并发 `Serialize`、`DrainBatch`、`DiscardBatch` 与 `Clear`。
+- **生命周期**：由 `UGameLoggingSubsystem` 持有；析构清空未消费队列。
+- **失败语义**：容量预留失败不阻塞调用线程，条目被丢弃并累加 `DroppedCount`；延迟时钟读取只在通过全部过滤后执行。
 
-继承自 `UGameInstanceSubsystem`，跨关卡 Seamless Travel 全生命周期常驻。
+## 常驻子系统 `UGameLoggingSubsystem`
 
-### 核心生命周期与运行机制
-- **CDO 零堆分配**：默认构造函数保持 `OutputDevice` 为空；
-- **`Initialize`**：显式声明 `Collection.InitializeDependency<UGameplayMessageSubsystem>()` 保障消息总线初始化就绪；创建捕获设备并应用预设配置；若处于启用态则挂载 `GLog` 并注册 `FTSTicker`；
-- **`Deinitialize`**：停止 `FTSTicker` 与 `GLog` 捕获，调用 `FlushQueue()` 尝试刷新残留尾日志（总线仍活跃时送达监听器，否则安全丢弃），最后释放缓冲与设备（提示：UE 5.8 `FSubsystemCollectionBase::Deinitialize()` 按 `SubsystemMap` 正序卸载，若业务需在 `GameInstance::Shutdown()` 前确保最后一批日志送达远端，建议在关停前显式调用一次 `FlushQueue()`）；
-- **零空转启用控制**：调用 `SetRemoteLoggingEnabled(false)` 时同步注销 `FTSTicker` 并从 `GLog` 解挂，禁用态零每帧开销；
-- **零分配排空与广播**：空队列 1 次原子判空短路；无监听者时原地调用 `DiscardBatch` 零 `TArray` 分配；有监听者时复用成员 `ReusableBatch` 稳态零堆分配，且广播全程受 `FRemoteLogReentrancyScope` 保护（同时阻止回调内递归 `FlushQueue()`）；
-- **`FlushQueue`**：按有界预算循环分批排空至队列见底（或达单次预算上限防无限生产循环）。
-
-### 公共接口
 ```cpp
 UCLASS()
 class GAMELOGGING_API UGameLoggingSubsystem : public UGameInstanceSubsystem {
@@ -176,7 +193,14 @@ public:
 };
 ```
 
-#### 获取与配置子系统示例
+- **初始化**：`Initialize` 显式声明 `InitializeDependency<UGameplayMessageSubsystem>()`，创建捕获设备、应用预设配置，并在启用态挂载 `GLog` 与注册 `FTSTicker`。
+- **卸载**：`Deinitialize` 停止 Ticker 与捕获，调用 `FlushQueue()` 刷新残留尾日志，随后释放缓冲与设备。
+- **零空转**：`SetRemoteLoggingEnabled(false)` 同步注销 Ticker 并从 `GLog` 解挂；禁用态无每帧开销。
+- **排空**：空队列 1 次原子判空短路；无监听者走 `DiscardBatch` 零分配；有监听者复用 `ReusableBatch` 并受重入守卫保护。
+- **`FlushQueue`**：按有界预算循环排空至队列见底或达单次上限，返回实际处理条数。
+- **线程**：生命周期、Ticker、`FlushQueue` 与广播在 GameThread；配置接口按 GameThread 调用设计。
+- **失败语义**：总线未就绪或已销毁时残留日志安全丢弃；`GetPtr` 未就绪返回 `nullptr`，`Get` 断言有效。
+
 ```cpp
 if (UGameLoggingSubsystem* LoggingSubsystem = UGameLoggingSubsystem::GetPtr(this)) {
     LoggingSubsystem->SetMinVerbosity(ELogVerbosity::Error);
@@ -184,11 +208,11 @@ if (UGameLoggingSubsystem* LoggingSubsystem = UGameLoggingSubsystem::GetPtr(this
 }
 ```
 
----
+> UE 5.8 的 `FSubsystemCollectionBase::Deinitialize()` 按 `SubsystemMap` 正序卸载；若必须在 `GameInstance::Shutdown()` 前确保最后一批日志送达远端，请在关停前显式调用一次 `FlushQueue()`。
 
-## 4. 下游监听与集成范例
+## 下游监听示例
 
-外部网络插件（如 `GameNetService`）仅需依赖 `GameMessage` 与 `GameLogging` 的轻量头 `Remote/GameRemoteLogTypes.h`，即可消费远程日志：
+订阅方仅需依赖 `GameMessage` 与轻量头 `Remote/GameRemoteLogTypes.h`：
 
 ```cpp
 #include "Message/GameplayMessageSubsystem.h"
@@ -208,3 +232,19 @@ FGameplayMessageListenerHandle ListenerHandle = MessageSubsystem.RegisterListene
     }
 );
 ```
+
+## 常见错误与边界
+
+- **默认阈值**：设备默认只捕获 `Warning` 及以上；`Log` / `Display` 需显式下调 `MinVerbosity`。
+- **默认黑名单**：`LogGameMessage`、`LogGameNetService`、`LogGameNetCore` 默认不采集，避免日志管道自激。
+- **队列满溢**：写入不阻塞，超出 `MaxCapacity` 的条目被丢弃，需监控 `GetDroppedCount()`。
+- **重入保护**：回调内再次 `FlushQueue()` 会被 TLS 守卫拦截，不会递归广播。
+- **卸载时序**：`GameInstance` 关停前如需送达尾日志，先显式 `FlushQueue()`；仅依赖 `Deinitialize` 可能因子系统卸载顺序错过监听者。
+- **订阅依赖**：订阅模块必须依赖 `GameMessage`，否则无法包含 `GameplayMessageSubsystem` 头。
+
+## 相关文档
+
+- [插件 README](../../README.md)
+- [架构概览](../Architecture/Overview.md)
+- [快速上手指南](../Guides/QuickStart.md)
+- [最佳实践与性能指南](../Guides/BestPractices.md)

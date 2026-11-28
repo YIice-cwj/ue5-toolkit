@@ -1,10 +1,94 @@
-# GameLogging 插件
+# GameLogging
 
-**GameLogging** 是基于 Unreal Engine 5 的高性能、线程安全全局日志基础设施。它提供模块级日志分类自动注册、双轨分发架构（编译期直轨 + 常驻原子槽位无锁动态分发）、单次去重与抑制前置限频输出机制，并通过 `GameCore` 编译期 `if constexpr` 开关在 Shipping 构建中实现零运行时开销。同时，本插件提供**零网络耦合的远程日志管道**（`FGameRemoteLogOutputDevice` 与 `UGameLoggingSubsystem`），基于 `GameCore::TLockFreeRingBuffer` 无锁环形队列与 `UGameplayMessageSubsystem` 消息总线，将结构化日志安全流转至外部网络或诊断模块。
+> **一句话**：模块级日志分类自动注册、编译期直轨与原子槽位双轨分发、单次 / 限频输出，外加一条不耦合网络模块的远程结构化日志管道。
+> **版本** v2.1.0 · **引擎** UE 5.1~5.8 · **层级** Level 1 · **直接依赖** GameCore, GameMessage（私有）
 
----
+## 30 秒速览
 
-## 架构与分发机制
+- **解决什么问题**：多模块工程的日志分类难统一、每次输出都要查分类的开销、缺少跨调用点的去重与限频、远程日志上报容易与网络模块耦合。
+- **核心能力**：
+  - `GAME_REGISTER_MODULE_LOG` 一行完成模块专属分类声明与登记；
+  - 编译期直轨与常驻原子槽位动态分发两条路径，热路径无跨 DLL 查找；
+  - `GAME_LOG` / `GAME_CLOG` / `GAME_LOG_ONCE` / `GAME_CLOG_ONCE` / `GAME_LOG_THROTTLE` 宏族；
+  - 关闭日志时经 `if constexpr` 编译期剔除；
+  - `FGameRemoteLogOutputDevice` + `UGameLoggingSubsystem` 将日志结构化广播到消息总线。
+- **什么时候用**：多模块工程需要统一分类与级别控制、需要单次 / 限频输出、需要把错误日志上报到运维或诊断模块。
+- **什么时候不用**：只需本地日志时不订阅 `TAG_Game_Log_Remote` 即可（无监听者时远程管道零分配丢弃）；项目未依赖 GameMessage 的模块无法订阅远程日志事件。
+
+## 快速开始
+
+```csharp
+// MyModule.Build.cs
+PublicDependencyModuleNames.AddRange(new string[] {
+    "Core", "CoreUObject", "GameCore", "GameLogging",
+});
+```
+
+```cpp
+// Private/MyModule.cpp：在模块主源文件顶层注册专属分类
+#include "MyModule.h"
+#include "Logging/GameLogMacros.h"
+
+GAME_REGISTER_MODULE_LOG(LogMyModule);
+
+void FMyModule::StartupModule() {
+    GAME_LOG(Log, TEXT("MyModule started successfully!"));
+}
+
+void AMyActor::Tick(float DeltaTime) {
+    Super::Tick(DeltaTime);
+    GAME_LOG_THROTTLE(2.0, Verbose, TEXT("Actor location: %s"), *GetActorLocation().ToString());
+}
+```
+
+```text
+Log LogMyModule Verbose        # 控制台动态调整分类级别
+```
+
+- 头文件选择：仅用宏时包含 `Logging/GameLogMacros.h` 最轻量；需要 `LogGame` 兜底分类时包含 `Logging/GameLogCategories.h`；需要聚合全部日志与远程管道设施时包含 `GameLogging.h`。
+
+## 核心能力
+
+### 模块分类注册
+- `FModuleLogRegistrar` 为 RAII 守卫，`GAME_REGISTER_MODULE_LOG` 展开为 `DEFINE_LOG_CATEGORY_STATIC` + 静态登记对象。
+- 宏用 `__COUNTER__` 生成唯一符号，避免 Unity Build 下重复定义。
+- 注册与析构恢复均为 $O(1)$，且无需拷贝模块名。
+
+### 双轨分发
+- 代码中显式定义 `GAME_CURRENT_MODULE_LOG` 时走编译期直轨，内联展开为原生 `UE_LOG`，零运行时查找。
+- 否则走常驻槽位动态分发：调用点首次经 `FGameLogRegistry::ResolveCategorySlot` 以 FNV-1a 哈希 $O(1)$ 取得槽位，之后缓存槽位指针直接读取。
+- 槽位为进程期地址恒定的原子对象；静态初始化早调用、运行期注册、覆写与注销均原子即时可见。
+
+### 宏族与热路径
+- `GAME_LOG` / `GAME_CLOG`：通用与条件模块感知输出。
+- `GAME_LOG_ONCE` / `GAME_CLOG_ONCE`：TTAS 无锁单次输出，触发后只读短路；`GAME_CLOG_ONCE` 同时跳过 `Condition` 求值。
+- `GAME_LOG_THROTTLE`：抑制级别前置短路，被抑制时不读时钟；未抑制时负哨兵保证首次必打，CAS 并发无锁更新。
+- 宏内只保留最小控制流，可复用逻辑收拢为 `Game::Log::Private` 的 `FORCEINLINE` 辅助函数。
+
+### 常驻单例与构建开关
+- 内部存储体在静态缓冲区以 C++20 `std::construct_at` 线程安全就地构造、退出期不析构，零裸 `new` / `delete`，规避静态初始化顺序（SIOF）与退出期逆序析构。
+- 联动 GameCore 的 `Game::Config::bEnableLog`；关闭时所有 `GAME_LOG*` 分支由 `if constexpr` 编译期剔除。
+- `NO_LOGGING` 下 `GAME_REGISTER_MODULE_LOG` 为空实现，宏整体编译移除。
+
+### 远程日志管道
+- `FGameRemoteLogOutputDevice` 挂载至 `GLog`，用 `TLockFreeRingBuffer<FGameRemoteLogEntry, 2048>` 做 MPMC 零节点堆分配缓冲。
+- 私有 `FRemoteLogReentrancyScope` 阻断重入风暴；拦截 `SetColor` / `NoLogging` 控制消息；延迟读取 `FPlatformTime::Seconds()`；`FRWLock` + `TArray<FName, TInlineAllocator<8>>` 维护黑名单。
+- `UGameLoggingSubsystem` 为 `UGameInstanceSubsystem`，CDO 零堆分配；`Initialize` 显式 `InitializeDependency<UGameplayMessageSubsystem>()`，`Deinitialize` 停止采集并刷新或丢弃残留队列。
+- 禁用态注销 `FTSTicker` 零空转；无监听者 `DiscardBatch` 零分配丢弃，有监听者复用 `ReusableBatch` 稳态零分配广播 `TAG_Game_Log_Remote`。
+
+## 架构与依赖
+
+- **公开依赖**：`Core`, `CoreUObject`, `Engine`, `GameplayTags`, `GameCore`
+- **私有依赖**：`GameMessage`（不向调用方暴露消息总线头文件）
+- **网络与对象池依赖**：0（不依赖 `GameNetCore`、`GameNetService`、`GamePool`）
+- **关键类**：
+  - `FGameLogRegistry` / `FLogCategorySlot`：分类注册表与常驻原子槽位
+  - `FModuleLogRegistrar`：RAII 注册与恢复
+  - `FGameRemoteLogOutputDevice`：`GLog` 旁路采集、过滤与无锁环形队列
+  - `UGameLoggingSubsystem`：远程管道生命周期、按需 Ticker 与广播门面
+
+<details>
+<summary><b>展开分发与远程管道流程图</b></summary>
 
 ```mermaid
 flowchart TD
@@ -24,72 +108,16 @@ flowchart TD
     subgraph RemotePipeline["零网络耦合远程日志管道 (Remote Logging)"]
         Output --> Hook["FGameRemoteLogOutputDevice (挂载至 GLog)"]
         Hook --> Guard{"私有 TLS 重入守卫<br>NoLogging/SetColor 拦截 & 级别/内联黑名单过滤"}
-        Guard -- 通过 --> Queue["GameCore::TLockFreeRingBuffer (MPMC 无锁环形队列)<br>CAS 严格软上限预留、零节点堆分配"]
+        Guard -- 通过 --> Queue["TLockFreeRingBuffer (MPMC 无锁环形队列)<br>CAS 严格软上限预留、零节点堆分配"]
         Queue --> Ticker["UGameLoggingSubsystem (启用期按需 FTSTicker)<br>空队短路 / 无监听者零分配丢弃 / 复用批次缓冲"]
         Ticker --> Bus["UGameplayMessageSubsystem<br>广播 TAG_Game_Log_Remote (FGameRemoteLogEntry)"]
     end
 ```
 
----
+</details>
 
-## 核心特性
-
-- **模块级日志自动注册**：通过 RAII 守卫（`FModuleLogRegistrar`）与 `__COUNTER__` 防 Unity Build 碰撞宏（`GAME_REGISTER_MODULE_LOG`），模块主源文件一行完成专属分类声明与登记。
-- **常驻不可移动原子槽位（Slot-based Lock-free Dispatch）**：
-  - 每个模块在 `FGameLogRegistry` 中拥有一个进程期地址恒定的原子槽位 `FLogCategorySlot`，由 `TMap` + FNV-1a 异构查找视图实现 $O(1)$ 零分配索引；
-  - 调用点首次解析后永久缓存该槽位指针，热路径零跨 DLL 调用、零双原子撕裂写、零跨模块误失效；
-  - 静态初始化早调用、运行期注册、覆写与注销均原子即时可见，且 `FModuleLogRegistrar` 无需拷贝模块名并在析构期 $O(1)$ 恢复。
-- **SIOF 免疫常驻单例**：内部存储体在静态缓冲区内以 C++20 `std::construct_at` 线程安全就地构造、退出期不析构，零裸 `new`/`delete`，彻底免疫跨编译单元静态初始化顺序问题与退出期逆序析构崩溃。
-- **丰富且防遮蔽的日志宏**：
-  - `GAME_LOG` / `GAME_CLOG`：通用与条件模块感知输出；
-  - `GAME_LOG_ONCE` / `GAME_CLOG_ONCE`：TTAS 无锁单次输出，触发后只读短路跳过条件求值；
-  - `GAME_LOG_THROTTLE`：抑制级别前置短路（被抑制时不查时钟、不触发 CAS、不浪费节流窗口），未抑制时负哨兵保证首触即打、CAS 并发无锁更新；
-  - 所有宏内部逻辑收拢至 `Game::Log::Private` `FORCEINLINE` 辅助函数，杜绝局部变量遮蔽与深层嵌套。
-- **零开销编译开关**：联动 `GameCore` 的 `Game::Config::bEnableLog`，关闭日志时经 `if constexpr` 编译期剔除。
-- **零耦合远程日志管道 (Remote Logging Pipeline)**：
-  - `FGameRemoteLogOutputDevice`：复用 `GameCore::TLockFreeRingBuffer<FGameRemoteLogEntry, 2048>` 实现 MPMC 零节点堆分配环形缓冲；通过私有 `FRemoteLogReentrancyScope` 阻断重入风暴；拦截 `SetColor`/`NoLogging` 控制消息；延迟读取 `FPlatformTime::Seconds()`；通过 `FRWLock` + `TArray<FName, TInlineAllocator<8>>` 实现 L1 亲和、零泄漏黑名单；
-  - `UGameLoggingSubsystem`：CDO 零堆分配，`Initialize` 显式声明 `Collection.InitializeDependency<UGameplayMessageSubsystem>()` 确保总线初始化就绪，`Deinitialize` 自动停止采集并安全刷新或丢弃残留队列；禁用态注销 `FTSTicker` 零空转；提供 `Get()`/`GetPtr()` 与统一远程配置门面；无监听者直接 `DiscardBatch` 零分配丢弃，有监听者复用 `ReusableBatch` 稳态零分配广播。
-
----
-
-## 插件依赖
-
-- **公开依赖 (`PublicDependencyModuleNames`)**：`Core`, `CoreUObject`, `Engine`, `GameplayTags`, `GameCore`
-- **私有依赖 (`PrivateDependencyModuleNames`)**：`GameMessage`（不对下游传递暴露）
-- **网络与对象池依赖**：**0**（不依赖 `GameNetCore`、`GameNetService`、`GamePool`）
-- **引擎版本**：Unreal Engine 5.1 ~ 5.8
-- **C++ 标准**：C++20
-
----
-
-## 快速上手
-
-### 1. 在模块主 cpp 中注册专属日志分类
-
-```cpp
-#include "Logging/GameLogCategories.h"
-
-GAME_REGISTER_MODULE_LOG(LogMyModule);
-```
-
-### 2. 在业务代码中使用日志
-
-```cpp
-#include "Logging/GameLogCategories.h"
-
-void AMyActor::BeginPlay() {
-    Super::BeginPlay();
-    GAME_LOG(Log, TEXT("AMyActor initialized."));
-    GAME_LOG_ONCE(Warning, TEXT("Resource initialized once."));
-}
-
-void AMyActor::Tick(float DeltaTime) {
-    Super::Tick(DeltaTime);
-    GAME_LOG_THROTTLE(2.0, Verbose, TEXT("Actor location: %s"), *GetActorLocation().ToString());
-}
-```
-
-### 3. 监听远程结构化日志事件（消息总线）
+<details>
+<summary><b>展开远程日志订阅示例</b></summary>
 
 ```cpp
 #include "Message/GameplayMessageSubsystem.h"
@@ -106,9 +134,56 @@ FGameplayMessageListenerHandle Handle = MessageSubsystem.RegisterListener<FGameR
 );
 ```
 
----
+- 订阅方所在模块需要具备 `GameMessage` 依赖。
 
-## 目录结构
+</details>
+
+## 性能与边界
+
+- 日志宏与注册表线程安全：槽位原子读取、单次 TTAS、限频 CAS，可从任意线程调用。
+- 远程管道默认开启，默认最低级别 `Warning`；每帧排空上限 `DEFAULT_DRAIN_PER_TICK = 50`，队列容量受 `MAX_CAPACITY` 钳制。
+- `GLog` 挂载、`FTSTicker` 注册与队列排空在 GameThread 执行；禁用时 Ticker 注销，零空转。
+- Shipping 构建 `NO_LOGGING` 默认为 `1`、`Game::Config::bEnableLog` 为 `false`，日志分支被静态裁剪。
+- 环形队列按软上限预留，满时写入侧预留失败、不阻塞调用线程；`NoLogging` / `SetColor` 与黑名单分类在入队前拦截。
+
+<details>
+<summary>展开性能基准（历史 Development 构建参考值）</summary>
+
+- 性能回归含 6 组基准（`DynamicDispatchVsStaticDirect`、`OnceAndThrottleHotPath`、`RegistryLookupScaling`、`RemoteDeviceFilterAndRingQueue`、`RemoteDeviceMultiThreadThroughput`、`SubsystemEndToEndBroadcast`），以中位数 ns/op 对预算阈值断言。
+- 预算阈值：动态分发抑制态 `30 ns/op`、`GAME_CLOG_ONCE` 短路 `20 ns/op`、限频抑制态 `30 ns/op`、200 分类注册表查找 `150 ns/op`、远程过滤 `40 ns/op`、环形队列往返 `600 ns/op`、多线程远程写入 `1500 ns/op`、子系统端到端广播 `2000 ns/op`。
+- 上述数值为 CI 断言预算，不是固定实测中位数。
+
+</details>
+
+<details>
+<summary><b>展开自动化测试清单（20 组）</b></summary>
+
+```bash
+UnrealEditor-Cmd <Project.uproject> -ExecCmds="Automation RunTests Game.Logging; Quit" -nullrhi -unattended
+```
+
+- **Registry (3)**：`Game.Logging.Registry.Lifecycle` · `RegistrarRAII` · `DynamicCapacityAndConcurrency`
+- **Macros (3)**：`Game.Logging.Macros.Concurrency` · `SemanticsAndSafety` · `SlotDispatch`
+- **RemoteTypes (1)**：`Game.Logging.RemoteTypes.EntryContractAndTag`
+- **RemoteOutputDevice (3)**：`Game.Logging.RemoteOutputDevice.FilteringAndCapacity` · `ConcurrencyAndReentrancy` · `BatchAtomicDrain`
+- **Subsystem (4)**：`Game.Logging.Subsystem.LifecycleAndFacade` · `NoListenerAndDeinitializeFlush` · `FeedbackLoopAndReentrantFlushGuard` · `TickerDrainAndDisableZeroSpin`
+- **Performance Benchmarks (6)**：`Game.Logging.Perf.DynamicDispatchVsStaticDirect` · `OnceAndThrottleHotPath` · `RegistryLookupScaling` · `RemoteDeviceFilterAndRingQueue` · `RemoteDeviceMultiThreadThroughput` · `SubsystemEndToEndBroadcast`
+
+</details>
+
+## 文档导航
+
+| 文档 | 内容 |
+| :--- | :--- |
+| [架构概述与分发机制](Docs/Architecture/Overview.md) | 双轨分发、槽位注册与远程管道时序 |
+| [日志宏参考](Docs/API/Macros.md) | `GAME_LOG*` 宏语义、去重与限频行为 |
+| [注册表 API](Docs/API/Registry.md) | 分类注册、RAII 守卫与槽位解析 |
+| [远程日志管道 API](Docs/API/RemoteLogging.md) | 输出设备、子系统门面与日志条目契约 |
+| [快速上手指南](Docs/Guides/QuickStart.md) | 依赖配置到远程订阅的五步接入 |
+| [最佳实践与性能指南](Docs/Guides/BestPractices.md) | Shipping 零开销控制与调优建议 |
+
+<details>
+<summary><b>展开源码目录</b></summary>
 
 ```text
 Plugins/GameLogging/
@@ -155,27 +230,4 @@ Plugins/GameLogging/
 └── README.md
 ```
 
----
-
-## 自动化测试与性能基准
-
-插件内置 **20 组**自动化测试（14 组功能/并发/边界回归 + 6 组多轮微基准性能回归），可在编辑器 Automation 面板过滤 `Game.Logging` 或通过命令行运行：
-
-```bash
-UnrealEditor-Cmd <Project.uproject> -ExecCmds="Automation RunTests Game.Logging; Quit" -nullrhi -unattended
-```
-
-- **Registry (3)**：`Game.Logging.Registry.Lifecycle` · `RegistrarRAII` · `DynamicCapacityAndConcurrency`
-- **Macros (3)**：`Game.Logging.Macros.Concurrency` · `SemanticsAndSafety` · `SlotDispatch`
-- **RemoteTypes (1)**：`Game.Logging.RemoteTypes.EntryContractAndTag`
-- **RemoteOutputDevice (3)**：`Game.Logging.RemoteOutputDevice.FilteringAndCapacity` · `ConcurrencyAndReentrancy` · `BatchAtomicDrain`
-- **Subsystem (4)**：`Game.Logging.Subsystem.LifecycleAndFacade` · `NoListenerAndDeinitializeFlush` · `FeedbackLoopAndReentrantFlushGuard` · `TickerDrainAndDisableZeroSpin`
-- **Performance Benchmarks (6)**：`Game.Logging.Perf.DynamicDispatchVsStaticDirect` · `OnceAndThrottleHotPath` · `RegistryLookupScaling` · `RemoteDeviceFilterAndRingQueue` · `RemoteDeviceMultiThreadThroughput` · `SubsystemEndToEndBroadcast`
-
----
-
-## 文档导航
-
-- [架构概述与分发机制](Docs/Architecture/Overview.md)
-- [日志宏参考](Docs/API/Macros.md) · [注册表 API](Docs/API/Registry.md) · [远程日志管道 API](Docs/API/RemoteLogging.md)
-- [快速上手指南](Docs/Guides/QuickStart.md) · [最佳实践与性能指南](Docs/Guides/BestPractices.md)
+</details>

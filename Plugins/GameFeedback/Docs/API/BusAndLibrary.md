@@ -1,35 +1,41 @@
 # GameFeedback 表现总线与广播函数库 API 参考
 
-本文档列出 `GameFeedback` 插件中总线通道标签、载荷结构体以及调用方唯一交互的蓝图函数库。
+> **一句话**：总线通道标签、消息载荷与调用方唯一广播入口的公共 API。
+> **头文件**：`Bus/GameFeedbackChannels.h`、`Bus/GameFeedbackMessages.h`、`Bus/GameFeedbackBlueprintLibrary.h` · **线程**：广播与监听均在 GameThread；网络回执由 Client RPC 在 GameThread 回灌 · **失败语义**：无返回值；`bEnableFeedback` 关闭、总线或 `WorldContextObject` 无效时静默丢弃
 
-- 头文件：
-  - `#include "Bus/GameFeedbackChannels.h"`
-  - `#include "Bus/GameFeedbackMessages.h"`
-  - `#include "Bus/GameFeedbackBlueprintLibrary.h"`
-  - 伤害契约适配器已归位至 Level 3 插件 `GameGameplay`：`#include "Bridge/UGameFeedbackAdapter.h"`
+## 30 秒速览
 
----
+- **通道**：`Feedback.Channel.Play` / `Network` / `Clear` 三个原生标签。
+- **载荷**：`FGameFeedbackMessage`、`FGameFeedbackNetworkMessage`、`FGameFeedbackClearMessage` 均为蓝图可读写 USTRUCT。
+- **入口**：`BroadcastFeedback` 未传 `Definition` 时预解析一次，供全部监听者复用。
+- **清理**：`BroadcastClearFeedback` 不受 `bEnableFeedback` 热关断阻断，始终放行复位。
+- **网络**：`BroadcastNetworkFeedback` 携带 `bSuppressed` 与 `ReceivingController`，配合同帧去重避免分屏重复表现。
 
-## 1. 总线通道标签 (`GameFeedbackChannels.h`)
+## API 速查
 
-框架基于 `NativeGameplayTags` 定义了 3 个专有原生通道标签：
+| 接口 | 用途 | 关键约束 |
+| :--- | :--- | :--- |
+| `TAG_Feedback_Channel_Play` | 本地表现广播通道 | 仅 GameThread 监听 |
+| `TAG_Feedback_Channel_Network` | 客户端网络回执回灌通道 | 携带 `bSuppressed`，供 Receiver 内部使用 |
+| `TAG_Feedback_Channel_Clear` | 状态重置与清除通道 | 不受 `bEnableFeedback` 热关断阻断 |
+| `FGameFeedbackMessage` | 本地表现广播载荷 | `OverrideDefinition` 为空时由监听者解析 |
+| `FGameFeedbackNetworkMessage` | 网络回执载荷 | `bSuppressed` 时监听者应跳过重复表现 |
+| `FGameFeedbackClearMessage` | 清理载荷 | `Target` 为空时不广播 |
+| `UGameFeedbackBlueprintLibrary::BroadcastFeedback` | 向 `Play` 通道广播表现 | `bEnableFeedback` 关闭时静默丢弃 |
+| `UGameFeedbackBlueprintLibrary::BroadcastClearFeedback` | 向 `Clear` 通道广播复位 | 不受热关断影响；`Target` 为空直接返回 |
+| `UGameFeedbackBlueprintLibrary::BroadcastNetworkFeedback` | 回灌网络回执 | 仅供 Receiver 内部；需 GameThread |
+
+## 总线通道标签
 
 | 标签常量 | 字符串标识 | 职责 |
-|---|---|---|
-| `TAG_Feedback_Channel_Play` | `"Feedback.Channel.Play"` | 本地表现广播通道（单机或服务端主发起，驱动所有本地监听者与网络派发） |
-| `TAG_Feedback_Channel_Network` | `"Feedback.Channel.Network"` | 客户端网络回执回灌通道（由 Receiver 接收后转发，携带 `bSuppressed` 标记） |
-| `TAG_Feedback_Channel_Clear` | `"Feedback.Channel.Clear"` | 状态重置与清除通道（死亡、复活、切关时快速复原 Overlay 材质与定格时间） |
+| :--- | :--- | :--- |
+| `TAG_Feedback_Channel_Play` | `"Feedback.Channel.Play"` | 本地表现广播通道 |
+| `TAG_Feedback_Channel_Network` | `"Feedback.Channel.Network"` | 客户端网络回执回灌通道，携带 `bSuppressed` |
+| `TAG_Feedback_Channel_Clear` | `"Feedback.Channel.Clear"` | 状态重置与清除通道 |
 
----
-
-## 2. 总线消息载荷 (`GameFeedbackMessages.h`)
-
-所有载荷结构体均为支持蓝图的 USTRUCT：
+## 总线消息载荷
 
 ```cpp
-/**
- * @brief 本地表现广播载荷
- */
 USTRUCT(BlueprintType)
 struct GAMEFEEDBACK_API FGameFeedbackMessage {
     GENERATED_BODY()
@@ -37,14 +43,10 @@ struct GAMEFEEDBACK_API FGameFeedbackMessage {
     UPROPERTY(BlueprintReadWrite, Category = "GameFeedback")
     FGameFeedbackSignal Signal;
 
-    /** 可选覆盖资产；为空时由监听者按注册表动态解析 */
     UPROPERTY(BlueprintReadWrite, Category = "GameFeedback")
     TObjectPtr<UGameFeedbackDefinition> OverrideDefinition = nullptr;
 };
 
-/**
- * @brief 网络回执广播载荷（携带本地预测抑制标记与可选定向接收控制器）
- */
 USTRUCT(BlueprintType)
 struct GAMEFEEDBACK_API FGameFeedbackNetworkMessage {
     GENERATED_BODY()
@@ -52,22 +54,16 @@ struct GAMEFEEDBACK_API FGameFeedbackNetworkMessage {
     UPROPERTY(BlueprintReadWrite, Category = "GameFeedback")
     FGameFeedbackSignal Signal;
 
-    /** 服务端权威解析出的最终 Definition */
     UPROPERTY(BlueprintReadWrite, Category = "GameFeedback")
     TObjectPtr<UGameFeedbackDefinition> ResolvedDefinition = nullptr;
 
-    /** 本地预测已播放而需要抑制重复表现的标志 */
     UPROPERTY(BlueprintReadWrite, Category = "GameFeedback")
     bool bSuppressed = false;
 
-    /** 可选定向接收控制器（非空时仅对应本地玩家组件响应，杜绝分屏重复触发） */
     UPROPERTY(BlueprintReadWrite, Category = "GameFeedback")
     TWeakObjectPtr<APlayerController> ReceivingController = nullptr;
 };
 
-/**
- * @brief 清除指定实体表现状态的广播载荷
- */
 USTRUCT(BlueprintType)
 struct GAMEFEEDBACK_API FGameFeedbackClearMessage {
     GENERATED_BODY()
@@ -77,57 +73,78 @@ struct GAMEFEEDBACK_API FGameFeedbackClearMessage {
 };
 ```
 
----
+| 结构体 | 字段 | 说明 |
+| :--- | :--- | :--- |
+| `FGameFeedbackMessage` | `Signal` | 纯表现信号 |
+| | `OverrideDefinition` | 可选覆盖资产；为空时由监听者按注册表解析 |
+| `FGameFeedbackNetworkMessage` | `Signal` | 服务端还原后的信号 |
+| | `ResolvedDefinition` | 服务端权威解析出的最终 Definition |
+| | `bSuppressed` | 本地预测已播放，监听者应跳过重复表现 |
+| | `ReceivingController` | 非空时仅对应本地玩家组件响应 |
+| `FGameFeedbackClearMessage` | `Target` | 待重置表现的实体 |
 
-## 3. 广播入口函数库 (`UGameFeedbackBlueprintLibrary`)
-
-调用方（技能、武器、战斗伤害等）与表现层之间的**唯一公开契约**。
+## 广播入口 `UGameFeedbackBlueprintLibrary`
 
 ```cpp
-UCLASS()
-class GAMEFEEDBACK_API UGameFeedbackBlueprintLibrary : public UBlueprintFunctionLibrary {
-    GENERATED_BODY()
+UFUNCTION(BlueprintCallable, Category = "GameFeedback", meta = (WorldContext = "WorldContextObject", AdvancedDisplay = "Definition"))
+static void BroadcastFeedback(
+    const UObject* WorldContextObject,
+    const FGameFeedbackSignal& Signal,
+    const UGameFeedbackDefinition* Definition = nullptr);
 
-public:
-    /**
-     * @brief 广播一次打击表现信号（未指定 Definition 时自动预解析一次供全部监听者零重复复用）
-     * @param WorldContextObject 世界上下文对象（蓝图自动隐式绑定）
-     * @param Signal 纯表现信号
-     * @param Definition 指定的表现资产（可选，为空时按注册表预解析）
-     */
-    UFUNCTION(BlueprintCallable, Category = "GameFeedback", meta = (WorldContext = "WorldContextObject", AdvancedDisplay = "Definition"))
-    static void BroadcastFeedback(
-        const UObject* WorldContextObject,
-        const FGameFeedbackSignal& Signal,
-        const UGameFeedbackDefinition* Definition = nullptr);
+UFUNCTION(BlueprintCallable, Category = "GameFeedback", meta = (WorldContext = "WorldContextObject"))
+static void BroadcastClearFeedback(const UObject* WorldContextObject, AActor* Target);
 
-    /**
-     * @brief 广播清除指定实体的表现状态（不受 bEnableFeedback 热关断阻断，始终放行清理复位）
-     * @param WorldContextObject 世界上下文对象（蓝图自动隐式绑定）
-     * @param Target 待重置的目标实体
-     */
-    UFUNCTION(BlueprintCallable, Category = "GameFeedback", meta = (WorldContext = "WorldContextObject"))
-    static void BroadcastClearFeedback(const UObject* WorldContextObject, AActor* Target);
-
-    /**
-     * @brief 将携带服务端最终 Definition 的网络回执回灌本地总线（由 Receiver 内部调用）
-     * @param WorldContextObject 世界上下文对象
-     * @param Signal 还原后的表现信号
-     * @param ResolvedDefinition 服务端最终 Definition
-     * @param bSuppressed 本地预测已播放而需要抑制重复表现
-     * @param ReceivingController 可选定向接收该回执的本地玩家控制器（分屏下隔离玩家侧组件重复执行）
-     */
-    static void BroadcastNetworkFeedback(
-        const UObject* WorldContextObject,
-        const FGameFeedbackSignal& Signal,
-        const UGameFeedbackDefinition* ResolvedDefinition,
-        bool bSuppressed,
-        APlayerController* ReceivingController = nullptr);
-};
+static void BroadcastNetworkFeedback(
+    const UObject* WorldContextObject,
+    const FGameFeedbackSignal& Signal,
+    const UGameFeedbackDefinition* ResolvedDefinition,
+    bool bSuppressed,
+    APlayerController* ReceivingController = nullptr);
 ```
 
----
+| 方法 | 参数 | 返回 | 行为 |
+| :--- | :--- | :---: | :--- |
+| `BroadcastFeedback` | `WorldContextObject`、`Signal`、可选 `Definition` | `void` | 向 `Play` 通道广播；`Definition` 为空时经 Provider 预解析一次 |
+| `BroadcastClearFeedback` | `WorldContextObject`、`Target` | `void` | 向 `Clear` 通道广播；`Target` 为空时直接返回 |
+| `BroadcastNetworkFeedback` | `WorldContextObject`、`Signal`、`ResolvedDefinition`、`bSuppressed`、`ReceivingController` | `void` | 向 `Network` 通道回灌网络回执 |
 
-## 4. 伤害契约转换适配器（已归位至 `GameGameplay`）
+- **线程**：三个入口均须在 GameThread 调用；消息在 GameThread 同步分发给监听者。
+- **生命周期**：无内部状态，不持有世界或资产引用；`bEnableFeedback` 在每次广播时读取项目配置。
+- **失败语义**：`bEnableFeedback == false` 时 `BroadcastFeedback` 与 `BroadcastNetworkFeedback` 静默返回；`BroadcastClearFeedback` 不受该开关影响；总线或上下文无效时静默丢弃。
 
-为严格遵守四级无环插件依赖拓扑（Level 2 的 `GameFeedback` 不依赖 Level 3 的 `GameGameplayCore`），`UGameFeedbackAdapter` 已迁至 `Plugins/GameGameplay/Source/GameGameplay/Public/Bridge/UGameFeedbackAdapter.h`（详见 [GameplayCueFeedbackBridge.md](../../../GameGameplay/Docs/API/GameplayCueFeedbackBridge.md)）。
+```cpp
+FGameFeedbackSignal Signal;
+Signal.Instigator = GetInstigator();
+Signal.DamageCauser = this;
+Signal.Target = HitActor;
+Signal.HitResult = HitResult;
+Signal.Magnitude = 50.0f;
+Signal.PrimaryChannel = FGameplayTag::RequestGameplayTag(TEXT("Damage.Channel.Blunt"));
+
+UGameFeedbackBlueprintLibrary::BroadcastFeedback(this, Signal);
+```
+
+## 网络回执与分屏去重
+
+- `UGameFeedbackReceiverComponent` 收到 RPC 后还原信号，并通过 `BroadcastNetworkFeedback` 回灌 `Network` 通道。
+- `bSuppressed == true` 时，`PlayerComponent`、`WorldComponent` 与 `HitStopService` 整段跳过执行。
+- `ReceivingController` 非空时，仅该本地玩家的组件响应；为空时全部本地玩家组件都会响应，分屏下可能重复。
+- `UGameFeedbackWorldComponent` 使用同帧栈内联去重表，支持分屏交错到达（A→B→A→B）时只执行一次。
+- 网络紧凑报文 `FGameFeedbackEventNet` 的字节预算与字段契约见 [SignalAndActions.md](SignalAndActions.md)。
+
+## 常见错误与边界
+
+- **热关断只拦广播**：`bEnableFeedback` 关闭会丢弃 `BroadcastFeedback` / `BroadcastNetworkFeedback`，但 `BroadcastClearFeedback` 仍会清理残留状态。
+- **无效上下文**：`WorldContextObject` 无法取得消息总线时，三个入口均静默返回，不产生错误码。
+- **重复预解析**：显式传入 `Definition` 可跳过 Provider 解析；未传且 Provider 不可用时 `OverrideDefinition` 为空，由监听者自行解析。
+- **误用网络入口**：`BroadcastNetworkFeedback` 面向 Receiver 内部回灌；玩法层直接调用会绕过网络权威解析。
+- **分屏重复**：`ReceivingController` 为空时所有本地玩家组件都会响应，分屏项目应传入实际接收控制器。
+- **清理目标为空**：`BroadcastClearFeedback` 对空 `Target` 直接返回，不会广播空清理消息。
+
+## 相关文档
+
+- [插件 README](../../README.md)
+- [架构概览](../Architecture/Overview.md)
+- [网络同步、裁剪与预测去重](../Architecture/NetworkAndCulling.md)
+- [快速上手](../Guides/QuickStart.md)
