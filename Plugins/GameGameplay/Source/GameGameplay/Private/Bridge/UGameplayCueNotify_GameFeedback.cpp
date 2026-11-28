@@ -49,7 +49,6 @@ bool UGameplayCueNotify_GameFeedback::OnExecute_Implementation(AActor* MyTarget,
         Signal.HitResult = EffectiveHitResult;
         Signal.Magnitude = Parameters.RawMagnitude;
         Signal.ImpactDirection = Parameters.Normal.IsNearlyZero() ? FVector(EffectiveHitResult.ImpactNormal) : FVector(Parameters.Normal);
-        Signal.PrimaryChannel = Parameters.MatchedTagName;
         Signal.TraceDirection = (Signal.HitResult.TraceEnd - Signal.HitResult.TraceStart).GetSafeNormal();
     }
 

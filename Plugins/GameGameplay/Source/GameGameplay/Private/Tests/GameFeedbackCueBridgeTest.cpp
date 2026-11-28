@@ -111,7 +111,7 @@ bool FGameFeedbackCueBridgeTest::RunTest([[maybe_unused]] const FString& Paramet
     TestTrue(TEXT("空上下文环境回落派发成功"), Cue->OnExecute_Implementation(Target, FallbackCueParams));
     TestEqual(TEXT("空上下文环境累积广播二次"), ReceivedCount, 2);
     TestEqual(TEXT("空上下文环境保留幅度"), ReceivedMessage.Signal.Magnitude, 33.0f);
-    TestEqual(TEXT("空上下文环境保留匹配通道"), ReceivedMessage.Signal.PrimaryChannel, SlashTag);
+    TestFalse(TEXT("空上下文回退不得把 Cue Tag 当作主通道"), ReceivedMessage.Signal.PrimaryChannel.IsValid());
     TestEqual(TEXT("空上下文环境保留参数法线作为冲击方向"), ReceivedMessage.Signal.ImpactDirection, FVector::UpVector);
 
     FGameplayEffectContext* NativeContext = new FGameplayEffectContext();
@@ -133,7 +133,7 @@ bool FGameFeedbackCueBridgeTest::RunTest([[maybe_unused]] const FString& Paramet
     TestEqual(TEXT("原生回落链路从 EffectContext 自动还原 Instigator"), ReceivedMessage.Signal.Instigator.Get(), Instigator);
     TestEqual(TEXT("原生回落链路从 EffectContext 自动还原 DamageCauser"), ReceivedMessage.Signal.DamageCauser.Get(), static_cast<AActor*>(MovingCauser));
     TestEqual(TEXT("原生上下文环境保留幅度"), ReceivedMessage.Signal.Magnitude, 77.0f);
-    TestEqual(TEXT("原生上下文环境保留匹配通道"), ReceivedMessage.Signal.PrimaryChannel, BluntTag);
+    TestFalse(TEXT("原生上下文回退不得把 Cue Tag 当作主通道"), ReceivedMessage.Signal.PrimaryChannel.IsValid());
     TestEqual(TEXT("Parameters.Normal 为零时回退使用 HitResult.ImpactNormal"), ReceivedMessage.Signal.ImpactDirection, FVector::ForwardVector);
     TestEqual(TEXT("原生回退分支正确计算 TraceDirection"), ReceivedMessage.Signal.TraceDirection, FVector::UpVector);
 
