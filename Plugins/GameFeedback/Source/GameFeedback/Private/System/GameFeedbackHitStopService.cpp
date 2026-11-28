@@ -124,6 +124,7 @@ void UGameFeedbackHitStopService::OnClear([[maybe_unused]] FGameplayTag Channel,
  * @brief 应用一次本地顿帧（含视角分流与累积预算）
  * @param Signal 表现信号
  * @param OverrideDefinition 覆盖资产；为空时按注册表解析
+ * @note 权威端（ListenServer / DedicatedServer）默认整段跳过；开启 bAllowAuthoritativeHitStop 后听服宿主会同时改变服务端模拟，当前未拆分纯表现层顿帧。
  */
 void UGameFeedbackHitStopService::ApplyHitStop(const FGameFeedbackSignal& Signal, const UGameFeedbackDefinition* OverrideDefinition) {
     UWorld* World = GetWorld();

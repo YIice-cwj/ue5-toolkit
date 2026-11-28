@@ -191,8 +191,12 @@ bool FGameFeedbackDefinitionProviderLifetimeTest::RunTest([[maybe_unused]] const
     };
 
     Provider->PreloadFeedbackBundle({AsyncSoft, TSoftObjectPtr<UGameFeedbackDefinition>()});
-    Provider->Resolve(AsyncSignal);
-    Provider->Resolve(AsyncSignal);
+    Registry->DefaultFallbackDefinition = CachedWeak.Get();
+    TestNull(
+        TEXT("未驻留 Definition 不得回退 DefaultFallbackDefinition"),
+        Provider->Resolve(AsyncSignal)
+    );
+    TestNull(TEXT("加载中重复 Resolve 仍返回空"), Provider->Resolve(AsyncSignal));
 
     FStreamableManager& StreamableManager = UAssetManager::GetStreamableManager();
     TArray<TSharedRef<FStreamableHandle>> Handles;

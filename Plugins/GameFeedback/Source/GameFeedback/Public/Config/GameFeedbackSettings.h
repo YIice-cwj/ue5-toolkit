@@ -50,7 +50,7 @@ public:
     float GlobalHapticScale = 1.0f;
 
     /**
-     * @brief 权威端（Listen Server / Dedicated Server）是否允许物理定格
+     * @brief 权威端是否允许物理定格；关闭时 ListenServer / DedicatedServer 整段跳过顿帧（当前未拆分纯表现层，听服宿主默认无手感反馈）
      */
     UPROPERTY(Config, EditAnywhere, Category = "HitStop")
     bool bAllowAuthoritativeHitStop = false;

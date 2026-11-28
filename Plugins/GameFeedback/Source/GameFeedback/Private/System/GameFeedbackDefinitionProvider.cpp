@@ -29,11 +29,7 @@ const UGameFeedbackDefinition* UGameFeedbackDefinitionProvider::Resolve(const FG
         return nullptr;
     }
 
-    if (const UGameFeedbackDefinition* Definition = ResolveDefinition(DefPtr)) {
-        return Definition;
-    }
-
-    return LoadedRegistry->DefaultFallbackDefinition.Get();
+    return ResolveDefinition(DefPtr);
 }
 
 /**
