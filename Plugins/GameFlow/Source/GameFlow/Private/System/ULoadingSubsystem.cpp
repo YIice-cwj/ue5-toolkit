@@ -211,7 +211,10 @@ void ULoadingSubsystem::CheckWatchdogTimeoutAt(double CurrentTimeSeconds) {
         ? CurrentTimeSeconds
         : FPlatformTime::Seconds();
 
-    if (MaxLoadingTimeoutSeconds > 0.0f && (Now - LoadingStartTimestamp) >= MaxLoadingTimeoutSeconds) {
+    const double WatchdogBaseline = (LoadingPhase == ELoadingTransitionPhase::WaitingBarriers)
+        ? MapLoadFinishedTimestamp
+        : LoadingStartTimestamp;
+    if (MaxLoadingTimeoutSeconds > 0.0f && (Now - WatchdogBaseline) >= MaxLoadingTimeoutSeconds) {
         HandleGlobalWatchdogTimeout(Now);
         return;
     }
@@ -335,6 +338,18 @@ bool ULoadingSubsystem::UpdateBarrierProgressInternal(
 }
 
 void ULoadingSubsystem::BeginLoadingTransition(const FName& InLevelName) {
+    if (LoadingPhase == ELoadingTransitionPhase::WaitingBarriers && !ActiveBarriers.IsEmpty()) {
+        const int32 DiscardedBarrierCount = ActiveBarriers.Num();
+        ActiveBarriers.Reset();
+        CustomTimeoutBarrierCount = 0;
+        GAME_LOG(
+            Warning,
+            TEXT("【GameFlow】等待屏障阶段被外部强切新图，已作废旧屏障 %d 个: 新目标=%s"),
+            DiscardedBarrierCount,
+            *InLevelName.ToString()
+        );
+    }
+
     LoadingPhase = ELoadingTransitionPhase::LoadingMap;
     TargetLevelName = InLevelName;
     CurrentLoadingProgress = 0.0f;

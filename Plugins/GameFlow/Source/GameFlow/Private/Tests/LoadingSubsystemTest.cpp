@@ -13,6 +13,7 @@
 #include <limits>
 
 #include "Engine/World.h"
+#include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTime.h"
 #include "Misc/AutomationTest.h"
 
@@ -536,11 +537,55 @@ bool FGameLoadingReentrancyAndForcedTravelTest::RunTest([[maybe_unused]] const F
     TestEqual(TEXT("强切新图后阶段重置为 LoadingMap"), LoadingSubsystem->GetLoadingPhase(), ELoadingTransitionPhase::LoadingMap);
     TestEqual(TEXT("强切新图后目标关卡更新为 ForcedMapC"), LoadingSubsystem->GetTargetLevelName(), FName(TEXT("/Game/Maps/ForcedMapC")));
     TestTrue(TEXT("强切新图触发 State:1:/Game/Maps/ForcedMapC 广播"), EventLog.Last() == TEXT("State:1:/Game/Maps/ForcedMapC"));
+    TestEqual(TEXT("强切新图后旧屏障应被清理"), LoadingSubsystem->GetActiveBarrierCount(), 0);
+    TestFalse(TEXT("强切新图后旧屏障令牌应立即失效"), PendingBarrier.IsValid());
 
     PendingBarrier.Release();
     TestWorld.BroadcastPostLoadMap();
     TestFalse(TEXT("ForcedMapC 加载完毕正常退出加载态"), LoadingSubsystem->IsLoading());
     TestEqual(TEXT("最终遥测报告关卡为 ForcedMapC"), LoadingSubsystem->GetLastTelemetryReport().LevelName, FName(TEXT("/Game/Maps/ForcedMapC")));
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameLoadingWatchdogBaselineTest,
+    "Game.Flow.System.WatchdogBaselineExcludesMapLoad",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证阻塞地图加载耗时不计入屏障等待超时基线
+ * @param Parameters 自动化测试参数
+ * @return 新基线在等待阶段生效返回 true
+ */
+bool FGameLoadingWatchdogBaselineTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    FScopedTestLoadingWorld TestWorld(FName(TEXT("LoadingWatchdogBaselineTestWorld")));
+    TestTrue(TEXT("测试世界初始化成功"), TestWorld.IsValid());
+    if (!TestWorld.IsValid()) {
+        return false;
+    }
+
+    ULoadingSubsystem* LoadingSubsystem = TestWorld.GetSubsystem();
+    LoadingSubsystem->SetMaxLoadingTimeoutSeconds(0.2f);
+
+    const double MapLoadStart = FPlatformTime::Seconds();
+    TestTrue(TEXT("进入慢加载关卡"), TestWorld.BroadcastPreLoadMap(TEXT("/Game/Maps/SlowMapLoad")));
+    while (FPlatformTime::Seconds() - MapLoadStart < 0.25) {
+        FPlatformProcess::Sleep(0.001f);
+    }
+
+    FLoadingBarrierToken Barrier = LoadingSubsystem->AcquireBarrierToken(FName(TEXT("PostMapBarrier")));
+    TestWorld.BroadcastPostLoadMap();
+    TestEqual(TEXT("地图完成后进入 WaitingBarriers"), LoadingSubsystem->GetLoadingPhase(), ELoadingTransitionPhase::WaitingBarriers);
+
+    LoadingSubsystem->CheckWatchdogTimeoutAt(FPlatformTime::Seconds());
+    TestTrue(TEXT("地图加载墙钟不应计入屏障等待超时"), LoadingSubsystem->IsLoading());
+    TestTrue(TEXT("屏障令牌仍有效"), Barrier.IsValid());
+
+    AddExpectedError(TEXT("【加载看门狗】"), EAutomationExpectedErrorFlags::Contains, 1);
+    LoadingSubsystem->CheckWatchdogTimeoutAt(FPlatformTime::Seconds() + 0.25);
+    TestFalse(TEXT("地图完成后超过新基线才触发全局熔断"), LoadingSubsystem->IsLoading());
 
     return true;
 }
