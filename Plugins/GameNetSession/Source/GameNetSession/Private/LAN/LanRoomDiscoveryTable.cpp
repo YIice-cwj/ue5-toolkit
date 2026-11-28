@@ -64,14 +64,22 @@ TOptional<FGameNetRoomDescriptor> FLanRoomDiscoveryTable::UpsertDiscoveredRoom(
         return NullOpt;
     }
 
-    if (IncomingRoom.HostAddress.IsEmpty()) {
-        IncomingRoom.HostAddress = SenderIp;
+    if (!IncomingRoom.HostAddress.IsEmpty() && !IsSafeHostAddress(IncomingRoom.HostAddress)) {
+        GAME_LOG_THROTTLE(
+            1.0,
+            Warning,
+            TEXT("[LAN/Table] 拦截含非法字符的载荷房主地址宣告: RoomId=%s"),
+            *IncomingRoom.RoomId
+        );
+        return NullOpt;
     }
+
+    IncomingRoom.HostAddress = SenderIp;
     if (!IsSafeHostAddress(IncomingRoom.HostAddress)) {
         GAME_LOG_THROTTLE(
             1.0,
             Warning,
-            TEXT("[LAN/Table] 拦截含非法字符或为空的房主地址宣告: RoomId=%s"),
+            TEXT("[LAN/Table] 拦截非法或为空的来源地址宣告: RoomId=%s"),
             *IncomingRoom.RoomId
         );
         return NullOpt;
@@ -80,6 +88,17 @@ TOptional<FGameNetRoomDescriptor> FLanRoomDiscoveryTable::UpsertDiscoveredRoom(
     IncomingRoom.bIsLanRoom = true;
 
     FDiscoveredRoomRecord* ExistingRecord = DiscoveredRooms.Find(IncomingRoom.RoomId);
+    if (ExistingRecord != nullptr && ExistingRecord->Descriptor.HostAddress != SenderIp) {
+        GAME_LOG_THROTTLE(
+            1.0,
+            Warning,
+            TEXT("[LAN/Table] 拒绝异源同 RoomId 覆盖（疑似房间劫持）: RoomId=%s, 原地址=%s, 新来源=%s"),
+            *IncomingRoom.RoomId,
+            *ExistingRecord->Descriptor.HostAddress,
+            *SenderIp
+        );
+        return NullOpt;
+    }
     if (ExistingRecord == nullptr && DiscoveredRooms.Num() >= MAX_DISCOVERED_ROOMS) {
         GAME_LOG_THROTTLE(
             1.0,

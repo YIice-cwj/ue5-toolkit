@@ -14,6 +14,7 @@ const FName FOnlineSessionRoomAdapter::DEFAULT_SESSION_NAME(TEXT("GameNetSession
 const FName FOnlineSessionRoomAdapter::SETTING_KEY_ROOM_NAME(TEXT("GAMENET_ROOM_NAME"));
 const FName FOnlineSessionRoomAdapter::SETTING_KEY_MAP_PATH(TEXT("GAMENET_MAP_PATH"));
 const FName FOnlineSessionRoomAdapter::SETTING_KEY_GAME_PORT(TEXT("GAMENET_GAME_PORT"));
+const FName FOnlineSessionRoomAdapter::SETTING_KEY_HOST_ADDRESS(TEXT("GAMENET_HOST_ADDRESS"));
 const FName FOnlineSessionRoomAdapter::OP_CREATE_ROOM(TEXT("CreateRoom"));
 const FName FOnlineSessionRoomAdapter::OP_FIND_ROOMS(TEXT("FindRooms"));
 const FName FOnlineSessionRoomAdapter::OP_JOIN_ROOM(TEXT("JoinRoom"));
@@ -369,6 +370,7 @@ void FOnlineSessionRoomAdapter::HandleFindComplete(TWeakObjectPtr<const UWorld> 
     }
 
     CachedRooms.Reset();
+    bool bAnyMissingHostAddress = false;
     if (bWasSuccessful && ActiveSessionSearch.IsValid()) {
         CachedRooms.Reserve(ActiveSessionSearch->SearchResults.Num());
         for (const FOnlineSessionSearchResult& SearchResult : ActiveSessionSearch->SearchResults) {
@@ -377,12 +379,22 @@ void FOnlineSessionRoomAdapter::HandleFindComplete(TWeakObjectPtr<const UWorld> 
             SearchResult.Session.SessionSettings.Get(SETTING_KEY_ROOM_NAME, Item.RoomName);
             SearchResult.Session.SessionSettings.Get(SETTING_KEY_MAP_PATH, Item.MapPath);
             SearchResult.Session.SessionSettings.Get(SETTING_KEY_GAME_PORT, Item.HostGamePort);
+            SearchResult.Session.SessionSettings.Get(SETTING_KEY_HOST_ADDRESS, Item.HostAddress);
+            bAnyMissingHostAddress |= Item.HostAddress.IsEmpty();
             Item.MaxPlayers = SearchResult.Session.SessionSettings.NumPublicConnections;
             Item.CurrentPlayers = FMath::Max(0, Item.MaxPlayers - SearchResult.Session.NumOpenPublicConnections);
             Item.PingMilliseconds = SearchResult.PingInMs;
             Item.bIsLanRoom = SearchResult.Session.SessionSettings.bIsLANMatch;
             CachedRooms.Add(MoveTemp(Item));
         }
+    }
+    if (bAnyMissingHostAddress) {
+        GAME_LOG_THROTTLE(
+            5.0,
+            Warning,
+            TEXT("[OSS] 搜索结果缺少 %s；这些描述符无法用于 TravelToRoom，请改用 JoinRoomByIndex 或由后端写入主机地址。"),
+            *SETTING_KEY_HOST_ADDRESS.ToString()
+        );
     }
 
     GAME_LOG(Log, TEXT("[OSS] FindRooms 完成: Success=%d, Count=%d"), bWasSuccessful ? 1 : 0, CachedRooms.Num());

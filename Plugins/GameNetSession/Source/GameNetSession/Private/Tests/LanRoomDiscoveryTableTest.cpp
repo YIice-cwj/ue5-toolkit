@@ -125,6 +125,21 @@ bool FGameNetLanRoomDiscoveryTableTest::RunTest([[maybe_unused]] const FString& 
     }
     TestEqual(TEXT("同 RoomId 原地去重保持 3 条记录"), Table.GetRoomCount(), 3);
 
+    FGameNetRoomDescriptor HijackRoom = Host1;
+    HijackRoom.HostAddress = TEXT("192.168.1.66");
+    TestFalse(
+        TEXT("异源同 RoomId 覆盖应被拒绝（防房间劫持）"),
+        Table.UpsertDiscoveredRoom(HijackRoom, TEXT("192.168.1.66"), 0, 11.2).IsSet()
+    );
+    Table.GetRoomsSnapshot(ReusableSnapshot);
+    const FGameNetRoomDescriptor* HijackedRecord = ReusableSnapshot.FindByPredicate(
+        [](const FGameNetRoomDescriptor& Room) { return Room.RoomId == TEXT("Room_Host1"); }
+    );
+    TestNotNull(TEXT("原房间记录仍存在"), HijackedRecord);
+    if (HijackedRecord != nullptr) {
+        TestEqual(TEXT("原房间 HostAddress 不被异源载荷改写"), HijackedRecord->HostAddress, FString(TEXT("192.168.1.21")));
+    }
+
     Table.GetRoomsSnapshot(ReusableSnapshot);
     TestEqual(TEXT("就地快照中数量为 3"), ReusableSnapshot.Num(), 3);
 

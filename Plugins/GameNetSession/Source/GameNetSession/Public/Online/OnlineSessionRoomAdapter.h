@@ -28,6 +28,7 @@ public:
     static const FName SETTING_KEY_ROOM_NAME;
     static const FName SETTING_KEY_MAP_PATH;
     static const FName SETTING_KEY_GAME_PORT;
+    static const FName SETTING_KEY_HOST_ADDRESS;
     static const FName OP_CREATE_ROOM;
     static const FName OP_FIND_ROOMS;
     static const FName OP_JOIN_ROOM;

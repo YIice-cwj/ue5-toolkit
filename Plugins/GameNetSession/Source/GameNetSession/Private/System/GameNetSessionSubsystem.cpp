@@ -279,11 +279,15 @@ bool UGameNetSessionSubsystem::TravelToListenServer(
  * @return 本地 PlayerController 有效且发起跳转返回 true
  */
 bool UGameNetSessionSubsystem::TravelToRoom(const FGameNetRoomDescriptor& Room, const FString& ExtraOptions) {
+    const EGameNetSessionState PreviousState = SessionState;
+    SetSessionState(EGameNetSessionState::Joining);
     if (UNetTravelLibrary::ExecuteClientRoomTravel(GetWorld(), Room, ExtraOptions).IsFailure()) {
+        SetSessionState(PreviousState);
         return false;
     }
 
-    SetSessionState(EGameNetSessionState::Joining);
+    LanBeacon.Stop();
+    SetSessionState(EGameNetSessionState::Idle);
     return true;
 }
 
@@ -385,8 +389,8 @@ void UGameNetSessionSubsystem::HandleOnlineAdapterOperationCompleted(
                     *TravelResult.GetError().ToString()
                 );
                 bEffectiveSuccess = false;
-                SetSessionState(EGameNetSessionState::Idle);
             }
+            SetSessionState(EGameNetSessionState::Idle);
         }
     } else {
         SetSessionState(EGameNetSessionState::Idle);
