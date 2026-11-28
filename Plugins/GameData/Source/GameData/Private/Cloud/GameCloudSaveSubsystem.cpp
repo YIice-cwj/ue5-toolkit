@@ -32,6 +32,7 @@ constexpr int32 CloudErrCancelled = 5;
 constexpr int32 CloudErrDiskWriteFailed = 6;
 constexpr int32 CloudErrVersionMismatch = 7;
 constexpr int32 CloudErrLocalReadFailed = 8;
+constexpr int32 CloudErrSuperseded = 9;
 
 /**
  * @brief 校验指定槽位名称是否合法且符合本地存档白名单约束
@@ -251,13 +252,15 @@ void UGameCloudSaveSubsystem::DownloadSlotAsync(
     FGameCloudSaveDownloadReq Req;
     Req.SlotName = SlotName;
 
+    const uint64 RequestGeneration = FSaveGameFileIO::IssueSlotSaveGeneration(SlotName);
+
     TWeakObjectPtr<UGameCloudSaveSubsystem> WeakThis(this);
     NetService->SendStructRequest<FGameCloudSaveDownloadReq, FGameCloudSaveDownloadRsp>(
         NET_MSG_CLOUD_SAVE_DOWNLOAD_REQ,
         NET_MSG_CLOUD_SAVE_DOWNLOAD_RSP,
         Req,
         TimeoutSeconds,
-        [WeakThis, SlotName, bAutoApplyToSubsystem, EffectiveToken, LinkedSource = MoveTemp(LinkedSource), Callback = MoveTemp(Callback)](
+        [WeakThis, SlotName, RequestGeneration, bAutoApplyToSubsystem, EffectiveToken, LinkedSource = MoveTemp(LinkedSource), Callback = MoveTemp(Callback)](
             ENetRequestResult NetResult,
             const FGameCloudSaveDownloadRsp* ResponsePtr
         ) mutable {
@@ -275,6 +278,7 @@ void UGameCloudSaveSubsystem::DownloadSlotAsync(
             }
             Self->HandleDownloadResponse(
                 SlotName,
+                RequestGeneration,
                 bAutoApplyToSubsystem,
                 NetResult,
                 ResponsePtr,
@@ -599,6 +603,7 @@ void UGameCloudSaveSubsystem::DispatchUploadRequest(
 /**
  * @brief 在主线程处理云端下载响应，先内存反序列化校验，通过后再派发后台原子落盘
  * @param SlotName 槽位名称
+ * @param RequestGeneration 请求派发时签发的槽位写入代次
  * @param bAutoApplyToSubsystem 是否落盘后热应用至本地已注册段
  * @param NetResult 底层网络请求结果
  * @param ResponsePtr 响应结构体指针
@@ -608,6 +613,7 @@ void UGameCloudSaveSubsystem::DispatchUploadRequest(
  */
 void UGameCloudSaveSubsystem::HandleDownloadResponse(
     const FString& SlotName,
+    uint64 RequestGeneration,
     bool bAutoApplyToSubsystem,
     ENetRequestResult NetResult,
     const FGameCloudSaveDownloadRsp* ResponsePtr,
@@ -618,6 +624,18 @@ void UGameCloudSaveSubsystem::HandleDownloadResponse(
     if (EffectiveToken.IsCancellationRequested()) {
         GAME_LOG(Log, TEXT("【云存档】下载响应因取消令牌中止，本地存档未触碰: 槽位=%s"), *SlotName);
         NotifyDownloadFailure(SlotName, EGameCloudSaveResult::Cancelled, CloudErrCancelled, TEXT("DownloadCancelled"), Callback);
+        return;
+    }
+
+    if (FSaveGameFileIO::IsSlotSaveGenerationSuperseded(SlotName, RequestGeneration)) {
+        GAME_LOG(Log, TEXT("【云存档】下载响应已过期（请求在途期间发生了更新保存/下载），本地存档未触碰: 槽位=%s"), *SlotName);
+        NotifyDownloadFailure(
+            SlotName,
+            EGameCloudSaveResult::Cancelled,
+            CloudErrSuperseded,
+            TEXT("DownloadSupersededByNewerRequestOrLocalSave"),
+            Callback
+        );
         return;
     }
 
@@ -665,7 +683,7 @@ void UGameCloudSaveSubsystem::HandleDownloadResponse(
         return;
     }
 
-    const uint64 SaveGeneration = FSaveGameFileIO::IssueSlotSaveGeneration(SlotName);
+    const uint64 SaveGeneration = RequestGeneration;
     const uint64 PendingDownloadId = ++NextPendingDownloadId;
     if (bAutoApplyToSubsystem && ValidatedArchivePtr != nullptr) {
         PendingDownloadArchives.Add(PendingDownloadId, ValidatedArchivePtr);
@@ -744,7 +762,7 @@ void UGameCloudSaveSubsystem::CompleteDownloadAfterDiskWrite(
     }
     if (bSkippedStale || FSaveGameFileIO::IsSlotSaveGenerationSuperseded(SlotName, SaveGeneration)) {
         FinalRsp.bSuccess = false;
-        FinalRsp.ErrorCode = CloudErrCancelled;
+        FinalRsp.ErrorCode = CloudErrSuperseded;
         FinalRsp.ErrorMessage = TEXT("DownloadSupersededByNewerLocalSave");
         GAME_LOG(Log, TEXT("【云存档】云端下载落盘已被更新的本地存档或删槽超越，跳过热应用: 槽位=%s"), *SlotName);
         NotifyDownloadComplete(SlotName, EGameCloudSaveResult::Cancelled, FinalRsp, Callback);

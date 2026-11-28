@@ -238,8 +238,9 @@ private:
     );
 
     /**
-     * @brief 在主线程处理云端下载响应，先内存反序列化校验，通过后再派发后台原子落盘
+     * @brief 在主线程处理云端下载响应，先判请求代次是否已过期，再内存反序列化校验并派发后台原子落盘
      * @param SlotName 槽位名称
+     * @param RequestGeneration 请求派发时签发的槽位写入代次（用于识别在途期间更新的本地保存/下载）
      * @param bAutoApplyToSubsystem 是否落盘后热应用至本地已注册段
      * @param NetResult 底层网络请求结果
      * @param ResponsePtr 响应结构体指针
@@ -249,6 +250,7 @@ private:
      */
     void HandleDownloadResponse(
         const FString& SlotName,
+        uint64 RequestGeneration,
         bool bAutoApplyToSubsystem,
         ENetRequestResult NetResult,
         const FGameCloudSaveDownloadRsp* ResponsePtr,
@@ -261,7 +263,7 @@ private:
      * @brief 在主线程结算下载后台原子落盘结果并可选热应用已校验的内存归档
      * @param SlotName 槽位名称
      * @param PendingDownloadId 子系统级全局唯一的下载请求序号（索引 PendingDownloadArchives 防止跨槽位碰撞）
-     * @param SaveGeneration 本次落盘签发的槽位级代次序号
+     * @param SaveGeneration 请求派发时签发的槽位级代次序号
      * @param bAutoApplyToSubsystem 是否热应用至已注册段
      * @param WriteResult 后台落盘状态
      * @param bSkippedStale 是否因被更新写入/删槽超越而跳过了物理落盘

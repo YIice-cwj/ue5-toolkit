@@ -109,6 +109,9 @@ bool FGameCloudSaveSubsystemTest::RunTest([[maybe_unused]] const FString& Parame
     int32 ForcedUploadErrorCode = 0;
     int32 ForcedQueryErrorCode = 0;
     bool bDropDownloadRequest = false;
+    bool bCaptureDownloadResponse = false;
+    uint32 CapturedDownloadSequenceId = 0;
+    TArray<uint8> CapturedDownloadRspBytes;
     TFunction<void()> OnDownloadRequestInFlight;
 
     MockTransport->RegisterMockHandler(
@@ -145,8 +148,9 @@ bool FGameCloudSaveSubsystemTest::RunTest([[maybe_unused]] const FString& Parame
     MockTransport->RegisterMockHandler(
         NET_MSG_CLOUD_SAVE_DOWNLOAD_REQ,
         NET_MSG_CLOUD_SAVE_DOWNLOAD_RSP,
-        [&MockCloudStorage, &NetService, &bDropDownloadRequest, &OnDownloadRequestInFlight](
-            [[maybe_unused]] const FNetPacketHeader& Header,
+        [&MockCloudStorage, &NetService, &bDropDownloadRequest, &bCaptureDownloadResponse,
+            &CapturedDownloadSequenceId, &CapturedDownloadRspBytes, &OnDownloadRequestInFlight](
+            const FNetPacketHeader& Header,
             TConstArrayView<uint8> ReqBytes
         ) -> TOptional<TArray<uint8>> {
             if (OnDownloadRequestInFlight) {
@@ -176,6 +180,11 @@ bool FGameCloudSaveSubsystemTest::RunTest([[maybe_unused]] const FString& Parame
             }
 
             const TGameStatusResult<TArray<uint8>> EncodedRsp = NetService.GetSerializer()->SerializeStruct(Rsp);
+            if (bCaptureDownloadResponse && EncodedRsp.IsSuccess()) {
+                CapturedDownloadSequenceId = Header.SequenceId;
+                CapturedDownloadRspBytes = EncodedRsp.GetValue();
+                return NullOpt;
+            }
             return EncodedRsp.IsSuccess() ? EncodedRsp.GetValue() : TOptional<TArray<uint8>>{};
         }
     );
@@ -541,6 +550,60 @@ bool FGameCloudSaveSubsystemTest::RunTest([[maybe_unused]] const FString& Parame
         }
     );
     TestEqual(TEXT("非法路径槽位名应被前置拦截并返回 SlotNotFound"), InvalidSlotResult, EGameCloudSaveResult::SlotNotFound);
+
+    const FString RaceSlot = TEXT("CloudRaceSlot");
+    RuntimeGold = 11111;
+    TestTrue(TEXT("RaceSlot 初始本地档保存成功"), SaveSys->SaveGameToSlot(RaceSlot).IsSuccess());
+    CloudSave.UploadSlot(RaceSlot, 5.0f);
+    PumpCloudSave(NetService);
+
+    RuntimeGold = 22222;
+    TestTrue(TEXT("RaceSlot 更新本地档保存成功"), SaveSys->SaveGameToSlot(RaceSlot).IsSuccess());
+    PumpCloudSave(NetService);
+
+    bCaptureDownloadResponse = true;
+    CapturedDownloadSequenceId = 0;
+    CapturedDownloadRspBytes.Reset();
+    EGameCloudSaveResult RaceDownloadResult = EGameCloudSaveResult::Success;
+    FGameCloudSaveDownloadRsp RaceDownloadRsp;
+    CloudSave.DownloadSlotAsync(
+        RaceSlot,
+        true,
+        5.0f,
+        [&RaceDownloadResult, &RaceDownloadRsp](EGameCloudSaveResult Result, const FGameCloudSaveDownloadRsp& Rsp) {
+            RaceDownloadResult = Result;
+            RaceDownloadRsp = Rsp;
+        }
+    );
+    PumpCloudSave(NetService);
+    bCaptureDownloadResponse = false;
+    TestTrue(TEXT("应捕获到在途下载响应字节"), CapturedDownloadRspBytes.Num() > 0);
+
+    RuntimeGold = 33333;
+    TestTrue(TEXT("下载在途期间再次本地保存成功"), SaveSys->SaveGameToSlot(RaceSlot).IsSuccess());
+    PumpCloudSave(NetService);
+
+    TestTrue(
+        TEXT("应成功注入旧云响应"),
+        MockTransport->SimulateServerPush(
+            NET_MSG_CLOUD_SAVE_DOWNLOAD_RSP,
+            CapturedDownloadRspBytes,
+            CapturedDownloadSequenceId
+        )
+    );
+    PumpCloudSave(NetService);
+
+    TestEqual(
+        TEXT("请求在途期间被更新本地保存超越后，旧下载应返回 Cancelled"),
+        RaceDownloadResult,
+        EGameCloudSaveResult::Cancelled
+    );
+    TestFalse(TEXT("过期下载响应 bSuccess 应为 false"), RaceDownloadRsp.bSuccess);
+
+    RuntimeGold = 0;
+    TestTrue(TEXT("过期下载后本地档仍可加载"), SaveSys->LoadGameFromSlot(RaceSlot).IsSuccess());
+    TestEqual(TEXT("本地新进度不得被旧云档覆盖"), RuntimeGold, 33333);
+    (void)SaveSys->DeleteSaveSlot(RaceSlot);
 
     NetService.Disconnect();
     EGameCloudSaveResult DisconnectUploadResult = EGameCloudSaveResult::Success;
