@@ -169,12 +169,13 @@ void UGameNetServiceSubsystem::SetHeartbeatConfig(const FNetHeartbeatConfig& InC
  * @return 成功触发连接流程返回 true
  */
 bool UGameNetServiceSubsystem::Connect(const FString& Endpoint) {
-    if (!ActiveTransport.IsValid() || Endpoint.IsEmpty()) {
+    const TSharedPtr<INetTransport> Transport = ActiveTransport;
+    if (!Transport.IsValid() || Endpoint.IsEmpty()) {
         GAME_LOG(Warning, TEXT("[Service] Connect 被拒：底层传输未装配或端点地址为空。"));
         return false;
     }
 
-    const ENetConnectionState TransportState = ActiveTransport->GetState();
+    const ENetConnectionState TransportState = Transport->GetState();
     if (TransportState == ENetConnectionState::Connected || TransportState == ENetConnectionState::Connecting) {
         GAME_LOG(Warning, TEXT("[Service] Connect 被拒：当前已处于连接中或已连接状态 (Target=%s)。"), *TargetEndpoint);
         return false;
@@ -186,7 +187,7 @@ bool UGameNetServiceSubsystem::Connect(const FString& Endpoint) {
     ReconnectPolicy.Reset();
     HeartbeatKeeper.Reset();
 
-    const TGameStatusResult<void> ConnectResult = ActiveTransport->Connect(Endpoint);
+    const TGameStatusResult<void> ConnectResult = Transport->Connect(Endpoint);
     if (ConnectResult.IsFailure()) {
         if (!bInReconnectCycle) {
             bManualDisconnect = true;
@@ -217,11 +218,12 @@ void UGameNetServiceSubsystem::Disconnect(int32 ReasonCode, const FString& Reaso
 
     const FString PreviousEndpoint = MoveTemp(TargetEndpoint);
     TargetEndpoint.Reset();
+    const TSharedPtr<INetTransport> Transport = ActiveTransport;
     const bool bTransportWasDisconnected =
-        !ActiveTransport.IsValid() || ActiveTransport->GetState() == ENetConnectionState::Disconnected;
+        !Transport.IsValid() || Transport->GetState() == ENetConnectionState::Disconnected;
 
-    if (ActiveTransport.IsValid()) {
-        ActiveTransport->Disconnect(ReasonCode, ReasonDetail);
+    if (Transport.IsValid()) {
+        Transport->Disconnect(ReasonCode, ReasonDetail);
     }
     if (!IsConnected()) {
         PendingRequestTracker.FailAll(ENetRequestResult::ConnectionClosed);
@@ -286,11 +288,20 @@ TGameStatusResult<void> UGameNetServiceSubsystem::SendRaw(
         );
     }
 
+    const TSharedPtr<INetTransport> Transport = ActiveTransport;
+    if (!Transport.IsValid()) {
+        return TGameStatusResult<void>::Failure(
+            Game::ModuleId::Net,
+            Game::NetErrorCodes::NotConnected,
+            TEXT("Transport unavailable")
+        );
+    }
+
     FNetPacketHeader Header;
     Header.MessageId = MessageId;
     Header.SequenceId = SequenceId;
     Header.PayloadLength = static_cast<uint32>(Payload.Num());
-    return ActiveTransport->Send(Header, Payload);
+    return Transport->Send(Header, Payload);
 }
 
 /**
@@ -426,8 +437,8 @@ void UGameNetServiceSubsystem::Tick(float DeltaTimeSeconds) {
         MonotonicClockSeconds += static_cast<double>(DeltaTimeSeconds);
     }
 
-    if (ActiveTransport.IsValid()) {
-        ActiveTransport->Tick(DeltaTimeSeconds);
+    if (const TSharedPtr<INetTransport> Transport = ActiveTransport; Transport.IsValid()) {
+        Transport->Tick(DeltaTimeSeconds);
     }
 
     PendingRequestTracker.TickTimeouts(DeltaTimeSeconds);
@@ -498,7 +509,9 @@ void UGameNetServiceSubsystem::TickHeartbeat(float DeltaTimeSeconds) {
     }
     if (Action == ENetHeartbeatAction::TimeoutDisconnect) {
         GAME_LOG(Warning, TEXT("[Service] 心跳静默超时，主动断开并尝试重连 (Endpoint=%s)。"), *TargetEndpoint);
-        ActiveTransport->Disconnect(1001, TEXT("HeartbeatTimeout"));
+        if (const TSharedPtr<INetTransport> Transport = ActiveTransport; Transport.IsValid()) {
+            Transport->Disconnect(1001, TEXT("HeartbeatTimeout"));
+        }
     }
 }
 
@@ -520,7 +533,8 @@ void UGameNetServiceSubsystem::TickReconnect(float DeltaTimeSeconds) {
         ReconnectPolicy.GetCurrentAttempt(),
         *TargetEndpoint
     );
-    const bool bStarted = ActiveTransport->Connect(TargetEndpoint).IsSuccess();
+    const TSharedPtr<INetTransport> Transport = ActiveTransport;
+    const bool bStarted = Transport.IsValid() && Transport->Connect(TargetEndpoint).IsSuccess();
     if (!bStarted && !ReconnectPolicy.IsWaitingForRetry() && !ReconnectPolicy.IsExhausted()) {
         TryEnterReconnectCycle();
     }

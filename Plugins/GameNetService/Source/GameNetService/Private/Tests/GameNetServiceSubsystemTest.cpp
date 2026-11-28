@@ -654,4 +654,52 @@ bool FGameNetServiceSubsystemCoroTest::RunTest([[maybe_unused]] const FString& P
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FGameNetServiceHotSwapInCallbackTest,
+    "Game.Net.Service.HotSwapInCallback",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+/**
+ * @brief 验证收包回调内热切换传输时旧驱动在 Tick 调用栈内保持存活，不发生 UAF
+ * @param Parameters 自动化测试参数
+ * @return 热切换完成且当前驱动为新实例返回 true
+ */
+bool FGameNetServiceHotSwapInCallbackTest::RunTest([[maybe_unused]] const FString& Parameters) {
+    UGameInstance* GameInstance = NewObject<UGameInstance>(GEngine);
+    GameInstance->InitializeStandalone(FName(TEXT("GameNetServiceHotSwapTestWorld")));
+
+    UGameNetServiceSubsystem& NetService = UGameNetServiceSubsystem::Get(GameInstance);
+    const TSharedRef<FMockNetTransport> TransportA = MakeShared<FMockNetTransport>();
+    const TSharedRef<FMockNetTransport> TransportB = MakeShared<FMockNetTransport>();
+
+    NetService.SetTransport(TransportA);
+    TestTrue(TEXT("应成功连接传输 A"), NetService.Connect(TEXT("mock://hot-swap-a")));
+
+    bool bSwappedInCallback = false;
+    NetService.RegisterRawHandler(
+        6001,
+        [&NetService, TransportB, &bSwappedInCallback](
+            [[maybe_unused]] const FNetPacketHeader& Header,
+            [[maybe_unused]] TConstArrayView<uint8> Payload
+        ) {
+            NetService.SetTransport(TransportB);
+            bSwappedInCallback = true;
+        }
+    );
+
+    TestTrue(TEXT("应成功注入服务端推送"), TransportA->SimulateServerPush(6001, {}, 0));
+    NetService.Tick(0.05f);
+
+    TestTrue(TEXT("收包回调内应完成热切换"), bSwappedInCallback);
+    TestEqual(
+        TEXT("热切换后当前传输应为 B"),
+        NetService.GetTransport().Get(),
+        static_cast<INetTransport*>(&TransportB.Get())
+    );
+
+    GameInstance->Shutdown();
+    return true;
+}
+
 #endif
